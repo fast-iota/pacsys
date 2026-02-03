@@ -23,7 +23,7 @@ from pacsys.ssh import (
 @pytest.fixture(autouse=True)
 def _mock_getuser():
     """Prevent getpass.getuser() failures in CI (no TTY)."""
-    with patch("pacsys.ssh.getpass.getuser", return_value="testuser"):
+    with patch("getpass.getuser", return_value="testuser"):
         yield
 
 
