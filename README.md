@@ -1,6 +1,10 @@
-# pacsys
+<h1 align="center">pacsys</h1>
 
-Pure-Python library for Fermilab's control system.
+<p align="center">Pure-Python library for Fermilab's control system.</p>
+
+<p align="center">
+  <a href="https://fast-iota.github.io/pacsys/"><img src="https://img.shields.io/badge/docs-available-blue" alt="Documentation"></a>
+</p>
 
 ## About
 
