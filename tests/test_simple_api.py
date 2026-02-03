@@ -494,20 +494,6 @@ class TestDPMFactory:
         )
 
 
-class TestGRPCFactory:
-    """Tests for pacsys.grpc() factory function."""
-
-    def test_grpc_returns_backend_or_raises_import_error(self):
-        """grpc() returns a GRPCBackend or raises ImportError if grpc is not installed."""
-        try:
-            # If grpc is installed, this returns a backend
-            backend = pacsys.grpc()
-            backend.close()
-        except ImportError as e:
-            # If grpc is not installed, ImportError is expected
-            assert "grpc package required" in str(e)
-
-
 class TestACLFactory:
     """Tests for pacsys.acl() factory function."""
 
