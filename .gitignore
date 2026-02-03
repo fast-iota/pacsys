@@ -163,7 +163,7 @@ cython_debug/
 
 # refs and sources
 reference_code/
-resources/
+/resources/
 ref_docs/
 
 # agentic stuff

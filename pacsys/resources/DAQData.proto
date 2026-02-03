@@ -1,0 +1,272 @@
+//  (c) 2010 Fermi Research Alliance
+//  $Id: DAQData.proto,v 1.12 2016/07/05 20:10:12 neswold Exp $
+//  Rebuild# 1
+
+//
+// DPM load balancing messages
+//
+
+request ServiceDiscovery {
+}
+
+reply ServiceDiscovery {
+    int16 load;
+}
+
+request OpenList {
+}
+
+reply OpenList {
+    int32 list_id;
+}
+
+request AddToList {
+    int32 list_id;
+    int32 ref_id;
+    string drf_request;
+}
+
+request RemoveFromList {
+    int32 list_id;
+    int32 ref_id;
+}
+
+request ClearList {
+    int32 list_id;
+}
+
+request ProcList {
+    int32 list_id;
+}
+
+//
+// Common DAQ data types.
+//
+
+request ReadingRequest {
+    string dataRequest[];
+}
+
+request SettingRequest {
+    string dataRequest[];
+}
+
+reply BinarySample {
+    binary value;
+    int64 time;
+    optional int64 return_time;
+    optional int64 cycle_time;
+    optional int16 ref_id;
+}
+
+reply BooleanSample {
+    bool value;
+    int64 time;
+    optional int64 return_time;
+    optional int64 cycle_time;
+    optional int16 ref_id;
+}
+
+reply BooleanArraySample {
+    bool value[];
+    int64 time;
+    optional int64 return_time;
+    optional int64 cycle_time;
+    optional int16 ref_id;
+}
+
+reply ShortSample {
+    int16 value;
+    int64 time;
+    optional int64 return_time;
+    optional int64 cycle_time;
+    optional string unit;
+    optional int16 format_hint;
+    optional int16 ref_id;
+}
+
+reply ShortArraySample {
+    int16 value[];
+    int64 time;
+    optional int64 return_time;
+    optional int64 cycle_time;
+    optional string unit;
+    optional int16 format_hint;
+    optional int16 ref_id;
+}
+
+reply IntegerSample {
+    int32 value;
+    int64 time;
+    optional int64 return_time;
+    optional int64 cycle_time;
+    optional string unit;
+    optional int16 format_hint;
+    optional int16 ref_id;
+}
+
+reply IntegerArraySample {
+    int32 value[];
+    int64 time;
+    optional int64 return_time;
+    optional int64 cycle_time;
+    optional string unit;
+    optional int16 format_hint;
+    optional int16 ref_id;
+}
+
+reply LongSample {
+    int64 value;
+    int64 time;
+    optional int64 return_time;
+    optional int64 cycle_time;
+    optional string unit;
+    optional int16 format_hint;
+    optional int16 ref_id;
+}
+
+reply LongArraySample {
+    int64 value[];
+    int64 time;
+    optional int64 return_time;
+    optional int64 cycle_time;
+    optional string unit;
+    optional int16 format_hint;
+    optional int16 ref_id;
+}
+
+reply DoubleSample {
+    double value;
+    int64 time;
+    optional int64 return_time;
+    optional int64 cycle_time;
+    optional string unit;
+    optional int16 format_hint;
+    optional int16 ref_id;
+}
+
+reply DoubleArraySample {
+    double value[];
+    int64 time;
+    optional int64 return_time;
+    optional int64 cycle_time;
+    optional string unit;
+    optional int16 format_hint;
+    optional int16 ref_id;
+}
+
+reply StringSample {
+    string value;
+    int64 time;
+    optional int64 return_time;
+    optional int64 cycle_time;
+    optional int16 ref_id;
+}
+
+reply StringArraySample {
+    string value[];
+    int64 time;
+    optional int64 return_time;
+    optional int64 cycle_time;
+    optional int16 ref_id;
+}
+
+struct BasicStatus {
+    optional bool on;
+    optional bool ready;
+    optional bool remote;
+    optional bool positive;
+    optional bool ramp;
+}
+
+reply BasicStatusSample {
+    BasicStatus value;
+    int64 time;
+    optional int64 return_time;
+    optional int64 cycle_time;
+    optional int16 ref_id;
+}
+
+reply BasicStatusArraySample {
+    BasicStatus value[];
+    int64 time;
+    optional int64 return_time;
+    optional int64 cycle_time;
+    optional int16 ref_id;
+}
+
+struct AnalogAlarm {
+    double minimum;
+    double maximum;
+    bool alarm_enable;
+    bool alarm_status;
+    bool abort;
+    bool abort_inhibit;
+    int32 tries_needed;
+    int32 tries_now;
+}
+
+reply AnalogAlarmSample {
+    AnalogAlarm value;
+    int64 time;
+    optional int64 return_time;
+    optional int64 cycle_time;
+    optional int16 ref_id;
+}
+
+reply AnalogAlarmArraySample {
+    AnalogAlarm value[];
+    int64 time;
+    optional int64 return_time;
+    optional int64 cycle_time;
+    optional int16 ref_id;
+}
+
+struct DigitalAlarm {
+    int32 nominal;
+    int32 mask;
+    bool alarm_enable;
+    bool alarm_status;
+    bool abort;
+    bool abort_inhibit;
+    int32 tries_needed;
+    int32 tries_now;
+}
+
+reply DigitalAlarmSample {
+    DigitalAlarm value;
+    int64 time;
+    optional int64 return_time;
+    optional int64 cycle_time;
+    optional int16 ref_id;
+}
+
+reply DigitalAlarmArraySample {
+    DigitalAlarm value[];
+    int64 time;
+    optional int64 return_time;
+    optional int64 cycle_time;
+    optional int16 ref_id;
+}
+
+enum BasicControl {
+     Reset, On, Off, Positive, Negative, Ramp, DC
+}
+
+reply BasicControlSample {
+    BasicControl value;
+    int64 time;
+    optional int64 return_time;
+    optional int64 cycle_time;
+    optional int16 ref_id;
+}
+
+reply ErrorSample {
+    int32 facilityCode;
+    int32 errorNumber;
+    int64 time;
+    optional int64 return_time;
+    optional int64 cycle_time;
+    optional string message;
+    optional int16 ref_id;
+}
