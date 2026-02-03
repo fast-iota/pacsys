@@ -677,5 +677,3 @@ class TestThreadSafety:
         assert all(r is results[0] for r in results)
         # Backend should only be created once
         assert MockBackend.call_count == 1
-
-

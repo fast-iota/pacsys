@@ -273,4 +273,3 @@ class TestEdgeCases:
         assert status[0].is_set is True  # bit 0 of 0xDEADBEEF = 1
         assert status[1].is_set is True  # bit 1 = 1
         assert status[4].is_set is False  # bit 4 = 0
-

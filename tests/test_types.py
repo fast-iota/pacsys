@@ -3,7 +3,6 @@ Tests for pacsys.types module.
 """
 
 import pytest
-import numpy as np
 
 from pacsys.types import (
     ValueType,
@@ -61,6 +60,7 @@ class TestReading:
         """Reading.name extracts device name from DRF."""
         reading = Reading(drf=drf, value_type=ValueType.SCALAR)
         assert reading.name == expected_name
+
 
 class TestWriteResult:
     """Tests for WriteResult.success property."""
