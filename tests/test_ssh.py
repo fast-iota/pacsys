@@ -20,6 +20,13 @@ from pacsys.ssh import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _mock_getuser():
+    """Prevent getpass.getuser() failures in CI (no TTY)."""
+    with patch("pacsys.ssh.getpass.getuser", return_value="testuser"):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # SSHHop validation
 # ---------------------------------------------------------------------------
@@ -75,10 +82,9 @@ class TestSSHHop:
         hop = SSHHop("host")  # auth_method="gssapi" by default, no username
         assert hop.effective_username == "kerbuser"
 
-    @patch("os.getlogin", return_value="ciuser")
-    def test_effective_username_password_fallback(self, mock_login):
+    def test_effective_username_password_fallback(self):
         hop = SSHHop("host", auth_method="password", password="pw")
-        assert hop.effective_username == "ciuser"
+        assert hop.effective_username == "testuser"
 
 
 # ---------------------------------------------------------------------------

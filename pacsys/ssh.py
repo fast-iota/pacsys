@@ -18,8 +18,8 @@ Example:
 
 from __future__ import annotations
 
+import getpass
 import logging
-import os
 import select
 import socket
 import socketserver
@@ -117,7 +117,7 @@ class SSHHop:
             return self.username
         if self.auth_method == "gssapi":
             return _gssapi_username()
-        return os.getlogin()
+        return getpass.getuser()
 
 
 # ---------------------------------------------------------------------------
