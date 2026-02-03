@@ -381,6 +381,7 @@ def _mock_dmq_backend(replies=None, routing_keys=None, **kwargs):
     """
     factory, mock_conn = create_mock_select_connection_factory(replies or [], routing_keys)
     with (
+        mock.patch.dict("sys.modules", {"gssapi": MockGSSAPIModule()}),
         mock.patch.object(SelectConnection, "__new__", side_effect=factory),
         mock.patch.object(DMQBackend, "_create_gss_context", return_value=_mock_gss_context()),
     ):
@@ -399,6 +400,7 @@ def _mock_dmq_write_backend(write_response_factory=None, **kwargs):
     """
     factory, mock_conn = create_write_select_connection_factory(write_response_factory)
     with (
+        mock.patch.dict("sys.modules", {"gssapi": MockGSSAPIModule()}),
         mock.patch("pika.BlockingConnection"),
         mock.patch.object(SelectConnection, "__new__", side_effect=factory),
         mock.patch.object(DMQBackend, "_create_gss_context", return_value=_mock_gss_context()),
