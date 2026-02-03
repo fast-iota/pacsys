@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from pacsys.backends.grpc_backend import GRPC_AVAILABLE
 from pacsys.types import SubscriptionHandle
 
 
@@ -160,10 +161,6 @@ class TestDPMHTTPBackendStreaming:
             backend.close()
 
 
-# Check if grpc is available for GRPCBackend tests
-from pacsys.backends.grpc_backend import GRPC_AVAILABLE
-
-
 @pytest.mark.skipif(not GRPC_AVAILABLE, reason="grpc/protobuf not installed")
 class TestGRPCBackendStreaming:
     """Tests for GRPCBackend streaming methods."""
@@ -299,12 +296,13 @@ class TestModuleLevelStreaming:
         mock_backend.subscribe.return_value = mock_handle
 
         with patch.object(pacsys, "_get_global_backend", return_value=mock_backend):
-            callback = lambda r, h: None
+
+            def callback(r, h):
+                return None
+
             result = pacsys.subscribe(["M:OUTTMP@p,1000"], callback=callback)
 
-            mock_backend.subscribe.assert_called_once_with(
-                ["M:OUTTMP@p,1000"], callback=callback, on_error=None
-            )
+            mock_backend.subscribe.assert_called_once_with(["M:OUTTMP@p,1000"], callback=callback, on_error=None)
             assert result == mock_handle
 
     def test_subscribe_without_callback(self):
@@ -322,7 +320,5 @@ class TestModuleLevelStreaming:
         with patch.object(pacsys, "_get_global_backend", return_value=mock_backend):
             result = pacsys.subscribe(["M:OUTTMP@p,1000"])
 
-            mock_backend.subscribe.assert_called_once_with(
-                ["M:OUTTMP@p,1000"], callback=None, on_error=None
-            )
+            mock_backend.subscribe.assert_called_once_with(["M:OUTTMP@p,1000"], callback=None, on_error=None)
             assert result == mock_handle
