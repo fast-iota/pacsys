@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package services.clock_event;
+
+import "google/protobuf/timestamp.proto";
+
+// Declares the clock events of interest. The Sync service will return
+// information as the events fire.
+
+message SubscribeReq {
+    repeated int32 events        = 1;
+}
+
+// This is the information that gets returned when an event fires. It
+// contains the event that fired along with a timestamp of when it
+// occurred.
+
+message EventInfo {
+    google.protobuf.Timestamp stamp	= 1;
+    int32 event				= 2;
+}
+
+service ClockEvent {
+
+    // A client uses this RPC to indicate which clock events should be
+    // returned. The function returns a stream of EventInfo messages
+    // which informs the client when events have fired.
+
+    rpc Subscribe(SubscribeReq) returns (stream EventInfo) {}
+}

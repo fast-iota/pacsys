@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package common.event;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/empty.proto";
+
+message Event {
+    message Clock {
+        int32 event_number = 1;
+        EventType event_type = 2;
+        optional google.protobuf.Duration delay = 3;
+    }
+
+    enum EventType {
+        HARDWARE = 0;
+        SOFTWARE = 1;
+        EITHER = 2;
+    }
+
+    message Periodic {
+        bool continuous = 1;
+        google.protobuf.Duration period = 2;
+        bool immediate = 3;
+    }
+
+    message State {
+        string state_name = 1;
+        optional google.protobuf.Duration delay = 2;
+
+        oneof expression {
+            int32 equal = 3;
+            int32 not_equal = 4;
+            int32 less_than = 5;
+            int32 less_than_or_equal = 6;
+            int32 greater_than = 7;
+            int32 greater_than_or_equal = 8;
+            google.protobuf.Empty any_value = 9;
+        }
+    }
+
+    oneof event {
+        google.protobuf.Empty immediate = 1;
+        Periodic periodic = 2;
+        Clock clock = 3;
+        State state = 4;
+        google.protobuf.Empty never = 5;
+    }
+}
+

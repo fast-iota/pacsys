@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+
+package services.alarm_user_layouts;
+
+service UserLayoutsService {
+    rpc getUserLayouts(google.protobuf.Empty) returns (UserLayouts);
+}
+
+message UserLayout {
+    string user_name = 1;
+    repeated string groups = 2;
+}
+
+message UserLayouts {
+    repeated UserLayout layouts = 1;
+}

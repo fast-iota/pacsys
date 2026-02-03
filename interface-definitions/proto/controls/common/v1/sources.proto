@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package common.sources;
+
+import "proto/controls/third-party/interval.proto";
+
+message Source {
+    oneof source {
+        third_party.type.Interval range = 1;
+        int32 save_restore = 2;
+        string redirection = 3;
+    }
+}

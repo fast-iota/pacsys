@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+package services.alarm_timers;
+
+service AlarmTimerService {
+    rpc create(AlarmTimer) returns (google.protobuf.Empty);
+    rpc delete(DeleteRequest) returns (google.protobuf.Empty);
+    rpc read(ReadRequest) returns (AlarmTimers);
+    rpc update(AlarmTimer) returns (google.protobuf.Empty);
+}
+
+message AlarmTimer {
+    string device = 1;
+    google.protobuf.Timestamp end_time = 2;
+    TimerType timer_type = 3;
+    google.protobuf.Timestamp updated_at = 4;
+    string updated_by = 5;
+}
+
+message AlarmTimers {
+    repeated AlarmTimer alarm_timers = 1;
+}
+
+message DeleteRequest {
+    string device = 1;
+    TimerType timer_type = 2;
+}
+
+message ReadRequest {
+    TimerType timer_type = 1;
+    string user = 2;
+}
+
+enum TimerType {
+    TimerType_UNKNOWN = 0;
+    TimerType_SNOOZE = 1;
+    TimerType_BYPASS_REMINDER = 2;
+}

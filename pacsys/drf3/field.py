@@ -1,0 +1,196 @@
+from enum import Enum, auto
+
+from .property import DRF_PROPERTY
+
+
+class DRF_FIELD(Enum):
+    # reading/setting
+    RAW = auto()
+    PRIMARY = auto()
+    VOLTS = auto()
+    SCALED = auto()
+    COMMON = auto()
+    # status
+    ALL = auto()
+    TEXT = auto()
+    EXTENDED_TEXT = auto()
+    ON = auto()
+    READY = auto()
+    REMOTE = auto()
+    POSITIVE = auto()
+    RAMP = auto()
+    BIT_VALUE = auto()
+    BIT_NAMES = auto()
+    BIT_VALUES = auto()
+    # alarm/limit fields
+    MIN = auto()
+    MAX = auto()
+    NOM = auto()
+    TOL = auto()
+    RAW_MIN = auto()
+    RAW_MAX = auto()
+    RAW_NOM = auto()
+    RAW_TOL = auto()
+    ALARM_ENABLE = auto()  # ENABLE/ALARM_ENABLE
+    ALARM_STATUS = auto()  # STATUS/ALARM_STATUS
+    TRIES_NEEDED = auto()
+    TRIES_NOW = auto()
+    ALARM_FTD = auto()  # FTD/ALARM_FTD
+    ABORT = auto()
+    ABORT_INHIBIT = auto()
+    FLAGS = auto()
+    MASK = auto()
+    # reading/setting units
+    UNITS = auto()
+    # sentinel
+    EMPTY = auto()
+
+
+DRF_FIELD_ALIASES = {
+    "RAW": DRF_FIELD.RAW,
+    "PRIMARY": DRF_FIELD.PRIMARY,
+    "VOLTS": DRF_FIELD.VOLTS,
+    "SCALED": DRF_FIELD.SCALED,
+    "COMMON": DRF_FIELD.COMMON,
+    "ALL": DRF_FIELD.ALL,
+    "TEXT": DRF_FIELD.TEXT,
+    "EXTENDED_TEXT": DRF_FIELD.EXTENDED_TEXT,
+    "ON": DRF_FIELD.ON,
+    "READY": DRF_FIELD.READY,
+    "REMOTE": DRF_FIELD.REMOTE,
+    "POSITIVE": DRF_FIELD.POSITIVE,
+    "RAMP": DRF_FIELD.RAMP,
+    "MIN": DRF_FIELD.MIN,
+    "MINIMUM": DRF_FIELD.MIN,
+    "MAX": DRF_FIELD.MAX,
+    "MAXIMUM": DRF_FIELD.MAX,
+    "NOM": DRF_FIELD.NOM,
+    "NOMINAL": DRF_FIELD.NOM,
+    "TOL": DRF_FIELD.TOL,
+    "TOLERANCE": DRF_FIELD.TOL,
+    "RAW_MIN": DRF_FIELD.RAW_MIN,
+    "RAWMIN": DRF_FIELD.RAW_MIN,
+    "RAW_MAX": DRF_FIELD.RAW_MAX,
+    "RAWMAX": DRF_FIELD.RAW_MAX,
+    "RAW_NOM": DRF_FIELD.RAW_NOM,
+    "RAWNOM": DRF_FIELD.RAW_NOM,
+    "RAW_TOL": DRF_FIELD.RAW_TOL,
+    "RAWTOL": DRF_FIELD.RAW_TOL,
+    "ALARM_ENABLE": DRF_FIELD.ALARM_ENABLE,
+    "ENABLE": DRF_FIELD.ALARM_ENABLE,
+    "ALARM_STATUS": DRF_FIELD.ALARM_STATUS,
+    "STATUS": DRF_FIELD.ALARM_STATUS,
+    "TRIES_NEEDED": DRF_FIELD.TRIES_NEEDED,
+    "TRIES_NOW": DRF_FIELD.TRIES_NOW,
+    "ALARM_FTD": DRF_FIELD.ALARM_FTD,
+    "FTD": DRF_FIELD.ALARM_FTD,
+    "ABORT": DRF_FIELD.ABORT,
+    "ABORT_INHIBIT": DRF_FIELD.ABORT_INHIBIT,
+    "FLAGS": DRF_FIELD.FLAGS,
+    "MASK": DRF_FIELD.MASK,
+    "BIT_VALUE": DRF_FIELD.BIT_VALUE,
+    "BIT_NAMES": DRF_FIELD.BIT_NAMES,
+    "BIT_VALUES": DRF_FIELD.BIT_VALUES,
+    "UNITS": DRF_FIELD.UNITS,
+}
+
+DEFAULT_FIELD_FOR_PROPERTY = {
+    DRF_PROPERTY.READING: DRF_FIELD.SCALED,
+    DRF_PROPERTY.SETTING: DRF_FIELD.SCALED,
+    DRF_PROPERTY.STATUS: None,  # Java has DRF_FIELD.ALL
+    DRF_PROPERTY.CONTROL: None,  # Java has DRF_FIELD.SCALED,
+    DRF_PROPERTY.ANALOG: DRF_FIELD.ALL,
+    DRF_PROPERTY.DIGITAL: DRF_FIELD.ALL,
+    DRF_PROPERTY.DESCRIPTION: None,  # DRF_FIELD.SCALED,
+    DRF_PROPERTY.INDEX: None,  # DRF_FIELD.SCALED,
+    DRF_PROPERTY.LONG_NAME: None,  # DRF_FIELD.SCALED,
+    DRF_PROPERTY.ALARM_LIST_NAME: None,  # DRF_FIELD.SCALED,
+}
+
+ALLOWED_FIELD_FOR_PROPERTY = {
+    DRF_PROPERTY.READING: [
+        DRF_FIELD.RAW,
+        DRF_FIELD.PRIMARY,
+        DRF_FIELD.SCALED,
+        DRF_FIELD.MIN,
+        DRF_FIELD.MAX,
+        DRF_FIELD.UNITS,
+    ],
+    DRF_PROPERTY.SETTING: [
+        DRF_FIELD.RAW,
+        DRF_FIELD.PRIMARY,
+        DRF_FIELD.SCALED,
+        DRF_FIELD.MIN,
+        DRF_FIELD.MAX,
+        DRF_FIELD.UNITS,
+    ],
+    DRF_PROPERTY.STATUS: [
+        DRF_FIELD.RAW,
+        DRF_FIELD.ALL,
+        DRF_FIELD.TEXT,
+        DRF_FIELD.EXTENDED_TEXT,
+        DRF_FIELD.ON,
+        DRF_FIELD.READY,
+        DRF_FIELD.REMOTE,
+        DRF_FIELD.POSITIVE,
+        DRF_FIELD.RAMP,
+        DRF_FIELD.BIT_VALUE,
+        DRF_FIELD.BIT_NAMES,
+        DRF_FIELD.BIT_VALUES,
+    ],
+    DRF_PROPERTY.CONTROL: [
+        DRF_FIELD.RAW,
+        DRF_FIELD.SCALED,
+    ],
+    DRF_PROPERTY.ANALOG: [
+        DRF_FIELD.RAW,
+        DRF_FIELD.ALL,
+        DRF_FIELD.TEXT,
+        DRF_FIELD.MIN,
+        DRF_FIELD.MAX,
+        DRF_FIELD.NOM,
+        DRF_FIELD.TOL,
+        DRF_FIELD.RAW_MIN,
+        DRF_FIELD.RAW_MAX,
+        DRF_FIELD.RAW_NOM,
+        DRF_FIELD.RAW_TOL,
+        DRF_FIELD.ALARM_ENABLE,
+        DRF_FIELD.ALARM_STATUS,
+        DRF_FIELD.TRIES_NEEDED,
+        DRF_FIELD.TRIES_NOW,
+        DRF_FIELD.ALARM_FTD,
+        DRF_FIELD.ABORT,
+        DRF_FIELD.ABORT_INHIBIT,
+        DRF_FIELD.FLAGS,
+    ],
+    DRF_PROPERTY.DIGITAL: [
+        DRF_FIELD.RAW,
+        DRF_FIELD.ALL,
+        DRF_FIELD.TEXT,
+        DRF_FIELD.NOM,
+        DRF_FIELD.MASK,
+        DRF_FIELD.ALARM_ENABLE,
+        DRF_FIELD.ALARM_STATUS,
+        DRF_FIELD.TRIES_NEEDED,
+        DRF_FIELD.TRIES_NOW,
+        DRF_FIELD.ALARM_FTD,
+        DRF_FIELD.ABORT,
+        DRF_FIELD.ABORT_INHIBIT,
+        DRF_FIELD.FLAGS,
+    ],
+    DRF_PROPERTY.DESCRIPTION: [DRF_FIELD.SCALED],
+    DRF_PROPERTY.INDEX: [DRF_FIELD.SCALED],
+    DRF_PROPERTY.LONG_NAME: [DRF_FIELD.SCALED],
+    DRF_PROPERTY.ALARM_LIST_NAME: [DRF_FIELD.SCALED],
+}
+
+
+def parse_field(raw_string: str) -> DRF_FIELD:
+    if raw_string.upper() in DRF_FIELD_ALIASES:
+        return DRF_FIELD_ALIASES[raw_string.upper()]
+    else:
+        raise ValueError(f"Unrecognized field {raw_string}")
+
+
+def get_default_field(prop: DRF_PROPERTY) -> DRF_FIELD | None:
+    return DEFAULT_FIELD_FOR_PROPERTY[prop]

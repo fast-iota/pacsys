@@ -1,0 +1,130 @@
+name: Build and Deploy gRPC Modules
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'proto/controls/**/*.proto'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  detect-changes:
+    name: Detect Proto Changes
+    runs-on: ubuntu-latest
+    outputs:
+      daq_changed: ${{ steps.check.outputs.daq_changed }}
+      dpm_changed: ${{ steps.check.outputs.dpm_changed }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Needed to compare changes
+
+      - name: Check for proto changes
+        id: check
+        run: |
+          echo "Detecting changes in proto files..."
+          git fetch --no-tags origin main  # make sure you have history
+          git diff --name-only HEAD^ > changed_files.txt        
+          
+          echo "::group::Changed Files"
+          cat changed_files.txt
+          echo "::endgroup::"
+          
+          if grep -qE '^proto/controls/service/DAQ/v1|^proto/controls/common/v1' changed_files.txt; then
+            echo "daq_changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "daq_changed=false" >> $GITHUB_OUTPUT
+          fi
+          
+          if grep -qE '^proto/controls/deprecated/' changed_files.txt; then
+            echo "dpm_changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "dpm_changed=false" >> $GITHUB_OUTPUT
+          fi
+
+  build-daq:
+    name: Build & Deploy DAQ
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.daq_changed == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: maven
+
+
+      - name: Set Dynamic Version
+        run: |
+          VERSION="1.0.${{ github.run_number }}"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Using version: $VERSION"
+
+
+      - name: Set Maven Version for controls-daq
+        run: |
+          mvn org.codehaus.mojo:versions-maven-plugin:2.16.0:set \
+            -DnewVersion=${{ env.VERSION }} \
+            -DgenerateBackupPoms=false \
+            -f build/java/controls-daq/pom.xml
+
+      - name: Build & Deploy DAQ
+        run: |
+          cd build/java/controls-daq
+           mvn clean deploy -Pclient -DskipTests --settings ../../maven/settings.xml
+           mvn clean deploy -Pserver -DskipTests --settings ../../maven/settings.xml
+        env:
+          GH_USERNAME: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-dpm:
+    name: Build & Deploy DPM
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.dpm_changed == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: maven
+
+      - name: Set Dynamic Version
+        run: |
+          VERSION="1.0.${{ github.run_number }}"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Using version: $VERSION"
+
+
+      - name: Set Maven Version for controls-dpm
+        run: |
+          mvn org.codehaus.mojo:versions-maven-plugin:2.16.0:set \
+            -DnewVersion=${{ env.VERSION }} \
+            -DgenerateBackupPoms=false \
+            -f build/java/controls-dpm/pom.xml
+
+      - name: Build & Deploy DPM
+        run: |
+          cd build/java/controls-dpm
+           mvn clean deploy -Pclient -DskipTests --settings ../../maven/settings.xml
+           mvn clean deploy -Pserver -DskipTests --settings ../../maven/settings.xml
+        env:
+          GH_USERNAME: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

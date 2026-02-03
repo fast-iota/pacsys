@@ -1,0 +1,130 @@
+[build-system]
+requires = [
+    "setuptools >= 64",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "acsys"
+authors = [{name = "Nikita Kuklev"}]
+version = "0.2.0"
+license = {text = "GPL-3.0-or-later"}
+description = "Pure-python library for Fermilab control system"
+readme = "README.md"
+classifiers = [
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.10",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering",
+    "Intended Audience :: Science/Research",
+    "Development Status :: 4 - Beta"
+]
+dependencies = [
+    "numpy >= 1.23.0",
+    "tqdm",
+    "httpx",
+    "websockets",
+    "aiohttp",
+    "grpcio",
+    "pika",
+    "gssapi",
+]
+requires-python = ">=3.9"
+
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "ruff",
+  "ty",
+]
+doc = [
+  "mkdocs",
+  "mkdocs-jupyter",
+  "mkdocs-macros-plugin",
+  "mkdocs-material",
+]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: marks tests as integration tests requiring network access (deselect with '-m \"not integration\"')",
+    "streaming: marks tests as streaming tests (may be slow or flaky)",
+    "real: marks tests that require real server connections (run explicitly with 'pytest tests/real/')",
+]
+testpaths = ["tests"]
+norecursedirs = ["reference_code"]
+# Exclude tests/real by default - run explicitly with: pytest tests/real/ -v -o "addopts="
+addopts = "--ignore=tests/real"
+
+[tool.ruff]
+line-length = 120
+exclude = ["acsys"]
+
+[tool.ty.environment]
+python-version = "3.10"
+
+[tool.ty.src]
+include = ["pacsys/", "tests/"]
+exclude = [
+    "reference_code/",
+    "proto/",
+    "acsys/",
+]
+
+[tool.ty.rules]
+# --- Rules demoted to warn (high false-positive rate in ty beta) ---
+# Union member subscript inference is weak in ty beta
+not-subscriptable = "warn"
+# Protocol/dynamic objects trigger spurious attribute errors
+unresolved-attribute = "warn"
+possibly-missing-attribute = "warn"
+# Default value inference across modules is incomplete
+invalid-parameter-default = "warn"
+
+[tool.ty.analysis]
+# All deps now have stubs: types-grpcio, types-pika-ts, types-protobuf; gssapi ships py.typed
+
+# Relax checking for low-level protocol code, test infra, and tests
+[[tool.ty.overrides]]
+include = ["pacsys/testing.py"]
+[tool.ty.overrides.rules]
+invalid-argument-type = "warn"
+invalid-assignment = "warn"
+unsupported-operator = "warn"
+invalid-return-type = "warn"
+invalid-method-override = "warn"
+
+[[tool.ty.overrides]]
+include = ["pacsys/dpm_protocol.py"]
+[tool.ty.overrides.rules]
+unresolved-attribute = "ignore"
+
+[[tool.ty.overrides]]
+include = ["pacsys/acnet/"]
+[tool.ty.overrides.rules]
+invalid-argument-type = "warn"
+invalid-return-type = "warn"
+unsupported-operator = "warn"
+invalid-assignment = "warn"
+unresolved-attribute = "ignore"
+
+[[tool.ty.overrides]]
+include = ["tests/"]
+[tool.ty.overrides.rules]
+invalid-argument-type = "warn"
+invalid-assignment = "warn"
+unsupported-operator = "warn"
+call-non-callable = "warn"
+unknown-argument = "warn"
+unresolved-attribute = "ignore"
+possibly-missing-attribute = "ignore"
+
+[tool.ty.terminal]
+output-format = "concise"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pacsys"]

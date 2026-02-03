@@ -1,0 +1,88 @@
+// Defines a message that can represent any type used by ACNET and
+// EPICS devices.
+//
+// Protocols that need to receive or provide device data should import
+// this file so they have an up-to-date representation of the device
+// types we're using. As we add more types, dependent protocols will
+// add them to their set (when rebuilt.)
+
+//adding comment for testing purpose
+syntax = "proto3";
+
+package common.device;
+
+// Holds a value that can be sent to a device to be received by
+// reading a device.
+
+message Value {
+
+    // Represents an array of floating point values.
+    //
+    // This needs to be a message because `oneof` fields don't allow
+    // the `repeated` keyword to be specified. This message type is
+    // used for ACNET array devices and EPICS waveform PVs.
+
+    message ScalarArray {
+        repeated double value = 1;
+    }
+
+    // Represents an array of strings.
+    //
+    // This needs to be a message because `oneof` fields don't allow
+    // the `repeated` keyword to be specified.
+
+    message TextArray {
+        repeated string value = 1;
+    }
+
+    // DEPRECATED. A message which is opinionated towards ACNET analog
+    // alarm structures. This will be replaced by a message that can
+    // represent both ACNET and EPICS alarms.
+
+    message AnalogAlarm {
+        double minimum = 1;
+        double maximum = 2;
+        bool alarmEnable = 3;
+        bool alarmStatus = 4;
+        bool abort = 5;
+        bool abortInhibit = 6;
+        uint32 triesNeeded = 7;
+        uint32 triesNow = 8;
+    }
+
+    // DEPRECATED. A message which is opinionated towards ACNET
+    // digital alarm structures. This will be replaced by a message
+    // that can represent both ACNET and EPICS alarms.
+
+    message DigitalAlarm {
+        int32 nominal = 1;
+        uint32 mask = 2;
+        bool alarmEnable = 3;
+        bool alarmStatus = 4;
+        bool abort = 5;
+        bool abortInhibit = 6;
+        uint32 triesNeeded = 7;
+        uint32 triesNow = 8;
+    }
+
+    // DEPRECATED. A message which is opinionated towards ACNET status
+    // definitions. This will be replaced by a more generic message
+    // that can be used by ACNET and EPICS devices.
+
+    message BasicStatus {
+        map<string, string> value = 1;
+    }
+
+    // A device value can only be one of these types.
+
+    oneof value {
+        double scalar = 1;
+        ScalarArray scalarArr = 2;
+        bytes raw = 3;
+        string text = 4;
+        TextArray textArr = 5;
+        AnalogAlarm anaAlarm = 6;
+        DigitalAlarm digAlarm = 7;
+        BasicStatus basicStatus = 8;
+    }
+}

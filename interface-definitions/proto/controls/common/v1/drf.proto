@@ -1,0 +1,96 @@
+syntax = "proto3";
+
+package common.drf;
+
+import "google/protobuf/empty.proto";
+
+import "proto/controls/common/v1/event.proto";
+import "proto/controls/common/v1/sources.proto";
+
+message ArrayRange {
+    int32 start_index = 1;
+    int32 end_index = 2;
+}
+
+message ByteRange {
+    int32 offset = 1;
+    int32 length = 2;
+}
+
+message DataChannel {
+    string name = 1;
+    Range range = 2;
+    Field field = 3;
+}
+
+message DRFs {
+    repeated DataChannel data_channel = 1;
+    optional common.event.Event event = 2;
+    optional common.sources.Source source = 3;
+}
+
+message DRF {
+    DataChannel data_channel = 1;
+    optional common.event.Event event = 2;
+    optional common.sources.Source source = 3;
+}
+
+message DRFList {
+    repeated common.drf.DRF drf = 1;
+}
+
+message Field {
+    enum Flavor {
+        RAW = 0;
+        PRIMARY = 1;
+        VOLTS = 2;
+        SCALED = 3;
+        COMMON = 4;
+        ALL = 5;
+        TEXT = 6;
+        EXTENDED_TEXT = 7;
+        ON = 8;
+        READY = 9;
+        REMOTE = 10;
+        POSITIVE = 11;
+        RAMP = 12;
+        MINIMUM = 13;
+        MAXIMUM = 14;
+        NOMINAL = 15;
+        TOLERANCE = 16;
+        RAW_MIN = 17;
+        RAW_MAX = 18;
+        RAW_NOM = 19;
+        RAW_TOL = 20;
+        ALARM_ENABLE = 21;
+        ALARM_STATUS = 22;
+        TRIES_NEEDED = 23;
+        TRIES_NOW = 24;
+        ALARM_FTD = 25;
+        ABORT = 26;
+        ABORT_INHIBIT = 27;
+        FLAGS = 28;
+        MASK = 29;
+    }
+
+    oneof field {
+        Flavor reading = 1;
+        Flavor setting = 2;
+        Flavor status = 3;
+        google.protobuf.Empty control = 4;
+        Flavor analog_alarm = 5;
+        Flavor digital_alarm = 6;
+        google.protobuf.Empty description = 7;
+        google.protobuf.Empty index = 8;
+        google.protobuf.Empty long_name = 9;
+        google.protobuf.Empty alarm_list_name = 10;
+    }
+}
+
+message Range {
+    oneof range {
+        google.protobuf.Empty full_range = 1;
+        ArrayRange array_range = 2;
+        ByteRange byte_range = 3;
+    }
+}

@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package common.status;
+
+message Status {
+    int32 facility_code = 1;
+    int32 status_code = 2;
+    string message = 3;
+}
