@@ -284,16 +284,6 @@ with pacsys.dmq(auth=auth) as backend:
 | `vhost` | / | — |
 | `timeout` | 10.0 | — |
 
-### Implicit Write Conversion
-
-When you call `backend.write("M:OUTTMP", 72.5)`, pacsys automatically prepares the DRF for writing:
-
-- **READING → SETTING**: `M:OUTTMP` becomes `M:OUTTMP.SETTING@N`
-- **STATUS → CONTROL**: `M:OUTTMP.STATUS` becomes `M:OUTTMP.CONTROL@N`
-- **Already correct**: SETTING, CONTROL, ANALOG, DIGITAL are preserved (just `@N` is forced)
-
-The `@N` ("never") event tells the server not to send periodic data back — writes are fire-and-confirm, not subscriptions.
-
 ### For the Curious: How DMQ Writes Work
 
 Under the hood, a DMQ write involves a surprisingly intricate dance between your client, RabbitMQ, and the DMQ server. Here's what happens when you call `backend.write("Z:ACLTST", 45.0)`:
@@ -392,14 +382,26 @@ inactivity.
 
 ---
 
+## Implicit Write Conversion
+
+All write-capable backends (DPM/HTTP, DPM/gRPC, DMQ) automatically prepare DRF strings for writing when you call `write()`:
+
+- **READING → SETTING**: `M:OUTTMP` becomes `M:OUTTMP.SETTING@N`
+- **STATUS → CONTROL**: `M:OUTTMP.STATUS` becomes `M:OUTTMP.CONTROL@N`
+- **Already correct**: SETTING, CONTROL, ANALOG, DIGITAL are preserved (just `@N` is forced)
+
+The `@N` ("never") event tells the server not to send periodic data back — writes are fire-and-confirm, not subscriptions.
+
+---
+
 ## Choosing a Backend
 
 ```mermaid
 flowchart TD
     A[Need to write?] -->|Yes| B[Have Kerberos?]
-    A -->|No| C[Need streaming?]
+    A -->|No| C{Network?}
 
-    B -->|Yes| D{Prefer RabbitMQ?}
+    B -->|Yes| D{Access issues?}
     B -->|No| E[Have JWT?]
 
     D -->|Yes| DMQ[DMQ]
@@ -408,14 +410,8 @@ flowchart TD
     E -->|Yes| F[DPM/gRPC]
     E -->|No| G[Cannot write]
 
-    C -->|Yes| H{Have Kerberos?}
-    C -->|No| I[Just reads?]
-
-    H -->|Yes| J[DPM/HTTP or DMQ]
-    H -->|No| K[DPM/HTTP]
-
-    I -->|Quick check| L[ACL]
-    I -->|Production| DPM
+    C -->|Outside controls| DPM
+    C -->|Inside controls| F2[DPM/gRPC]
 ```
 
 ### Recommendations
