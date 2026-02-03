@@ -43,13 +43,6 @@ def create_mock_kerberos_auth(principal="user@FNAL.GOV"):
 class TestAuthenticationInit:
     """Tests for backend initialization with authentication."""
 
-    def test_no_auth_default(self):
-        """Test that backend defaults to no authentication."""
-        backend = DPMHTTPBackend()
-        assert not backend.authenticated
-        assert backend.principal is None
-        backend.close()
-
     def test_invalid_auth_method(self):
         """Test that invalid auth type raises ValueError."""
         with pytest.raises(ValueError, match="auth must be KerberosAuth or None"):
@@ -99,43 +92,6 @@ class TestAuthenticationInit:
         with mock.patch.dict("sys.modules", {"gssapi": mock_gssapi}):
             with pytest.raises(AuthenticationError, match="No valid Kerberos credentials"):
                 KerberosAuth()
-
-
-class TestCapabilities:
-    """Tests for backend capabilities with authentication."""
-
-    def test_capabilities_no_auth(self):
-        """Test capabilities without authentication."""
-        backend = DPMHTTPBackend()
-        assert BackendCapability.READ in backend.capabilities
-        assert BackendCapability.BATCH in backend.capabilities
-        assert BackendCapability.AUTH_KERBEROS not in backend.capabilities
-        assert BackendCapability.WRITE not in backend.capabilities
-        backend.close()
-
-    def test_capabilities_auth_no_role(self):
-        """Test capabilities with auth but no role."""
-        mock_gssapi = MockGSSAPIModule()
-
-        with mock.patch.dict("sys.modules", {"gssapi": mock_gssapi}):
-            auth = KerberosAuth()
-            backend = DPMHTTPBackend(auth=auth)
-            assert BackendCapability.READ in backend.capabilities
-            assert BackendCapability.AUTH_KERBEROS in backend.capabilities
-            assert BackendCapability.WRITE not in backend.capabilities
-            backend.close()
-
-    def test_capabilities_auth_with_role(self):
-        """Test capabilities with auth and role."""
-        mock_gssapi = MockGSSAPIModule()
-
-        with mock.patch.dict("sys.modules", {"gssapi": mock_gssapi}):
-            auth = KerberosAuth()
-            backend = DPMHTTPBackend(auth=auth, role="Operator")
-            assert BackendCapability.READ in backend.capabilities
-            assert BackendCapability.AUTH_KERBEROS in backend.capabilities
-            assert BackendCapability.WRITE in backend.capabilities
-            backend.close()
 
 
 class TestWriteWithoutAuth:

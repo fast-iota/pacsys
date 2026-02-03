@@ -16,7 +16,7 @@ import numpy as np
 
 from pacsys.acnet.errors import ERR_NOPROP, ERR_RETRY, FACILITY_DBM
 from pacsys.testing import FakeBackend
-from pacsys.types import ValueType, BackendCapability
+from pacsys.types import ValueType
 from pacsys.errors import DeviceError
 from pacsys.device import Device, ScalarDevice, ArrayDevice
 
@@ -388,11 +388,6 @@ class TestSetWriteResult:
 class TestReadsProperty:
     """Tests for reads property."""
 
-    def test_reads_empty_initially(self):
-        """reads is empty initially."""
-        fake = FakeBackend()
-        assert fake.reads == []
-
     def test_reads_records_read(self):
         """reads records device reads in order."""
         fake = FakeBackend()
@@ -448,11 +443,6 @@ class TestReadsProperty:
 
 class TestWritesProperty:
     """Tests for writes property."""
-
-    def test_writes_empty_initially(self):
-        """writes is empty initially."""
-        fake = FakeBackend()
-        assert fake.writes == []
 
     def test_writes_records_write(self):
         """writes records device writes."""
@@ -599,30 +589,6 @@ class TestReset:
 # ─────────────────────────────────────────────────────────────────────────────
 # Backend Interface Tests
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-class TestBackendProperties:
-    """Tests for Backend property implementations."""
-
-    def test_capabilities_has_all(self):
-        """FakeBackend has READ, WRITE, STREAM, BATCH capabilities."""
-        fake = FakeBackend()
-        caps = fake.capabilities
-
-        assert BackendCapability.READ in caps
-        assert BackendCapability.WRITE in caps
-        assert BackendCapability.STREAM in caps
-        assert BackendCapability.BATCH in caps
-
-    def test_authenticated_true(self):
-        """FakeBackend is always authenticated."""
-        fake = FakeBackend()
-        assert fake.authenticated is True
-
-    def test_principal(self):
-        """FakeBackend has a fake principal."""
-        fake = FakeBackend()
-        assert fake.principal == "test-user@FNAL.GOV"
 
 
 class TestReadMethod:

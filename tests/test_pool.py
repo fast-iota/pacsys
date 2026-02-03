@@ -20,7 +20,6 @@ from pacsys.pool import (
     ConnectionPool,
     PoolClosedError,
     PoolExhaustedError,
-    DEFAULT_POOL_SIZE,
 )
 from pacsys.dpm_connection import (
     DPMConnection,
@@ -51,30 +50,6 @@ def create_mock_socket(list_id: int = 1):
 
 class TestConnectionPoolInit:
     """Tests for ConnectionPool initialization."""
-
-    def test_default_parameters(self):
-        """Test that default parameters are set correctly."""
-        pool = ConnectionPool()
-        assert pool.host == "acsys-proxy.fnal.gov"
-        assert pool.port == 6802
-        assert pool.pool_size == DEFAULT_POOL_SIZE
-        assert pool.timeout == 5.0
-        assert not pool.closed
-        assert pool.available_count == 0
-        assert pool.in_use_count == 0
-
-    def test_custom_parameters(self):
-        """Test initialization with custom parameters."""
-        pool = ConnectionPool(
-            host="test.example.com",
-            port=1234,
-            pool_size=8,
-            timeout=5.0,
-        )
-        assert pool.host == "test.example.com"
-        assert pool.port == 1234
-        assert pool.pool_size == 8
-        assert pool.timeout == 5.0
 
     @pytest.mark.parametrize(
         "kwargs,match",

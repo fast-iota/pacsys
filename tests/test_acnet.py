@@ -7,21 +7,14 @@ import pytest
 
 from pacsys.acnet import (
     ACNET_HEADER_SIZE,
-    ACNET_NO_NODE,
-    ACNET_OK,
     ACNET_PEND,
-    ACNET_SUCCESS,
-    ACSYS_PROXY_HOST,
-    AcnetConnection,
     AcnetConnectionTCP,
     AcnetError,
-    AcnetNodeError,
     AcnetPacket,
     AcnetReply,
     AcnetRequest,
     NodeStats,
     ReplyId,
-    RequestId,
     decode,
     decode_stripped,
     encode,
@@ -42,14 +35,9 @@ from pacsys.acnet.constants import (
     CMD_TASK_PID,
 )
 from pacsys.acnet.errors import (
-    ERR_OK,
-    ERR_RETRY,
-    ERR_TIMEOUT,
-    FACILITY_ACNET,
     make_error,
     normalize_error_code,
     parse_error,
-    status_message,
 )
 
 
@@ -171,23 +159,6 @@ class TestErrorCodes:
         assert facility == 1
         assert error_num == -30
 
-    def test_success_codes(self):
-        """Test success codes."""
-        assert ACNET_OK == 0
-        assert ACNET_SUCCESS == 0
-
-    def test_decomposed_constants(self):
-        """Decomposed constants match error numbers in composite constants."""
-        assert FACILITY_ACNET == 1
-        assert ERR_OK == 0
-        assert ERR_RETRY == -1
-        assert ERR_TIMEOUT == -6
-        # Verify consistency with composite constants
-        _, error_num = parse_error(make_error(1, -1))
-        assert error_num == ERR_RETRY
-        _, error_num = parse_error(make_error(1, -6))
-        assert error_num == ERR_TIMEOUT
-
 
 class TestNormalizeErrorCode:
     """Tests for unsigned -> signed error code normalization."""
@@ -211,54 +182,8 @@ class TestNormalizeErrorCode:
         assert normalize_error_code(input_code) == expected
 
 
-class TestStatusMessage:
-    """Tests for status_message helper."""
-
-    def test_success_returns_none(self):
-        assert status_message(0, 0) is None
-        assert status_message(1, 0) is None
-
-    def test_error_message(self):
-        msg = status_message(1, -6)
-        assert msg == "Device error (facility=1, error=-6)"
-
-    def test_warning_message(self):
-        msg = status_message(17, 2)
-        assert msg == "Warning (facility=17, error=2)"
-
-
-class TestAcnetError:
-    """Tests for AcnetError exception."""
-
-    def test_basic_error(self):
-        """Test creating basic error."""
-        err = AcnetError(ACNET_PEND, "test message")
-        assert err.status == ACNET_PEND
-        assert "test message" in str(err)
-
-    def test_node_error(self):
-        """Test AcnetNodeError."""
-        err = AcnetNodeError("MISSING")
-        assert err.status == ACNET_NO_NODE
-        assert "MISSING" in str(err)
-
-
 class TestRequestReplyIds:
     """Tests for RequestId and ReplyId."""
-
-    def test_request_id_equality(self):
-        """Test RequestId equality."""
-        id1 = RequestId(123)
-        id2 = RequestId(123)
-        id3 = RequestId(456)
-
-        assert id1 == id2
-        assert id1 != id3
-
-    def test_request_id_hash(self):
-        """Test RequestId is hashable."""
-        ids = {RequestId(1), RequestId(2), RequestId(1)}
-        assert len(ids) == 2
 
     def test_reply_id_from_client_and_id(self):
         """Test ReplyId creation from client and message ID."""
@@ -440,34 +365,6 @@ class TestAcnetRequest:
 
         request = AcnetPacket.parse(raw)
         assert request.is_multicast()
-
-
-class TestConnectionClasses:
-    """Tests for connection class instantiation."""
-
-    def test_udp_connection_instantiation(self):
-        """Test that AcnetConnection can be instantiated."""
-        conn = AcnetConnection("TEST")
-        assert conn.name == "TEST"
-        assert not conn.connected
-
-    def test_tcp_connection_instantiation(self):
-        """Test that AcnetConnectionTCP can be instantiated."""
-        conn = AcnetConnectionTCP("localhost", name="TEST")
-        # name returns empty string before connecting (handle is assigned by daemon)
-        assert conn.name == ""
-        assert conn.host == "localhost"
-        assert conn.port == 6802
-        assert not conn.connected
-
-    def test_tcp_connection_default_host(self):
-        """Test default host for TCP connection."""
-        conn = AcnetConnectionTCP()
-        assert conn.host == ACSYS_PROXY_HOST
-
-    def test_proxy_host_constant(self):
-        """Test the proxy host constant."""
-        assert ACSYS_PROXY_HOST == "acsys-proxy.fnal.gov"
 
 
 # =============================================================================

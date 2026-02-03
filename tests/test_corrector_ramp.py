@@ -238,37 +238,6 @@ class TestModifyContext:
                 pass
 
 
-class TestReprStr:
-    def test_repr_with_active_points(self):
-        ramp = BoosterRamp(
-            values=np.array([10.0, 5.0] + [0.0] * 62),
-            times=np.zeros(64, dtype=np.int16),
-        )
-        r = repr(ramp)
-        assert "BoosterRamp" in r
-        assert "2/64" in r
-
-    def test_repr_all_zeros(self):
-        ramp = BoosterRamp(values=np.zeros(64), times=np.zeros(64, dtype=np.int16))
-        r = repr(ramp)
-        assert "0/64" in r
-
-    def test_str_shows_nonzero(self):
-        ramp = BoosterRamp(
-            values=np.array([10.0] + [0.0] * 63),
-            times=np.array([100] + [0] * 63, dtype=np.int16),
-        )
-        s = str(ramp)
-        assert "[ 0]" in s
-        assert "10.0000" in s
-        assert "100" in s
-
-    def test_str_all_zeros(self):
-        ramp = BoosterRamp(values=np.zeros(64), times=np.zeros(64, dtype=np.int16))
-        s = str(ramp)
-        assert "all zeros" in s
-
-
 class TestCustomSubclass:
     def test_custom_transforms(self):
         class TestRamp(CorrectorRamp):

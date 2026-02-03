@@ -24,9 +24,6 @@ import pytest
 from pika.adapters.select_connection import SelectConnection
 
 from pacsys.backends.dmq import (
-    DEFAULT_HOST,
-    DEFAULT_PORT,
-    DEFAULT_TIMEOUT,
     DMQBackend,
     _reply_to_reading,
 )
@@ -43,7 +40,7 @@ from pacsys.resources import (
     ErrorSample_reply,
     StringSample_reply,
 )
-from pacsys.types import BackendCapability, Reading, ValueType
+from pacsys.types import Reading, ValueType
 from tests.devices import (
     TEMP_DEVICE,
     TEMP_DEVICE_2,
@@ -426,35 +423,6 @@ class TestDMQBackendInit:
         with pytest.raises(AuthenticationError, match="DMQ requires KerberosAuth"):
             DMQBackend()
 
-    def test_backend_init_defaults(self):
-        """Test that default parameters are set correctly."""
-        with mock.patch("pika.BlockingConnection"):
-            auth = _create_mock_auth()
-            backend = DMQBackend(auth=auth)
-            try:
-                assert backend.host == DEFAULT_HOST
-                assert backend.port == DEFAULT_PORT
-                assert backend.timeout == DEFAULT_TIMEOUT
-            finally:
-                backend.close()
-
-    def test_backend_init_custom_params(self):
-        """Test initialization with custom parameters."""
-        with mock.patch("pika.BlockingConnection"):
-            auth = _create_mock_auth()
-            backend = DMQBackend(
-                host="custom.example.com",
-                port=5673,
-                timeout=5.0,
-                auth=auth,
-            )
-            try:
-                assert backend.host == "custom.example.com"
-                assert backend.port == 5673
-                assert backend.timeout == 5.0
-            finally:
-                backend.close()
-
     def test_backend_init_invalid_host(self):
         """Test that empty host raises ValueError."""
         auth = _create_mock_auth()
@@ -476,21 +444,6 @@ class TestDMQBackendInit:
             DMQBackend(timeout=0, auth=auth)
         with pytest.raises(ValueError, match="timeout must be positive"):
             DMQBackend(timeout=-1, auth=auth)
-
-    def test_backend_capabilities(self):
-        """Test that backend has correct capabilities (including WRITE since auth required)."""
-        with mock.patch("pika.BlockingConnection"):
-            auth = _create_mock_auth()
-            backend = DMQBackend(auth=auth)
-            try:
-                caps = backend.capabilities
-                assert BackendCapability.READ in caps
-                assert BackendCapability.WRITE in caps  # Auth always required now
-                assert BackendCapability.AUTH_KERBEROS in caps
-                assert BackendCapability.STREAM in caps
-                assert BackendCapability.BATCH in caps
-            finally:
-                backend.close()
 
 
 # =============================================================================

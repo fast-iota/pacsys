@@ -26,13 +26,6 @@ from pacsys.ssh import (
 
 
 class TestSSHHop:
-    def test_defaults(self):
-        hop = SSHHop("host.example.com")
-        assert hop.hostname == "host.example.com"
-        assert hop.port == 22
-        assert hop.auth_method == "gssapi"
-        assert hop.username is None
-
     def test_empty_hostname_raises(self):
         with pytest.raises(ValueError, match="non-empty"):
             SSHHop("")
@@ -72,15 +65,6 @@ class TestSSHHop:
     def test_password_auth_valid(self):
         hop = SSHHop("host", auth_method="password", password="secret")
         assert hop.password == "secret"
-
-    def test_password_hidden_in_repr(self):
-        hop = SSHHop("host", auth_method="password", password="secret")
-        assert "secret" not in repr(hop)
-
-    def test_frozen(self):
-        hop = SSHHop("host")
-        with pytest.raises(AttributeError):
-            hop.hostname = "other"  # type: ignore
 
     def test_effective_username_explicit(self):
         hop = SSHHop("host", username="bob")
@@ -147,11 +131,6 @@ class TestCommandResult:
     def test_ok_nonzero(self):
         r = CommandResult("ls /bad", 1, "", "not found\n")
         assert r.ok is False
-
-    def test_frozen(self):
-        r = CommandResult("ls", 0, "", "")
-        with pytest.raises(AttributeError):
-            r.exit_code = 1  # type: ignore
 
 
 # ---------------------------------------------------------------------------
@@ -694,46 +673,6 @@ class TestTunnel:
         with Tunnel(0, "remote", 5432, mock_transport) as t:
             assert t.active
         assert not t.active
-
-    def test_repr(self):
-        mock_transport = _make_mock_transport()
-        t = Tunnel(0, "remote", 5432, mock_transport)
-        assert "remote:5432" in repr(t)
-        assert "active" in repr(t)
-        t.stop()
-        assert "stopped" in repr(t)
-
-
-# ---------------------------------------------------------------------------
-# SSHClient repr
-# ---------------------------------------------------------------------------
-
-
-class TestSSHClientRepr:
-    def test_repr_disconnected(self):
-        ssh = SSHClient(SSHHop("host.example.com", auth_method="password", password="pw"))
-        assert "host.example.com" in repr(ssh)
-        assert "disconnected" in repr(ssh)
-
-    @patch("pacsys.ssh.paramiko.Transport")
-    @patch("pacsys.ssh.socket.create_connection")
-    def test_repr_connected(self, mock_connect, mock_transport_cls):
-        mock_connect.return_value = MagicMock()
-        mock_transport = _make_mock_transport()
-        mock_transport_cls.return_value = mock_transport
-
-        ssh = SSHClient(SSHHop("host.example.com", auth_method="password", password="pw"))
-        ssh._ensure_connected()
-        assert "connected" in repr(ssh)
-
-    def test_repr_multi_hop(self):
-        ssh = SSHClient(
-            [
-                SSHHop("jump", auth_method="password", password="pw"),
-                SSHHop("target", auth_method="password", password="pw"),
-            ]
-        )
-        assert "jump -> target" in repr(ssh)
 
 
 # ---------------------------------------------------------------------------

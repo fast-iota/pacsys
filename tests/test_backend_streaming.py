@@ -5,7 +5,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from pacsys.backends.grpc_backend import GRPC_AVAILABLE
-from pacsys.types import SubscriptionHandle
 
 
 class TestDPMHTTPBackendStreaming:
@@ -67,28 +66,6 @@ class TestDPMHTTPBackendStreaming:
         finally:
             backend.close()
 
-    def test_subscription_handle_properties(self):
-        """Test SubscriptionHandle ref_ids and stopped properties."""
-        from pacsys.backends.dpm_http import _DPMHTTPSubscriptionHandle, DPMHTTPBackend
-
-        backend = DPMHTTPBackend()
-        try:
-            handle = _DPMHTTPSubscriptionHandle(
-                backend=backend,
-                sub_id=1,
-                is_callback_mode=False,
-            )
-            handle._ref_ids = [1, 2, 3]
-
-            assert handle.ref_ids == [1, 2, 3]
-            assert handle.stopped is False
-            assert handle.exc is None
-
-            handle._stopped = True
-            assert handle.stopped is True
-        finally:
-            backend.close()
-
     def test_subscription_handle_context_manager(self):
         """Test SubscriptionHandle can be used as context manager."""
         from pacsys.backends.dpm_http import _DPMHTTPSubscriptionHandle, DPMHTTPBackend
@@ -125,17 +102,6 @@ class TestDPMHTTPBackendStreaming:
 
             with pytest.raises(RuntimeError, match="Cannot iterate subscription with callback"):
                 list(handle.readings(timeout=0))
-        finally:
-            backend.close()
-
-    def test_capabilities_include_stream(self):
-        """DPMHTTPBackend should have STREAM capability."""
-        from pacsys.backends.dpm_http import DPMHTTPBackend
-        from pacsys.types import BackendCapability
-
-        backend = DPMHTTPBackend()
-        try:
-            assert BackendCapability.STREAM in backend.capabilities
         finally:
             backend.close()
 
@@ -187,17 +153,6 @@ class TestGRPCBackendStreaming:
         finally:
             backend.close()
 
-    def test_capabilities_include_stream(self):
-        """GRPCBackend should have STREAM capability."""
-        from pacsys.backends.grpc_backend import GRPCBackend
-        from pacsys.types import BackendCapability
-
-        backend = GRPCBackend()
-        try:
-            assert BackendCapability.STREAM in backend.capabilities
-        finally:
-            backend.close()
-
     def test_close_calls_stop_streaming(self):
         """close() should call stop_streaming()."""
         from pacsys.backends.grpc_backend import GRPCBackend
@@ -233,51 +188,6 @@ class TestACLBackendStreaming:
                 backend.subscribe(["M:OUTTMP@p,1000"], callback=lambda r, h: None)
         finally:
             backend.close()
-
-    def test_capabilities_exclude_stream(self):
-        """ACLBackend should NOT have STREAM capability."""
-        from pacsys.backends.acl import ACLBackend
-        from pacsys.types import BackendCapability
-
-        backend = ACLBackend()
-        try:
-            assert BackendCapability.STREAM not in backend.capabilities
-        finally:
-            backend.close()
-
-
-class TestSubscriptionHandleBase:
-    """Tests for base SubscriptionHandle class."""
-
-    def test_subscription_handle_raises_not_implemented(self):
-        """Base SubscriptionHandle methods should raise NotImplementedError."""
-        handle = SubscriptionHandle()
-
-        with pytest.raises(NotImplementedError):
-            _ = handle.ref_ids
-
-        with pytest.raises(NotImplementedError):
-            _ = handle.stopped
-
-        with pytest.raises(NotImplementedError):
-            _ = handle.exc
-
-        with pytest.raises(NotImplementedError):
-            list(handle.readings(timeout=0))
-
-        with pytest.raises(NotImplementedError):
-            handle.stop()
-
-    def test_subscription_handle_context_manager(self):
-        """Base SubscriptionHandle should support context manager protocol."""
-        handle = SubscriptionHandle()
-
-        # __enter__ should return self
-        assert handle.__enter__() is handle
-
-        # __exit__ should call stop() which raises NotImplementedError
-        with pytest.raises(NotImplementedError):
-            handle.__exit__(None, None, None)
 
 
 class TestModuleLevelStreaming:

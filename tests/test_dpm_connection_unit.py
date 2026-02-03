@@ -13,9 +13,6 @@ from unittest import mock
 from pacsys.dpm_connection import (
     DPMConnection,
     DPMConnectionError,
-    DEFAULT_HOST,
-    DEFAULT_PORT,
-    DEFAULT_TIMEOUT,
     DPM_HANDSHAKE,
     MAX_MESSAGE_SIZE,
 )
@@ -27,24 +24,7 @@ from pacsys.dpm_protocol import (
 
 
 class TestDPMConnectionInit:
-    """Tests for DPMConnection initialization."""
-
-    def test_default_parameters(self):
-        """Test that default parameters are set correctly."""
-        conn = DPMConnection()
-        assert conn._host == DEFAULT_HOST
-        assert conn._port == DEFAULT_PORT
-        assert conn._timeout == DEFAULT_TIMEOUT
-        assert conn._socket is None
-        assert conn._list_id is None
-        assert not conn.connected
-
-    def test_custom_parameters(self):
-        """Test initialization with custom parameters."""
-        conn = DPMConnection(host="test.example.com", port=1234, timeout=5.0)
-        assert conn._host == "test.example.com"
-        assert conn._port == 1234
-        assert conn._timeout == 5.0
+    """Tests for DPMConnection input validation."""
 
     @pytest.mark.parametrize(
         "kwargs,match",

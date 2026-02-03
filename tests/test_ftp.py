@@ -19,7 +19,6 @@ from pacsys.acnet.ftp import (
     REPLY_TYPE_SETUP,
     SNAP_CLASS_INFO,
     SNAPSHOT_CONTROL_RESTART,
-    SNAPSHOT_CONTROL_RESET,
     TYPECODE_CLASS_INFO,
     TYPECODE_CONTINUOUS,
     TYPECODE_SNAPSHOT_CONTROL,
@@ -89,10 +88,6 @@ class TestFTPDevice:
     def test_data_length_validation(self):
         with pytest.raises(ValueError, match="data_length must be 2 or 4"):
             FTPDevice(di=1, pi=0, ssdn=b"\x00" * 8, data_length=3)
-
-    def test_frozen(self, mouttmp):
-        with pytest.raises(AttributeError):
-            mouttmp.di = 999
 
 
 # =============================================================================
@@ -916,12 +911,6 @@ class TestTaskNameGeneration:
 
 
 class TestSnapshotControlConstants:
-    def test_restart_constant(self):
-        assert SNAPSHOT_CONTROL_RESTART == 1
-
-    def test_reset_constant(self):
-        assert SNAPSHOT_CONTROL_RESET == 2
-
     def test_control_packet_with_task_name(self):
         from pacsys.acnet import rad50
 

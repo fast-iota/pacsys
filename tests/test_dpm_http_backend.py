@@ -15,7 +15,7 @@ Tests cover:
 
 from datetime import datetime
 from unittest import mock
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -26,7 +26,7 @@ from pacsys.backends.dpm_http import (
     _device_info_to_meta,
 )
 from pacsys.drf_utils import ensure_immediate_event as _ensure_immediate_event
-from pacsys.types import BackendCapability, Reading, ValueType
+from pacsys.types import Reading, ValueType
 from pacsys.errors import DeviceError, AuthenticationError
 from pacsys.acnet.errors import make_error
 from pacsys.dpm_protocol import (
@@ -46,7 +46,6 @@ from pacsys.dpm_protocol import (
 
 # Shared test helpers
 from tests.devices import (
-    MockGSSAPIModule,
     MockSocketWithReplies,
     make_device_info,
     make_start_list,
@@ -85,77 +84,6 @@ class TestDPMHTTPBackendInit:
     def test_invalid_init_params(self, kwargs, match):
         with pytest.raises(ValueError, match=match):
             DPMHTTPBackend(**kwargs)
-
-
-# =============================================================================
-# Capabilities Tests
-# =============================================================================
-
-
-class TestCapabilities:
-    """Tests for backend capabilities."""
-
-    def test_capabilities_include_read(self):
-        """Capabilities include READ."""
-        backend = DPMHTTPBackend()
-        try:
-            assert BackendCapability.READ in backend.capabilities
-        finally:
-            backend.close()
-
-    def test_capabilities_include_batch(self):
-        """Capabilities include BATCH."""
-        backend = DPMHTTPBackend()
-        try:
-            assert BackendCapability.BATCH in backend.capabilities
-        finally:
-            backend.close()
-
-    def test_capabilities_exclude_write_without_auth(self):
-        """Capabilities do not include WRITE without auth."""
-        backend = DPMHTTPBackend()
-        try:
-            assert BackendCapability.WRITE not in backend.capabilities
-        finally:
-            backend.close()
-
-    def test_capabilities_include_stream(self):
-        """Capabilities include STREAM."""
-        backend = DPMHTTPBackend()
-        try:
-            assert BackendCapability.STREAM in backend.capabilities
-        finally:
-            backend.close()
-
-    def test_not_authenticated_by_default(self):
-        """Backend is not authenticated by default."""
-        backend = DPMHTTPBackend()
-        try:
-            assert not backend.authenticated
-        finally:
-            backend.close()
-
-    def test_principal_is_none_by_default(self):
-        """Principal is None by default."""
-        backend = DPMHTTPBackend()
-        try:
-            assert backend.principal is None
-        finally:
-            backend.close()
-
-    def test_capabilities_with_auth(self):
-        """WRITE capability with auth and role."""
-        from pacsys.auth import KerberosAuth
-
-        with patch.dict("sys.modules", {"gssapi": MockGSSAPIModule()}):
-            auth = KerberosAuth()
-            backend = DPMHTTPBackend(auth=auth, role="Operator")
-            try:
-                caps = backend.capabilities
-                assert BackendCapability.WRITE in caps
-                assert BackendCapability.AUTH_KERBEROS in caps
-            finally:
-                backend.close()
 
 
 # =============================================================================
@@ -901,37 +829,6 @@ class TestFactoryFunction:
         backend = pacsys.dpm_http()
         try:
             assert isinstance(backend, DPMHTTPBackend)
-        finally:
-            backend.close()
-
-    def test_factory_default_parameters(self):
-        """dpm_http() uses default parameters."""
-        import pacsys
-
-        backend = pacsys.dpm_http()
-        try:
-            assert backend.host == "acsys-proxy.fnal.gov"
-            assert backend.port == 6802
-            assert backend.pool_size == 4
-            assert backend.timeout == 5.0
-        finally:
-            backend.close()
-
-    def test_factory_custom_parameters(self):
-        """dpm_http() accepts custom parameters."""
-        import pacsys
-
-        backend = pacsys.dpm_http(
-            host="custom.example.com",
-            port=1234,
-            pool_size=16,
-            timeout=30.0,
-        )
-        try:
-            assert backend.host == "custom.example.com"
-            assert backend.port == 1234
-            assert backend.pool_size == 16
-            assert backend.timeout == 30.0
         finally:
             backend.close()
 

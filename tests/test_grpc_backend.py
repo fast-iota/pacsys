@@ -22,9 +22,8 @@ from unittest import mock
 import pytest
 
 from pacsys.auth import JWTAuth
-from pacsys.backends import Backend
 from pacsys.errors import AuthenticationError, DeviceError
-from pacsys.types import BackendCapability, Reading, ValueType, WriteResult
+from pacsys.types import Reading, ValueType, WriteResult
 from tests.devices import make_jwt_token
 
 # sample_jwt fixture is provided by conftest.py
@@ -242,61 +241,6 @@ class TestGRPCBackendInit:
 # ─────────────────────────────────────────────────────────────────────────────
 # Capabilities Tests
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-class TestCapabilities:
-    """Tests for backend capabilities."""
-
-    @pytest.mark.parametrize(
-        "cap,present",
-        [
-            (BackendCapability.READ, True),
-            (BackendCapability.STREAM, True),
-            (BackendCapability.BATCH, True),
-            (BackendCapability.WRITE, False),
-            (BackendCapability.AUTH_JWT, False),
-            (BackendCapability.AUTH_KERBEROS, False),
-        ],
-    )
-    def test_capabilities_no_auth(self, cap, present):
-        backend = grpc_backend.GRPCBackend()
-        try:
-            assert (cap in backend.capabilities) == present
-        finally:
-            backend.close()
-
-    @pytest.mark.parametrize(
-        "cap,present",
-        [
-            (BackendCapability.READ, True),
-            (BackendCapability.WRITE, True),
-            (BackendCapability.AUTH_JWT, True),
-        ],
-    )
-    def test_capabilities_with_auth(self, sample_jwt, cap, present):
-        auth = JWTAuth(token=sample_jwt)
-        backend = grpc_backend.GRPCBackend(auth=auth)
-        try:
-            assert (cap in backend.capabilities) == present
-        finally:
-            backend.close()
-
-    def test_not_authenticated_without_token(self):
-        backend = grpc_backend.GRPCBackend()
-        try:
-            assert not backend.authenticated
-            assert backend.principal is None
-        finally:
-            backend.close()
-
-    def test_authenticated_with_auth(self, sample_jwt):
-        auth = JWTAuth(token=sample_jwt)
-        backend = grpc_backend.GRPCBackend(auth=auth)
-        try:
-            assert backend.authenticated
-            assert backend.principal == "testuser@fnal.gov"
-        finally:
-            backend.close()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

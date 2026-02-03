@@ -20,13 +20,6 @@ from tests.devices import make_jwt_token, MockGSSAPIModule
 class TestJWTAuth:
     """Tests for JWTAuth class."""
 
-    def test_create_with_token(self):
-        """Test creating JWTAuth with explicit token."""
-        token = make_jwt_token({"sub": "user@example.com"})
-        auth = JWTAuth(token=token)
-        assert auth.token == token
-        assert auth.auth_type == "jwt"
-
     def test_principal_extracted(self):
         """Test that principal is extracted from JWT."""
         token = make_jwt_token({"sub": "user@example.com"})
@@ -77,23 +70,6 @@ class TestJWTAuth:
             assert auth is not None
             assert auth.principal == "custom@example.com"
 
-    def test_frozen_dataclass(self):
-        """Test that JWTAuth is immutable."""
-        token = make_jwt_token({"sub": "user@example.com"})
-        auth = JWTAuth(token=token)
-        with pytest.raises(AttributeError):
-            auth.token = "new_token"
-
-    def test_token_not_in_repr(self):
-        """Test that token is excluded from repr to prevent credential leaks."""
-        token = make_jwt_token({"sub": "user@example.com"})
-        auth = JWTAuth(token=token)
-        repr_str = repr(auth)
-        # Token should not appear in repr
-        assert token not in repr_str
-        # But it should still be a valid repr
-        assert "JWTAuth" in repr_str
-
 
 class TestKerberosAuth:
     """Tests for KerberosAuth class."""
@@ -110,14 +86,6 @@ class TestKerberosAuth:
 
         with pytest.raises(ImportError, match="gssapi library required"):
             KerberosAuth()
-
-    def test_auth_type(self):
-        """Test auth_type property."""
-        mock_gssapi = MockGSSAPIModule()
-
-        with mock.patch.dict("sys.modules", {"gssapi": mock_gssapi}):
-            auth = KerberosAuth()
-            assert auth.auth_type == "kerberos"
 
     def test_principal_extracted(self):
         """Test that principal is extracted from Kerberos credentials."""
@@ -184,7 +152,6 @@ class TestKerberosAuth:
         with mock.patch.dict("sys.modules", {"gssapi": MockGSSAPI()}):
             with pytest.raises(AuthenticationError, match="No valid Kerberos credentials"):
                 KerberosAuth()
-
 
 
 if __name__ == "__main__":

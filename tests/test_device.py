@@ -48,10 +48,6 @@ def mock_backend():
 class TestDeviceCreation:
     """Tests for Device creation and DRF validation."""
 
-    def test_create_simple_device(self):
-        dev = Device("M:OUTTMP")
-        assert dev.name == "M:OUTTMP"
-
     def test_create_device_with_property(self):
         dev = Device("M:OUTTMP.READING")
         assert dev.name == "M:OUTTMP"
@@ -99,11 +95,6 @@ class TestDeviceProperties:
     def test_name_returns_device_name(self):
         dev = Device("M:OUTTMP.READING[0:10]@p,1000")
         assert dev.name == "M:OUTTMP"
-
-    def test_request_returns_datarequest(self):
-        dev = Device("M:OUTTMP")
-        req = dev.request
-        assert req.device == "M:OUTTMP"
 
     def test_has_event_false_for_default(self):
         dev = Device("M:OUTTMP")

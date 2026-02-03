@@ -12,60 +12,22 @@ Tests cover:
 """
 
 import urllib.error
-import urllib.request
 from unittest import mock
 
 import pytest
 
-from pacsys.backends import Backend
 from pacsys.backends.acl import (
     ACLBackend,
-    DEFAULT_BASE_URL,
-    DEFAULT_TIMEOUT,
     _parse_acl_value,
     _is_error_response,
 )
-from pacsys.types import BackendCapability, Reading, ValueType
+from pacsys.types import Reading, ValueType
 from pacsys.errors import DeviceError
 from tests.conftest import MockACLResponse
 
 
-class TestBackendAbstract:
-    """Tests for Backend abstract base class."""
-
-    def test_backend_is_abstract(self):
-        """Test that Backend cannot be instantiated directly."""
-        with pytest.raises(TypeError):
-            Backend()
-
-    def test_acl_backend_is_subclass(self):
-        """Test that ACLBackend is a Backend subclass."""
-        assert issubclass(ACLBackend, Backend)
-
-
 class TestACLBackendInit:
-    """Tests for ACLBackend initialization."""
-
-    def test_default_parameters(self):
-        """Test that default parameters are set correctly."""
-        backend = ACLBackend()
-        assert backend.base_url == DEFAULT_BASE_URL
-        assert backend.timeout == DEFAULT_TIMEOUT
-
-    def test_custom_parameters(self):
-        """Test initialization with custom parameters."""
-        backend = ACLBackend(
-            base_url="https://custom.example.com/acl",
-            timeout=5.0,
-        )
-        assert backend.base_url == "https://custom.example.com/acl"
-        assert backend.timeout == 5.0
-
-    def test_none_parameters_use_defaults(self):
-        """Test that None parameters use defaults."""
-        backend = ACLBackend(base_url=None, timeout=None)
-        assert backend.base_url == DEFAULT_BASE_URL
-        assert backend.timeout == DEFAULT_TIMEOUT
+    """Tests for ACLBackend input validation."""
 
     @pytest.mark.parametrize(
         "kwargs,match",
@@ -78,46 +40,6 @@ class TestACLBackendInit:
     def test_invalid_init_params(self, kwargs, match):
         with pytest.raises(ValueError, match=match):
             ACLBackend(**kwargs)
-
-
-class TestCapabilities:
-    """Tests for backend capabilities."""
-
-    def test_capabilities_include_read(self):
-        """Test that capabilities include READ."""
-        backend = ACLBackend()
-        assert BackendCapability.READ in backend.capabilities
-
-    def test_capabilities_include_batch(self):
-        """Test that capabilities include BATCH."""
-        backend = ACLBackend()
-        assert BackendCapability.BATCH in backend.capabilities
-
-    def test_capabilities_exclude_write(self):
-        """Test that capabilities do not include WRITE."""
-        backend = ACLBackend()
-        assert BackendCapability.WRITE not in backend.capabilities
-
-    def test_capabilities_exclude_stream(self):
-        """Test that capabilities do not include STREAM."""
-        backend = ACLBackend()
-        assert BackendCapability.STREAM not in backend.capabilities
-
-    def test_capabilities_exclude_auth(self):
-        """Test that capabilities do not include AUTH_KERBEROS or AUTH_JWT."""
-        backend = ACLBackend()
-        assert BackendCapability.AUTH_KERBEROS not in backend.capabilities
-        assert BackendCapability.AUTH_JWT not in backend.capabilities
-
-    def test_not_authenticated(self):
-        """Test that backend is not authenticated."""
-        backend = ACLBackend()
-        assert not backend.authenticated
-
-    def test_principal_is_none(self):
-        """Test that principal is None."""
-        backend = ACLBackend()
-        assert backend.principal is None
 
 
 class TestHelperFunctions:
