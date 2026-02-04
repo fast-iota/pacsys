@@ -252,7 +252,7 @@ class FakeBackend(Backend):
 
     Models devices as shared state: writes update the stored value,
     subsequent reads return it.  Keys are device identity (name + property +
-    field) — events and ranges are stripped so @I, @N, @p,1000 all hit the
+    field) -- events and ranges are stripped so @I, @N, @p,1000 all hit the
     same state.  Range requests slice the stored value at read time.
 
     Example:
@@ -492,7 +492,7 @@ class FakeBackend(Backend):
                 )
             return _apply_range(drf, reading.value, _get_range(drf))
 
-        # No reading configured — distinguish property-not-found from unknown device
+        # No reading configured -- distinguish property-not-found from unknown device
         if self._device_known(drf):
             raise DeviceError(drf, FACILITY_DBM, ERR_NOPROP, f"No such property for {get_device_name(drf)}")
         raise DeviceError(drf, FACILITY_ACNET, ERR_RETRY, f"No reading configured for {drf}")
@@ -528,7 +528,7 @@ class FakeBackend(Backend):
                 return replace(reading, value=_apply_range(drf, reading.value, rng))
             return reading
 
-        # No reading configured — distinguish property-not-found from unknown device
+        # No reading configured -- distinguish property-not-found from unknown device
         if self._device_known(drf):
             return Reading(
                 drf=drf,
@@ -596,7 +596,7 @@ class FakeBackend(Backend):
         If the write DRF includes a range and an existing array is stored,
         performs a slice assignment instead of replacing the whole value.
         """
-        # Clear any error — device is now responsive
+        # Clear any error -- device is now responsive
         self._errors.pop(key, None)
 
         rng = _get_range(drf)

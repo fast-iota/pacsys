@@ -130,7 +130,7 @@ re-configuring with `configure()`).
 | `PACSYS_DPM_PORT` | DPM proxy port | 6802 |
 | `PACSYS_TIMEOUT` | Default timeout (seconds) | 10.0 |
 | `PACSYS_JWT_TOKEN` | JWT token for gRPC auth | - |
-| `PACSYS_DMQ_HOST` | RabbitMQ broker host | appsrv3.fnal.gov |
+| `PACSYS_DMQ_HOST` | RabbitMQ broker host | appsrv2.fnal.gov |
 | `PACSYS_DMQ_PORT` | RabbitMQ broker port | 5672 |
 
 ---

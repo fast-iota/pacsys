@@ -179,7 +179,7 @@ def _make_backend_with_stub(stub, auth=None):
 
 @pytest.fixture
 def backend_with_mock_stub(mock_stub):
-    """GRPCBackend (no auth) with mocked stub — for read tests."""
+    """GRPCBackend (no auth) with mocked stub -- for read tests."""
     backend = _make_backend_with_stub(mock_stub)
     yield backend, mock_stub
     backend.close()
@@ -187,7 +187,7 @@ def backend_with_mock_stub(mock_stub):
 
 @pytest.fixture
 def auth_backend_with_mock_stub(mock_stub, sample_jwt):
-    """GRPCBackend (with JWT auth) and mocked stub — for write tests."""
+    """GRPCBackend (with JWT auth) and mocked stub -- for write tests."""
     auth = JWTAuth(token=sample_jwt)
     backend = _make_backend_with_stub(mock_stub, auth=auth)
     yield backend, mock_stub

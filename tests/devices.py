@@ -17,6 +17,7 @@ import socket
 import struct
 
 from pacsys.dpm_protocol import (
+    AddToList_reply,
     ApplySettings_reply,
     Authenticate_reply,
     DeviceInfo_reply,
@@ -338,6 +339,19 @@ def make_jwt_token(payload: dict) -> str:
 # =============================================================================
 # DPM Reply Factories
 # =============================================================================
+
+
+def make_add_to_list_reply(
+    list_id: int = 1,
+    ref_id: int = 1,
+    status: int = 0,
+) -> AddToList_reply:
+    """Create an AddToList_reply with sensible defaults."""
+    reply = AddToList_reply()
+    reply.list_id = list_id
+    reply.ref_id = ref_id
+    reply.status = status
+    return reply
 
 
 def make_device_info(

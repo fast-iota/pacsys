@@ -1,11 +1,11 @@
 # FTPMAN Protocol
 
-!!! danger "Direct front-end access — use with caution"
+!!! danger "Direct front-end access -- use with caution"
     This module communicates **directly with front-end hardware controllers**, bypassing all central services. Incorrect requests can disrupt data collection for other users, preempt active plots, and impact operations.
 
     **Prefer higher-level alternatives whenever possible:**
 
-    - **Continuous streaming up to 1440 Hz**: Use `pacsys.subscribe()` with a DPM backend — DPM proxies FTP requests to front-ends on your behalf with proper resource management.
+    - **Continuous streaming up to 1440 Hz**: Use `pacsys.subscribe()` with a DPM backend -- DPM proxies FTP requests to front-ends on your behalf with proper resource management.
     - **Snapshot plots**: Currently only available through this direct protocol. Use the `FTPClient` API rather than building raw packets.
 
     Only use the direct FTPMAN protocol when you need snapshot capability or when DPM/DMQ cannot meet your requirements. Always use the lowest reasonable priority (0) and clean up resources promptly.
@@ -92,7 +92,7 @@ with AcnetConnectionTCP() as conn:
     node = conn.get_node("MUONFE")
     dev = FTPDevice(di=27235, pi=12, ssdn=b"\x00\x00B\x00?!\x00\x00")
 
-    # Arm on TCLK event 0x02 — each byte is a literal event number
+    # Arm on TCLK event 0x02 -- each byte is a literal event number
     arm_events = b"\x02" + b"\xff" * 7
 
     with ftp.start_snapshot(

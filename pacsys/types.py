@@ -42,6 +42,7 @@ class ValueType(Enum):
 
     SCALAR = "scalar"
     SCALAR_ARRAY = "scalarArr"
+    TIMED_SCALAR_ARRAY = "timedScalarArr"
     RAW = "raw"
     TEXT = "text"
     TEXT_ARRAY = "textArr"
@@ -53,8 +54,11 @@ class ValueType(Enum):
 class BasicControl(IntEnum):
     """Control commands for device CONTROL property writes.
 
-    Ordinals match the BasicControl enum in DAQData.proto.
-    Each backend maps these to its wire format internally.
+    Ordinals match the Java BasicControlDefs constants. Commands 0-6 are
+    also defined in the DMQ DAQData.proto enum; commands 7-9 (LOCAL, REMOTE,
+    TRIP) are sent as numeric values on DMQ since the proto enum lacks them.
+
+    Each command toggles a status bit (see _CONTROL_STATUS_MAP in device.py).
 
     Usage::
 
@@ -69,6 +73,9 @@ class BasicControl(IntEnum):
     NEGATIVE = 4
     RAMP = 5
     DC = 6
+    LOCAL = 7
+    REMOTE = 8
+    TRIP = 9
 
 
 @dataclass(frozen=True)
@@ -359,7 +366,7 @@ class CombinedStream:
                 if isinstance(item, Exception):
                     raise item
 
-                # Got first reading — drain all currently available into a heap
+                # Got first reading -- drain all currently available into a heap
                 heap = []
                 reading, handle = item
                 ts = reading.timestamp or datetime.min

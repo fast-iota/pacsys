@@ -72,6 +72,7 @@ class DPMReading:
     status: int = 0
     data: object = None
     device_info: Optional["DPMDeviceInfo"] = None
+    micros: object = None  # Per-sample timestamps from TimedScalarArray (int64 list)
 
 
 @dataclass
@@ -146,7 +147,7 @@ class DPMConnection:
         self._stop_event = threading.Event()
 
         # Receive buffer
-        self._recv_buffer = b""
+        self._recv_buffer = bytearray()
 
     @property
     def connected(self) -> bool:
@@ -241,13 +242,13 @@ class DPMConnection:
                 chunk = self._socket.recv(4096)
                 if not chunk:
                     raise ConnectionError("Connection closed")
-                self._recv_buffer += chunk
+                self._recv_buffer.extend(chunk)
         finally:
             if timeout:
                 self._socket.settimeout(RECV_TIMEOUT)
 
-        data = self._recv_buffer[:n]
-        self._recv_buffer = self._recv_buffer[n:]
+        data = bytes(self._recv_buffer[:n])
+        del self._recv_buffer[:n]
         return data
 
     def _recv_reply(self, timeout: float | None = None) -> object:
@@ -489,12 +490,16 @@ class DPMConnection:
                 TimedScalarArray_reply,
             ),
         ):
+            micros = None
+            if isinstance(reply, TimedScalarArray_reply) and hasattr(reply, "micros") and reply.micros:
+                micros = reply.micros
             reading = DPMReading(
                 ref_id=reply.ref_id,
                 timestamp=reply.timestamp,
                 cycle=reply.cycle,
                 status=reply.status,
                 data=reply.data if hasattr(reply, "data") else None,
+                micros=micros,
             )
 
             # Attach device info if available

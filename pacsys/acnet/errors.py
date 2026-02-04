@@ -12,10 +12,19 @@ class AcnetFacility(IntEnum):
     """ACNET facility codes."""
 
     ACNET = 1  # Core ACNET errors
+    FSHARE = 2  # File sharing
+    APM = 3  # Application program manager
+    LJ = 4  # Local journaling
+    CBS = 5  # Console basic services
+    CMU = 6  # Console management utilities
+    CLIB = 7  # C library
+    LOCK = 8  # Lock manager
+    APPDS = 9  # Application data services
     DIO = 14  # Device I/O
     FTP = 15  # Fast Time Plot
     DBM = 16  # Database Manager
     DPM = 17  # Data Pool Manager
+    DMQ = 72  # Data Multiplexer Queue (RabbitMQ-based)
 
 
 def make_error(facility: int, error_number: int) -> int:
@@ -65,8 +74,89 @@ ACNET_DISCONNECTED = make_error(1, -34)  # Replier disconnected
 ACNET_LEVEL2 = make_error(1, -35)  # Level II function error
 ACNET_HARD_IO = make_error(1, -36)  # Hard I/O error
 ACNET_NODE_DOWN = make_error(1, -42)  # Node offline
+ACNET_SYS = make_error(1, -43)  # System service error
+ACNET_NXE = make_error(1, -44)  # Untranslatable error
+ACNET_BUG = make_error(1, -45)  # Network internal error
+ACNET_NE1 = make_error(1, -46)  # Network error #1
+ACNET_NE2 = make_error(1, -47)  # Network error #2
+ACNET_NE3 = make_error(1, -48)  # Network error #3
 ACNET_UTIME = make_error(1, -49)  # User timeout
 ACNET_INVARG = make_error(1, -50)  # Invalid argument
+ACNET_MEMFAIL = make_error(1, -51)  # Dynamic memory allocation failed
+ACNET_NO_HANDLE = make_error(1, -52)  # Requested ACNET handle does not exist
+
+# DIO facility errors (Device I/O, facility 14)
+# Positive status codes (warnings)
+DIO_NOT_SCALABLE = make_error(14, 12)  # Value not scalable as floating point
+DIO_NOT_UNIQUE = make_error(14, 11)  # Request did not have unique result
+DIO_TOO_HIGH = make_error(14, 10)  # Value too high (clipped to max)
+DIO_TOO_LOW = make_error(14, 9)  # Value too low (clipped to min)
+DIO_INCOMPLETE_DATA = make_error(14, 8)  # Some but not all data returned
+DIO_INCONSISTENT_TIMES = make_error(14, 7)  # Data has inconsistent timestamps
+DIO_NO_CHANGE = make_error(14, 6)  # Data has not changed
+DIO_MORE_VALUES = make_error(14, 5)  # Additional values available
+DIO_NOW_EMPTY = make_error(14, 4)  # Object is now empty
+DIO_PEND = make_error(14, 3)  # No new data available
+DIO_ALREADY_SET = make_error(14, 2)  # Value already at requested setting
+DIO_TOO_MANY_ARGS = make_error(14, 1)  # Too many arguments
+# Negative error codes
+DIO_MEMFAIL = make_error(14, -1)  # Memory allocation failed
+DIO_CANFAIL = make_error(14, -2)  # Cancel of list/device failed
+DIO_NOLIST = make_error(14, -3)  # Nonexistent list
+DIO_STALE = make_error(14, -4)  # Data same as previous call
+DIO_INVATT = make_error(14, -5)  # Device attribute does not exist
+DIO_NOATT = make_error(14, -6)  # Attribute doesn't exist for device
+DIO_NOSCALE = make_error(14, -7)  # No scaling information
+DIO_BADARG = make_error(14, -8)  # Invalid argument
+DIO_BADSCALE = make_error(14, -9)  # Invalid PDB (scaling) data
+DIO_NOFAMILY = make_error(14, -10)  # Not a family device
+DIO_NOINFO = make_error(14, -11)  # No database-information node
+DIO_INVDBDAT = make_error(14, -12)  # DBM error for device
+DIO_INVLEN = make_error(14, -13)  # Invalid raw data length
+DIO_SETDIS = make_error(14, -14)  # Setting inhibited
+DIO_SMOFF = make_error(14, -15)  # Stepping motor is off
+DIO_SMITER = make_error(14, -16)  # Stepping motor iteration limit
+DIO_NO_SUCH = make_error(14, -17)  # Object does not exist
+DIO_UNAVAIL = make_error(14, -18)  # Service unavailable
+DIO_INVDEV = make_error(14, -19)  # Invalid device
+DIO_SCALEFAIL = make_error(14, -20)  # Scaling failed
+DIO_NOTYET = make_error(14, -21)  # Feature not yet implemented
+DIO_MISMATCH = make_error(14, -22)  # Data does not match request
+DIO_TOO_MANY = make_error(14, -28)  # Too many objects
+DIO_GENERIC_ERROR = make_error(14, -29)  # Generic error
+DIO_BUGCHK = make_error(14, -32)  # Internal program bug
+DIO_CORRUPT = make_error(14, -33)  # Data corrupted; math exception in scaling
+DIO_INSUFFICIENT_ARGS = make_error(14, -34)  # Not enough arguments
+DIO_INVDATA = make_error(14, -35)  # Invalid data in context
+DIO_INVOFF = make_error(14, -36)  # Invalid raw data offset
+DIO_DUPREQ = make_error(14, -37)  # Duplicate request
+DIO_TRUNCATED = make_error(14, -38)  # Result truncated
+DIO_SYNTAX = make_error(14, -39)  # Syntax error
+DIO_TOO_BIG = make_error(14, -40)  # Request too large
+DIO_NOT_ENABLED = make_error(14, -41)  # Feature not enabled
+DIO_INVPROP = make_error(14, -42)  # Invalid property in context
+DIO_TIMEOUT = make_error(14, -43)  # Request timed out
+DIO_MATH_EXCEPTION = make_error(14, -46)  # Math exception during calculation
+DIO_NOT_PROCESSED = make_error(14, -47)  # Entry was not processed
+DIO_RETIRED = make_error(14, -48)  # Service has been retired
+DIO_INVALID_RATE = make_error(14, -49)  # Invalid data rate
+DIO_RANGE = make_error(14, -58)  # Value out of range
+DIO_NOPRIV = make_error(14, -59)  # No privilege for action
+DIO_READONLY = make_error(14, -60)  # Read-only access
+DIO_EMPTY = make_error(14, -65)  # Empty request
+DIO_NOT_SUPPORTED = make_error(14, -69)  # Operation not supported
+DIO_AMBIGUOUS = make_error(14, -70)  # Ambiguous request
+DIO_NOT_A_NUMBER = make_error(14, -71)  # Data value is NaN
+DIO_RECURSION_LIMIT = make_error(14, -72)  # Recursion limit reached
+DIO_INVALID_DEVICE_TYPE = make_error(14, -73)  # Invalid device type
+DIO_TOO_SMALL = make_error(14, -74)  # Request too small
+DIO_INVALID_DB_REQUEST = make_error(14, -76)  # Invalid database request (SQL error)
+DIO_UNTRANSLATABLE_ERROR = make_error(14, -77)  # Untranslatable low-level error
+DIO_NOREGULAR = make_error(14, -78)  # Not a regular device (family device)
+DIO_SETONLY = make_error(14, -79)  # Unreadable property in readable context
+DIO_OUT_OF_BOUNDS = make_error(14, -80)  # Array index out of bounds
+DIO_CONTROLLED_SET = make_error(14, -81)  # Attempt to set controlled property
+DIO_NO_DATA = make_error(14, -82)  # No data for this request
 
 # DBM facility errors (Database Manager)
 DBM_NOPROP = make_error(16, -13)  # Property not found
@@ -206,9 +296,22 @@ DPM_NO_SCALE = make_error(17, -31)  # Scaling not available
 DPM_BAD_EVENT = make_error(17, -33)  # Invalid event
 DPM_INTERNAL_ERROR = make_error(17, -45)  # Internal error
 
+# DMQ facility errors (Data Multiplexer Queue, facility 72)
+FACILITY_DMQ = int(AcnetFacility.DMQ)  # 72
+DMQ_PENDING = make_error(72, 1)  # Data acquisition pending initialization
+DMQ_OK = make_error(72, 0)  # Normal condition
+DMQ_INVALID_DATA_TYPE = make_error(72, -93)  # Invalid data type in setting job
+DMQ_SETTING_DISABLED = make_error(72, -94)  # Settings disabled
+DMQ_SYSTEM_ERROR = make_error(72, -95)  # Unchecked exception on server
+DMQ_CHANNEL_NOT_READY = make_error(72, -96)  # Communication channel not ready
+DMQ_LOGIN_REQUIRED = make_error(72, -97)  # Login required
+DMQ_INVALID_REQUEST = make_error(72, -98)  # Invalid data request
+DMQ_SECURITY_VIOLATION = make_error(72, -99)  # Security violation (invalid credentials)
+
 # Decomposed error numbers (signed int8) for use with Reading/WriteResult fields.
 # These match the error_number component of the composite constants above.
 FACILITY_ACNET = int(AcnetFacility.ACNET)  # 1
+FACILITY_DIO = int(AcnetFacility.DIO)  # 14
 FACILITY_DBM = int(AcnetFacility.DBM)  # 16
 ERR_OK = 0
 ERR_RETRY = -1  # Generic retryable error (error number of ACNET_RETRY)
@@ -228,16 +331,42 @@ def normalize_error_code(code: int) -> int:
     return code
 
 
+# Reverse lookup tables for named error messages.
+# Built lazily on first use from the module-level constants.
+_STATUS_NAMES: dict[int, str] | None = None
+
+
+def _build_status_names() -> dict[int, str]:
+    """Build composite-code -> name map from module constants."""
+    names: dict[int, str] = {}
+    for name, val in globals().items():
+        if isinstance(val, int) and name.isupper() and "_" in name:
+            prefix = name.split("_")[0]
+            if prefix in ("ACNET", "DIO", "DPM", "DBM", "DMQ"):
+                names[val] = name
+    return names
+
+
 def status_message(facility: int, error: int) -> str | None:
     """Build human-readable status message from decomposed error codes.
 
     Returns None for success (error == 0).
     """
+    if error == 0:
+        return None
+
+    global _STATUS_NAMES
+    if _STATUS_NAMES is None:
+        _STATUS_NAMES = _build_status_names()
+
+    composite = make_error(facility, error)
+    name = _STATUS_NAMES.get(composite)
+    if name:
+        kind = "warning" if error > 0 else "error"
+        return f"{name} ({kind}, facility={facility}, error={error})"
     if error < 0:
         return f"Device error (facility={facility}, error={error})"
-    elif error > 0:
-        return f"Warning (facility={facility}, error={error})"
-    return None
+    return f"Warning (facility={facility}, error={error})"
 
 
 class AcnetError(Exception):

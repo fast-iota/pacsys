@@ -235,5 +235,62 @@ class TestDeviceDigitalStatus:
             backend.close()
 
 
+# =============================================================================
+# Ramp Table Tests
+# =============================================================================
+
+
+@requires_dpm_http
+class TestBoosterRamp:
+    """Read a real Booster corrector ramp table via DPM HTTP."""
+
+    def test_read_ramp(self):
+        """Read slot 0 from B:HS23T, verify structure, and cross-check with scalar read."""
+        import numpy as np
+        from pacsys.ramp import BoosterRamp
+
+        with DPMHTTPBackend() as backend:
+            ramp = BoosterRamp.read("B:HS23T", slot=0, backend=backend)
+
+            assert isinstance(ramp, BoosterRamp)
+            assert ramp.values.shape == (64,)
+            assert ramp.times.shape == (64,)
+            assert ramp.values.dtype == np.float64
+            assert ramp.times.dtype == np.float64
+
+            print(f"\nRamp times (us): {ramp.times}")
+            print(f"Ramp values: {ramp.values}")
+
+            # Cross-check: read SETTING[7] as scalar via DPM and compare
+            # to the ramp table value at the same index
+            scalar = backend.read("B_HS23T[7]", timeout=TIMEOUT_READ)
+            print(f"\nB_HS23T[7] scalar = {scalar}")
+            print(f"ramp.values[7]    = {ramp.values[7]}")
+            assert ramp.values[7] == pytest.approx(scalar, rel=0.01)
+
+    def test_read_ramp_round_trip_bytes(self):
+        """from_bytes(to_bytes(read)) preserves the wire representation."""
+        from pacsys.ramp import BoosterRamp
+
+        with DPMHTTPBackend() as backend:
+            ramp = BoosterRamp.read("B:HS23T", slot=0, backend=backend)
+            raw = ramp.to_bytes()
+            ramp2 = BoosterRamp.from_bytes(raw)
+
+            assert ramp2.values == pytest.approx(ramp.values, abs=0.002)
+            assert ramp2.times == pytest.approx(ramp.times)
+
+    def test_read_multiple_slots(self):
+        """Slots 0 and 1 can both be read (may or may not differ)."""
+        from pacsys.ramp import BoosterRamp
+
+        with DPMHTTPBackend() as backend:
+            ramp0 = BoosterRamp.read("B:HS23T", slot=0, backend=backend)
+            ramp1 = BoosterRamp.read("B:HS23T", slot=1, backend=backend)
+
+            assert ramp0.values.shape == (64,)
+            assert ramp1.values.shape == (64,)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s"])

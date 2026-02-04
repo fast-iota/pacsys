@@ -160,14 +160,14 @@ class TestAcnetTCPPing:
     """
 
     def test_ping_clx74(self, acnet_tcp_connection):
-        """Ping CLX74 (acnetd node) — must echo payload back."""
+        """Ping CLX74 (acnetd node) -- must echo payload back."""
         reply = _ping(acnet_tcp_connection, CLX74_NODE, CLX74_EXPECTED_ADDRESS)
         assert reply.status == 0, f"Ping CLX74 failed with status {reply.status}"
         assert reply.data == b"\x00\x00", f"CLX74 should echo payload: {reply.data!r}"
         assert reply.last
 
     def test_ping_muonfe(self, acnet_tcp_connection):
-        """Ping MUONFE (front-end node) — status 0 is sufficient."""
+        """Ping MUONFE (front-end node) -- status 0 is sufficient."""
         reply = _ping(acnet_tcp_connection, MUONFE_NODE, MUONFE_EXPECTED_ADDRESS)
         assert reply.status == 0, f"Ping MUONFE failed with status {reply.status}"
         assert reply.last

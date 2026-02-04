@@ -417,6 +417,9 @@ class TestDeviceWriteMethods:
             ("negative", BasicControl.NEGATIVE),
             ("ramp", BasicControl.RAMP),
             ("dc", BasicControl.DC),
+            ("local", BasicControl.LOCAL),
+            ("remote", BasicControl.REMOTE),
+            ("trip", BasicControl.TRIP),
         ],
     )
     def test_control_shortcut(self, mock_backend, method, expected):

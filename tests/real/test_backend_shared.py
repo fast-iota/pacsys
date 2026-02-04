@@ -19,6 +19,8 @@ from pacsys.types import Reading, ValueType, BackendCapability, SubscriptionHand
 from pacsys.errors import DeviceError
 
 from .devices import (
+    ACLTST_NONEXISTENT_ORDINAL,
+    ACLTST_UNPAIRED_CONTROLS,
     CONTROL_PAIRS,
     CONTROL_RESET,
     DEVICE_TYPES,
@@ -372,6 +374,73 @@ class TestBackendStreaming:
         for h in handles:
             assert h.stopped
 
+    def _skip_if_dmq(self, backend):
+        """DMQ silently drops nonexistent devices instead of sending errors."""
+        from pacsys.backends.dmq import DMQBackend
+
+        if isinstance(backend, DMQBackend):
+            pytest.skip("DMQ does not report errors for nonexistent streaming devices")
+
+    def test_subscribe_mixed_valid_and_invalid(self, read_backend):
+        """Subscription with valid + nonexistent device delivers both data and errors."""
+        self._skip_if_no_stream(read_backend)
+        self._skip_if_dmq(read_backend)
+
+        readings_by_drf: dict[str, list[Reading]] = {}
+        lock = threading.Lock()
+        got_both = threading.Event()
+
+        valid_drf = PERIODIC_DEVICE
+        invalid_drf = f"{NONEXISTENT_DEVICE}@p,500"
+
+        def on_reading(reading: Reading, handle: SubscriptionHandle):
+            with lock:
+                readings_by_drf.setdefault(reading.drf, []).append(reading)
+                if len(readings_by_drf) >= 2:
+                    got_both.set()
+
+        handle = read_backend.subscribe([valid_drf, invalid_drf], callback=on_reading)
+        try:
+            # Nonexistent device warning (DPM_PEND) arrives with delay
+            got_both.wait(timeout=10.0)
+        finally:
+            handle.stop()
+
+        with lock:
+            valid_readings = readings_by_drf.get(valid_drf, [])
+            assert len(valid_readings) >= 1, f"Expected readings for {valid_drf}"
+            assert valid_readings[0].ok
+
+            # Nonexistent device should have delivered an error/warning reading
+            # (DRF may be canonicalized by the server, so check all non-valid keys)
+            invalid_readings = [r for drf, rs in readings_by_drf.items() if drf != valid_drf for r in rs]
+            assert len(invalid_readings) >= 1, (
+                f"Expected error reading for invalid device, got drfs: {list(readings_by_drf)}"
+            )
+            assert invalid_readings[0].is_error or invalid_readings[0].is_warning
+
+    def test_subscribe_invalid_device_reports_error(self, read_backend):
+        """Subscription to nonexistent device delivers error/warning (not silent)."""
+        self._skip_if_no_stream(read_backend)
+        self._skip_if_dmq(read_backend)
+
+        readings: list[Reading] = []
+        got_reading = threading.Event()
+
+        def on_reading(reading: Reading, handle: SubscriptionHandle):
+            readings.append(reading)
+            got_reading.set()
+
+        handle = read_backend.subscribe([f"{NONEXISTENT_DEVICE}@p,500"], callback=on_reading)
+        try:
+            # DPM_PEND warning arrives with delay for nonexistent devices
+            got_reading.wait(timeout=10.0)
+        finally:
+            handle.stop()
+
+        assert len(readings) >= 1, "Expected at least one error/warning reading for nonexistent device"
+        assert readings[0].is_error or readings[0].is_warning
+
 
 # =============================================================================
 # Write Tests (shared across write-capable backends)
@@ -483,6 +552,42 @@ class TestBackendWrite:
         assert status.ok, f"Failed to read status after RESET: {status.message}"
         assert isinstance(status.value, dict)
         assert "on" in status.value
+
+
+# =============================================================================
+# Unpaired / Nonexistent Control Ordinals (Z:ACLTST)
+# =============================================================================
+
+
+@pytest.mark.real
+@pytest.mark.kerberos
+@requires_kerberos
+class TestBackendUnpairedControls:
+    """Unpaired control ordinals on Z:ACLTST (all write-capable backends).
+
+    Ordinals 7-11 map to device-specific TEST commands that succeed but don't
+    toggle standard status bits. Ordinal 25 is beyond the device's control
+    table and should be rejected. See ordinal table in devices.py.
+    """
+
+    @pytest.mark.write
+    @requires_write_enabled
+    @pytest.mark.parametrize(
+        "ordinal,cmd_name",
+        ACLTST_UNPAIRED_CONTROLS,
+        ids=[name for _, name in ACLTST_UNPAIRED_CONTROLS],
+    )
+    def test_unpaired_control_write_succeeds(self, write_backend, ordinal, cmd_name):
+        """Unpaired ordinal write is accepted without error."""
+        result = write_backend.write(STATUS_CONTROL_DEVICE, ordinal, timeout=TIMEOUT_READ)
+        assert result.success, f"Ordinal {ordinal} ({cmd_name}) write failed: {result.error_code} {result.message}"
+
+    @pytest.mark.write
+    @requires_write_enabled
+    def test_nonexistent_ordinal_rejected(self, write_backend):
+        """Ordinal beyond device's control table is rejected (DIO_SCALEFAIL)."""
+        result = write_backend.write(STATUS_CONTROL_DEVICE, ACLTST_NONEXISTENT_ORDINAL, timeout=TIMEOUT_READ)
+        assert not result.success, f"Expected error for ordinal {ACLTST_NONEXISTENT_ORDINAL}, but write succeeded"
 
 
 if __name__ == "__main__":

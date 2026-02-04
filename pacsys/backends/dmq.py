@@ -24,7 +24,7 @@ from pika.channel import Channel
 
 from pacsys.acnet.errors import ERR_OK, ERR_RETRY, ERR_TIMEOUT, FACILITY_ACNET
 from pacsys.auth import Auth, KerberosAuth
-from pacsys.backends import Backend, timestamp_from_millis
+from pacsys.backends import Backend, timestamp_from_millis, validate_alarm_dict
 from pacsys.errors import AuthenticationError, DeviceError
 from pacsys.backends.dmq_protocol import (
     ReadingRequest_request,
@@ -76,7 +76,7 @@ logger = logging.getLogger(__name__)
 # Enable verbose protocol tracing for write channel messages
 TRACE = False
 
-DEFAULT_HOST = os.environ.get("PACSYS_DMQ_HOST", "appsrv3.fnal.gov")
+DEFAULT_HOST = os.environ.get("PACSYS_DMQ_HOST", "appsrv2.fnal.gov")
 DEFAULT_PORT = int(os.environ.get("PACSYS_DMQ_PORT", "5672"))
 _DEFAULT_QUEUE_MAXSIZE = 10000
 DEFAULT_VHOST = "/"
@@ -98,7 +98,9 @@ DEFAULT_WRITE_SESSION_TTL = 600.0
 # Maximum concurrent write sessions (protects against channel exhaustion)
 MAX_WRITE_SESSIONS = 256
 
-# Map backend-agnostic BasicControl enum → SDD protocol constants
+# Map backend-agnostic BasicControl enum → SDD protocol constants.
+# Only commands 0-6 have SDD enum values; LOCAL/REMOTE/TRIP (7-9) are
+# sent as DoubleSample since the DMQ proto enum lacks them.
 _BASIC_CONTROL_TO_SDD = {
     BasicControl.RESET: BasicControl_Reset,
     BasicControl.ON: BasicControl_On,
@@ -109,13 +111,6 @@ _BASIC_CONTROL_TO_SDD = {
     BasicControl.DC: BasicControl_DC,
 }
 
-_ANALOG_ONLY_KEYS = {"minimum", "maximum"}
-_DIGITAL_ONLY_KEYS = {"nominal", "mask"}
-_SHARED_ALARM_KEYS = {"alarm_enable", "abort_inhibit", "tries_needed"}
-_ANALOG_ALARM_KEYS = _ANALOG_ONLY_KEYS | _SHARED_ALARM_KEYS
-_DIGITAL_ALARM_KEYS = _DIGITAL_ONLY_KEYS | _SHARED_ALARM_KEYS
-_ALARM_READONLY_KEYS = {"abort", "alarm_status", "tries_now"}
-
 
 def _dict_to_alarm_sample(d: dict, ref_id: int, timestamp_ms: int):
     """Convert alarm dict to AnalogAlarmSample_reply or DigitalAlarmSample_reply.
@@ -123,19 +118,8 @@ def _dict_to_alarm_sample(d: dict, ref_id: int, timestamp_ms: int):
     Requires at least one type-specific key (minimum/maximum for analog,
     nominal/mask for digital) to disambiguate alarm type.
     """
-    keys = set(d) - _ALARM_READONLY_KEYS
-    unknown = keys - _ANALOG_ALARM_KEYS - _DIGITAL_ALARM_KEYS
-    if unknown:
-        raise ValueError(f"Unknown alarm dict keys: {unknown}")
-    has_analog = bool(keys & _ANALOG_ONLY_KEYS)
-    has_digital = bool(keys & _DIGITAL_ONLY_KEYS)
-    if has_analog and has_digital:
-        raise ValueError("Cannot mix analog (minimum/maximum) and digital (nominal/mask) alarm keys")
-    if not has_analog and not has_digital:
-        raise ValueError(
-            "Alarm dict must include at least one type-specific key: minimum/maximum (analog) or nominal/mask (digital)"
-        )
-    if has_analog:
+    alarm_type = validate_alarm_dict(d)
+    if alarm_type == "analog":
         alarm = AnalogAlarm_struct()
         if "minimum" in d:
             alarm.minimum = float(d["minimum"])
@@ -209,7 +193,7 @@ class _WriteSession:
     """
 
     device: str
-    init_drf: str  # exact DRF used in INIT dataRequest — must match SETTING routing key
+    init_drf: str  # exact DRF used in INIT dataRequest -- must match SETTING routing key
     channel: Channel
     exchange_name: str
     queue_name: str
@@ -238,12 +222,12 @@ class _WriteCompletionTracker:
             self.done_event.set()
 
     def abort(self, exc: Exception) -> None:
-        """Abort with exception — signals done immediately."""
+        """Abort with exception -- signals done immediately."""
         self.exception = exc
         self.done_event.set()
 
 
-# Fermilab AS3152 prefixes — if the client's IP falls in one of these,
+# Fermilab public AS3152 prefixes -- if the client's IP falls in one of these,
 # report it verbatim; otherwise use the proxy address to avoid leaking
 # private/home IPs to the server.
 _FNAL_PREFIXES = (
@@ -252,8 +236,6 @@ _FNAL_PREFIXES = (
     (socket.inet_aton("198.49.208.0"), 24),
 )
 _FNAL_PROXY = socket.inet_aton("131.225.142.68")
-
-_cached_host_address: bytes | None = None
 
 
 def _in_fnal_range(ip_bytes: bytes) -> bool:
@@ -272,12 +254,7 @@ def _get_host_address() -> bytes:
 
     Returns the real local IP if it's on the Fermilab network (AS3152),
     otherwise returns a fixed proxy address to avoid leaking private IPs.
-    Result is cached — the lookup runs only once per process.
     """
-    global _cached_host_address
-    if _cached_host_address is not None:
-        return _cached_host_address
-
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
@@ -287,8 +264,7 @@ def _get_host_address() -> bytes:
         logger.warning("Cannot determine local IP, falling back to FNAL proxy: %s", e)
         local_ip = _FNAL_PROXY
 
-    _cached_host_address = local_ip if _in_fnal_range(local_ip) else _FNAL_PROXY
-    return _cached_host_address
+    return local_ip if _in_fnal_range(local_ip) else _FNAL_PROXY
 
 
 def _extract_basic_status(reply):
@@ -552,7 +528,7 @@ class DMQBackend(Backend):
         Initialize DMQ backend.
 
         Args:
-            host: RabbitMQ broker hostname (default: appsrv3.fnal.gov)
+            host: RabbitMQ broker hostname (default: appsrv2.fnal.gov)
             port: RabbitMQ broker port (default: 5672)
             vhost: RabbitMQ virtual host (default: /)
             timeout: Default operation timeout in seconds (default: 5.0)
@@ -745,7 +721,7 @@ class DMQBackend(Backend):
         conn.ioloop.add_callback_threadsafe(lambda: self._start_read_async(job))
 
         if not job.done_event.wait(timeout):
-            # Timeout — schedule cleanup on IO thread
+            # Timeout -- schedule cleanup on IO thread
             if conn.is_open:
                 conn.ioloop.add_callback_threadsafe(lambda: self._complete_read(job))
                 job.done_event.wait(timeout=5.0)
@@ -780,7 +756,7 @@ class DMQBackend(Backend):
 
         def on_ready(channel, exchange_name, queue_name):
             if job.done_event.is_set():
-                # Timeout already fired — clean up the channel we just opened
+                # Timeout already fired -- clean up the channel we just opened
                 try:
                     if channel.is_open:
                         channel.close()
@@ -1208,15 +1184,9 @@ class DMQBackend(Backend):
             tracker.abort(AuthenticationError(f"GSS context creation failed: {e}"))
             return
 
-        # Bind S.# to receive setting responses (full DRF may contain dots)
-        standby.channel.queue_bind(
-            queue=standby.queue_name,
-            exchange=standby.exchange_name,
-            routing_key="S.#",
-            callback=lambda _: self._on_write_bind_complete(
-                standby, init_drf, ctx, token, drf_settings, results, tracker
-            ),
-        )
+        # Channel already has R.# and Q bindings from standby setup.
+        # Server replies use R.# routing keys, no S.# binding needed.
+        self._on_write_bind_complete(standby, init_drf, ctx, token, drf_settings, results, tracker)
 
     def _on_write_bind_complete(
         self,
@@ -1230,7 +1200,7 @@ class DMQBackend(Backend):
     ) -> None:
         """Binding complete, send INIT and create session (IO thread)."""
         device = get_device_name(init_drf)
-        # Build and send INIT — init_drf is the exact string registered
+        # Build and send INIT -- init_drf is the exact string registered
         # on the server as the setter key; SETTING routing key must match it
         req = SettingRequest_request()
         req.dataRequest = [init_drf]
@@ -1344,7 +1314,7 @@ class DMQBackend(Backend):
                 # sends empty string (impl). Using message_id avoids mismatch.
                 message_id = str(uuid.uuid4())
 
-                mic = self._sign_message(session.gss_context, body, message_id, correlation_id=message_id)
+                mic = self._sign_message(session.gss_context, body, message_id)
 
                 session.pending[message_id] = (i, drf, results, tracker)
                 pending_for_device += 1
@@ -1355,7 +1325,6 @@ class DMQBackend(Backend):
                     body=body,
                     properties=pika.BasicProperties(
                         message_id=message_id,
-                        correlation_id=message_id,
                         headers={"signature": mic, "host-address": self._local_ip},
                     ),
                 )
@@ -1382,10 +1351,9 @@ class DMQBackend(Backend):
         """Handle write response (IO thread)."""
         channel.basic_ack(method.delivery_tag)
 
-        # Skip heartbeats and outbound settings (S.# is the client's own
-        # message echoed back via the queue binding — server responses use R.#)
+        # Skip heartbeats (server sends Q routing key periodically)
         rk: str = method.routing_key  # type: ignore[assignment]
-        if rk == "Q" or rk.startswith("S."):
+        if rk == "Q":
             return
 
         # Extract correlation_id early (before unmarshal) so we can fail
@@ -1428,9 +1396,9 @@ class DMQBackend(Backend):
         if isinstance(reply, ErrorSample_reply) and reply.errorNumber == DMQ_PENDING_ERROR:
             return
 
-        # Match by correlation_id. The Java server (impl2) echoes message_id
-        # as correlationId; the older impl sends empty string. Fall back to
-        # FIFO (oldest pending) when correlationId is missing or unknown.
+        # Match by correlation_id. Server echoes message_id as the response's
+        # correlationId; older impl sends empty string. Fall back to FIFO
+        # (oldest pending) when correlationId is missing or unknown.
         if corr_id and corr_id in session.pending:
             i, drf, results, tracker = session.pending.pop(corr_id)
         elif session.pending:
@@ -1492,10 +1460,21 @@ class DMQBackend(Backend):
         """
         timestamp_ms = int(time.time() * 1000)
 
-        # BasicControl enum → BasicControlSample with SDD constant
+        # BasicControl enum → BasicControlSample for commands 0-6,
+        # DoubleSample for LOCAL/REMOTE/TRIP (7-9) since the DMQ proto
+        # enum only defines 7 values. The server accepts the ordinal as
+        # a double and looks it up in the per-device control attribute table.
         if isinstance(value, BasicControl):
-            sample = BasicControlSample_reply()
-            sample.value = _BASIC_CONTROL_TO_SDD[value]
+            sdd_const = _BASIC_CONTROL_TO_SDD.get(value)
+            if sdd_const is not None:
+                sample = BasicControlSample_reply()
+                sample.value = sdd_const
+                sample.time = timestamp_ms
+                sample.ref_id = ref_id  # type: ignore[attr-defined]
+                return sample
+            # LOCAL, REMOTE, TRIP -- send as double ordinal
+            sample = DoubleSample_reply()
+            sample.value = float(value)
             sample.time = timestamp_ms
             sample.ref_id = ref_id  # type: ignore[attr-defined]
             return sample

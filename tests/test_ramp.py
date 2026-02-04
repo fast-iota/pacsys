@@ -1,11 +1,11 @@
-"""Tests for corrector ramp table manipulation."""
+"""Tests for ramp table manipulation."""
 
 import struct
 
 import numpy as np
 import pytest
 
-from pacsys.corrector_ramp import BoosterRamp, CorrectorRamp
+from pacsys.ramp import BoosterRamp, Ramp
 
 
 def _make_ramp_bytes(pairs: list[tuple[int, int]], n_points: int = 64) -> bytes:
@@ -28,13 +28,13 @@ class TestFromBytes:
 
     def test_parse_known_values(self):
         # raw_value=8192 -> eng = 8192 / 3276.8 * 4.0 = 10.0
-        # raw_time=100 -> 100 us
+        # raw_time=100 ticks -> 100 * 10 = 1000 us at 100 KHz
         data = _make_ramp_bytes([(8192, 100), (-8192, 200)])
         ramp = BoosterRamp.from_bytes(data)
         assert ramp.values[0] == pytest.approx(10.0, abs=0.01)
         assert ramp.values[1] == pytest.approx(-10.0, abs=0.01)
-        assert ramp.times[0] == 100
-        assert ramp.times[1] == 200
+        assert ramp.times[0] == pytest.approx(1_000.0)
+        assert ramp.times[1] == pytest.approx(2_000.0)
         assert np.all(ramp.values[2:] == 0.0)
 
     def test_wrong_length_raises(self):
@@ -50,7 +50,7 @@ class TestFromBytes:
         ramp = BoosterRamp.from_bytes(data)
         expected_eng = 1024 / 3276.8 * 4.0
         assert ramp.values[0] == pytest.approx(expected_eng, abs=0.001)
-        assert ramp.times[0] == 16
+        assert ramp.times[0] == pytest.approx(160.0)  # 16 ticks * 10 us
 
 
 class TestToBytes:
@@ -66,10 +66,10 @@ class TestToBytes:
         """Engineering value 10.0 -> raw 8192 (10.0 / 4.0 * 3276.8 = 8192)."""
         ramp = BoosterRamp(
             values=np.zeros(64),
-            times=np.zeros(64, dtype=np.int16),
+            times=np.zeros(64),
         )
         ramp.values[0] = 10.0
-        ramp.times[0] = 50
+        ramp.times[0] = 500.0  # 500 us -> 50 ticks at 100 KHz
         raw = ramp.to_bytes()
         v, t = struct.unpack_from("<hh", raw, 0)
         assert v == 8192
@@ -79,7 +79,7 @@ class TestToBytes:
         """Values that don't map to exact int16 are rounded."""
         ramp = BoosterRamp(
             values=np.zeros(64),
-            times=np.zeros(64, dtype=np.int16),
+            times=np.zeros(64),
         )
         # 1.0 Amps -> raw = 1.0 / 4.0 * 3276.8 = 819.2 -> rounds to 819
         ramp.values[0] = 1.0
@@ -106,7 +106,7 @@ class TestBoosterRamp:
         """eng 10.0 -> raw 8192"""
         ramp = BoosterRamp(
             values=np.array([10.0] + [0.0] * 63),
-            times=np.zeros(64, dtype=np.int16),
+            times=np.zeros(64),
         )
         raw = ramp.to_bytes()
         v, _ = struct.unpack_from("<hh", raw, 0)
@@ -116,24 +116,25 @@ class TestBoosterRamp:
 class TestValidation:
     def test_wrong_values_length(self):
         with pytest.raises(ValueError, match="Expected 64 values"):
-            BoosterRamp(values=np.zeros(10), times=np.zeros(64, dtype=np.int16))
+            BoosterRamp(values=np.zeros(10), times=np.zeros(64))
 
     def test_wrong_times_length(self):
         with pytest.raises(ValueError, match="Expected 64 times"):
-            BoosterRamp(values=np.zeros(64), times=np.zeros(10, dtype=np.int16))
+            BoosterRamp(values=np.zeros(64), times=np.zeros(10))
 
     def test_max_value_exceeded(self):
         ramp = BoosterRamp(
             values=np.array([1500.0] + [0.0] * 63),
-            times=np.zeros(64, dtype=np.int16),
+            times=np.zeros(64),
         )
         with pytest.raises(ValueError, match="Ramp values exceed max"):
             ramp.to_bytes()
 
     def test_max_time_exceeded(self):
+        # 66_660 us is max for BoosterRamp; 70_000 us exceeds it
         ramp = BoosterRamp(
             values=np.zeros(64),
-            times=np.array([7000] + [0] * 63, dtype=np.int16),
+            times=np.array([70_000.0] + [0.0] * 63),
         )
         with pytest.raises(ValueError, match="Ramp times exceed max"):
             ramp.to_bytes()
@@ -146,7 +147,7 @@ class TestReadWrite:
 
         ramp = BoosterRamp.read("B:HS23T", slot=0, backend=fake_backend)
         assert ramp.values[0] == pytest.approx(10.0, abs=0.01)
-        assert ramp.times[0] == 100
+        assert ramp.times[0] == pytest.approx(1_000.0)  # 100 ticks * 10 us
 
     def test_read_error_raises(self, fake_backend):
         fake_backend.set_error("B:HS23T.SETTING{0:256}.RAW@I", -1, "Device offline")
@@ -165,7 +166,7 @@ class TestReadWrite:
     def test_write_success(self, fake_backend):
         ramp = BoosterRamp(
             values=np.array([10.0] + [0.0] * 63),
-            times=np.zeros(64, dtype=np.int16),
+            times=np.zeros(64),
         )
         ramp.write("B:HS23T", slot=0, backend=fake_backend)
 
@@ -238,9 +239,57 @@ class TestModifyContext:
                 pass
 
 
+class TestTimeScaling:
+    def test_booster_rate_100khz(self):
+        assert BoosterRamp.update_rate_hz == 100_000
+        assert BoosterRamp._tick_us() == pytest.approx(10.0)
+
+    def test_base_default_rate_10khz(self):
+        assert Ramp.update_rate_hz == 10_000
+        assert Ramp._tick_us() == pytest.approx(100.0)
+
+    def test_time_round_trip(self):
+        """Times survive from_bytes -> to_bytes at 100 KHz."""
+        data = _make_ramp_bytes([(0, 500)])  # 500 ticks
+        ramp = BoosterRamp.from_bytes(data)
+        assert ramp.times[0] == pytest.approx(5_000.0)  # 500 * 10 us
+        raw = ramp.to_bytes()
+        _, t = struct.unpack_from("<hh", raw, 0)
+        assert t == 500
+
+    def test_custom_rate(self):
+        """Subclass with different update rate scales times correctly."""
+
+        class SlowRamp(Ramp):
+            update_rate_hz = 1_000  # 1 KHz -> 1000 us/tick
+
+            @classmethod
+            def primary_transform(cls, raw):
+                return raw.astype(np.float64)
+
+            @classmethod
+            def common_transform(cls, primary):
+                return primary
+
+            @classmethod
+            def inverse_common_transform(cls, common):
+                return common
+
+            @classmethod
+            def inverse_primary_transform(cls, primary):
+                return primary
+
+        data = _make_ramp_bytes([(0, 50)])  # 50 ticks
+        ramp = SlowRamp.from_bytes(data)
+        assert ramp.times[0] == pytest.approx(50_000.0)  # 50 * 1000 us
+        raw = ramp.to_bytes()
+        _, t = struct.unpack_from("<hh", raw, 0)
+        assert t == 50
+
+
 class TestCustomSubclass:
     def test_custom_transforms(self):
-        class TestRamp(CorrectorRamp):
+        class TestRamp(Ramp):
             @classmethod
             def primary_transform(cls, raw):
                 return raw / 1000.0
@@ -265,7 +314,7 @@ class TestCustomSubclass:
     def test_nonlinear_transforms(self):
         """Transform functions can be nonlinear."""
 
-        class LogRamp(CorrectorRamp):
+        class LogRamp(Ramp):
             @classmethod
             def primary_transform(cls, raw):
                 return raw.astype(np.float64)
@@ -290,9 +339,9 @@ class TestCustomSubclass:
         assert rt.values[0] == pytest.approx(10.0, abs=0.1)
 
     def test_missing_transforms_raises(self):
-        """Using CorrectorRamp directly without implementing transforms raises."""
+        """Using Ramp directly without implementing transforms raises."""
         with pytest.raises(NotImplementedError):
-            CorrectorRamp.from_bytes(b"\x00" * 256)
+            Ramp.from_bytes(b"\x00" * 256)
 
 
 @pytest.fixture

@@ -57,7 +57,8 @@ class AlarmFlags(IntFlag):
     """Alarm block status/flag bits."""
 
     # Common flags (both analog and digital)
-    BYPASS = 1 << 0  # BP: 0=bypassed, 1=active
+    ENABLE = 1 << 0  # Alarm enable: 0=bypassed, 1=active (Java: isEnabled())
+    BYPASS = ENABLE  # Deprecated alias -- use ENABLE
     BAD = 1 << 1  # GB: 0=good, 1=bad/alarm
     ABORT = 1 << 2  # AB: 0=no abort, 1=abort on alarm
     ABORT_INHIBIT = 1 << 3  # AI: 0=enabled, 1=inhibited
@@ -241,11 +242,11 @@ class AlarmBlock:
     @property
     def is_active(self) -> bool:
         """True if alarm is active (not bypassed)."""
-        return self._get_flag(AlarmFlags.BYPASS)
+        return self._get_flag(AlarmFlags.ENABLE)
 
     @is_active.setter
     def is_active(self, value: bool) -> None:
-        self._set_flag(AlarmFlags.BYPASS, value)
+        self._set_flag(AlarmFlags.ENABLE, value)
         if self._structured is not None:
             self._structured["alarm_enable"] = value
 
@@ -317,7 +318,7 @@ class AnalogAlarm(AlarmBlock):
 
     Use minimum/maximum properties for engineering-unit limits. The raw alarm
     block also has a NOM_TOL limit_type (nominal/tolerance), but no backend
-    protocol supports writing it in engineering units — only minimum/maximum
+    protocol supports writing it in engineering units -- only minimum/maximum
     are available in structured alarm messages (DPM PC binary, gRPC protobuf,
     DMQ SDD). To set a nominal/tolerance alarm, convert manually:
         minimum = nominal - tolerance
@@ -810,8 +811,29 @@ class _AlarmModifyContext:
                     raw_only_changed = True
 
         # Decide write strategy
-        if raw_only_changed:
-            # Must use raw write for ftd/fe_data changes
+        if raw_only_changed and (eng_changed or struct_changed):
+            # Both raw-only fields (ftd, fe_data) and engineering values changed.
+            # Write structured first (eng values), then raw (for ftd/fe_data).
+            self._write_structured(backend, name, prop)
+            # Re-read to get updated raw bytes with new eng values, then
+            # patch raw-only fields on top and write.
+            raw_drf = f"{name}.{prop}{{{offset}:20}}.RAW@I"
+            fresh = backend.read(raw_drf)
+            if isinstance(fresh, bytes):
+                patched = self._cls.from_bytes(fresh)
+            else:
+                patched = self._cls.from_bytes(current_raw)
+            # Apply raw-only field changes from user's block onto the fresh read
+            patched.ftd = self._block.ftd
+            patched.fe_data = self._block.fe_data
+            patched.data_length = self._block.data_length
+            if isinstance(self._block, AnalogAlarm) and isinstance(patched, AnalogAlarm):
+                patched.limit_type = self._block.limit_type
+            result = backend.write(raw_drf, patched.to_bytes())
+            if not result.success:
+                raise RuntimeError(f"Failed to write alarm (raw): {result.message}")
+        elif raw_only_changed:
+            # Only raw-only fields changed (ftd, fe_data, etc.)
             raw_drf = f"{name}.{prop}{{{offset}:20}}.RAW@I"
             result = backend.write(raw_drf, current_raw)
             if not result.success:

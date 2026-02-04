@@ -104,10 +104,13 @@ def values_match(a: Value, b: Value, tolerance: float = 0.0) -> bool:
         return a == b
     if isinstance(a, (int, float)) and isinstance(b, (int, float)):
         return abs(a - b) <= tolerance
-    if isinstance(a, np.ndarray) and isinstance(b, np.ndarray):
-        if a.shape != b.shape:
+    a_arr = isinstance(a, np.ndarray)
+    b_arr = isinstance(b, np.ndarray)
+    if a_arr or b_arr:
+        try:
+            return bool(np.allclose(np.asarray(a), np.asarray(b), atol=tolerance))
+        except (TypeError, ValueError):
             return False
-        return bool(np.allclose(a, b, atol=tolerance))
     return a == b
 
 

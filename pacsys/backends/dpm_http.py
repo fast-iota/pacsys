@@ -6,10 +6,10 @@ independent TCP connections per subscribe() for streaming.
 See SPECIFICATION.md for protocol details.
 """
 
+import asyncio
 import logging
 import queue
-import selectors
-import socket
+import struct
 import threading
 import time
 from typing import Iterator, Optional
@@ -26,7 +26,9 @@ from pacsys.acnet.errors import (
 )
 from pacsys.auth import Auth, KerberosAuth
 from pacsys.backends import Backend, timestamp_from_millis
-from pacsys.dpm_connection import DPMConnection, DPMConnectionError
+import socket
+
+from pacsys.dpm_connection import DPM_HANDSHAKE, MAX_MESSAGE_SIZE, DPMConnection, DPMConnectionError
 from pacsys.errors import AuthenticationError, DeviceError
 from pacsys.pool import ConnectionPool
 from pacsys.types import (
@@ -42,6 +44,7 @@ from pacsys.types import (
 )
 
 from pacsys.dpm_protocol import (
+    AddToList_reply,
     AddToList_request,
     AnalogAlarm_reply,
     ApplySettings_reply,
@@ -54,6 +57,8 @@ from pacsys.dpm_protocol import (
     DigitalAlarm_reply,
     EnableSettings_request,
     ListStatus_reply,
+    OpenList_reply,
+    ProtocolError,
     Raw_reply,
     RawSetting_struct,
     Scalar_reply,
@@ -67,6 +72,7 @@ from pacsys.dpm_protocol import (
     TextArray_reply,
     TextSetting_struct,
     TimedScalarArray_reply,
+    unmarshal_reply,
 )
 from pacsys.drf_utils import ensure_immediate_event, prepare_for_write
 
@@ -89,9 +95,11 @@ def _reply_to_value_and_type(reply) -> tuple[Optional[Value], ValueType]:
     elif isinstance(reply, ScalarArray_reply):
         return np.array(reply.data), ValueType.SCALAR_ARRAY
     elif isinstance(reply, TimedScalarArray_reply):
+        data = np.array(reply.data)
         if hasattr(reply, "micros") and reply.micros:
-            logger.debug(f"TimedScalarArray: {len(reply.micros)} per-sample timestamps discarded")
-        return np.array(reply.data), ValueType.SCALAR_ARRAY
+            micros = np.array(reply.micros, dtype=np.int64)
+            return {"data": data, "micros": micros}, ValueType.TIMED_SCALAR_ARRAY
+        return data, ValueType.SCALAR_ARRAY
     elif isinstance(reply, Raw_reply):
         return bytes(reply.data), ValueType.RAW
     elif isinstance(reply, Text_reply):
@@ -136,8 +144,8 @@ def _reply_to_value_and_type(reply) -> tuple[Optional[Value], ValueType]:
     elif isinstance(reply, Status_reply):
         return None, ValueType.SCALAR
 
-    logger.warning(f"Unknown reply type: {type(reply).__name__}")
-    return None, ValueType.SCALAR
+    logger.error(f"Unknown reply type: {type(reply).__name__}, cannot extract value")
+    return None, None
 
 
 def _device_info_to_meta(info: DeviceInfo_reply) -> DeviceMeta:
@@ -156,21 +164,126 @@ def _device_info_to_meta(info: DeviceInfo_reply) -> DeviceMeta:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class _StreamSubscription:
-    """Internal state for a single device within a subscription."""
+class _AsyncDPMConnection:
+    """Async TCP connection to DPM server for streaming subscriptions.
 
-    def __init__(
-        self,
-        ref_id: int,
-        drf: str,
-        callback: Optional[ReadingCallback],
-        handle: "_DPMHTTPSubscriptionHandle",
-    ):
-        self.ref_id = ref_id
-        self.drf = drf
-        self.callback = callback
-        self.handle = handle
-        self.meta: Optional[DeviceMeta] = None
+    Uses asyncio StreamReader/StreamWriter for non-blocking I/O.
+    Handles partial packets natively via readexactly().
+    """
+
+    # DPM server sends ListStatus_reply heartbeats every ~2s.
+    # If no data arrives within this window, the connection is presumed dead.
+    _RECV_TIMEOUT = 10.0
+
+    def __init__(self, host: str, port: int, timeout: float = DEFAULT_TIMEOUT):
+        self._host = host
+        self._port = port
+        self._timeout = timeout
+        self._reader: Optional[asyncio.StreamReader] = None
+        self._writer: Optional[asyncio.StreamWriter] = None
+        self._list_id: Optional[int] = None
+
+    @property
+    def list_id(self) -> Optional[int]:
+        return self._list_id
+
+    async def connect(self) -> None:
+        """Connect to DPM, send handshake, read OpenList_reply."""
+        try:
+            self._reader, self._writer = await asyncio.wait_for(
+                asyncio.open_connection(self._host, self._port, limit=MAX_MESSAGE_SIZE),
+                timeout=self._timeout,
+            )
+        except asyncio.TimeoutError:
+            raise DPMConnectionError(f"Connection to {self._host}:{self._port} timed out")
+
+        # Set TCP_NODELAY and SO_KEEPALIVE on the underlying socket
+        sock = self._writer.get_extra_info("socket")
+        if sock is not None:
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+
+        self._writer.write(DPM_HANDSHAKE)
+        await self._writer.drain()
+
+        # Read OpenList reply (same detection as sync: first 4 bytes)
+        first_bytes = await self._reader.readexactly(4)
+        if first_bytes == b"HTTP":
+            # Read rest of HTTP status line for useful error message
+            try:
+                rest = await asyncio.wait_for(self._reader.readline(), timeout=2.0)
+                status_line = "HTTP" + rest.decode("utf-8", errors="replace").rstrip()
+            except Exception:
+                status_line = "HTTP error (could not read status)"
+            raise DPMConnectionError(f"DPM server at {self._host}:{self._port} returned HTTP error: {status_line}")
+
+        length = struct.unpack(">I", first_bytes)[0]
+        if length == 0 or length > MAX_MESSAGE_SIZE:
+            raise DPMConnectionError(f"Invalid message length: {length}")
+
+        data = await self._reader.readexactly(length)
+        try:
+            reply = unmarshal_reply(iter(data))
+        except (ProtocolError, StopIteration) as e:
+            raise DPMConnectionError(f"Protocol error during handshake: {e}")
+
+        if not isinstance(reply, OpenList_reply):
+            raise DPMConnectionError(f"Expected OpenList reply, got {type(reply).__name__}")
+        self._list_id = reply.list_id
+
+    async def send_message(self, msg) -> None:
+        """Send a length-prefixed PC message."""
+        assert self._writer is not None
+        if hasattr(msg, "marshal"):
+            data = bytes(msg.marshal())
+        else:
+            data = bytes(msg)
+        self._writer.write(struct.pack(">I", len(data)) + data)
+        await self._writer.drain()
+
+    async def send_messages_batch(self, msgs: list) -> None:
+        """Send multiple length-prefixed messages in a single TCP write."""
+        assert self._writer is not None
+        buf = bytearray()
+        for msg in msgs:
+            data = bytes(msg.marshal()) if hasattr(msg, "marshal") else bytes(msg)
+            buf.extend(struct.pack(">I", len(data)))
+            buf.extend(data)
+        self._writer.write(buf)
+        await self._writer.drain()
+
+    async def recv_message(self):
+        """Receive and unmarshal one reply. Handles partial packets natively.
+
+        Uses a read timeout to detect silent connection drops. The DPM server
+        sends ListStatus_reply heartbeats every ~2s, so if nothing arrives
+        within _RECV_TIMEOUT seconds, the connection is presumed dead.
+        """
+        assert self._reader is not None
+        try:
+            len_bytes = await asyncio.wait_for(self._reader.readexactly(4), timeout=self._RECV_TIMEOUT)
+        except asyncio.TimeoutError:
+            raise DPMConnectionError(
+                f"No data received for {self._RECV_TIMEOUT}s (missed heartbeats), connection presumed dead"
+            )
+        length = struct.unpack(">I", len_bytes)[0]
+        if length == 0 or length > MAX_MESSAGE_SIZE:
+            raise DPMConnectionError(f"Invalid message length: {length}")
+        data = await self._reader.readexactly(length)
+        try:
+            return unmarshal_reply(iter(data))
+        except (ProtocolError, StopIteration) as e:
+            raise DPMConnectionError(f"Protocol error: {e}")
+
+    async def close(self) -> None:
+        if self._writer is not None:
+            try:
+                self._writer.close()
+                await self._writer.wait_closed()
+            except Exception:
+                pass
+            self._writer = None
+            self._reader = None
 
 
 class _WriteConnection:
@@ -202,44 +315,29 @@ class _WriteConnection:
             pass
 
 
-class _StreamConnection:
-    """State for a single streaming TCP connection (one per subscribe() call)."""
-
-    def __init__(
-        self,
-        sub_id: int,
-        conn: DPMConnection,
-        handle: "_DPMHTTPSubscriptionHandle",
-    ):
-        self.sub_id = sub_id
-        self.conn = conn
-        self.handle = handle
-        self.list_started = False
-        self.subscriptions: dict[int, _StreamSubscription] = {}  # ref_id -> subscription
-        self.next_ref_id = 1
-
-
 class _DPMHTTPSubscriptionHandle(SubscriptionHandle):
     """Subscription handle for DPMHTTPBackend.
 
-    Each handle corresponds to one TCP connection with its own DPM list.
+    Each handle corresponds to one async task with its own TCP connection.
     """
 
     def __init__(
         self,
         backend: "DPMHTTPBackend",
-        sub_id: int,
-        is_callback_mode: bool,
+        drfs: list[str],
+        callback: Optional[ReadingCallback],
         on_error: Optional[ErrorCallback] = None,
     ):
         self._backend = backend
-        self._sub_id = sub_id
-        self._is_callback_mode = is_callback_mode
+        self._drfs = drfs
+        self._callback = callback
+        self._is_callback_mode = callback is not None
         self._on_error = on_error
         self._queue: queue.Queue[Reading] = queue.Queue(maxsize=_DEFAULT_QUEUE_MAXSIZE)
         self._stopped = False
         self._exc: Optional[Exception] = None
-        self._ref_ids: list[int] = []
+        self._ref_ids: list[int] = list(range(1, len(drfs) + 1))
+        self._task: Optional[asyncio.Task] = None
 
     @property
     def ref_ids(self) -> list[int]:
@@ -302,10 +400,9 @@ class _DPMHTTPSubscriptionHandle(SubscriptionHandle):
                 continue
 
     def stop(self) -> None:
-        """Stop this subscription and close its connection."""
+        """Stop this subscription and cancel its async task."""
         if not self._stopped:
             self._backend.remove(self)
-            self._stopped = True
 
 
 class DPMHTTPBackend(Backend):
@@ -314,7 +411,12 @@ class DPMHTTPBackend(Backend):
 
     Uses TCP/HTTP protocol to communicate with DPM via acsys-proxy.
     Supports multiple independent streaming subscriptions, each with its
-    own TCP connection, multiplexed on a single receiver thread.
+    own async TCP connection on a shared asyncio reactor thread.
+
+    Design note: RemoveFromList is not implemented. Each subscription gets
+    its own TCP connection with an independent DPM list, so partial device
+    removal has no use case -- call remove(handle) to tear down an entire
+    subscription instead.
 
     Capabilities:
         - READ: Always enabled
@@ -365,18 +467,12 @@ class DPMHTTPBackend(Backend):
         self._pool_lock = threading.Lock()
         self._closed = False
 
-        # Streaming state - multiple connections, single thread
-        self._selector: Optional[selectors.DefaultSelector] = None
-        self._stream_thread: Optional[threading.Thread] = None
-        self._stream_lock = threading.Lock()
-        self._stream_stop_event = threading.Event()
-        self._stream_connections: dict[int, _StreamConnection] = {}  # sub_id -> connection state
-        self._next_sub_id = 1
-        # Self-pipe trick: selector ops are queued and executed by the receiver
-        # thread so selector.select() is never held under _stream_lock.
-        self._selector_ops: queue.SimpleQueue = queue.SimpleQueue()
-        self._wakeup_r: Optional[socket.socket] = None
-        self._wakeup_w: Optional[socket.socket] = None
+        # Streaming state -- asyncio reactor (matches gRPC backend pattern)
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._reactor_thread: Optional[threading.Thread] = None
+        self._reactor_lock = threading.Lock()
+        self._handles: list[_DPMHTTPSubscriptionHandle] = []
+        self._handles_lock = threading.Lock()
 
         # Write connection pool - authenticated connections for writes
         # Authentication persists at list level; reuse via StopList + ClearList
@@ -492,24 +588,29 @@ class DPMHTTPBackend(Backend):
 
         device_infos: dict[int, DeviceInfo_reply] = {}
         data_replies: dict[int, object] = {}
+        add_errors: dict[int, AddToList_reply] = {}  # ref_id -> failed AddToList
         received_count = 0
         expected_count = len(drfs)
 
         pool = self._get_pool()
+        conn_broken = False
 
         with pool.connection() as conn:
             list_id = conn.list_id
 
+            # Pipeline: batch all AddToList + StartList into a single TCP send
+            setup_msgs = []
             for i, drf in enumerate(prepared_drfs):
                 add_req = AddToList_request()
                 add_req.list_id = list_id
                 add_req.ref_id = i + 1
                 add_req.drf_request = drf
-                conn.send_message(add_req)
+                setup_msgs.append(add_req)
 
             start_req = StartList_request()
             start_req.list_id = list_id
-            conn.send_message(start_req)
+            setup_msgs.append(start_req)
+            conn.send_messages_batch(setup_msgs)
 
             try:
                 while received_count < expected_count:
@@ -524,34 +625,39 @@ class DPMHTTPBackend(Backend):
                             break
                         continue
 
-                    if isinstance(reply, DeviceInfo_reply):
+                    if isinstance(reply, AddToList_reply):
+                        if reply.status != 0:
+                            add_errors[reply.ref_id] = reply
+                            received_count += 1
+                    elif isinstance(reply, DeviceInfo_reply):
                         device_infos[reply.ref_id] = reply
                     elif isinstance(reply, StartList_reply):
                         if reply.status != 0:
                             logger.warning(f"StartList returned status {reply.status}")
+                            break  # No data will arrive
                     elif isinstance(reply, ListStatus_reply):
                         pass
                     elif isinstance(reply, Status_reply):
-                        # Only count first reply per ref_id (ignore subsequent periodic updates)
                         if reply.ref_id not in data_replies:
                             data_replies[reply.ref_id] = reply
                             received_count += 1
                     elif hasattr(reply, "ref_id"):
-                        # Only count first reply per ref_id (ignore subsequent periodic updates)
                         if reply.ref_id not in data_replies:
                             data_replies[reply.ref_id] = reply
                             received_count += 1
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                conn_broken = True
+                raise
             finally:
-                try:
-                    stop_req = StopList_request()
-                    stop_req.list_id = list_id
-                    conn.send_message(stop_req)
-
-                    clear_req = ClearList_request()
-                    clear_req.list_id = list_id
-                    conn.send_message(clear_req)
-                except Exception:
-                    pass  # Best-effort cleanup on broken connection
+                if not conn_broken:
+                    try:
+                        stop_req = StopList_request()
+                        stop_req.list_id = list_id
+                        clear_req = ClearList_request()
+                        clear_req.list_id = list_id
+                        conn.send_messages_batch([stop_req, clear_req])
+                    except Exception:
+                        pass  # Best-effort cleanup on broken connection
 
         readings: list[Reading] = []
 
@@ -559,10 +665,28 @@ class DPMHTTPBackend(Backend):
             ref_id = i + 1
             info = device_infos.get(ref_id)
             reply = data_replies.get(ref_id)
+            add_err = add_errors.get(ref_id)
 
             meta = _device_info_to_meta(info) if info else None
 
-            if reply is None:
+            if add_err is not None:
+                # AddToList failed for this device (bad DRF, etc.)
+                facility, error = parse_error(add_err.status)
+                readings.append(
+                    Reading(
+                        drf=original_drf,
+                        value_type=ValueType.SCALAR,
+                        tag=ref_id,
+                        facility_code=facility,
+                        error_code=error,
+                        value=None,
+                        message=status_message(facility, error) or f"AddToList failed (status={add_err.status})",
+                        timestamp=None,
+                        cycle=0,
+                        meta=meta,
+                    )
+                )
+            elif reply is None:
                 readings.append(
                     Reading(
                         drf=original_drf,
@@ -591,7 +715,7 @@ class DPMHTTPBackend(Backend):
 
         Two-phase protocol:
         1. Send empty token to request service name from DPM server
-        2. Server replies with its Kerberos service name (e.g. "dpm@dce03.fnal.gov")
+        2. Server replies with its Kerberos service name (e.g. "dpm@<host>")
         3. Create GSSAPI context targeting that service, send initial token
         4. Server accepts, optional mutual-auth token exchange
         """
@@ -792,7 +916,7 @@ class DPMHTTPBackend(Backend):
             text_setting = TextSetting_struct()
             text_setting.ref_id = ref_id
             text_setting.data = [value]
-        elif isinstance(value, (list, np.ndarray)):
+        elif isinstance(value, (list, tuple, np.ndarray)):
             if len(value) > 0 and isinstance(value[0], str):  # type: ignore[arg-type]  # numpy indexing
                 text_setting = TextSetting_struct()
                 text_setting.ref_id = ref_id
@@ -828,7 +952,7 @@ class DPMHTTPBackend(Backend):
     def _expand_alarm_dict(self, drf: str, alarm_dict: dict) -> list[tuple[str, Value]]:
         """Expand an alarm dict into per-field (drf.FIELD, value) pairs.
 
-        DPM/HTTP ApplySettings only supports scalar/raw/text — not structured
+        DPM/HTTP ApplySettings only supports scalar/raw/text -- not structured
         alarm messages. The DRF property (ANALOG/DIGITAL) determines which
         field map to use; keys that don't belong raise ValueError.
         """
@@ -875,7 +999,7 @@ class DPMHTTPBackend(Backend):
         timeout: Optional[float] = None,
     ) -> WriteResult:
         """Write a single device value."""
-        # DPM/HTTP has no structured alarm setting type — expand dict to
+        # DPM/HTTP has no structured alarm setting type -- expand dict to
         # sequential per-field writes.  They must be sequential because alarm
         # fields share the same 20-byte block on the server; a single
         # ApplySettings with multiple fields on the same device causes the
@@ -895,6 +1019,124 @@ class DPMHTTPBackend(Backend):
 
         results = self.write_many([(drf, value)], timeout=timeout)
         return results[0]
+
+    def _execute_write(
+        self,
+        conn: DPMConnection,
+        list_id: int,
+        prepared_settings: list[tuple[str, Value]],
+        deadline: float,
+    ) -> Optional[ApplySettings_reply]:
+        """Execute the write protocol on an authenticated connection.
+
+        Returns the ApplySettings_reply or None on timeout.
+        Raises connection errors for retry handling by caller.
+        """
+        # Stop and clear previous requests from reused connection
+        stop_req = StopList_request()
+        stop_req.list_id = list_id
+        conn.send_message(stop_req)
+
+        clear_req = ClearList_request()
+        clear_req.list_id = list_id
+        conn.send_message(clear_req)
+
+        # Set ROLE list property
+        role_req = AddToList_request()
+        role_req.list_id = list_id
+        role_req.ref_id = 0
+        role_req.drf_request = f"#ROLE:{self._role}"
+        conn.send_message(role_req)
+
+        # Add devices to list
+        for i, (drf, _) in enumerate(prepared_settings):
+            add_req = AddToList_request()
+            add_req.list_id = list_id
+            add_req.ref_id = i + 1
+            add_req.drf_request = drf
+            conn.send_message(add_req)
+
+        # Start list
+        start_req = StartList_request()
+        start_req.list_id = list_id
+        conn.send_message(start_req)
+
+        # Wait for device info
+        device_infos: dict[int, DeviceInfo_reply | Status_reply] = {}
+        received_infos = 0
+        expected_count = len(prepared_settings)
+
+        while received_infos < expected_count:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+
+            try:
+                reply = conn.recv_message(timeout=min(remaining, 2.0))
+            except TimeoutError:
+                if time.monotonic() >= deadline:
+                    break
+                continue
+
+            if isinstance(reply, (AddToList_reply, ListStatus_reply)):
+                pass
+            elif isinstance(reply, DeviceInfo_reply):
+                device_infos[reply.ref_id] = reply
+                received_infos += 1
+            elif isinstance(reply, StartList_reply):
+                if reply.status != 0:
+                    logger.warning(f"StartList returned status {reply.status}")
+            elif isinstance(reply, Status_reply):
+                device_infos[reply.ref_id] = reply
+                received_infos += 1
+
+        # Build and send ApplySettings
+        apply_req = ApplySettings_request()
+        apply_req.user_name = self._auth.principal if self._auth else ""
+        apply_req.list_id = list_id
+
+        raw_settings = []
+        scaled_settings = []
+        text_settings = []
+
+        for i, (_, value) in enumerate(prepared_settings):
+            ref_id = i + 1
+            raw, scaled, text = self._value_to_setting(ref_id, value)
+            if raw:
+                raw_settings.append(raw)
+            if scaled:
+                scaled_settings.append(scaled)
+            if text:
+                text_settings.append(text)
+
+        if raw_settings:
+            apply_req.raw_array = raw_settings
+        if scaled_settings:
+            apply_req.scaled_array = scaled_settings
+        if text_settings:
+            apply_req.text_array = text_settings
+
+        conn.send_message(apply_req)
+
+        # Wait for ApplySettings reply
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+
+            try:
+                reply = conn.recv_message(timeout=min(remaining, 2.0))
+            except TimeoutError:
+                if time.monotonic() >= deadline:
+                    break
+                continue
+
+            if isinstance(reply, ApplySettings_reply):
+                return reply
+            elif isinstance(reply, ListStatus_reply):
+                pass
+
+        return None
 
     def write_many(
         self,
@@ -916,154 +1158,62 @@ class DPMHTTPBackend(Backend):
             raise AuthenticationError("Role required for writes. Pass role='Operator' (or appropriate role).")
 
         effective_timeout = timeout if timeout is not None else self._timeout
-        deadline = time.monotonic() + effective_timeout
 
         # Prepare settings (add .SETTING and @I if needed)
         prepared_settings = [(prepare_for_write(drf), value) for drf, value in settings]
 
-        # Get authenticated write connection (from pool or create new)
-        try:
-            wc = self._get_write_connection()
-        except Exception as e:
-            error_msg = f"Failed to get write connection: {e}"
-            return [
-                WriteResult(drf=drf, facility_code=FACILITY_ACNET, error_code=ERR_RETRY, message=error_msg)
-                for drf, _ in settings
-            ]
+        # Try up to twice: first attempt may hit a stale pooled connection
+        last_error = None
+        for attempt in range(2):
+            deadline = time.monotonic() + effective_timeout
 
-        conn = wc.conn
-        list_id = conn.list_id
-        apply_reply = None
+            try:
+                wc = self._get_write_connection()
+            except Exception as e:
+                error_msg = f"Failed to get write connection: {e}"
+                return [
+                    WriteResult(drf=drf, facility_code=FACILITY_ACNET, error_code=ERR_RETRY, message=error_msg)
+                    for drf, _ in settings
+                ]
 
-        try:
-            # Stop and clear previous requests from reused connection
-            stop_req = StopList_request()
-            stop_req.list_id = list_id
-            conn.send_message(stop_req)
+            conn = wc.conn
+            list_id = conn.list_id
+            apply_reply = None
 
-            clear_req = ClearList_request()
-            clear_req.list_id = list_id
-            conn.send_message(clear_req)
+            try:
+                result = self._execute_write(conn, list_id, prepared_settings, deadline)
+                apply_reply = result
 
-            # Set ROLE list property (DPM server checks list.property("ROLE") for write auth)
-            role_req = AddToList_request()
-            role_req.list_id = list_id
-            role_req.ref_id = 0
-            role_req.drf_request = f"#ROLE:{self._role}"
-            conn.send_message(role_req)
+                # Stop list (but keep connection and auth for reuse)
+                stop_req = StopList_request()
+                stop_req.list_id = list_id
+                conn.send_message(stop_req)
 
-            # Add devices to list
-            for i, (drf, _) in enumerate(prepared_settings):
-                add_req = AddToList_request()
-                add_req.list_id = list_id
-                add_req.ref_id = i + 1
-                add_req.drf_request = drf
-                conn.send_message(add_req)
+                self._release_write_connection(wc)
+                last_error = None
+                break  # Success
 
-            # Start list
-            start_req = StartList_request()
-            start_req.list_id = list_id
-            conn.send_message(start_req)
+            except (BrokenPipeError, ConnectionResetError, OSError, DPMConnectionError) as e:
+                logger.warning(f"Write connection error (attempt {attempt + 1}): {e}")
+                self._discard_write_connection(wc)
+                last_error = e
+                if attempt == 0:
+                    continue  # Retry with fresh connection
+            except Exception as e:
+                logger.warning(f"Unexpected write error: {e}")
+                self._discard_write_connection(wc)
+                raise
 
-            # Wait for device info
-            device_infos: dict[int, DeviceInfo_reply | Status_reply] = {}
-            received_infos = 0
-            expected_count = len(settings)
-
-            while received_infos < expected_count:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-
-                try:
-                    reply = conn.recv_message(timeout=min(remaining, 2.0))
-                except TimeoutError:
-                    if time.monotonic() >= deadline:
-                        break
-                    continue
-
-                if isinstance(reply, DeviceInfo_reply):
-                    device_infos[reply.ref_id] = reply
-                    received_infos += 1
-                elif isinstance(reply, StartList_reply):
-                    if reply.status != 0:
-                        logger.warning(f"StartList returned status {reply.status}")
-                elif isinstance(reply, ListStatus_reply):
-                    pass
-                elif isinstance(reply, Status_reply):
-                    device_infos[reply.ref_id] = reply
-                    received_infos += 1
-
-            # Build and send ApplySettings
-            apply_req = ApplySettings_request()
-            apply_req.user_name = self._auth.principal if self._auth else ""
-            apply_req.list_id = list_id
-
-            raw_settings = []
-            scaled_settings = []
-            text_settings = []
-
-            for i, (_, value) in enumerate(prepared_settings):
-                ref_id = i + 1
-                raw, scaled, text = self._value_to_setting(ref_id, value)
-                if raw:
-                    raw_settings.append(raw)
-                if scaled:
-                    scaled_settings.append(scaled)
-                if text:
-                    text_settings.append(text)
-
-            if raw_settings:
-                apply_req.raw_array = raw_settings
-            if scaled_settings:
-                apply_req.scaled_array = scaled_settings
-            if text_settings:
-                apply_req.text_array = text_settings
-
-            conn.send_message(apply_req)
-
-            # Wait for ApplySettings reply
-            while time.monotonic() < deadline:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-
-                try:
-                    reply = conn.recv_message(timeout=min(remaining, 2.0))
-                except TimeoutError:
-                    if time.monotonic() >= deadline:
-                        break
-                    continue
-
-                if isinstance(reply, ApplySettings_reply):
-                    apply_reply = reply
-                    break
-                elif isinstance(reply, ListStatus_reply):
-                    pass
-
-            # Stop list (but keep connection and auth for reuse)
-            stop_req = StopList_request()
-            stop_req.list_id = list_id
-            conn.send_message(stop_req)
-
-            # Return connection to pool for reuse
-            self._release_write_connection(wc)
-
-        except (BrokenPipeError, ConnectionResetError, OSError, DPMConnectionError) as e:
-            # Connection broken, discard it
-            logger.warning(f"Write connection error: {e}")
-            self._discard_write_connection(wc)
+        if last_error is not None:
             return [
                 WriteResult(
-                    drf=drf, facility_code=FACILITY_ACNET, error_code=ERR_RETRY, message=f"Connection error: {e}"
+                    drf=drf,
+                    facility_code=FACILITY_ACNET,
+                    error_code=ERR_RETRY,
+                    message=f"Connection error: {last_error}",
                 )
                 for drf, _ in settings
             ]
-        except Exception as e:
-            # Unexpected error, discard connection to be safe
-            logger.warning(f"Unexpected write error: {e}")
-            self._discard_write_connection(wc)
-            raise
 
         # Parse results
         if apply_reply is None:
@@ -1097,191 +1247,184 @@ class DPMHTTPBackend(Backend):
         return results
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Streaming Methods - Multi-connection, single-thread
+    # Streaming Methods -- asyncio reactor
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _ensure_receiver_thread(self) -> None:
-        """Ensure the receiver thread and selector are running."""
-        if self._stream_thread is not None and self._stream_thread.is_alive():
+    def _start_reactor(self) -> None:
+        """Start the reactor thread and event loop. Must hold _reactor_lock."""
+        ready = threading.Event()
+        loop_holder: list[asyncio.AbstractEventLoop] = []
+
+        def _run():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop_holder.append(loop)
+            ready.set()
+            loop.run_forever()
+            # Cleanup pending tasks on shutdown
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            loop.close()
+
+        self._reactor_thread = threading.Thread(target=_run, name="DPMHTTPBackend-Reactor", daemon=True)
+        self._reactor_thread.start()
+        ready.wait(timeout=5.0)
+        if not loop_holder:
+            raise RuntimeError("DPMHTTPBackend: failed to start reactor event loop")
+        self._loop = loop_holder[0]
+
+    def _ensure_reactor(self) -> None:
+        """Lazily start the reactor thread (double-check locking)."""
+        if self._loop is not None:
             return
-
-        with self._stream_lock:
-            if self._stream_thread is not None and self._stream_thread.is_alive():
+        with self._reactor_lock:
+            if self._loop is not None:
                 return
-
             if self._closed:
                 raise RuntimeError("Backend is closed")
+            self._start_reactor()
 
-            # Create selector + wakeup pipe if needed
-            if self._selector is None:
-                self._selector = selectors.DefaultSelector()
-                r, w = socket.socketpair()
-                r.setblocking(False)
-                w.setblocking(False)
-                self._wakeup_r = r
-                self._wakeup_w = w
-                self._selector.register(r, selectors.EVENT_READ, data=None)
+    async def _stream_subscription(self, handle: _DPMHTTPSubscriptionHandle) -> None:
+        """Async coroutine that manages a single streaming subscription.
 
-            self._stream_stop_event.clear()
-
-            self._stream_thread = threading.Thread(
-                target=self._receiver_loop,
-                name="DPMHTTPBackend-Receiver",
-                daemon=True,
-            )
-            self._stream_thread.start()
-
-            logger.debug("Started receiver thread")
-
-    def _wakeup(self) -> None:
-        """Wake the receiver thread from selector.select()."""
-        if self._wakeup_w is not None:
-            try:
-                self._wakeup_w.send(b"\x00")
-            except OSError:
-                pass
-
-    def _process_selector_ops(self) -> None:
-        """Process queued selector register/unregister ops (receiver thread only)."""
-        while True:
-            try:
-                action, sock, sub_id = self._selector_ops.get_nowait()
-            except queue.Empty:
-                break
-            try:
-                assert self._selector is not None
-                if action == "register":
-                    self._selector.register(sock, selectors.EVENT_READ, data=sub_id)
-                elif action == "unregister":
-                    self._selector.unregister(sock)
-            except (KeyError, ValueError, OSError) as e:
-                logger.warning("Selector %s failed for sub_id=%s: %s", action, sub_id, e)
-
-    def _receiver_loop(self) -> None:
-        """Single thread that receives from all streaming connections."""
-        logger.debug("Receiver loop started")
-
-        while not self._stream_stop_event.is_set():
-            try:
-                # All selector mutations happen here on the receiver thread
-                self._process_selector_ops()
-
-                if self._selector is None:
-                    break
-
-                # select() WITHOUT holding _stream_lock — no contention
-                ready = self._selector.select(timeout=1.0)
-
-                for key, events in ready:
-                    if self._stream_stop_event.is_set():
-                        break
-
-                    # Drain wakeup pipe (data=None sentinel)
-                    if key.data is None:
-                        try:
-                            assert self._wakeup_r is not None
-                            self._wakeup_r.recv(1024)
-                        except (BlockingIOError, OSError):
-                            pass
-                        continue
-
-                    sub_id = key.data
-                    self._handle_socket_ready(sub_id)
-
-            except Exception as e:
-                if self._stream_stop_event.is_set():
-                    break
-                logger.error(f"Error in receiver loop: {e}")
-
-        logger.debug("Receiver loop exiting")
-
-    def _handle_socket_ready(self, sub_id: int) -> None:
-        """Handle a socket that has data ready to read."""
-        with self._stream_lock:
-            stream_conn = self._stream_connections.get(sub_id)
-            if stream_conn is None:
-                return
-
-            conn = stream_conn.conn
+        Creates its own TCP connection, sends AddToList/StartList, then
+        loops receiving replies until cancelled or connection error.
+        """
+        conn = _AsyncDPMConnection(self._host, self._port, self._timeout)
+        drfs = handle._drfs
+        callback = handle._callback
+        # Per-device metadata, keyed by ref_id
+        metas: dict[int, DeviceMeta] = {}
+        # DRF by ref_id for reading construction
+        drf_map: dict[int, str] = {}
+        # Rate-limit queue overflow warnings
+        drop_count = 0
+        last_drop_log = 0.0
 
         try:
-            # Receive message (non-blocking since selector said it's ready)
-            reply = conn.recv_message(timeout=1.0)
-            self._dispatch_reply(sub_id, reply)
+            await conn.connect()
+            list_id = conn.list_id
 
-        except DPMConnectionError as e:
-            # Check if subscription was removed during recv (normal teardown)
-            with self._stream_lock:
-                if sub_id not in self._stream_connections:
-                    return
-            logger.error(f"Connection error for sub_id={sub_id}: {e}")
-            self._handle_connection_error(sub_id, e)
+            # Batch all AddToList + StartList into a single TCP write
+            setup_msgs = []
+            for i, drf in enumerate(drfs):
+                ref_id = i + 1
+                drf_map[ref_id] = drf
+                add_req = AddToList_request()
+                add_req.list_id = list_id
+                add_req.ref_id = ref_id
+                add_req.drf_request = drf
+                setup_msgs.append(add_req)
 
-        except TimeoutError:
-            # Shouldn't happen since selector said ready, but handle gracefully
-            pass
+            start_req = StartList_request()
+            start_req.list_id = list_id
+            setup_msgs.append(start_req)
+            await conn.send_messages_batch(setup_msgs)
 
+            # Receive loop
+            while not handle._stopped:
+                reply = await conn.recv_message()
+
+                if isinstance(reply, AddToList_reply):
+                    if reply.status != 0:
+                        # Report failed device addition as error reading
+                        drf = drf_map.get(reply.ref_id)
+                        if drf is not None:
+                            facility, error = parse_error(reply.status)
+                            reading = Reading(
+                                drf=drf,
+                                value_type=ValueType.SCALAR,
+                                tag=reply.ref_id,
+                                facility_code=facility,
+                                error_code=error,
+                                value=None,
+                                message=status_message(facility, error) or f"AddToList failed (status={reply.status})",
+                                timestamp=None,
+                                cycle=0,
+                                meta=None,
+                            )
+                            if callback is not None:
+                                try:
+                                    callback(reading, handle)
+                                except Exception as e:
+                                    logger.error(f"Error in callback: {e}")
+                            else:
+                                try:
+                                    handle._queue.put_nowait(reading)
+                                except queue.Full:
+                                    pass
+                    continue
+
+                if isinstance(reply, StartList_reply):
+                    if reply.status != 0:
+                        logger.warning(f"StartList returned status {reply.status}")
+                    continue
+
+                if isinstance(reply, ListStatus_reply):
+                    continue
+
+                if isinstance(reply, DeviceInfo_reply):
+                    metas[reply.ref_id] = _device_info_to_meta(reply)
+                    continue
+
+                if hasattr(reply, "ref_id"):
+                    ref_id = reply.ref_id
+                    drf = drf_map.get(ref_id)
+                    if drf is None:
+                        logger.warning(f"Data for unknown ref_id={ref_id}")
+                        continue
+                    meta = metas.get(ref_id)
+                    reading = self._reply_to_reading(reply, drf, meta)
+
+                    if callback is not None:
+                        try:
+                            callback(reading, handle)
+                        except Exception as e:
+                            logger.error(f"Error in callback: {e}")
+                    else:
+                        try:
+                            handle._queue.put_nowait(reading)
+                        except queue.Full:
+                            drop_count += 1
+                            now = time.monotonic()
+                            if now - last_drop_log >= 5.0:
+                                logger.warning(
+                                    f"DPM subscription queue full ({_DEFAULT_QUEUE_MAXSIZE}), "
+                                    f"dropped {drop_count} readings"
+                                )
+                                drop_count = 0
+                                last_drop_log = now
+
+        except asyncio.CancelledError:
+            pass  # Normal shutdown via task.cancel()
+        except (asyncio.IncompleteReadError, DPMConnectionError, OSError) as e:
+            if not handle._stopped:
+                handle._exc = e
+                handle._stopped = True
+                if handle._on_error is not None:
+                    try:
+                        handle._on_error(e, handle)
+                    except Exception as cb_err:
+                        logger.error(f"Error in on_error callback: {cb_err}")
         except Exception as e:
-            with self._stream_lock:
-                if sub_id not in self._stream_connections:
-                    return
-            logger.error(f"Unexpected error for sub_id={sub_id}: {e}")
-            self._handle_connection_error(sub_id, e)
-
-    def _dispatch_reply(self, sub_id: int, reply) -> None:
-        """Dispatch a received reply to appropriate handler."""
-        with self._stream_lock:
-            stream_conn = self._stream_connections.get(sub_id)
-            if stream_conn is None:
-                return
-
-        # Handle StartList reply
-        if isinstance(reply, StartList_reply):
-            if reply.status != 0:
-                logger.warning(f"StartList returned status {reply.status} for sub_id={sub_id}")
-            return
-
-        # Handle heartbeat
-        if isinstance(reply, ListStatus_reply):
-            logger.debug(f"Heartbeat: sub_id={sub_id}, status={reply.status}")
-            return
-
-        # Handle DeviceInfo
-        if isinstance(reply, DeviceInfo_reply):
-            ref_id = reply.ref_id
-            with self._stream_lock:
-                sub = stream_conn.subscriptions.get(ref_id)
-                if sub is not None:
-                    sub.meta = _device_info_to_meta(reply)
-            return
-
-        # Handle data replies
-        if hasattr(reply, "ref_id"):
-            ref_id = reply.ref_id
-            with self._stream_lock:
-                sub = stream_conn.subscriptions.get(ref_id)
-                if sub is None:
-                    logger.warning(f"Data for unknown ref_id={ref_id} in sub_id={sub_id}")
-                    return
-                drf = sub.drf
-                meta = sub.meta
-                callback = sub.callback
-                handle = sub.handle
-
-            reading = self._reply_to_reading(reply, drf, meta)
-
-            if callback is not None:
-                try:
-                    callback(reading, handle)
-                except Exception as e:
-                    logger.error(f"Error in callback: {e}")
-            else:
-                try:
-                    handle._queue.put_nowait(reading)
-                except queue.Full:
-                    logger.warning(
-                        f"DPM subscription queue full ({_DEFAULT_QUEUE_MAXSIZE}), dropping reading for {reading.drf}"
-                    )
+            if not handle._stopped:
+                handle._exc = e
+                handle._stopped = True
+                logger.error(f"Unexpected streaming error: {e}")
+                if handle._on_error is not None:
+                    try:
+                        handle._on_error(e, handle)
+                    except Exception as cb_err:
+                        logger.error(f"Error in on_error callback: {cb_err}")
+        finally:
+            await conn.close()
+            # Remove handle so dead subscriptions don't accumulate
+            with self._handles_lock:
+                if handle in self._handles:
+                    self._handles.remove(handle)
 
     def _reply_to_reading(self, reply, drf: str, meta: Optional[DeviceMeta]) -> Reading:
         """Convert a DPM reply to a Reading object."""
@@ -1301,6 +1444,22 @@ class DPMHTTPBackend(Backend):
             )
 
         value, value_type = _reply_to_value_and_type(reply)
+
+        # Unknown reply type -- return error reading
+        if value_type is None:
+            return Reading(
+                drf=drf,
+                value_type=ValueType.SCALAR,
+                tag=reply.ref_id if hasattr(reply, "ref_id") else 0,
+                facility_code=FACILITY_ACNET,
+                error_code=ERR_RETRY,
+                value=None,
+                message=f"Unknown reply type: {type(reply).__name__}",
+                timestamp=None,
+                cycle=0,
+                meta=meta,
+            )
+
         # Alarm/status replies have no status field -- receiving them means success (0)
         status = reply.status if hasattr(reply, "status") else 0
         timestamp = reply.timestamp
@@ -1321,52 +1480,6 @@ class DPMHTTPBackend(Backend):
             meta=meta,
         )
 
-    def _handle_connection_error(self, sub_id: int, exc: Exception) -> None:
-        """Handle a connection error for a specific subscription."""
-        with self._stream_lock:
-            stream_conn = self._stream_connections.get(sub_id)
-            if stream_conn is None:
-                return
-
-            handle = stream_conn.handle
-
-        # Store exception on handle
-        handle._exc = exc
-        handle._stopped = True
-
-        # Call on_error callback if provided
-        if handle._on_error is not None:
-            try:
-                handle._on_error(exc, handle)
-            except Exception as cb_err:
-                logger.error(f"Error in on_error callback: {cb_err}")
-
-        # Clean up this connection
-        self._cleanup_subscription(sub_id)
-
-    def _cleanup_subscription(self, sub_id: int) -> None:
-        """Clean up a subscription's connection and state."""
-        with self._stream_lock:
-            stream_conn = self._stream_connections.pop(sub_id, None)
-            if stream_conn is None:
-                return
-
-            conn = stream_conn.conn
-
-        # Save socket reference before close (conn.close() sets _socket to None)
-        sock = conn._socket
-
-        # Queue selector unregister before closing (needs valid socket)
-        if sock is not None:
-            self._selector_ops.put(("unregister", sock, None))
-            self._wakeup()
-
-        # Close connection (outside lock)
-        try:
-            conn.close()
-        except Exception as e:
-            logger.debug(f"Error closing connection for sub_id={sub_id}: {e}")
-
     def subscribe(
         self,
         drfs: list[str],
@@ -1375,8 +1488,8 @@ class DPMHTTPBackend(Backend):
     ) -> SubscriptionHandle:
         """Subscribe to devices for streaming data.
 
-        Each subscribe() call creates a new TCP connection with its own
-        DPM list. Subscriptions are independent - stopping one does not
+        Each subscribe() call creates an async task with its own TCP connection
+        and DPM list. Subscriptions are independent -- stopping one does not
         affect others.
 
         Args:
@@ -1394,167 +1507,57 @@ class DPMHTTPBackend(Backend):
         if self._closed:
             raise RuntimeError("Backend is closed")
 
-        # Create new connection for this subscription
-        conn = DPMConnection(
-            host=self._host,
-            port=self._port,
-            timeout=self._timeout,
+        self._ensure_reactor()
+        assert self._loop is not None
+
+        handle = _DPMHTTPSubscriptionHandle(
+            backend=self,
+            drfs=drfs,
+            callback=callback,
+            on_error=on_error,
         )
-        conn.connect()
 
-        is_callback_mode = callback is not None
+        # Create the streaming task on the reactor loop
+        async def _create_task():
+            return asyncio.ensure_future(self._stream_subscription(handle))
 
-        with self._stream_lock:
-            sub_id = self._next_sub_id
-            self._next_sub_id += 1
+        handle._task = asyncio.run_coroutine_threadsafe(_create_task(), self._loop).result(timeout=5.0)
 
-            # Create handle
-            handle = _DPMHTTPSubscriptionHandle(
-                backend=self,
-                sub_id=sub_id,
-                is_callback_mode=is_callback_mode,
-                on_error=on_error,
-            )
+        with self._handles_lock:
+            self._handles.append(handle)
 
-            # Create stream connection state
-            stream_conn = _StreamConnection(
-                sub_id=sub_id,
-                conn=conn,
-                handle=handle,
-            )
-
-            list_id = conn.list_id
-            ref_ids = []
-
-            # Add each device to this connection's list
-            for drf in drfs:
-                ref_id = stream_conn.next_ref_id
-                stream_conn.next_ref_id += 1
-
-                add_req = AddToList_request()
-                add_req.list_id = list_id
-                add_req.ref_id = ref_id
-                add_req.drf_request = drf
-                conn.send_message(add_req)
-
-                sub = _StreamSubscription(
-                    ref_id=ref_id,
-                    drf=drf,
-                    callback=callback,
-                    handle=handle,
-                )
-                stream_conn.subscriptions[ref_id] = sub
-                ref_ids.append(ref_id)
-
-                logger.debug(f"Added device: sub_id={sub_id}, ref_id={ref_id}, drf={drf}")
-
-            # Start the list
-            start_req = StartList_request()
-            start_req.list_id = list_id
-            conn.send_message(start_req)
-            stream_conn.list_started = True
-
-            # Store connection state
-            self._stream_connections[sub_id] = stream_conn
-            handle._ref_ids = ref_ids
-
-        # Queue selector registration (processed by receiver thread)
-        self._selector_ops.put(("register", conn._socket, sub_id))
-        self._wakeup()
-
-        # Ensure receiver thread is running
-        self._ensure_receiver_thread()
-
-        mode_str = "callback" if is_callback_mode else "iterator"
-        logger.info(f"Created {mode_str} subscription sub_id={sub_id} for {len(drfs)} devices")
-
+        mode_str = "callback" if handle._is_callback_mode else "iterator"
+        logger.info(f"Created {mode_str} subscription for {len(drfs)} devices")
         return handle
 
     def remove(self, handle: SubscriptionHandle) -> None:
-        """Remove a subscription and close its connection."""
+        """Remove a subscription. Cancels the associated async task."""
         if not isinstance(handle, _DPMHTTPSubscriptionHandle):
             raise TypeError(f"Expected _DPMHTTPSubscriptionHandle, got {type(handle).__name__}")
 
-        sub_id = handle._sub_id
-
-        with self._stream_lock:
-            stream_conn = self._stream_connections.get(sub_id)
-            if stream_conn is None:
-                return  # Already removed
-
-            conn = stream_conn.conn
-            list_id = conn.list_id
-
-            # Send StopList and ClearList
-            if stream_conn.list_started:
-                try:
-                    stop_req = StopList_request()
-                    stop_req.list_id = list_id
-                    conn.send_message(stop_req)
-
-                    clear_req = ClearList_request()
-                    clear_req.list_id = list_id
-                    conn.send_message(clear_req)
-                except Exception as e:
-                    logger.debug(f"Error stopping list for sub_id={sub_id}: {e}")
-
-        # Clean up (also closes connection)
-        self._cleanup_subscription(sub_id)
-
         handle._stopped = True
-        logger.info(f"Removed subscription sub_id={sub_id}")
+
+        if handle._task is not None and self._loop is not None:
+            self._loop.call_soon_threadsafe(handle._task.cancel)
+
+        with self._handles_lock:
+            if handle in self._handles:
+                self._handles.remove(handle)
+
+        logger.info(f"Removed DPM subscription for {len(handle._drfs)} devices")
 
     def stop_streaming(self) -> None:
-        """Stop all streaming subscriptions and close all streaming connections."""
-        logger.debug("Stopping all streaming")
+        """Stop all streaming subscriptions."""
+        with self._handles_lock:
+            handles = list(self._handles)
+            self._handles.clear()
 
-        # Signal receiver thread to stop and wake it
-        self._stream_stop_event.set()
-        self._wakeup()
+        for handle in handles:
+            handle._stopped = True
+            if handle._task is not None and self._loop is not None:
+                self._loop.call_soon_threadsafe(handle._task.cancel)
 
-        # Get all sub_ids
-        with self._stream_lock:
-            sub_ids = list(self._stream_connections.keys())
-
-        # Stop each subscription
-        for sub_id in sub_ids:
-            with self._stream_lock:
-                stream_conn = self._stream_connections.get(sub_id)
-                if stream_conn:
-                    stream_conn.handle._stopped = True
-            self._cleanup_subscription(sub_id)
-
-        # Wait for receiver thread
-        if self._stream_thread is not None and self._stream_thread.is_alive():
-            self._stream_thread.join(timeout=2.0)
-            self._stream_thread = None
-
-        # Drain any remaining queued ops
-        while not self._selector_ops.empty():
-            try:
-                self._selector_ops.get_nowait()
-            except queue.Empty:
-                break
-
-        # Close wakeup sockets
-        for s in (self._wakeup_r, self._wakeup_w):
-            if s is not None:
-                try:
-                    s.close()
-                except OSError:
-                    pass
-        self._wakeup_r = None
-        self._wakeup_w = None
-
-        # Close selector
-        if self._selector is not None:
-            try:
-                self._selector.close()
-            except Exception:
-                pass
-            self._selector = None
-
-        logger.info("All streaming stopped")
+        logger.info("All DPM streaming stopped")
 
     def close(self) -> None:
         """Close the backend and release all resources."""
@@ -1565,6 +1568,16 @@ class DPMHTTPBackend(Backend):
 
         # Stop streaming first
         self.stop_streaming()
+
+        # Stop the event loop and join reactor thread
+        loop = self._loop
+        thread = self._reactor_thread
+        if loop is not None:
+            loop.call_soon_threadsafe(loop.stop)
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
+        self._loop = None
+        self._reactor_thread = None
 
         # Close write connections
         self._close_write_connections()
@@ -1579,7 +1592,8 @@ class DPMHTTPBackend(Backend):
     def __repr__(self) -> str:
         status = "closed" if self._closed else "open"
         auth_info = f", auth={self._auth.auth_type}" if self._auth else ""
-        n_subs = len(self._stream_connections)
+        with self._handles_lock:
+            n_subs = len(self._handles)
         return f"DPMHTTPBackend({self._host}:{self._port}, pool_size={self._pool_size}{auth_info}, subs={n_subs}, {status})"
 
 

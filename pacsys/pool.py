@@ -28,7 +28,7 @@ import threading
 from contextlib import contextmanager
 from typing import Optional
 
-from pacsys.dpm_connection import DPMConnection
+from pacsys.dpm_connection import DPMConnection, DPMConnectionError
 
 logger = logging.getLogger(__name__)
 
@@ -356,7 +356,14 @@ class ConnectionPool:
         broken = False
         try:
             yield conn
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+        except (
+            BrokenPipeError,
+            ConnectionResetError,
+            ConnectionAbortedError,
+            TimeoutError,
+            OSError,
+            DPMConnectionError,
+        ):
             broken = True
             raise
         finally:

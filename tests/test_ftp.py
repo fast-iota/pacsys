@@ -1,8 +1,8 @@
 """
-Unit tests for pacsys.acnet.ftp — FTPMAN protocol.
+Unit tests for pacsys.acnet.ftp -- FTPMAN protocol.
 
 Tests packet construction, reply parsing, buffer size calculations,
-and class code registry. Uses no network — all ACNET interactions are mocked.
+and class code registry. Uses no network -- all ACNET interactions are mocked.
 """
 
 import struct
@@ -1266,7 +1266,7 @@ class TestSnapshotStateTracking:
             rq.put((0, data, False))
             assert handle.wait(timeout=2.0)
 
-            # Send a COLLECTING update — should be ignored
+            # Send a COLLECTING update -- should be ignored
             data = self._build_status_reply(0, [FTP_COLLECTING])
             rq.put((0, data, False))
             import time

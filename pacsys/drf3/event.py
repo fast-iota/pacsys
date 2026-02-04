@@ -90,12 +90,10 @@ class ClockEvent(DRF_EVENT):
 class NeverEvent(DRF_EVENT):
     """No data should ever be sent back. Used for write/setting operations.
 
-    Java reference (NeverEvent.java):
+    Java reference:
     - isRepetitive() = false, defaultTimeout() = 0
     - FTD code = 2 (the "never" fetch-time-descriptor)
-    - Only event type that REMOVES the EVENT flag from ACNET options
-      (WhatDaq.java:794-804), meaning "don't trigger data transmission"
-    - toString() returns "N"
+    - Only event type that REMOVES the EVENT flag from ACNET options, meaning "don't trigger data transmission"
     """
 
     def __init__(self, raw_string="N", mode="N"):

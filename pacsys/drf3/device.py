@@ -18,21 +18,16 @@ class Device:
         return get_qualified_device(self.raw_string, prop)
 
 
-class EPICSDevice(Device):
-    @property
-    def canonical(self):
-        return self.canonical_string
-
-    def qualified_name(self, prop: DRF_PROPERTY):
-        return get_qualified_device(self.raw_string, prop)
-
-
 def get_qualified_device(device_str: str, prop: DRF_PROPERTY):
     if len(device_str) < 3:
         raise ValueError(f"{device_str} is too short for device")
     if prop not in DRF_PROPERTY:
         raise ValueError(f"prop must be a DRF_PROPERTY member, got {prop!r}")
     ext = prop.value
+    if ext is None:
+        raise ValueError(
+            f"Property {prop.name} has no qualifier character and cannot be used in qualified device names"
+        )
     ld = list(device_str)
     ld[1] = ext
     return "".join(ld)
@@ -44,7 +39,7 @@ def parse_device(raw_string, assume_epics: bool = True) -> Device:
     match = PATTERN_NAME.match(raw_string)
     if match is None:
         if assume_epics:
-            return EPICSDevice(raw_string=raw_string, canonical_string=raw_string)
+            return Device(raw_string=raw_string, canonical_string=raw_string)
         raise ValueError(f"{raw_string} is not a valid device")
     ld = list(raw_string)
     ld[1] = ":"

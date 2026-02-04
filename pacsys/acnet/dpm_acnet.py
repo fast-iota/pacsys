@@ -8,9 +8,9 @@ This is an alternative to the direct HTTP-based DPMConnection.
 """
 
 import logging
+import queue
 import threading
 import time
-from collections import deque
 from dataclasses import dataclass
 from typing import Optional
 
@@ -57,6 +57,7 @@ class DPMReading:
     status: int = 0
     data: object = None
     meta: Optional[dict] = None
+    micros: object = None  # Per-sample timestamps from TimedScalarArray (int64 list)
 
 
 class DPMError(Exception):
@@ -108,9 +109,8 @@ class DPMAcnet:
         self._dev_list: dict[int, str] = {}  # tag -> drf
         self._meta: dict[int, dict] = {}  # ref_id -> metadata
 
-        # Reply handling (deque is thread-safe for append/popleft under GIL)
-        self._reply_queue: deque = deque()
-        self._reply_event = threading.Event()
+        # Reply handling (bounded to prevent OOM on slow consumers)
+        self._reply_queue: queue.Queue = queue.Queue(maxsize=10000)
         self._request_ctx = None
 
         # Lock for state
@@ -339,8 +339,10 @@ class DPMAcnet:
                 status=msg.status,
                 meta=self._meta.get(msg.ref_id),
             )
-            self._reply_queue.append(reading)
-            self._reply_event.set()
+            try:
+                self._reply_queue.put_nowait(reading)
+            except queue.Full:
+                pass  # drop newest on overflow
             return
 
         if isinstance(
@@ -354,6 +356,9 @@ class DPMAcnet:
                 TimedScalarArray_reply,
             ),
         ):
+            micros = None
+            if isinstance(msg, TimedScalarArray_reply) and hasattr(msg, "micros") and msg.micros:
+                micros = msg.micros
             reading = DPMReading(
                 ref_id=msg.ref_id,
                 timestamp=msg.timestamp,
@@ -361,9 +366,12 @@ class DPMAcnet:
                 status=msg.status,
                 data=msg.data if hasattr(msg, "data") else None,
                 meta=self._meta.get(msg.ref_id),
+                micros=micros,
             )
-            self._reply_queue.append(reading)
-            self._reply_event.set()
+            try:
+                self._reply_queue.put_nowait(reading)
+            except queue.Full:
+                pass  # drop newest on overflow
             return
 
         if isinstance(msg, (AnalogAlarm_reply, DigitalAlarm_reply, BasicStatus_reply)):
@@ -373,8 +381,10 @@ class DPMAcnet:
                 data=msg.__dict__,
                 meta=self._meta.get(msg.ref_id),
             )
-            self._reply_queue.append(reading)
-            self._reply_event.set()
+            try:
+                self._reply_queue.put_nowait(reading)
+            except queue.Full:
+                pass  # drop newest on overflow
             return
 
     def readings(self, timeout: float | None = None):
@@ -388,18 +398,9 @@ class DPMAcnet:
             DPMReading objects
         """
         while True:
-            # Check queue first
-            if self._reply_queue:
-                yield self._reply_queue.popleft()
-                continue
-
-            # Wait for new data
-            self._reply_event.clear()
-            if self._reply_event.wait(timeout=timeout):
-                if self._reply_queue:
-                    yield self._reply_queue.popleft()
-            else:
-                # Timeout
+            try:
+                yield self._reply_queue.get(timeout=timeout)
+            except queue.Empty:
                 return
 
     def read(self, drf: str, timeout: float = 5.0) -> DPMReading:

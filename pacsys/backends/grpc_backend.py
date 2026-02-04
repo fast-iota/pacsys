@@ -20,7 +20,7 @@ import numpy as np
 
 from pacsys.acnet.errors import ERR_RETRY, ERR_TIMEOUT, FACILITY_ACNET, normalize_error_code
 from pacsys.auth import Auth, JWTAuth
-from pacsys.backends import Backend
+from pacsys.backends import Backend, validate_alarm_dict
 from pacsys.drf_utils import prepare_for_write
 from pacsys.errors import AuthenticationError, DeviceError
 from pacsys.types import (
@@ -43,7 +43,7 @@ try:
     from google.protobuf import timestamp_pb2
     from grpc import aio as grpc_aio
 
-    # Import generated proto files (common protos first — DAQ depends on them)
+    # Import generated proto files (common protos first -- DAQ depends on them)
     from proto.controls.common.v1 import device_pb2, status_pb2
     from proto.controls.service.DAQ.v1 import DAQ_pb2, DAQ_pb2_grpc
 
@@ -103,15 +103,6 @@ def _grpc_facility_code(e: "grpc.aio.AioRpcError") -> int:
     return 0
 
 
-_ANALOG_ONLY_KEYS = {"minimum", "maximum"}
-_DIGITAL_ONLY_KEYS = {"nominal", "mask"}
-_SHARED_ALARM_KEYS = {"alarm_enable", "abort_inhibit", "tries_needed"}
-_ANALOG_ALARM_KEYS = _ANALOG_ONLY_KEYS | _SHARED_ALARM_KEYS
-_DIGITAL_ALARM_KEYS = _DIGITAL_ONLY_KEYS | _SHARED_ALARM_KEYS
-# Read-only keys silently skipped (present in read responses but not settable)
-_ALARM_READONLY_KEYS = {"abort", "alarm_status", "tries_now"}
-
-
 def _value_to_proto_value(value: Value, *, for_write: bool = False) -> "device_pb2.Value":
     """Convert Python value to proto Value message."""
     proto_value = device_pb2.Value()
@@ -127,7 +118,7 @@ def _value_to_proto_value(value: Value, *, for_write: bool = False) -> "device_p
     elif isinstance(value, dict):
         if for_write:
             raise NotImplementedError(
-                "Alarm writes are not supported via gRPC — the DPM server does not handle "
+                "Alarm writes are not supported via gRPC -- the DPM server does not handle "
                 "alarm settings over this protocol. Use the DPM/HTTP or DMQ backend instead."
             )
         _dict_to_proto_alarm(value, proto_value)
@@ -152,19 +143,8 @@ def _dict_to_proto_alarm(d: dict, proto_value: "device_pb2.Value") -> None:
     Requires at least one type-specific key (minimum/maximum for analog,
     nominal/mask for digital) to disambiguate alarm type.
     """
-    keys = set(d) - _ALARM_READONLY_KEYS
-    unknown = keys - _ANALOG_ALARM_KEYS - _DIGITAL_ALARM_KEYS
-    if unknown:
-        raise ValueError(f"Unknown alarm dict keys: {unknown}")
-    has_analog = bool(keys & _ANALOG_ONLY_KEYS)
-    has_digital = bool(keys & _DIGITAL_ONLY_KEYS)
-    if has_analog and has_digital:
-        raise ValueError("Cannot mix analog (minimum/maximum) and digital (nominal/mask) alarm keys")
-    if not has_analog and not has_digital:
-        raise ValueError(
-            "Alarm dict must include at least one type-specific key: minimum/maximum (analog) or nominal/mask (digital)"
-        )
-    if has_analog:
+    alarm_type = validate_alarm_dict(d)
+    if alarm_type == "analog":
         a = proto_value.anaAlarm
         if "minimum" in d:
             a.minimum = float(d["minimum"])
@@ -315,7 +295,7 @@ def _reply_to_readings(reply, drfs: list[str]) -> list[Reading]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Async Core — all gRPC I/O lives here
+# Async Core -- all gRPC I/O lives here
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -525,7 +505,7 @@ class _DaqCore:
         """Long-running stream with reconnection on errors.
 
         Normal stream completion (server onCompleted) is treated as a graceful
-        end — the subscription stops without reconnecting. This is the correct
+        end -- the subscription stops without reconnecting. This is the correct
         behavior for @I (immediate) events and also safe for periodic events
         since the server never calls onCompleted on periodic streams. Network
         errors and UNAVAILABLE trigger exponential backoff reconnection.
@@ -556,7 +536,7 @@ class _DaqCore:
 
                 # Stream ended normally (server called onCompleted). This
                 # happens for @I events and on graceful server shutdown.
-                # Do NOT reconnect — treat as subscription end.
+                # Do NOT reconnect -- treat as subscription end.
                 if not stop_check():
                     logger.info("gRPC stream completed normally, subscription ending")
                 return
@@ -718,7 +698,7 @@ class _GRPCSubscriptionHandle(SubscriptionHandle):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# GRPCBackend — sync facade over the async reactor
+# GRPCBackend -- sync facade over the async reactor
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -780,7 +760,7 @@ class GRPCBackend(Backend):
         if self._timeout <= 0:
             raise ValueError(f"timeout must be positive, got {self._timeout}")
 
-        # Reactor state — all lazy
+        # Reactor state -- all lazy
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._reactor_thread: Optional[threading.Thread] = None
         self._core: Optional[_DaqCore] = None

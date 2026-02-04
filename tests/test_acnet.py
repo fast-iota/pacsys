@@ -342,15 +342,6 @@ class TestAcnetRequest:
         expected = (0x0901 << 16) | 0x1234
         assert request.reply_id.value == expected
 
-    def test_cancel_state(self):
-        """Test request cancellation state."""
-        raw = struct.pack("<HhHHIHHH", ACNET_FLG_REQ, 0, 0, 0, 0, 0, 1, 18)
-        request = AcnetPacket.parse(raw)
-
-        assert not request.cancelled
-        request.cancel()
-        assert request.cancelled
-
     def test_is_multicast(self):
         """Test multicast detection."""
         # Server node 0xFF indicates multicast

@@ -1,12 +1,21 @@
-# Corrector Ramp Tables
+# Ramp Tables
 
-The `CorrectorRamp` and `BoosterRamp` classes provide convenient interfaces for reading and writing corrector magnet ramp tables. Ramp tables are 64-point arrays of (time, value) pairs stored as raw bytes in the SETTING property.
+The `Ramp` (and its subclass `BoosterRamp`) classes provide convenient interface for reading and writing ramp tables. This is a partial reimplementation of Java `RampDevice`.
 
 ---
 
 ## Overview
 
-Each ramp **slot** contains 64 points. Each point is 4 bytes: a signed int16 value followed by a signed int16 time (little-endian). The total slot size is 256 bytes.
+Each ramp **slot** contains 64 points stored as raw bytes in the SETTING property. Each point is 4 bytes little-endian: a signed int16 **value** followed by a signed int16 **time (clock ticks)**.
+
+```
+byte[0:1] = value (int16 LE)  -- F(t) amplitude
+byte[2:3] = time  (int16 LE)  -- delta time (clock ticks)
+```
+
+The total slot size is 256 bytes.
+
+### Value Scaling
 
 Values are converted between raw int16 and engineering units via overridable transform functions:
 
@@ -17,12 +26,29 @@ Inverse:  raw = inverse_primary_transform(inverse_common_transform(engineering))
 
 `BoosterRamp` implements these as linear transforms for Booster corrector magnets (engineering units in Amps).
 
+### Time Scaling
+
+Raw times on the wire are clock ticks. The card's `update_rate_hz` determines the tick period. Times are always presented in **microseconds**:
+
+```
+Forward:  time_us = raw_ticks * (1e6 / update_rate_hz)
+Inverse:  raw_ticks = round(time_us * update_rate_hz / 1e6)
+```
+
+Different card types have different update rates:
+
+| Card Class | Type | Update Rate | Tick Period | Notes |
+|-----------|------|-------------|-------------|-------|
+| 453 | CAMAC | 720 Hz fixed | 1389 µs | Legacy |
+| 465/466 | CAMAC | 1 / 5 / 10 KHz | configurable | Stored at byte offset 22 |
+| 473 | CAMAC | 100 KHz fixed | 10 µs | Booster correctors |
+
 ```python
 from pacsys import BoosterRamp
 
 ramp = BoosterRamp.read("B:HS23T", slot=0)
 print(ramp.values)  # float64 array, Amps
-print(ramp.times)   # int16 array, microseconds
+print(ramp.times)   # float64 array, microseconds
 ```
 
 ---
@@ -52,7 +78,7 @@ ramp = BoosterRamp.read("B:HS23T", slot=0)
 
 # Modify
 ramp.values[:8] = [1.0, 2.0, 3.0, 4.0, 4.0, 3.0, 2.0, 1.0]
-ramp.times[:8] = [0, 100, 200, 300, 400, 500, 600, 700]
+ramp.times[:8] = [0, 10000, 20000, 30000, 40000, 50000, 60000, 70000]  # microseconds
 
 # Write back
 ramp.write("B:HS23T", slot=0)
@@ -62,11 +88,20 @@ ramp.write("B:HS23T", slot=0)
 
 ## Transforms
 
+### Value Transforms
+
 | Class | Primary Transform | Common Transform | Combined | Units |
 |-------|------------------|-----------------|----------|-------|
 | `BoosterRamp` | raw / 3276.8 | primary * 4.0 | raw / 819.2 | Amps |
 
 The quantization step for BoosterRamp is approximately 0.00122 Amps.
+
+### Time Scaling
+
+| Class | `update_rate_hz` | Tick Period | Max Time |
+|-------|-----------------|-------------|----------|
+| `Ramp` (default) | 10,000 Hz | 100 µs | (none) |
+| `BoosterRamp` | 100,000 Hz | 10 µs | 66,660 µs (~one 15 Hz cycle) |
 
 ---
 
@@ -84,14 +119,15 @@ Ramp slots are indexed starting at 0. Each slot occupies 256 bytes in the SETTIN
 
 ## Custom Machine Types
 
-Subclass `CorrectorRamp` and implement the four transform functions:
+Subclass `Ramp` and implement the four transform functions:
 
 ```python
-from pacsys import CorrectorRamp
+from pacsys import Ramp
 
-class MainInjectorRamp(CorrectorRamp):
-    max_value = 500.0   # optional validation bound
-    max_time = 10000    # optional validation bound
+class MainInjectorRamp(Ramp):
+    update_rate_hz = 5000  # 5 KHz card (200 us/tick)
+    max_value = 500.0      # optional validation bound (engineering units)
+    max_time = 1_000_000   # optional validation bound (microseconds)
 
     @classmethod
     def primary_transform(cls, raw):
@@ -112,7 +148,7 @@ class MainInjectorRamp(CorrectorRamp):
 ramp = MainInjectorRamp.read("MI:DEVICE", slot=0)
 ```
 
-Transforms can also be nonlinear (e.g., polynomial, lookup table). We currently do not (re)implement any standard ACNET transforms - look up them on your own.
+Transforms can also be nonlinear (e.g., polynomial, lookup table). We currently do not (re)implement any standard ACNET transforms -- look them up on your own.
 
 ---
 
@@ -160,7 +196,67 @@ ramp = BoosterRamp.read("B:HS23T")
 print(repr(ramp))  # BoosterRamp(8/64 active points)
 print(ramp)
 # BoosterRamp (64 points):
-#   [ 0] t=     0us  value=1.2345
-#   [ 1] t=   100us  value=2.3456
+#   [ 0] t=     0.0us  value=1.2345
+#   [ 1] t=  2400.0us  value=2.3456
 #   ...
 ```
+
+---
+
+## Ramp Card Hardware
+
+### 465 Class CAMAC Cards (453/465/466) (Waveform Generator)
+
+The 465 class CAMAC ramp card produces a single output waveform in response to a TCLK event. There are 32 defined interrupt levels, each triggered by the OR of up to 8 TCLK events.
+
+For each interrupt level the output waveform is:
+
+```
+sf1·m1·F(t) + sf2·m2·g(M1) + sf3·m3·h(M2)
+```
+
+Where:
+
+- **sf1, sf2, sf3** -- scale factors (-128 to +127.9)
+- **m1, m2, m3** -- raw MDAT readings / 256
+- **F(t)** -- interpolated function of time (the ramp table `Ramp` manipulates)
+- **g(M1), h(M2)** -- interpolated functions of selected MDAT parameters
+
+Update frequency is 1 / 5 / 10 KHz, with up to 15 slots. See references for more details.
+
+
+### 473 Class CAMAC Cards (Quad Ramp Controller)
+
+The 473 CAMAC ramp card is used by Booster correctors. It has a fixed 100 KHz update rate (10 µs tick period). The `BoosterRamp` subclass uses this card type.
+
+The output waveform is:
+
+```
+output = sf1·f(t) + offset (C473)
+output = sf1·f(t) + offset + sf2·g(M1) + sf3·h(M2) (C475)
+```
+
+Where:
+
+- **sf1, sf2, and sf3** are constant scale factors having a range of -128.0 to +127.9
+- **f(t)** is an interpolated function of time which is initiated by a TCLK event. f(t) defines the
+overall shape of the output function
+- **offset** is a constant offset having a range of -32768 to +32767
+- **M1 and M2** are variable values received via MDAT
+- **g(M1) and h(M2)** are interpolated functions of M1 and M2, respectively
+
+The output functions of all four channels share a common trigger. Each channel has an
+independent delay, programmable from 0 to 65535 µsec, between the TCLK trigger event and the
+start of the output functions.
+
+Note: Although the shortest programmable delay is 0 µsec, at least 30 µsec (C473) or 100 µsec
+(C475) must be allowed for the processor to service the trigger interrupt. The C473/C475 will
+enforce the minimum delay.
+
+See references for more details and configuration.
+
+### References
+
+- [C465 CAMAC module documentation](http://www-bd.fnal.gov/controls/camac_modules/c465.htm)
+- [C465 associated device listing](http://www-bd.fnal.gov/controls/micro_p/camac.doc/465.lis)
+- [C473 module](https://www-bd.fnal.gov/controls/camac_modules/c473.pdf)

@@ -36,10 +36,13 @@ _CONTROL_STATUS_MAP: dict[BasicControl, tuple[str, bool]] = {
     BasicControl.ON: ("on", True),
     BasicControl.OFF: ("on", False),
     BasicControl.RESET: ("ready", True),
+    BasicControl.TRIP: ("ready", False),
     BasicControl.POSITIVE: ("positive", True),
     BasicControl.NEGATIVE: ("positive", False),
     BasicControl.RAMP: ("ramp", True),
     BasicControl.DC: ("ramp", False),
+    BasicControl.REMOTE: ("remote", True),
+    BasicControl.LOCAL: ("remote", False),
 }
 
 
@@ -216,11 +219,38 @@ class Device:
         """Read device with full metadata."""
         return self._get_backend().get(self.drf, timeout)
 
+    def info(self, timeout: float | None = None):
+        """Fetch device metadata from DevDB (cached).
+
+        Provides scaling, limits, control commands, status bit definitions.
+
+        Args:
+            timeout: gRPC timeout in seconds (default: client's configured timeout).
+
+        Raises:
+            RuntimeError: If DevDB is not configured or unreachable.
+            DeviceError: If the device is not found in DevDB.
+        """
+        from pacsys.devdb import DeviceInfoResult  # noqa: F811
+
+        devdb = self._get_devdb()
+        if devdb is None:
+            raise RuntimeError(
+                "DevDB not available. Configure with pacsys.configure(devdb_host=...) "
+                "or set PACSYS_DEVDB_HOST environment variable."
+            )
+        results: dict[str, DeviceInfoResult] = devdb.get_device_info([self.name], timeout=timeout)
+        return results[self.name]
+
     def digital_status(self, timeout: float | None = None) -> DigitalStatus:
         """Fetch full digital status (BIT_VALUE + BIT_NAMES + BIT_VALUES).
 
         Returns a DigitalStatus with per-bit labels and values, richer than
         the 5-bool legacy dict from get() on a STATUS property.
+
+        When DevDB is available and has cached status_bits for this device,
+        only 1 read (BIT_VALUE) is needed instead of 3. Falls back to the
+        3-read path if DevDB is unavailable.
 
         Raises:
             DeviceError: If the device has no status property.
@@ -231,6 +261,29 @@ class Device:
         backend = self._get_backend()
         name = self.name
         extra = f"<-{self._request.extra.name}" if self._request.extra else ""
+
+        # Try DevDB-accelerated path (1 read instead of 3)
+        devdb = self._get_devdb()
+        if devdb is not None:
+            try:
+                info = devdb.get_device_info([name])[name]
+            except Exception:
+                info = None  # DevDB unavailable, fall through to 3-read path
+            if info is not None and info.status_bits is not None:
+                reading = backend.get(f"{name}.STATUS.BIT_VALUE@I{extra}", timeout)
+                if reading.is_error:
+                    raise DeviceError(reading.drf, reading.facility_code, reading.error_code, reading.message)
+                raw_value = reading.value
+                if not isinstance(raw_value, (int, float)):
+                    raise TypeError(f"Expected numeric BIT_VALUE, got {type(raw_value).__name__}")
+                return DigitalStatus.from_devdb_bits(
+                    device=name,
+                    raw_value=int(raw_value),
+                    bit_defs=info.status_bits,
+                    ext_bit_defs=info.ext_status_bits,
+                )
+
+        # Standard 3-read path
         readings = backend.get_many(
             [
                 f"{name}.STATUS.BIT_VALUE@I{extra}",
@@ -398,6 +451,15 @@ class Device:
     def dc(self, *, verify: bool | Verify | None = None, timeout: float | None = None) -> WriteResult:
         return self.control(BasicControl.DC, verify=verify, timeout=timeout)
 
+    def local(self, *, verify: bool | Verify | None = None, timeout: float | None = None) -> WriteResult:
+        return self.control(BasicControl.LOCAL, verify=verify, timeout=timeout)
+
+    def remote(self, *, verify: bool | Verify | None = None, timeout: float | None = None) -> WriteResult:
+        return self.control(BasicControl.REMOTE, verify=verify, timeout=timeout)
+
+    def trip(self, *, verify: bool | Verify | None = None, timeout: float | None = None) -> WriteResult:
+        return self.control(BasicControl.TRIP, verify=verify, timeout=timeout)
+
     # ─── Alarm Setters ────────────────────────────────────────────────────
 
     def set_analog_alarm(self, settings: dict, *, timeout: float | None = None) -> WriteResult:
@@ -428,10 +490,13 @@ class Device:
         time.sleep(v.initial_delay)
 
         last_readback: Value | None = None
+        last_error: DeviceError | None = None
         for attempt in range(1, v.max_attempts + 1):
             try:
                 last_readback = backend.read(read_drf, timeout)
-            except DeviceError:
+                last_error = None
+            except DeviceError as e:
+                last_error = e
                 if attempt < v.max_attempts:
                     time.sleep(v.retry_delay)
                 continue
@@ -448,11 +513,14 @@ class Device:
             if attempt < v.max_attempts:
                 time.sleep(v.retry_delay)
 
+        msg = write_result.message
+        if last_error is not None:
+            msg = f"Readback failed: {last_error}"
         return WriteResult(
             drf=write_result.drf,
             facility_code=write_result.facility_code,
             error_code=write_result.error_code,
-            message=write_result.message,
+            message=msg,
             verified=False,
             readback=last_readback,
             attempts=v.max_attempts,
@@ -485,6 +553,12 @@ class Device:
         from pacsys import _get_global_backend
 
         return _get_global_backend()
+
+    def _get_devdb(self):
+        """Get global DevDB client, or None if not configured."""
+        from pacsys import _get_global_devdb
+
+        return _get_global_devdb()
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.drf!r})"

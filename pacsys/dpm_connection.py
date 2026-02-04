@@ -262,6 +262,42 @@ class DPMConnection:
             self._connected = False
             raise DPMConnectionError(f"Send failed: {e}")
 
+    def send_messages_batch(self, messages: list) -> None:
+        """Send multiple messages in a single TCP packet.
+
+        Builds one bytearray with all length-prefixed messages concatenated,
+        then sends with a single sendall() call to reduce packet overhead.
+
+        Args:
+            messages: List of protocol message objects (with marshal() method) or raw bytes
+
+        Raises:
+            DPMConnectionError: If not connected or send fails
+        """
+        if not messages:
+            return
+
+        if not self._connected or self._socket is None:
+            raise DPMConnectionError("Not connected")
+
+        buf = bytearray()
+        for msg in messages:
+            if hasattr(msg, "marshal"):
+                data = bytes(msg.marshal())
+            elif isinstance(msg, (bytes, bytearray)):
+                data = bytes(msg)
+            else:
+                raise TypeError(f"msg must be a protocol message or bytes, got {type(msg).__name__}")
+            buf.extend(struct.pack(">I", len(data)))
+            buf.extend(data)
+
+        try:
+            self._socket.sendall(buf)
+            logger.debug(f"Sent batch: {len(messages)} messages, {len(buf)} bytes")
+        except socket.error as e:
+            self._connected = False
+            raise DPMConnectionError(f"Send failed: {e}")
+
     def recv_message(self, timeout: Optional[float] = None) -> object:
         """
         Receive and unmarshal a single reply message.

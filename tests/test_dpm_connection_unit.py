@@ -460,5 +460,83 @@ class TestErrorConditions:
                 conn.send_message(12345)  # Invalid type
 
 
+class TestSendMessagesBatch:
+    """Tests for send_messages_batch()."""
+
+    def _make_connected_conn(self):
+        """Helper: create a connected DPMConnection with mocked socket."""
+        open_list_reply = OpenList_reply()
+        open_list_reply.list_id = 1
+        reply_data = bytes(open_list_reply.marshal())
+        reply_frame = struct.pack(">I", len(reply_data)) + reply_data
+
+        mock_socket = mock.Mock(spec=socket.socket)
+        mock_socket.recv.return_value = reply_frame
+
+        with mock.patch("socket.socket", return_value=mock_socket):
+            conn = DPMConnection()
+            conn.connect()
+        return conn, mock_socket
+
+    def test_batch_single_message(self):
+        """Batch with 1 message produces correct framing."""
+        conn, mock_socket = self._make_connected_conn()
+        mock_socket.sendall.reset_mock()
+
+        add_req = AddToList_request()
+        add_req.list_id = 1
+        add_req.ref_id = 1
+        add_req.drf_request = "M:OUTTMP@I"
+        conn.send_messages_batch([add_req])
+
+        assert mock_socket.sendall.call_count == 1
+        sent = mock_socket.sendall.call_args[0][0]
+        # Verify length prefix + body
+        length = struct.unpack(">I", sent[:4])[0]
+        assert length == len(sent) - 4
+
+    def test_batch_multiple_messages(self):
+        """Batch with N messages concatenates all frames."""
+        conn, mock_socket = self._make_connected_conn()
+        mock_socket.sendall.reset_mock()
+
+        msgs = []
+        for i in range(3):
+            req = AddToList_request()
+            req.list_id = 1
+            req.ref_id = i + 1
+            req.drf_request = f"D:DEV{i:02d}@I"
+            msgs.append(req)
+
+        conn.send_messages_batch(msgs)
+
+        assert mock_socket.sendall.call_count == 1
+        sent = bytes(mock_socket.sendall.call_args[0][0])
+
+        # Parse frames back out
+        offset = 0
+        count = 0
+        while offset < len(sent):
+            length = struct.unpack(">I", sent[offset : offset + 4])[0]
+            offset += 4 + length
+            count += 1
+        assert count == 3
+        assert offset == len(sent)
+
+    def test_batch_empty_list(self):
+        """Empty batch does not call sendall."""
+        conn, mock_socket = self._make_connected_conn()
+        mock_socket.sendall.reset_mock()
+
+        conn.send_messages_batch([])
+        mock_socket.sendall.assert_not_called()
+
+    def test_batch_not_connected_raises(self):
+        """Batch on disconnected connection raises."""
+        conn = DPMConnection()
+        with pytest.raises(DPMConnectionError, match="Not connected"):
+            conn.send_messages_batch([b"test"])
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

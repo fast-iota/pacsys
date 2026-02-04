@@ -27,7 +27,7 @@ from pacsys.acnet.ftp import (
 )
 from tests.real.devices import requires_acnet_tcp
 
-# M:OUTTMP on MUONFE — known FTP class 16 (C290), snap class 13 (C290)
+# M:OUTTMP on MUONFE -- known FTP class 16 (C290), snap class 13 (C290)
 MOUTTMP_DI = 27235
 MOUTTMP_PI = 12
 MOUTTMP_SSDN = b"\x00\x00B\x00?!\x00\x00"
@@ -436,7 +436,7 @@ class TestSnapshotPreTrigger:
             snap_class_code=13,
             timeout=10.0,
         ) as snap:
-            # Wait for collection — may need a full supercycle (~5s) + buffer time
+            # Wait for collection -- may need a full supercycle (~5s) + buffer time
             ready = snap.wait(timeout=20.0)
             print(f"\n  State: {snap.state.name}, ready={ready}")
             assert ready, f"Pre-trigger snapshot not ready: {snap.state.name}"

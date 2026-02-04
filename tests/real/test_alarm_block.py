@@ -119,7 +119,7 @@ class TestAnalogAlarm:
 
         print(f"\nFlag breakdown for {device}:")
         print(f"  raw flags: 0x{alarm.flags:04X}")
-        print(f"  BYPASS={bool(alarm.flags & AlarmFlags.BYPASS)} -> is_active={alarm.is_active}")
+        print(f"  ENABLE={bool(alarm.flags & AlarmFlags.ENABLE)} -> is_active={alarm.is_active}")
         print(f"  BAD={bool(alarm.flags & AlarmFlags.BAD)} -> is_bad={alarm.is_bad}")
         print(f"  ABORT={bool(alarm.flags & AlarmFlags.ABORT)} -> abort={alarm.abort}")
         print(f"  ABORT_INHIBIT={bool(alarm.flags & AlarmFlags.ABORT_INHIBIT)} -> abort_inhibit={alarm.abort_inhibit}")
@@ -127,7 +127,7 @@ class TestAnalogAlarm:
         print(f"  LOW={bool(alarm.flags & AlarmFlags.LOW)} -> is_low={alarm.is_low}")
 
         # Verify accessors match raw flag bits
-        assert alarm.is_active == bool(alarm.flags & AlarmFlags.BYPASS)
+        assert alarm.is_active == bool(alarm.flags & AlarmFlags.ENABLE)
         assert alarm.is_bad == bool(alarm.flags & AlarmFlags.BAD)
         assert alarm.abort == bool(alarm.flags & AlarmFlags.ABORT)
 
@@ -190,11 +190,11 @@ class TestDigitalAlarm:
 
         print(f"\nFlag breakdown for {device}:")
         print(f"  raw flags: 0x{alarm.flags:04X}")
-        print(f"  BYPASS={bool(alarm.flags & AlarmFlags.BYPASS)} -> is_active={alarm.is_active}")
+        print(f"  ENABLE={bool(alarm.flags & AlarmFlags.ENABLE)} -> is_active={alarm.is_active}")
         print(f"  BAD={bool(alarm.flags & AlarmFlags.BAD)} -> is_bad={alarm.is_bad}")
         print(f"  DIGITAL={bool(alarm.flags & AlarmFlags.DIGITAL)} -> is_digital={alarm.is_digital}")
 
-        assert alarm.is_active == bool(alarm.flags & AlarmFlags.BYPASS)
+        assert alarm.is_active == bool(alarm.flags & AlarmFlags.ENABLE)
         assert alarm.is_bad == bool(alarm.flags & AlarmFlags.BAD)
         assert alarm.is_digital == bool(alarm.flags & AlarmFlags.DIGITAL)
 

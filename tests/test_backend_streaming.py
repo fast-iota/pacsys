@@ -29,10 +29,9 @@ class TestDPMHTTPBackendStreaming:
         try:
             handle = _DPMHTTPSubscriptionHandle(
                 backend=backend,
-                sub_id=1,
-                is_callback_mode=False,
+                drfs=["M:OUTTMP@p,1000"],
+                callback=None,
             )
-            handle._ref_ids = [1]
 
             # Using context manager should call stop() on exit
             with handle as h:
@@ -51,8 +50,8 @@ class TestDPMHTTPBackendStreaming:
         try:
             handle = _DPMHTTPSubscriptionHandle(
                 backend=backend,
-                sub_id=1,
-                is_callback_mode=True,
+                drfs=["M:OUTTMP@p,1000"],
+                callback=lambda r, h: None,
             )
 
             with pytest.raises(RuntimeError, match="Cannot iterate subscription with callback"):

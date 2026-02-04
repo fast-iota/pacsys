@@ -53,20 +53,20 @@ REPLY_TYPE_DATA = 2
 # Default return period (15 Hz ticks between data replies)
 DEFAULT_RETURN_PERIOD = 3
 
-# Task name counters — each pool gets a unique RAD50 name (matches Java FTPPool/SnapShotPool)
+# Task name counters -- each pool gets a unique RAD50 name (matches Java FTPPool/SnapShotPool)
 _ftp_counter = itertools.count(1)
 _snap_counter = itertools.count(1)
 
 
 def _next_ftp_task_name() -> int:
     """Generate next unique RAD50 task name for continuous FTP (FTP001, FTP002, ...)."""
-    n = next(_ftp_counter)
+    n = next(_ftp_counter) % 999 + 1  # wrap to 1-999, keeps name within 6-char RAD50 limit
     return rad50.encode(f"FTP{n:03d}")
 
 
 def _next_snap_task_name() -> int:
     """Generate next unique RAD50 task name for snapshot (SNP001, SNP002, ...)."""
-    n = next(_snap_counter)
+    n = next(_snap_counter) % 999 + 1  # wrap to 1-999, keeps name within 6-char RAD50 limit
     return rad50.encode(f"SNP{n:03d}")
 
 
@@ -402,7 +402,7 @@ def _build_arm_trigger_word(
       3..2:   AM (arm modifier, only if AS=3)
       1..0:   AS (arm source: 0=device, 1=immediate, 2=clock, 3=external)
 
-    NOTE: Java SnapShotPool never sends ARM_IMMEDIATELY (1) on the wire —
+    NOTE: Java SnapShotPool never sends ARM_IMMEDIATELY (1) on the wire --
     even for immediate arming it uses ARM_CLOCK_EVENTS (2) with all-0xFF
     events and arm_delay=0.  Comment from Java: "ecbpm doesn't like;
     other don't care".  We follow the same convention.
@@ -440,7 +440,7 @@ def build_snapshot_setup(
     Header is 68 bytes, each device adds 20 bytes.
 
     The default ``arm_source=2`` (ARM_CLOCK_EVENTS) with all-0xFF arm_events
-    gives immediate arming — matching Java SnapShotPool which never sends
+    gives immediate arming -- matching Java SnapShotPool which never sends
     ARM_IMMEDIATELY (1) on the wire ("ecbpm doesn't like; other don't care").
     For clock-event arming, pass arm_events with literal event numbers, e.g.
     ``b"\\x02" + b"\\xff" * 7`` for TCLK event 0x02.
@@ -729,7 +729,7 @@ def parse_snapshot_data_reply(
             (most classes do; Quick Digitizer and Swift do not).
         skip_first_point: If True, discard the first data point (it contains
             arm time / metadata, not real data).  Nearly all snapshot classes
-            require this — see ``SnapClassInfo.skip_first_point``.
+            require this -- see ``SnapClassInfo.skip_first_point``.
     """
     if len(data) < 4:
         return []
@@ -1419,7 +1419,7 @@ class FTPClient:
             rate_hz: Sample rate in Hz.
             num_points: Number of points to capture (default 2048).
             arm_source: 0=device, 2=clock (default, also used for immediate),
-                3=external.  Avoid 1 (ARM_IMMEDIATELY) — some FEs reject it.
+                3=external.  Avoid 1 (ARM_IMMEDIATELY) -- some FEs reject it.
             arm_modifier: Modifier for external arm source (0-3, only if arm_source=3).
             plot_mode: 2=post-trigger, 3=pre-trigger.
             arm_delay: Microseconds (post-trigger) or samples (pre-trigger) after arm.

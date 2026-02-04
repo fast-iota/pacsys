@@ -653,14 +653,10 @@ class MockSelectChannelWithWriteSupport(MockSelectChannel):
     def basic_publish(self, exchange="", routing_key="", body=b"", properties=None):
         """Capture SETTING messages."""
         super().basic_publish(exchange, routing_key, body, properties)
-        # Queue write response if this is a SETTING message
-        if (
-            routing_key.startswith("S.")
-            and properties
-            and hasattr(properties, "correlation_id")
-            and properties.correlation_id
-        ):
-            self._pending_writes.append(properties.correlation_id)
+        # Queue write response if this is a SETTING message (use message_id
+        # as the response correlation_id, matching Java server behavior)
+        if routing_key.startswith("S.") and properties and getattr(properties, "message_id", None):
+            self._pending_writes.append(properties.message_id)
 
     def basic_consume(self, queue, on_message_callback=None, auto_ack=False):
         """Start consuming and also deliver write responses."""
@@ -927,6 +923,36 @@ class TestDictToAlarmSample:
 
         with pytest.raises(ValueError, match="type-specific key"):
             _dict_to_alarm_sample({}, ref_id=1, timestamp_ms=0)
+
+
+# =============================================================================
+# Test Value-to-Sample Conversion
+# =============================================================================
+
+
+class TestValueToSample:
+    """Tests for _value_to_sample helper (BasicControl → wire format)."""
+
+    def test_basic_control_on_uses_sdd_enum(self):
+        """Commands 0-6 use BasicControlSample with SDD enum constants."""
+        from pacsys.backends.dmq import DMQBackend, _BASIC_CONTROL_TO_SDD
+        from pacsys.types import BasicControl
+
+        backend = object.__new__(DMQBackend)
+        sample = backend._value_to_sample(BasicControl.ON)
+        assert isinstance(sample, BasicControlSample_reply)
+        assert sample.value == _BASIC_CONTROL_TO_SDD[BasicControl.ON]
+
+    def test_basic_control_local_uses_double(self):
+        """LOCAL/REMOTE/TRIP (7-9) use DoubleSample since DMQ proto lacks them."""
+        from pacsys.backends.dmq import DMQBackend
+        from pacsys.types import BasicControl
+
+        backend = object.__new__(DMQBackend)
+        for cmd in (BasicControl.LOCAL, BasicControl.REMOTE, BasicControl.TRIP):
+            sample = backend._value_to_sample(cmd)
+            assert isinstance(sample, DoubleSample_reply), f"{cmd.name} should use DoubleSample"
+            assert sample.value == float(cmd), f"{cmd.name} ordinal mismatch"
 
 
 # =============================================================================

@@ -1,7 +1,7 @@
 site_name: pacsys
 site_description: Pure-Python library for Fermilab's ACNET control system
-repo_url: https://github.com/fermi-ad/pacsys
-repo_name: fermi-ad/pacsys
+repo_url: https://github.com/fast-iota/pacsys
+repo_name: fast-iota/pacsys
 
 nav:
   - Home: index.md
@@ -104,4 +104,4 @@ extra:
   generator: false
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/fermi-ad/pacsys
+      link: https://github.com/fast-iota/pacsys

@@ -54,8 +54,8 @@ class TestAnalogAlarm:
     def test_parse_from_bytes(self):
         """Parse analog alarm from raw bytes (ACNET network order)."""
         # Build 20-byte block: flags with MIN_MAX (K=2), 2-byte data (Q=1)
-        # Flags: BYPASS=1, K=2 (bits 8-9), Q=1 (bits 5-6) = 0x0221
-        flags = AlarmFlags.BYPASS | (2 << 8) | (1 << 5)
+        # Flags: ENABLE=1, K=2 (bits 8-9), Q=1 (bits 5-6) = 0x0221
+        flags = AlarmFlags.ENABLE | (2 << 8) | (1 << 5)
         data = struct.pack(
             "<H4s4sBBH6s",
             flags,
@@ -133,8 +133,8 @@ class TestAnalogAlarm:
 class TestDigitalAlarm:
     def test_parse_from_bytes(self):
         """Parse digital alarm from raw bytes (ACNET network order)."""
-        # Flags: BYPASS=1, DIGITAL=1 (bit 7), Q=1 (bits 5-6) = 0x00A1
-        flags = AlarmFlags.BYPASS | AlarmFlags.DIGITAL | (1 << 5)
+        # Flags: ENABLE=1, DIGITAL=1 (bit 7), Q=1 (bits 5-6) = 0x00A1
+        flags = AlarmFlags.ENABLE | AlarmFlags.DIGITAL | (1 << 5)
         data = struct.pack(
             "<H4s4sBBH6s",
             flags,

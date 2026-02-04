@@ -391,7 +391,7 @@ class AcnetConnectionTCP:
             raise AcnetUnavailableError()
 
         if len(ack) < 6:
-            # Short ACK — error-only response (no request ID allocated)
+            # Short ACK -- error-only response (no request ID allocated)
             _ack_code, status = struct.unpack(">Hh", ack[:4])
             if status == ACNET_REQREJ:
                 raise AcnetRequestRejectedError(task)
@@ -632,7 +632,10 @@ class AcnetConnectionTCP:
         return pid
 
     def disconnect_single(self):
-        """Disconnect this single task instance (not all tasks for handle)."""
+        """Disconnect this single task instance (not all tasks for handle).
+
+        Not currently used internally -- kept for potential future protocol needs.
+        """
         buf = struct.pack(">I2H2I", 12, ACNETD_COMMAND, CMD_DISCONNECT_SINGLE, self._raw_handle, 0)
         try:
             self._xact(buf)
@@ -729,6 +732,13 @@ class AcnetConnectionTCP:
         assert self._socket is not None, "not connected"
 
         with self._cmd_lock:
+            # Drain any stale ACKs from a previous timed-out command
+            while not self._ack_queue.empty():
+                try:
+                    self._ack_queue.get_nowait()
+                except queue.Empty:
+                    break
+
             try:
                 with self._socket_lock:
                     self._socket.sendall(buf)

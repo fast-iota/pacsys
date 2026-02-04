@@ -45,7 +45,7 @@ from pacsys.alarm_block import (
     DataType,
     DataLength,
 )
-from pacsys.corrector_ramp import CorrectorRamp, BoosterRamp  # noqa: F401
+from pacsys.ramp import Ramp, CorrectorRamp, BoosterRamp  # noqa: F401
 from pacsys.digital_status import StatusBit, DigitalStatus  # noqa: F401
 from pacsys.verify import Verify  # noqa: F401
 from pacsys.ssh import (  # noqa: F401
@@ -65,6 +65,7 @@ if TYPE_CHECKING:
     from pacsys.backends.grpc_backend import GRPCBackend
     from pacsys.backends.acl import ACLBackend
     from pacsys.backends.dmq import DMQBackend
+    from pacsys.devdb import DevDBClient
 
 __version__ = "0.1.0"
 
@@ -103,6 +104,8 @@ _env_dpm_host = os.environ.get("PACSYS_DPM_HOST")
 _env_dpm_port = _get_env_int("PACSYS_DPM_PORT")
 _env_pool_size = _get_env_int("PACSYS_POOL_SIZE")
 _env_timeout = _get_env_float("PACSYS_TIMEOUT")
+_env_devdb_host = os.environ.get("PACSYS_DEVDB_HOST")
+_env_devdb_port = _get_env_int("PACSYS_DEVDB_PORT")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -123,6 +126,12 @@ _config_dpm_host: Optional[str] = None
 _config_dpm_port: Optional[int] = None
 _config_pool_size: Optional[int] = None
 _config_timeout: Optional[float] = None
+_config_devdb_host: Optional[str] = None
+_config_devdb_port: Optional[int] = None
+
+# Global lazy-initialized DevDB client (None until first use)
+_global_devdb: Optional["DevDBClient"] = None
+_devdb_initialized = False
 
 # All backends created via factory functions, tracked for atexit cleanup.
 # WeakSet so backends closed+dereferenced via `with` get garbage collected.
@@ -156,6 +165,8 @@ def configure(
     dpm_port: Optional[int] = None,
     pool_size: Optional[int] = None,
     default_timeout: Optional[float] = None,
+    devdb_host: Optional[str] = None,
+    devdb_port: Optional[int] = None,
 ) -> None:
     """Configure pacsys global settings.
 
@@ -166,14 +177,17 @@ def configure(
         dpm_port: DPM proxy port (default: from PACSYS_DPM_PORT or 6802)
         pool_size: Connection pool size (default: from PACSYS_POOL_SIZE or 4)
         default_timeout: Default operation timeout in seconds (default: from PACSYS_TIMEOUT or 5.0)
+        devdb_host: DevDB gRPC hostname (default: from PACSYS_DEVDB_HOST or localhost)
+        devdb_port: DevDB gRPC port (default: from PACSYS_DEVDB_PORT or 6802)
 
     Raises:
         RuntimeError: If called after any backend is initialized
     """
     global _config_dpm_host, _config_dpm_port, _config_pool_size, _config_timeout
+    global _config_devdb_host, _config_devdb_port
 
     with _global_lock:
-        if _backend_initialized:
+        if _backend_initialized or _devdb_initialized:
             raise RuntimeError(
                 "configure() must be called before any read/get operations. "
                 "Call shutdown() first to close the backend, then configure() to change settings."
@@ -187,10 +201,14 @@ def configure(
             _config_pool_size = pool_size
         if default_timeout is not None:
             _config_timeout = default_timeout
+        if devdb_host is not None:
+            _config_devdb_host = devdb_host
+        if devdb_port is not None:
+            _config_devdb_port = devdb_port
 
 
 def shutdown() -> None:
-    """Close and release the global lazy-initialized backend.
+    """Close and release the global lazy-initialized backend and DevDB client.
 
     The global backend is automatically closed on interpreter exit via atexit,
     so explicit shutdown() is only needed to reset state mid-process (e.g.,
@@ -198,18 +216,24 @@ def shutdown() -> None:
 
     After shutdown(), the next read/get call will re-initialize the backend
     using existing configuration from configure(). Configuration is preserved
-    across shutdown/re-init cycles — use configure() to change settings.
+    across shutdown/re-init cycles -- use configure() to change settings.
 
     Safe to call multiple times or when no backend is initialized.
     """
     global _global_dpm_backend, _backend_initialized
+    global _global_devdb, _devdb_initialized
 
     with _global_lock:
         if _global_dpm_backend is not None:
             _global_dpm_backend.close()
             _global_dpm_backend = None
 
+        if _global_devdb is not None:
+            _global_devdb.close()
+            _global_devdb = None
+
         _backend_initialized = False
+        _devdb_initialized = False
 
 
 def _get_global_backend() -> "DPMHTTPBackend":
@@ -266,6 +290,45 @@ def _get_global_backend() -> "DPMHTTPBackend":
         _backend_initialized = True
 
         return _global_dpm_backend
+
+
+def _get_global_devdb() -> Optional["DevDBClient"]:
+    """Get or create the global DevDB client if configured.
+
+    Returns None if DevDB is not configured (no host in env or configure()).
+    The global DevDB is opt-in -- only created if PACSYS_DEVDB_HOST is set
+    or configure(devdb_host=...) was called.
+    """
+    global _global_devdb, _devdb_initialized
+
+    if _devdb_initialized:
+        return _global_devdb
+
+    with _global_lock:
+        if _devdb_initialized:
+            return _global_devdb
+
+        host = _config_devdb_host or _env_devdb_host
+        if host is None:
+            _devdb_initialized = True
+            return None
+
+        from pacsys.devdb import DevDBClient, DEVDB_AVAILABLE
+
+        if not DEVDB_AVAILABLE:
+            from pacsys.devdb import _import_error
+
+            logger.warning("DevDB configured (host=%s) but gRPC not available: %s", host, _import_error)
+            _devdb_initialized = True
+            return None
+
+        port = _config_devdb_port or _env_devdb_port or 6802
+        _global_devdb = DevDBClient(host=host, port=port)
+        _devdb_initialized = True
+        # Track for atexit cleanup
+        with _live_backends_lock:
+            _live_backends.add(_global_devdb)
+        return _global_devdb
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -612,7 +675,7 @@ def dmq(
     Requires Kerberos authentication for ALL operations (including reads).
 
     Args:
-        host: RabbitMQ broker hostname (default: from PACSYS_DMQ_HOST or appsrv3.fnal.gov)
+        host: RabbitMQ broker hostname (default: from PACSYS_DMQ_HOST or appsrv2.fnal.gov)
         port: RabbitMQ broker port (default: from PACSYS_DMQ_PORT or 5672)
         timeout: Default operation timeout in seconds (default: 5.0)
         auth: KerberosAuth required for all DMQ operations
@@ -648,6 +711,39 @@ def dmq(
     return _track(DMQBackend(**kwargs))
 
 
+def devdb(
+    host: Optional[str] = None,
+    port: Optional[int] = None,
+    timeout: Optional[float] = None,
+    cache_ttl: float = 3600.0,
+) -> "DevDBClient":
+    """Create a DevDB client for device metadata queries.
+
+    DevDB provides device information like scaling parameters, control commands,
+    and status bit definitions from the master PostgreSQL database.
+
+    Args:
+        host: DevDB gRPC hostname (default: from PACSYS_DEVDB_HOST or localhost)
+        port: DevDB gRPC port (default: from PACSYS_DEVDB_PORT or 6802)
+        timeout: RPC timeout in seconds (default: 5.0)
+        cache_ttl: Cache TTL in seconds (default: 3600.0)
+
+    Returns:
+        DevDBClient instance (use as context manager or call close() when done)
+
+    Raises:
+        ImportError: If grpc package is not available
+
+    Example:
+        with pacsys.devdb(host="localhost", port=45678) as db:
+            info = db.get_device_info(["Z:ACLTST"])
+            print(info["Z:ACLTST"].description)
+    """
+    from pacsys.devdb import DevDBClient
+
+    return _track(DevDBClient(host=host, port=port, timeout=timeout, cache_ttl=cache_ttl))
+
+
 def ssh(
     hops: "Union[str, SSHHop, list[str | SSHHop]]",
     auth: Optional[Auth] = None,
@@ -680,7 +776,7 @@ def ssh(
 
     Example (port forwarding):
         with pacsys.ssh("jump.fnal.gov") as client:
-            with client.forward(23456, "dce08.fnal.gov", 50051) as tunnel:
+            with client.forward(23456, "grpc-host.fnal.gov", 50051) as tunnel:
                 # Use gRPC backend via tunnel
                 with pacsys.grpc(port=tunnel.local_port) as backend:
                     value = backend.read("M:OUTTMP")
@@ -776,10 +872,12 @@ __all__ = [
     "dmq",
     "acl",
     "ssh",
+    "devdb",
     # Submodule
     "acnet",
     # Internal (for Device)
     "_get_global_backend",
+    "_get_global_devdb",
 ]
 
 # Testing utilities (import explicitly when needed):

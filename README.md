@@ -22,7 +22,7 @@ ACNET (Accelerator Control NETwork) is the control system used at Fermilab's par
 ```python
 from pacsys import Device, ScalarDevice, ArrayDevice, Verify, KerberosAuth
 
-# Create a device — DRF is validated immediately
+# Create a device -- DRF is validated immediately
 dev = Device("M:OUTTMP")
 
 # Read different properties
@@ -51,7 +51,7 @@ dev.on()
 dev.off()
 dev.reset()
 
-# Immutable — modifications return new instances
+# Immutable -- modifications return new instances
 periodic_dev = dev.with_event("p,1000")
 sliced_dev = dev.with_range(0, 10)
 ```

@@ -60,7 +60,7 @@ with pacsys.dmq(auth=auth) as backend:
 
 | Parameter | Default | Environment Variable |
 |-----------|---------|---------------------|
-| `host` | appsrv3.fnal.gov | `PACSYS_DMQ_HOST` |
+| `host` | appsrv2.fnal.gov | `PACSYS_DMQ_HOST` |
 | `port` | 5672 | `PACSYS_DMQ_PORT` |
 | `vhost` | / | - |
 | `timeout` | 10.0 | - |

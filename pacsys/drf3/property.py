@@ -12,9 +12,10 @@ class DRF_PROPERTY(Enum):
     INDEX = "^"
     LONG_NAME = "#"
     ALARM_LIST_NAME = "!"
+    BIT_STATUS = None  # No qualifier char; only accessible via explicit .BIT_STATUS
 
 
-DRF_PROPERTY_SHORTHANDS = {el.name: el.value for el in DRF_PROPERTY}
+DRF_PROPERTY_SHORTHANDS = {el.name: el.value for el in DRF_PROPERTY if el.value is not None}
 
 DRF_PROPERTY_ALIASES = {
     "READING": DRF_PROPERTY.READING,
@@ -51,6 +52,8 @@ DRF_PROPERTY_ALIASES = {
     "ALARM_LIST_NAME": DRF_PROPERTY.ALARM_LIST_NAME,
     "LSTNAM": DRF_PROPERTY.ALARM_LIST_NAME,
     "PRALNM": DRF_PROPERTY.ALARM_LIST_NAME,
+    "BIT_STATUS": DRF_PROPERTY.BIT_STATUS,
+    "BITSTATUS": DRF_PROPERTY.BIT_STATUS,
 }
 
 
@@ -65,7 +68,7 @@ def parse_property(raw_string: str) -> DRF_PROPERTY:
 def get_default_property(raw_string: str) -> DRF_PROPERTY:
     char = raw_string[1]
     if len(raw_string) > 2:
-        values = [el.value for el in DRF_PROPERTY]
+        values = [el.value for el in DRF_PROPERTY if el.value is not None]
         if char in values:
             return DRF_PROPERTY(char)
     return DRF_PROPERTY.READING

@@ -165,7 +165,7 @@ DIGITAL_ALARM_DEVICE = "N$H801"
 # Allowed Write Devices
 # =============================================================================
 # Safety: ONLY these devices may be written to in tests.
-# conftest.py enforces this — any write to an unlisted device raises an error.
+# conftest.py enforces this -- any write to an unlisted device raises an error.
 ALLOWED_WRITE_DEVICES = frozenset(
     [
         "G:AMANDA",
@@ -205,7 +205,24 @@ ANALOG_ALARM_SETPOINT = "Z@ACLTST"
 # Test Devices - Control (on/off)
 # =============================================================================
 
-# Z:ACLTST supports basic on/off control.
+# Z:ACLTST is an OAC (Open Access Client) device -- software-emulated.
+# Its DB control attribute table has 12 commands, but ordinals 7-9 map to
+# TEST/TEST2/TEST3 -- NOT to LOCAL/REMOTE/TRIP:
+#
+#   ordinal 0 (RESET)    → value 3   (RESET)
+#   ordinal 1 (ON)       → value 1   (ON)
+#   ordinal 2 (OFF)      → value 2   (OFF)
+#   ordinal 3 (POSITIVE) → value 4   (POSITIVE)
+#   ordinal 4 (NEGATIVE) → value 16  (NEGATIVE)
+#   ordinal 5 (RAMP)     → value 5   (RAMP)
+#   ordinal 6 (DC)       → value 6   (DC)
+#   ordinal 7 (LOCAL)    → value 8   (TEST)      ← no remote status bit
+#   ordinal 8 (REMOTE)   → value 256 (TEST2)     ← no remote status bit
+#   ordinal 9 (TRIP)     → value 257 (TEST3)     ← does NOT toggle ready
+#
+# Status bits (DB): on (0x1), ready (0x2), positive (0x8), ramp (0x200).
+# No "remote" status bit exists on this device.
+#
 # STATUS qualifier (Z|ACLTST) reads the device status bits.
 # CONTROL qualifier (Z&ACLTST) writes control commands.
 STATUS_CONTROL_DEVICE = "Z|ACLTST"
@@ -216,8 +233,29 @@ CONTROL_NEGATIVE = BasicControl.NEGATIVE
 CONTROL_RAMP = BasicControl.RAMP
 CONTROL_DC = BasicControl.DC
 CONTROL_RESET = BasicControl.RESET
+CONTROL_LOCAL = BasicControl.LOCAL
+CONTROL_REMOTE = BasicControl.REMOTE
+CONTROL_TRIP = BasicControl.TRIP
 
-# (command_true, command_false, status_field) — each pair toggles a status bit
+# Unpaired control ordinals on Z:ACLTST -- ordinals that map to device-specific
+# TEST commands rather than standard BasicControl actions. These write successfully
+# but don't toggle any standard status bit. See ordinal table above.
+# (ordinal, device_command_name)
+ACLTST_UNPAIRED_CONTROLS = [
+    (BasicControl.LOCAL, "TEST"),  # ordinal 7 → value 8
+    (BasicControl.REMOTE, "TEST2"),  # ordinal 8 → value 256
+    (BasicControl.TRIP, "TEST3"),  # ordinal 9 → value 257
+    (10, "TEST4"),  # ordinal 10 → value 258 (beyond BasicControl enum)
+    (11, "TEST5"),  # ordinal 11 → value 259 (beyond BasicControl enum)
+]
+
+# Ordinal with no entry in Z:ACLTST's 12-command control table.
+ACLTST_NONEXISTENT_ORDINAL = 25
+
+# (command_true, command_false, status_field) -- each pair toggles a status bit.
+# Only pairs whose ordinals map to real control actions on Z:ACLTST.
+# REMOTE/LOCAL and RESET/TRIP are excluded -- see ordinal table above.
+# Unpaired ordinals are tested separately in test_dpm_http_backend.py.
 CONTROL_PAIRS = [
     (BasicControl.ON, BasicControl.OFF, "on"),
     (BasicControl.POSITIVE, BasicControl.NEGATIVE, "positive"),

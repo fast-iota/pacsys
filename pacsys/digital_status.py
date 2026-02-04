@@ -2,7 +2,7 @@
 Digital status (basic status) helper for ACNET devices.
 
 DigitalStatus is a frozen value object representing a device's status bit field.
-It is constructed from data already fetched by a backend or Device API — it does
+It is constructed from data already fetched by a backend or Device API -- it does
 no I/O itself.
 
 Two construction paths:
@@ -163,7 +163,7 @@ class DigitalStatus:
         """Construct from PC/DMQ format: {"on": True, ...}."""
         legacy = {k: d.get(k) for k in _LEGACY_KEYS}
 
-        # Build bits from what we know (limited — no bit positions or text)
+        # Build bits from what we know (limited -- no bit positions or text)
         bits = []
         for i, key in enumerate(_LEGACY_KEYS):
             val = d.get(key)
@@ -209,6 +209,60 @@ class DigitalStatus:
         return cls(
             device=device,
             raw_value=raw_value if raw_value is not None else _reconstruct_raw(bits),
+            bits=tuple(bits),
+            **legacy,
+        )
+
+    @classmethod
+    def from_devdb_bits(
+        cls,
+        device: str,
+        raw_value: int,
+        bit_defs: tuple,
+        ext_bit_defs: tuple | None = None,
+    ) -> DigitalStatus:
+        """Construct from DevDB status bit definitions + runtime raw value.
+
+        Uses mask/match/invert logic from DevDB DigitalStatusItem to evaluate
+        each bit against the raw value. This is more accurate than the positional
+        index approach in from_bit_arrays() because DevDB provides the actual
+        hardware bit masks.
+
+        Args:
+            device: Device name.
+            raw_value: Raw integer status word from BIT_VALUE.
+            bit_defs: Tuple of StatusBitDef from DevDB.
+            ext_bit_defs: Optional tuple of ExtStatusBitDef from DevDB.
+        """
+        bits = []
+        for i, bd in enumerate(bit_defs):
+            is_active = ((raw_value & bd.mask) == bd.match) ^ bd.invert
+            bits.append(
+                StatusBit(
+                    position=i,
+                    name=bd.short_name,
+                    value=bd.true_str if is_active else bd.false_str,
+                    is_set=is_active,
+                )
+            )
+
+        # Append extended status bits (higher bit positions from DevDB)
+        if ext_bit_defs:
+            for ebd in ext_bit_defs:
+                is_set = bool(raw_value & (1 << ebd.bit_no))
+                bits.append(
+                    StatusBit(
+                        position=ebd.bit_no,
+                        name=ebd.description or f"bit{ebd.bit_no}",
+                        value=ebd.name1 if is_set else ebd.name0,
+                        is_set=is_set,
+                    )
+                )
+
+        legacy = _infer_legacy_from_bits(bits)
+        return cls(
+            device=device,
+            raw_value=raw_value,
             bits=tuple(bits),
             **legacy,
         )

@@ -29,6 +29,7 @@ from pacsys.dpm_protocol import ListStatus_reply, Raw_reply, StartList_reply
 # Shared test helpers
 from tests.devices import (
     MockSocketWithReplies,
+    make_add_to_list_reply,
     make_device_info,
     make_start_list,
     make_scalar_reply,
@@ -469,8 +470,8 @@ class TestDPMHTTPBackendStreaming:
         try:
             handle = _DPMHTTPSubscriptionHandle(
                 backend=backend,
-                sub_id=1,
-                is_callback_mode=True,
+                drfs=["M:OUTTMP@p,1000"],
+                callback=lambda r, h: None,
             )
 
             with pytest.raises(RuntimeError, match="Cannot iterate subscription with callback"):
@@ -486,10 +487,9 @@ class TestDPMHTTPBackendStreaming:
         try:
             handle = _DPMHTTPSubscriptionHandle(
                 backend=backend,
-                sub_id=1,
-                is_callback_mode=False,
+                drfs=["M:OUTTMP@p,1000"],
+                callback=None,
             )
-            handle._ref_ids = [1]
 
             with handle as h:
                 assert h is handle
@@ -525,16 +525,16 @@ class TestDPMHTTPBackendStreaming:
 class TestDPMHTTPBackendMultiConnection:
     """Tests for multi-connection streaming architecture."""
 
-    def test_stop_streaming_clears_all_connections(self):
-        """stop_streaming() clears all connections."""
+    def test_stop_streaming_clears_all_handles(self):
+        """stop_streaming() clears all handles."""
         backend = DPMHTTPBackend()
         try:
-            backend._stream_connections[1] = MagicMock()
-            backend._stream_connections[2] = MagicMock()
+            backend._handles.append(MagicMock())
+            backend._handles.append(MagicMock())
 
             backend.stop_streaming()
 
-            assert len(backend._stream_connections) == 0
+            assert len(backend._handles) == 0
         finally:
             backend.close()
 
@@ -660,6 +660,146 @@ class TestErrorHandling:
                 assert reading.value == TEMP_VALUE
             finally:
                 backend.close()
+
+
+# =============================================================================
+# AddToList Reply Handling Tests
+# =============================================================================
+
+
+class TestAddToListReplyHandling:
+    """Tests that AddToList_reply is correctly filtered in get_many."""
+
+    def test_add_to_list_replies_not_counted_as_data(self):
+        """AddToList_reply should be ignored, not treated as data replies."""
+        replies = [
+            make_add_to_list_reply(ref_id=1, status=0),
+            make_add_to_list_reply(ref_id=2, status=0),
+            make_device_info(name="M:OUTTMP", ref_id=1),
+            make_device_info(name="G:AMANDA", ref_id=2, di=12346),
+            make_start_list(),
+            make_scalar_reply(value=72.5, ref_id=1),
+            make_scalar_reply(value=1.234, ref_id=2),
+        ]
+        mock_socket = MockSocketWithReplies(list_id=1, replies=replies)
+
+        with mock.patch("socket.socket", return_value=mock_socket):
+            backend = DPMHTTPBackend()
+            try:
+                readings = backend.get_many(["M:OUTTMP", "G:AMANDA"], timeout=5.0)
+                assert len(readings) == 2
+                assert readings[0].value == 72.5
+                assert readings[1].value == 1.234
+            finally:
+                backend.close()
+
+    def test_add_to_list_error_returns_error_reading(self):
+        """AddToList_reply with non-zero status produces error reading."""
+        error_status = make_error(1, -42)
+        replies = [
+            make_add_to_list_reply(ref_id=1, status=0),
+            make_add_to_list_reply(ref_id=2, status=error_status),
+            make_device_info(name="M:OUTTMP", ref_id=1),
+            make_start_list(),
+            make_scalar_reply(value=72.5, ref_id=1),
+        ]
+        mock_socket = MockSocketWithReplies(list_id=1, replies=replies)
+
+        with mock.patch("socket.socket", return_value=mock_socket):
+            backend = DPMHTTPBackend()
+            try:
+                readings = backend.get_many(["M:OUTTMP", "M:BADDEV"], timeout=5.0)
+                assert len(readings) == 2
+                assert readings[0].ok
+                assert readings[0].value == 72.5
+                assert readings[1].is_error
+                assert readings[1].error_code == -42
+            finally:
+                backend.close()
+
+
+# =============================================================================
+# StartList Failure Abort Tests
+# =============================================================================
+
+
+class TestStartListFailureAbort:
+    """Tests that failed StartList aborts get_many instead of waiting."""
+
+    def test_start_list_failure_returns_timeout_readings(self):
+        """Failed StartList should not block -- return timeout readings promptly."""
+        replies = [
+            make_add_to_list_reply(ref_id=1, status=0),
+            make_device_info(name="M:OUTTMP", ref_id=1),
+            make_start_list(status=make_error(1, -1)),
+        ]
+        mock_socket = MockSocketWithReplies(list_id=1, replies=replies)
+
+        with mock.patch("socket.socket", return_value=mock_socket):
+            backend = DPMHTTPBackend()
+            try:
+                import time
+
+                start = time.monotonic()
+                readings = backend.get_many(["M:OUTTMP"], timeout=5.0)
+                elapsed = time.monotonic() - start
+                assert len(readings) == 1
+                assert readings[0].is_error
+                # Should return quickly, not wait for the full 5s timeout
+                assert elapsed < 2.0
+            finally:
+                backend.close()
+
+
+# =============================================================================
+# Connection Pool Contamination Tests
+# =============================================================================
+
+
+class TestPoolTimeoutDiscard:
+    """Tests that pool discards connections on TimeoutError."""
+
+    def test_pool_discards_on_timeout(self):
+        """ConnectionPool should discard connection on TimeoutError."""
+        from pacsys.pool import ConnectionPool
+
+        mock_conn = MagicMock()
+        mock_conn.connected = True
+
+        pool = ConnectionPool(host="localhost", port=6802)
+        # Manually inject mock connection to avoid real network
+        pool._available = [mock_conn]
+        pool._in_use = set()
+
+        try:
+            with pool.connection() as conn:
+                assert conn is mock_conn
+                raise TimeoutError("Receive timeout")
+        except TimeoutError:
+            pass
+
+        # Connection should have been discarded, not returned to available
+        assert mock_conn not in pool._available
+        assert mock_conn not in pool._in_use
+        mock_conn.close.assert_called_once()
+
+    def test_pool_keeps_connection_on_normal_exit(self):
+        """ConnectionPool should return connection on normal exit."""
+        from pacsys.pool import ConnectionPool
+
+        mock_conn = MagicMock()
+        mock_conn.connected = True
+
+        pool = ConnectionPool(host="localhost", port=6802)
+        pool._available = [mock_conn]
+        pool._in_use = set()
+
+        with pool.connection() as conn:
+            assert conn is mock_conn
+
+        # Connection should be returned to available pool
+        assert mock_conn in pool._available
+        mock_conn.close.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ from unittest import mock
 
 from pacsys.backends.dpm_http import DPMHTTPBackend
 from pacsys.auth import KerberosAuth
-from pacsys.types import BackendCapability, WriteResult
+from pacsys.types import WriteResult
 from pacsys.errors import AuthenticationError
 from pacsys.acnet.errors import make_error
 from tests.devices import (
@@ -304,7 +304,7 @@ class TestWriteVerify:
     """Tests for write verification (now handled at Device layer, not backend)."""
 
     def test_backend_write_has_no_verify_param(self):
-        """Backend.write() no longer accepts verify/tolerance — verification is Device-layer only."""
+        """Backend.write() no longer accepts verify/tolerance -- verification is Device-layer only."""
         mock_gssapi = MockGSSAPIModule()
         mock_socket = MockSocketWithReplies(list_id=1, replies=make_write_sequence())
 
@@ -319,44 +319,8 @@ class TestWriteVerify:
                     backend.close()
 
 
-class TestPacsysDpmFactory:
-    """Tests for pacsys.dpm() factory function."""
-
-    def test_dpm_factory_no_auth(self):
-        """Test dpm() factory without auth."""
-        import pacsys
-
-        backend = pacsys.dpm()
-        assert not backend.authenticated
-        backend.close()
-
-    def test_dpm_factory_with_auth(self):
-        """Test dpm() factory with auth."""
-        import pacsys
-
-        mock_gssapi = MockGSSAPIModule()
-
-        with mock.patch.dict("sys.modules", {"gssapi": mock_gssapi}):
-            auth = KerberosAuth()
-            backend = pacsys.dpm(auth=auth, role="Operator")
-            assert backend.authenticated
-            assert backend.principal == "user@FNAL.GOV"
-            assert BackendCapability.WRITE in backend.capabilities
-            backend.close()
-
-
 class TestWriteConnectionPool:
     """Tests for write connection caching behavior."""
-
-    def test_write_connection_pool_starts_empty(self):
-        """Test that write connection pool starts empty."""
-        mock_gssapi = MockGSSAPIModule()
-
-        with mock.patch.dict("sys.modules", {"gssapi": mock_gssapi}):
-            auth = KerberosAuth()
-            backend = DPMHTTPBackend(auth=auth, role="Operator")
-            assert len(backend._write_connections) == 0
-            backend.close()
 
     def test_write_connection_closed_on_backend_close(self):
         """Test that write connections are closed when backend closes."""

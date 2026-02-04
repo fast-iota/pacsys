@@ -22,6 +22,35 @@ def timestamp_from_millis(millis: int) -> datetime:
     return datetime.fromtimestamp(millis / 1_000)
 
 
+# Alarm dict key sets shared by DMQ and gRPC backends
+ALARM_ANALOG_ONLY_KEYS = frozenset({"minimum", "maximum"})
+ALARM_DIGITAL_ONLY_KEYS = frozenset({"nominal", "mask"})
+ALARM_SHARED_KEYS = frozenset({"alarm_enable", "abort_inhibit", "tries_needed"})
+ALARM_ANALOG_KEYS = ALARM_ANALOG_ONLY_KEYS | ALARM_SHARED_KEYS
+ALARM_DIGITAL_KEYS = ALARM_DIGITAL_ONLY_KEYS | ALARM_SHARED_KEYS
+ALARM_READONLY_KEYS = frozenset({"abort", "alarm_status", "tries_now"})
+
+
+def validate_alarm_dict(d: dict) -> str:
+    """Validate an alarm dict and return 'analog' or 'digital'.
+
+    Raises ValueError on unknown keys, mixed types, or missing type-specific keys.
+    """
+    keys = set(d) - ALARM_READONLY_KEYS
+    unknown = keys - ALARM_ANALOG_KEYS - ALARM_DIGITAL_KEYS
+    if unknown:
+        raise ValueError(f"Unknown alarm dict keys: {unknown}")
+    has_analog = bool(keys & ALARM_ANALOG_ONLY_KEYS)
+    has_digital = bool(keys & ALARM_DIGITAL_ONLY_KEYS)
+    if has_analog and has_digital:
+        raise ValueError("Cannot mix analog (minimum/maximum) and digital (nominal/mask) alarm keys")
+    if not has_analog and not has_digital:
+        raise ValueError(
+            "Alarm dict must include at least one type-specific key: minimum/maximum (analog) or nominal/mask (digital)"
+        )
+    return "analog" if has_analog else "digital"
+
+
 class Backend(ABC):
     """
     Abstract base class for backend instances.

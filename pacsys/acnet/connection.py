@@ -15,7 +15,6 @@ import select
 import socket
 import struct
 import threading
-import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Optional
@@ -637,9 +636,7 @@ class AcnetConnection:
         logger.debug(f"Monitor thread started for {self.name}")
 
         while not self._stop_event.is_set():
-            time.sleep(HEARTBEAT_TIMEOUT / 1000.0)
-
-            if self._stop_event.is_set():
+            if self._stop_event.wait(timeout=HEARTBEAT_TIMEOUT / 1000.0):
                 break
 
             try:
@@ -653,7 +650,7 @@ class AcnetConnection:
             except AcnetError:
                 logger.warning(f"Lost connection for {self.name}")
                 self._disconnect()
-                time.sleep(RECONNECT_DELAY / 1000.0)
+                self._stop_event.wait(timeout=RECONNECT_DELAY / 1000.0)
             except Exception as e:
                 logger.exception(f"Monitor thread error: {e}")
 

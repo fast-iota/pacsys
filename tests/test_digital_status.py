@@ -87,7 +87,7 @@ class TestFromBitArrays:
         assert status.bits[1].position == 3
 
     def test_mismatched_lengths_pads(self):
-        """bit_names shorter than bit_values — should not crash."""
+        """bit_names shorter than bit_values -- should not crash."""
         status = DigitalStatus.from_bit_arrays(
             "TEST",
             0b11,

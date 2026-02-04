@@ -75,6 +75,8 @@ def strip_event(drf: str) -> str:
 
         if DEFAULT_FIELD_FOR_PROPERTY.get(request.property) != request.field:
             out += f".{request.field.name}"
+    if request.extra is not None:
+        out += f"<-{request.extra.name}"
     return out
 
 
@@ -94,7 +96,7 @@ def has_event(drf: str) -> bool:
 def has_explicit_property(drf: str) -> bool:
     """Check if DRF has an explicit property (e.g., .SETTING, .READING).
 
-    Qualifier characters (M_OUTTMP) are NOT considered explicit — only
+    Qualifier characters (M_OUTTMP) are NOT considered explicit -- only
     dotted property names (.SETTING, .READING, etc.) count.
 
     Args:
@@ -126,7 +128,7 @@ def prepare_for_write(drf: str) -> str:
     """Prepare a DRF string for write operations.
 
     Converts properties to their writable counterparts and forces @N (never)
-    event — writes should never request data back.
+    event -- writes should never request data back.
 
     Property conversions:
         READING     -> SETTING   (read value -> write setpoint)
@@ -152,5 +154,5 @@ def prepare_for_write(drf: str) -> str:
     }
     new_property = _WRITE_PROPERTY.get(request.property, request.property)
 
-    # Force @N — writes never need a response event
+    # Force @N -- writes never need a response event
     return request.to_canonical(property=new_property, event=NeverEvent())

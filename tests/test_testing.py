@@ -835,7 +835,7 @@ class TestDRFNormalization:
         assert fake.read("M:OUTTMP") == 72.5
 
     def test_range_stripped_from_key(self):
-        """Ranges are stripped from key — stored value is the full device array."""
+        """Ranges are stripped from key -- stored value is the full device array."""
         fake = FakeBackend()
         fake.set_reading("B:HS23T", np.array([10, 20, 30, 40, 50]))
         # Read with same range or different range
