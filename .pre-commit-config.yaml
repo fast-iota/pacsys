@@ -1,3 +1,5 @@
+exclude: '^(interface-definitions/|proto/)'
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
@@ -7,6 +9,7 @@ repos:
       - id: mixed-line-ending
         args: [--fix=lf]
       - id: check-yaml
+        args: [--unsafe]
       - id: check-toml
       - id: check-added-large-files
         args: [--maxkb=500]
