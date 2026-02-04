@@ -29,6 +29,7 @@ dependencies = [
     "websockets",
     "aiohttp",
     "grpcio",
+    "protobuf",
     "pika",
     "gssapi",
     "paramiko",
