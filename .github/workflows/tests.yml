@@ -31,7 +31,7 @@ jobs:
       - name: Type check
         run: |
           SITE=$(python -c "import sysconfig; print(sysconfig.get_path('purelib'))")
-          ty check --extra-search-path "$SITE"
+          ty check --extra-search-path "$SITE" pacsys/
 
   test:
     runs-on: ubuntu-latest

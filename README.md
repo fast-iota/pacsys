@@ -49,6 +49,12 @@ dev.on()
 dev.off()
 dev.reset()
 
+# Device database metadata (scaling, limits, units)
+info = dev.info()
+print(info.description)                # "Outside temperature"
+print(info.reading.common_units)       # "DegF"
+print(info.reading.min_val)            # 0.0
+
 # Immutable -- modifications return new instances
 periodic_dev = dev.with_event("p,1000")
 sliced_dev = dev.with_range(0, 10)
