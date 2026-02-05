@@ -232,7 +232,7 @@ class _AsyncDPMConnection:
         self._list_id = reply.list_id
 
     async def send_message(self, msg) -> None:
-        """Send a length-prefixed PC message."""
+        """Send a length-prefixed SDD message."""
         assert self._writer is not None
         if hasattr(msg, "marshal"):
             data = bytes(msg.marshal())

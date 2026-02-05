@@ -44,8 +44,8 @@ try:
     from grpc import aio as grpc_aio
 
     # Import generated proto files (common protos first -- DAQ depends on them)
-    from proto.controls.common.v1 import device_pb2, status_pb2
-    from proto.controls.service.DAQ.v1 import DAQ_pb2, DAQ_pb2_grpc
+    from pacsys._proto.controls.common.v1 import device_pb2, status_pb2
+    from pacsys._proto.controls.service.DAQ.v1 import DAQ_pb2, DAQ_pb2_grpc
 
     GRPC_AVAILABLE = True
 except (ImportError, TypeError) as e:

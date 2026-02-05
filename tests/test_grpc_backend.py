@@ -31,8 +31,8 @@ from tests.devices import make_jwt_token
 # Check if grpc and proto files are available
 try:
     from pacsys.backends import grpc_backend
-    from proto.controls.common.v1 import device_pb2, status_pb2
-    from proto.controls.service.DAQ.v1 import DAQ_pb2
+    from pacsys._proto.controls.common.v1 import device_pb2, status_pb2
+    from pacsys._proto.controls.service.DAQ.v1 import DAQ_pb2
 
     GRPC_AVAILABLE = grpc_backend.GRPC_AVAILABLE
 except ImportError:

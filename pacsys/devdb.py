@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 _import_error = ""
 try:
     import grpc
-    from proto.controls.service.DevDB.v1 import DevDB_pb2, DevDB_pb2_grpc
+    from pacsys._proto.controls.service.DevDB.v1 import DevDB_pb2, DevDB_pb2_grpc
 
     DEVDB_AVAILABLE = True
 except (ImportError, TypeError) as e:

@@ -35,6 +35,7 @@ from .devices import (
     SCALAR_DEVICE_2,
     SCALAR_SETPOINT,
     SCALAR_SETPOINT_RAW,
+    SETTING_ON_READONLY,
     STATUS_CONTROL_DEVICE,
     ARRAY_DEVICE,
     SCALAR_ELEMENT,
@@ -241,6 +242,11 @@ class TestBackendErrors:
         reading = read_backend.get(NOPROP_DEVICE, timeout=TIMEOUT_READ)
         assert not reading.ok
         assert reading.error_code < 0
+
+    def test_read_setting_on_readonly_raises(self, read_backend):
+        """read() raises DeviceError for SETTING on read-only device."""
+        with pytest.raises(DeviceError):
+            read_backend.read(SETTING_ON_READONLY, timeout=TIMEOUT_READ)
 
     def test_get_many_partial_failure(self, read_backend):
         """get_many() handles mix of success and error."""

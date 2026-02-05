@@ -22,13 +22,16 @@ _runtime_version.ValidateProtobufRuntimeVersion(
 _sym_db = _symbol_database.Default()
 
 
+from google.protobuf import timestamp_pb2 as google_dot_protobuf_dot_timestamp__pb2
+from pacsys._proto.controls.common.v1 import device_pb2 as proto_dot_controls_dot_common_dot_v1_dot_device__pb2
+from pacsys._proto.controls.common.v1 import status_pb2 as proto_dot_controls_dot_common_dot_v1_dot_status__pb2
 
 
 DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\'proto/controls/service/DAQ/v1/DAQ.proto\x12\x0cservices.daq\x1a\x1fgoogle/protobuf/timestamp.proto\x1a%proto/controls/common/v1/device.proto\x1a%proto/controls/common/v1/status.proto\"\x1a\n\x0bReadingList\x12\x0b\n\x03\x64rf\x18\x01 \x03(\t\"\x87\x01\n\x07Reading\x12-\n\ttimestamp\x18\x01 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\"\n\x04\x64\x61ta\x18\x02 \x01(\x0b\x32\x14.common.device.Value\x12)\n\x06status\x18\x03 \x01(\x0b\x32\x15.common.status.StatusB\x02\x18\x01\"2\n\x08Readings\x12&\n\x07reading\x18\x02 \x03(\x0b\x32\x15.services.daq.Reading\"{\n\x0cReadingReply\x12\r\n\x05index\x18\x01 \x01(\r\x12*\n\x08readings\x18\x02 \x01(\x0b\x32\x16.services.daq.ReadingsH\x00\x12\'\n\x06status\x18\x03 \x01(\x0b\x32\x15.common.status.StatusH\x00\x42\x07\n\x05value\">\n\x07Setting\x12\x0e\n\x06\x64\x65vice\x18\x01 \x01(\t\x12#\n\x05value\x18\x02 \x01(\x0b\x32\x14.common.device.Value\"5\n\x0bSettingList\x12&\n\x07setting\x18\x01 \x03(\x0b\x32\x15.services.daq.Setting\"5\n\x0cSettingReply\x12%\n\x06status\x18\x02 \x03(\x0b\x32\x15.common.status.Status\"\x1c\n\nDeviceList\x12\x0e\n\x06\x64\x65vice\x18\x01 \x03(\t\"y\n\x0b\x41larmsReply\x12\r\n\x05index\x18\x01 \x01(\r\x12)\n\x06\x61larms\x18\x02 \x01(\x0b\x32\x17.services.daq.AlarmListH\x00\x12\'\n\x06status\x18\x03 \x01(\x0b\x32\x15.common.status.StatusH\x00\x42\x07\n\x05value\"?\n\tAlarmList\x12\x0e\n\x06\x64\x65vice\x18\x01 \x01(\t\x12\"\n\x05\x61larm\x18\x02 \x03(\x0b\x32\x13.services.daq.Alarm\"\x9d\x02\n\x05\x41larm\x12*\n\x06status\x18\x01 \x01(\x0e\x32\x1a.services.daq.Alarm.Status\x12.\n\x08severity\x18\x02 \x01(\x0e\x32\x1c.services.daq.Alarm.Severity\x12\x0f\n\x07\x65nabled\x18\x03 \x01(\x08\x12\x0c\n\x04text\x18\x04 \x01(\t\"a\n\x06Status\x12\r\n\tSTAT_NONE\x10\x00\x12\r\n\tSTAT_HIHI\x10\x01\x12\r\n\tSTAT_HIGH\x10\x02\x12\x0c\n\x08STAT_LOW\x10\x03\x12\r\n\tSTAT_LOLO\x10\x04\x12\r\n\tSTAT_BOOL\x10\x05\"6\n\x08Severity\x12\x0c\n\x08SEV_NONE\x10\x00\x12\r\n\tSEV_MINOR\x10\x01\x12\r\n\tSEV_MAJOR\x10\x02\x32\xc9\x01\n\x03\x44\x41Q\x12\x41\n\x04Read\x12\x19.services.daq.ReadingList\x1a\x1a.services.daq.ReadingReply\"\x00\x30\x01\x12>\n\x03Set\x12\x19.services.daq.SettingList\x1a\x1a.services.daq.SettingReply\"\x00\x12?\n\x06\x41larms\x12\x18.services.daq.DeviceList\x1a\x19.services.daq.AlarmsReply\"\x00\x42\x32\n$gov.fnal.controls.service.proto.grpcB\x08\x44\x41QProtoP\x00\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
-_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'proto.controls.service.DAQ.v1.DAQ_pb2', _globals)
+_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'pacsys._proto.controls.service.DAQ.v1.DAQ_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   _globals['DESCRIPTOR']._loaded_options = None
   _globals['DESCRIPTOR']._serialized_options = b'\n$gov.fnal.controls.service.proto.grpcB\010DAQProtoP\000'

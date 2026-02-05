@@ -28,7 +28,7 @@ DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n%proto/controls/co
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
-_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'proto.controls.common.v1.status_pb2', _globals)
+_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'pacsys._proto.controls.common.v1.status_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
   _globals['_STATUS']._serialized_start=56

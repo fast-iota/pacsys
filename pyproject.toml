@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "acsys"
 authors = [{name = "Nikita Kuklev"}]
-version = "0.2.0"
+version = "0.1.0"
 license = {text = "GPL-3.0-or-later"}
 description = "Pure-python library for Fermilab control system"
 readme = "README.md"
@@ -35,6 +35,12 @@ dependencies = [
     "paramiko[gssapi]",
 ]
 requires-python = ">=3.10"
+
+[project.urls]
+Homepage = "https://github.com/fast-iota/pacsys"
+Documentation = "https://fast-iota.github.io/pacsys/"
+Repository = "https://github.com/fast-iota/pacsys"
+Issues = "https://github.com/fast-iota/pacsys/issues"
 
 
 [project.optional-dependencies]
@@ -67,7 +73,7 @@ addopts = "--ignore=tests/real"
 
 [tool.ruff]
 line-length = 120
-exclude = ["acsys"]
+exclude = ["acsys", "pacsys/_proto"]
 
 [tool.ty.environment]
 python-version = "3.10"
@@ -76,7 +82,7 @@ python-version = "3.10"
 include = ["pacsys/", "tests/"]
 exclude = [
     "reference_code/",
-    "proto/",
+    "pacsys/_proto/",
     "acsys/",
 ]
 
@@ -133,4 +139,4 @@ output-format = "concise"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["pacsys*", "proto*"]
+include = ["pacsys*"]

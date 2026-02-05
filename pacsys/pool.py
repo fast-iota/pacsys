@@ -4,8 +4,8 @@ Thread-safe connection pool for DPM connections.
 Provides borrow/release semantics. Supports context manager usage for safe
 resource management.
 
-NOTE: DPM is a stateful protocol where the list_id is tied to the specific TCP
-connection. Transparent retry-on-stale is NOT safe - if a connection fails, the
+NOTE: DPM/HTTP is a stateful protocol where the list_id is tied to the specific TCP
+connection (unlike DPM/ACNET). Transparent retry-on-stale is NOT safe - if a connection fails, the
 caller must rebuild their request with the new list_id from the fresh connection.
 The pool returns raw DPMConnection objects; callers handle reconnection at the
 operation level.

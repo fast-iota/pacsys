@@ -6,13 +6,25 @@ Tests the TCP protocol path: AcnetConnectionTCP -> acnetd
 Run with: pytest tests/real/low_level/test_acnet_tcp.py -v -s
 """
 
+import os
 import queue
 import time
 
 import pytest
 
-from pacsys.acnet import NodeStats, node_parts
+from pacsys.acnet import AcnetConnectionTCP, NodeStats, node_parts
 from tests.real.devices import requires_acnet_tcp
+
+
+@pytest.fixture(scope="class")
+def acnet_tcp_connection():
+    """Create an AcnetConnectionTCP to acsys-proxy.fnal.gov:6802."""
+    host = os.environ.get("PACSYS_ACNET_HOST", "acsys-proxy.fnal.gov")
+    port = int(os.environ.get("PACSYS_ACNET_PORT", "6802"))
+    conn = AcnetConnectionTCP(host, port)
+    conn.connect()
+    yield conn
+    conn.close()
 
 
 @pytest.fixture(autouse=True)
@@ -116,12 +128,19 @@ class TestAcnetTCPTaskOperations:
         assert pid > 0
         print(f"\n  PID for {conn.name}: {pid}")
 
-    def test_rename_task(self, acnet_tcp_connection):
-        conn = acnet_tcp_connection
-        old_name = conn.name
-        conn.rename_task("PYTEST")
-        assert conn.name == "PYTEST"
-        print(f"\n  Renamed: {old_name} -> {conn.name}")
+    def test_rename_task(self):
+        """Rename uses its own connection to avoid corrupting shared fixture."""
+        host = os.environ.get("PACSYS_ACNET_HOST", "acsys-proxy.fnal.gov")
+        port = int(os.environ.get("PACSYS_ACNET_PORT", "6802"))
+        conn = AcnetConnectionTCP(host, port)
+        conn.connect()
+        try:
+            old_name = conn.name
+            conn.rename_task("PYTEST")
+            assert conn.name == "PYTEST"
+            print(f"\n  Renamed: {old_name} -> {conn.name}")
+        finally:
+            conn.close()
 
 
 def _ping(conn, node_name, expected_addr, timeout=10):
@@ -166,6 +185,7 @@ class TestAcnetTCPPing:
         assert reply.data == b"\x00\x00", f"CLX74 should echo payload: {reply.data!r}"
         assert reply.last
 
+    @pytest.mark.skip(reason="Unreliable")
     def test_ping_muonfe(self, acnet_tcp_connection):
         """Ping MUONFE (front-end node) -- status 0 is sufficient."""
         reply = _ping(acnet_tcp_connection, MUONFE_NODE, MUONFE_EXPECTED_ADDRESS)

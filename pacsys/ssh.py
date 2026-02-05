@@ -637,22 +637,25 @@ class SSHClient:
             while True:
                 if deadline is not None and time.monotonic() >= deadline:
                     raise SSHTimeoutError(f"Command timed out after {timeout}s: {command!r}")
-                # Read stdout
-                if chan.recv_ready():
-                    data = chan.recv(65536)
-                    if data:
-                        stdout_chunks.append(data)
-                # Read stderr
-                if chan.recv_stderr_ready():
-                    data = chan.recv_stderr(65536)
-                    if data:
-                        stderr_chunks.append(data)
-                # Check if done
-                if chan.exit_status_ready() and not chan.recv_ready() and not chan.recv_stderr_ready():
-                    break
-                # Small sleep to avoid busy loop
-                if not chan.recv_ready() and not chan.recv_stderr_ready() and not chan.exit_status_ready():
-                    chan.status_event.wait(0.1)
+                try:
+                    # Read stdout
+                    if chan.recv_ready():
+                        data = chan.recv(65536)
+                        if data:
+                            stdout_chunks.append(data)
+                    # Read stderr
+                    if chan.recv_stderr_ready():
+                        data = chan.recv_stderr(65536)
+                        if data:
+                            stderr_chunks.append(data)
+                    # Check if done
+                    if chan.exit_status_ready() and not chan.recv_ready() and not chan.recv_stderr_ready():
+                        break
+                    # Small sleep to avoid busy loop
+                    if not chan.recv_ready() and not chan.recv_stderr_ready() and not chan.exit_status_ready():
+                        chan.status_event.wait(0.1)
+                except socket.timeout as e:
+                    raise SSHTimeoutError(str(e)) from e
 
             exit_code = chan.recv_exit_status()
             stdout = b"".join(stdout_chunks).decode(errors="replace")
@@ -694,21 +697,24 @@ class SSHClient:
                 if deadline is not None and time.monotonic() >= deadline:
                     raise SSHTimeoutError(f"Command timed out after {timeout}s: {command!r}")
 
-                if chan.recv_ready():
-                    data = chan.recv(65536).decode(errors="replace")
-                    buf += data
-                    while "\n" in buf:
-                        line, buf = buf.split("\n", 1)
-                        yield line
+                try:
+                    if chan.recv_ready():
+                        data = chan.recv(65536).decode(errors="replace")
+                        buf += data
+                        while "\n" in buf:
+                            line, buf = buf.split("\n", 1)
+                            yield line
 
-                if chan.recv_stderr_ready():
-                    stderr_chunks.append(chan.recv_stderr(65536))
+                    if chan.recv_stderr_ready():
+                        stderr_chunks.append(chan.recv_stderr(65536))
 
-                if chan.exit_status_ready() and not chan.recv_ready():
-                    break
+                    if chan.exit_status_ready() and not chan.recv_ready():
+                        break
 
-                if not chan.recv_ready() and not chan.exit_status_ready():
-                    chan.status_event.wait(0.1)
+                    if not chan.recv_ready() and not chan.exit_status_ready():
+                        chan.status_event.wait(0.1)
+                except socket.timeout as e:
+                    raise SSHTimeoutError(str(e)) from e
 
             # Yield remaining buffer
             if buf:

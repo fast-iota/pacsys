@@ -19,6 +19,7 @@ import select
 import socket
 import struct
 import threading
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -163,7 +164,34 @@ class AcnetConnectionTCP:
         conn.close()
     """
 
-    def __init__(self, host: str = ACSYS_PROXY_HOST, port: int = ACNET_TCP_PORT, name: str = ""):
+    # Command code → name for tracing
+    _CMD_NAMES = {
+        0: "KEEPALIVE",
+        1: "CONNECT",
+        2: "RENAME",
+        3: "DISCONNECT",
+        4: "SEND",
+        5: "SEND_REQ",
+        6: "RECV_REQ",
+        7: "SEND_REPLY",
+        8: "CANCEL",
+        9: "REQ_ACK",
+        11: "NAME_LOOKUP",
+        12: "NODE_LOOKUP",
+        13: "LOCAL_NODE",
+        14: "TASK_PID",
+        15: "NODE_STATS",
+        17: "DISCONNECT1",
+        18: "SEND_REQ_TMO",
+        19: "IGNORE_REQ",
+        20: "BLOCK_REQ",
+        22: "DEFAULT_NODE",
+    }
+    _MSG_TYPE_NAMES = {0: "PING", 1: "CMD", 2: "ACK", 3: "DATA"}
+
+    def __init__(
+        self, host: str = ACSYS_PROXY_HOST, port: int = ACNET_TCP_PORT, name: str = "", *, trace: bool = False
+    ):
         """
         Initialize a TCP ACNET connection.
 
@@ -171,10 +199,12 @@ class AcnetConnectionTCP:
             host: Remote host to connect to (default: acsys-proxy.fnal.gov)
             port: Remote port (default: 6802)
             name: Task name (up to 6 characters, auto-assigned if empty)
+            trace: Enable packet-level tracing to logger
         """
         self._host = host
         self._port = port
         self._requested_name = name
+        self._trace = trace
 
         # Handle assigned by daemon (used in all commands)
         self._raw_handle = 0
@@ -290,15 +320,17 @@ class AcnetConnectionTCP:
 
     def close(self):
         """Close the connection and clean up resources."""
-        self._disposed = True
+        # Stop monitor thread first so it doesn't send keepalives during shutdown
         self._stop_event.set()
 
-        # Disconnect from daemon
+        # Send DISCONNECT before marking disposed (otherwise _xact refuses)
         if self._connected:
             try:
                 self._do_disconnect()
             except Exception:
                 pass
+
+        self._disposed = True
 
         # Close socket
         if self._socket:
@@ -739,6 +771,11 @@ class AcnetConnectionTCP:
                 except queue.Empty:
                     break
 
+            if self._trace:
+                cmd = struct.unpack(">H", buf[6:8])[0]
+                cmd_name = self._CMD_NAMES.get(cmd, f"?{cmd}")
+                logger.info(f"TRACE> {cmd_name}({cmd}) len={len(buf)} {buf[:20].hex()}")
+
             try:
                 with self._socket_lock:
                     self._socket.sendall(buf)
@@ -752,6 +789,9 @@ class AcnetConnectionTCP:
             except queue.Empty:
                 logger.error("Timeout waiting for ack")
                 raise AcnetUnavailableError()
+
+            if self._trace:
+                logger.info(f"TRACE< ACK len={len(ack_data)} {ack_data.hex()}")
 
             return ack_data
 
@@ -777,9 +817,24 @@ class AcnetConnectionTCP:
         except Exception:
             pass
 
+    def _ack_outgoing_request(self, req_id: int):
+        """Signal readiness for replies on a multiple-reply outgoing request."""
+        buf = struct.pack(
+            ">I2H2IH",
+            14,
+            ACNETD_COMMAND,
+            CMD_REQUEST_ACK,
+            self._raw_handle,
+            0,
+            req_id & 0xFFFF,
+        )
+        try:
+            self._xact(buf)
+        except Exception as e:
+            logger.warning(f"Failed to ack outgoing request: {e}")
+
     def _request_ack(self, reply_id: ReplyId):
-        """Acknowledge receipt of a request."""
-        # REQUEST_ACK command (9)
+        """Acknowledge receipt of an incoming request."""
         buf = struct.pack(
             ">I2H2IH",
             14,
@@ -894,6 +949,9 @@ class AcnetConnectionTCP:
 
     def _handle_tcp_message(self, msg_type: int, data: bytes):
         """Handle a received TCP message based on type."""
+        if self._trace and msg_type != TCP_CLIENT_PING:
+            type_name = self._MSG_TYPE_NAMES.get(msg_type, f"?{msg_type}")
+            logger.info(f"TRACE  RECV {type_name} len={len(data)} {data[:20].hex()}")
         if msg_type == TCP_CLIENT_PING:
             pass  # Ignore pings
         elif msg_type == ACNETD_ACK:
@@ -928,9 +986,22 @@ class AcnetConnectionTCP:
             logger.exception(f"Error handling packet: {e}")
 
     def _handle_reply(self, reply: AcnetReply):
-        """Handle an incoming reply."""
-        with self._requests_out_lock:
-            context = self._requests_out.get(reply.request_id)
+        """Handle an incoming reply.
+
+        Runs on the read thread — must NOT call _xact() (deadlock).
+
+        When ACK and reply arrive in the same TCP batch, the read thread
+        can process the reply before send_request() registers the context.
+        A brief retry covers this registration window (~10-50µs).
+        """
+        context = None
+        for attempt in range(3):
+            with self._requests_out_lock:
+                context = self._requests_out.get(reply.request_id)
+            if context is not None:
+                break
+            if attempt < 2:
+                time.sleep(0.001)
 
         if context:
             try:
@@ -943,29 +1014,17 @@ class AcnetConnectionTCP:
                     self._requests_out.pop(reply.request_id, None)
                 context._cancelled = True
         else:
-            # No handler - send cancel
-            try:
-                buf = struct.pack(
-                    ">I2H2IH",
-                    14,
-                    ACNETD_COMMAND,
-                    CMD_CANCEL,
-                    self._raw_handle,
-                    0,
-                    reply.request_id.id,
-                )
-                self._xact(buf)
-            except Exception:
-                pass
+            # No handler — request was already cancelled or completed.
+            # Do NOT call _xact() here: we are on the read thread, and _xact
+            # blocks waiting for an ACK that only this thread can deliver.
+            logger.debug(f"Dropping reply for cancelled request {reply.request_id.id}")
 
     def _handle_request(self, request: AcnetRequest):
-        """Handle an incoming request."""
-        try:
-            self._request_ack(request.reply_id)
-        except Exception as e:
-            logger.warning(f"Failed to ack request: {e}")
-            return
+        """Handle an incoming request.
 
+        Runs on the read thread — must NOT call _xact() (deadlock).
+        _request_ack is skipped; acnetd auto-acks on first reply.
+        """
         with self._requests_in_lock:
             self._requests_in[request.reply_id] = request
 
@@ -974,15 +1033,8 @@ class AcnetConnectionTCP:
                 self._request_handler(request)
             except Exception as e:
                 logger.warning(f"Request handler exception: {e}")
-                try:
-                    self.send_reply(request, b"", REPLY_ENDMULT, last=True)
-                except Exception:
-                    pass
         else:
-            try:
-                self.send_reply(request, b"", REPLY_ENDMULT, last=True)
-            except Exception:
-                pass
+            logger.debug("No request handler, ignoring incoming request")
 
     def _handle_message(self, message: AcnetMessage):
         """Handle an unsolicited message."""
