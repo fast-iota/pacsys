@@ -95,7 +95,7 @@ class KerberosAuth(Auth):
 
         try:
             creds = gssapi.Credentials(usage="initiate")
-        except gssapi.exceptions.GSSError as e:
+        except gssapi.exceptions.GSSError as e:  # type: ignore[possibly-missing-attribute]
             raise AuthenticationError(f"No valid Kerberos credentials. Run 'kinit' first. Error: {e}")
 
         principal_parts = str(creds.name).split("@")

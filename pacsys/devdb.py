@@ -411,7 +411,7 @@ class DevDBClient:
         if not uncached:
             return result
 
-        request = DevDB_pb2.DeviceList(device=uncached)
+        request = DevDB_pb2.DeviceList(device=uncached)  # type: ignore[unresolved-attribute]
         reply = self._stub.getDeviceInfo(request, timeout=timeout or self._timeout)
 
         for entry in reply.set:
@@ -438,7 +438,7 @@ class DevDBClient:
             grpc.RpcError: On gRPC transport failure.
         """
         self._check_closed()
-        request = DevDB_pb2.DeviceList(device=names)
+        request = DevDB_pb2.DeviceList(device=names)  # type: ignore[unresolved-attribute]
         reply = self._stub.getAllAlarmInfo(request, timeout=self._timeout)
         return [_convert_alarm_info(a) for a in reply.alarm_info]
 
@@ -455,7 +455,7 @@ class DevDBClient:
             grpc.RpcError: On gRPC transport failure.
         """
         self._check_closed()
-        request = DevDB_pb2.AlarmTextIdList(alarm_text_id=ids)
+        request = DevDB_pb2.AlarmTextIdList(alarm_text_id=ids)  # type: ignore[unresolved-attribute]
         reply = self._stub.getAlarmText(request, timeout=self._timeout)
         return [_convert_alarm_text(t) for t in reply.device_alarm_text]
 

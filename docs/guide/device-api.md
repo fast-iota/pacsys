@@ -61,10 +61,17 @@ alarm_min = dev.analog_alarm(field="min")
 # DESCRIPTION
 desc = dev.description()               # Returns str
 
-# Full metadata read
+# Full metadata read (uses device's base DRF)
 reading = dev.get()
-print(f"{reading.value} {reading.units}")
+print(f"{reading.value} {reading.timestamp}")
+
+# Full metadata for a specific property
+reading = dev.get(prop="setting")
+reading = dev.get(prop="status", field="on")
+print(f"{reading.value} at {reading.timestamp}")
 ```
+
+The `prop` argument accepts any property name: `'reading'`, `'setting'`, `'status'`, `'analog'`, `'digital'`, `'description'`. When omitted, `get()` uses the device's base DRF.
 
 Invalid fields raise `ValueError`:
 

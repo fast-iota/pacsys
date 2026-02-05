@@ -32,6 +32,19 @@ if reading.is_error:
     print(f"Error: [{reading.facility_code},{reading.error_code}] {reading.message}")
 ```
 
+Using the Device API, you can get a full `Reading` for any property:
+
+```python
+from pacsys import Device
+
+dev = Device("M:OUTTMP")
+reading = dev.get(prop="setting")
+print(f"Setpoint: {reading.value} at {reading.timestamp}")
+
+reading = dev.get(prop="status", field="on")
+print(f"On: {reading.value} at {reading.timestamp}")
+```
+
 The `Reading` object fields:
 
 | Field | Description |

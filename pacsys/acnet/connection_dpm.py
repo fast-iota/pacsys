@@ -30,6 +30,7 @@ from pacsys.dpm_protocol import (
     AnalogAlarm_reply,
     BasicStatus_reply,
     ClearList_request,
+    RemoveFromList_request,
     DeviceInfo_reply,
     DigitalAlarm_reply,
     ListStatus_reply,
@@ -279,6 +280,15 @@ class DPMConnection:
         data = bytes(msg.marshal())
         self._send_message(data)
 
+    def _send_remove_from_list(self, ref_id: int):
+        """Send RemoveFromList request."""
+        msg = RemoveFromList_request()
+        msg.list_id = self._list_id
+        msg.ref_id = ref_id
+
+        data = bytes(msg.marshal())
+        self._send_message(data)
+
     def _send_start_list(self, model: str | None = None):
         """Send StartList request."""
         msg = StartList_request()
@@ -327,6 +337,16 @@ class DPMConnection:
         logger.debug(f"Added request {ref_id}: {drf_request}")
 
         return ref_id
+
+    def remove_request(self, ref_id: int):
+        """Remove a device request from the list.
+
+        Args:
+            ref_id: Reference ID returned by add_request()
+        """
+        self._requests.pop(ref_id, None)
+        self._send_remove_from_list(ref_id)
+        logger.debug(f"Removed request {ref_id}")
 
     def start(self, model: str | None = None):
         """
@@ -406,7 +426,7 @@ class DPMConnection:
             result_event.set()
 
         # Add request with callback
-        self.add_request(drf_request, callback=handle_result)
+        ref_id = self.add_request(drf_request, callback=handle_result)
 
         # Start if not already running
         was_running = self._running
@@ -427,6 +447,11 @@ class DPMConnection:
             return reading
 
         finally:
+            # Clean up one-shot request from server and local dict
+            try:
+                self.remove_request(ref_id)
+            except Exception:
+                pass
             if not was_running:
                 self.stop()
 

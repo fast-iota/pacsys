@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from pacsys.backends import Backend
+    from pacsys.types import WriteResult
 
 
 def _get_backend(backend: Optional["Backend"]) -> "Backend":
@@ -518,13 +519,16 @@ class AnalogAlarm(AlarmBlock):
 
         return alarm
 
-    def write(self, device: str, backend: Optional["Backend"] = None, segment: int = 0) -> None:
+    def write(self, device: str, backend: Optional["Backend"] = None, segment: int = 0) -> WriteResult:
         """Write analog alarm block to device.
 
         Args:
             device: Device name or DRF string
             backend: Optional backend. If None, uses global default.
             segment: Alarm segment index (default 0)
+
+        Returns:
+            WriteResult from the backend
         """
         from pacsys.drf_utils import get_device_name
 
@@ -534,6 +538,7 @@ class AnalogAlarm(AlarmBlock):
         result = _get_backend(backend).write(drf, self.to_bytes())
         if not result.success:
             raise RuntimeError(f"Failed to write alarm: {result.message}")
+        return result
 
     @classmethod
     def modify(cls, device: str, backend: Optional["Backend"] = None, segment: int = 0):
@@ -646,13 +651,16 @@ class DigitalAlarm(AlarmBlock):
 
         return alarm
 
-    def write(self, device: str, backend: Optional["Backend"] = None, segment: int = 0) -> None:
+    def write(self, device: str, backend: Optional["Backend"] = None, segment: int = 0) -> WriteResult:
         """Write digital alarm block to device.
 
         Args:
             device: Device name or DRF string
             backend: Optional backend. If None, uses global default.
             segment: Alarm segment index (default 0)
+
+        Returns:
+            WriteResult from the backend
         """
         from pacsys.drf_utils import get_device_name
 
@@ -662,6 +670,7 @@ class DigitalAlarm(AlarmBlock):
         result = _get_backend(backend).write(drf, self.to_bytes())
         if not result.success:
             raise RuntimeError(f"Failed to write alarm: {result.message}")
+        return result
 
     @classmethod
     def modify(cls, device: str, backend: Optional["Backend"] = None, segment: int = 0):

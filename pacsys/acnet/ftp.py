@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from . import rad50
 from enum import IntEnum
 
-from .connection_tcp import AcnetConnectionTCP, AcnetRequestContext
+from .connection_sync import AcnetConnectionTCP, AcnetRequestContext
 from .errors import (
     FACILITY_FTP,
     FTP_COLLECTING,

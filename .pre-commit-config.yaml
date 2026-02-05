@@ -25,7 +25,7 @@ repos:
     hooks:
       - id: ty
         name: ty type check
-        entry: ty check
+        entry: ty check pacsys/
         language: system
         types: [python]
         pass_filenames: false

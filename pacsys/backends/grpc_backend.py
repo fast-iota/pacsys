@@ -103,9 +103,9 @@ def _grpc_facility_code(e: "grpc.aio.AioRpcError") -> int:
     return 0
 
 
-def _value_to_proto_value(value: Value, *, for_write: bool = False) -> "device_pb2.Value":
+def _value_to_proto_value(value: Value, *, for_write: bool = False) -> "device_pb2.Value":  # type: ignore[unresolved-attribute]
     """Convert Python value to proto Value message."""
-    proto_value = device_pb2.Value()
+    proto_value = device_pb2.Value()  # type: ignore[unresolved-attribute]
 
     if isinstance(value, float):
         proto_value.scalar = value
@@ -137,7 +137,7 @@ def _value_to_proto_value(value: Value, *, for_write: bool = False) -> "device_p
     return proto_value
 
 
-def _dict_to_proto_alarm(d: dict, proto_value: "device_pb2.Value") -> None:
+def _dict_to_proto_alarm(d: dict, proto_value: "device_pb2.Value") -> None:  # type: ignore[unresolved-attribute]
     """Populate proto Value with an alarm dict (analog or digital).
 
     Requires at least one type-specific key (minimum/maximum for analog,
@@ -170,7 +170,7 @@ def _dict_to_proto_alarm(d: dict, proto_value: "device_pb2.Value") -> None:
             a.triesNeeded = int(d["tries_needed"])
 
 
-def _proto_value_to_python(proto_value: "device_pb2.Value") -> tuple[Value, ValueType]:
+def _proto_value_to_python(proto_value: "device_pb2.Value") -> tuple[Value, ValueType]:  # type: ignore[unresolved-attribute]
     """Convert proto Value message to Python value."""
     value_type = proto_value.WhichOneof("value")
 
@@ -231,7 +231,7 @@ def _proto_timestamp_to_datetime(ts: "timestamp_pb2.Timestamp") -> Optional[date
         return None
 
 
-def _proto_status_to_codes(status: "status_pb2.Status") -> tuple[int, int, Optional[str]]:
+def _proto_status_to_codes(status: "status_pb2.Status") -> tuple[int, int, Optional[str]]:  # type: ignore[unresolved-attribute]
     """Extract status codes from proto Status message."""
     if status is None:
         return 0, 0, None
@@ -336,7 +336,7 @@ class _DaqCore:
 
     async def read_many(self, drfs: list[str], timeout: float) -> list[Reading]:
         assert self._stub is not None, "Not connected"
-        request = DAQ_pb2.ReadingList()
+        request = DAQ_pb2.ReadingList()  # type: ignore[unresolved-attribute]
         for drf in drfs:
             request.drf.append(drf)
 
@@ -356,25 +356,31 @@ class _DaqCore:
             )
 
             async for reply in call:
+                if reply is None:
+                    logger.warning(
+                        f"gRPC stream yielded None (received={received_count}/{expected_count}), "
+                        f"missing=[{', '.join(drfs[i] for i in range(len(drfs)) if results[i] is None)}]"
+                    )
+                    continue
+
                 index = reply.index
                 if index >= len(drfs) or results[index] is not None:
                     continue
 
                 readings = _reply_to_readings(reply, drfs)
                 if readings:
-                    # For one-shot reads, keep the last reading per index
                     results[index] = readings[-1]
                     received_count += 1
 
                 if received_count >= expected_count:
-                    logger.debug(f"Received all {expected_count} readings, cancelling stream")
                     call.cancel()
                     break
 
         except grpc.aio.AioRpcError as e:
             target = f"{self._host}:{self._port}"
             error_message = f"gRPC error ({target}): {e.code().name}: {e.details()}"
-            logger.error(error_message)
+            missing = [drfs[i] for i in range(len(drfs)) if results[i] is None]
+            logger.error(f"{error_message} (received {received_count}/{expected_count}, missing: {missing})")
             ec = _grpc_error_code(e)
             fc = _grpc_facility_code(e)
             for i in range(len(drfs)):
@@ -418,12 +424,12 @@ class _DaqCore:
     async def write_many(self, settings: list[tuple[str, Value]], timeout: float) -> list[WriteResult]:
         assert self._stub is not None, "Not connected"
         # Phase 1: Validate
-        valid_items: list[tuple[int, str, "DAQ_pb2.Setting"]] = []
+        valid_items: list[tuple[int, str, "DAQ_pb2.Setting"]] = []  # type: ignore[unresolved-attribute]
         validation_errors: dict[int, str] = {}
 
         for i, (drf, value) in enumerate(settings):
             try:
-                setting = DAQ_pb2.Setting()
+                setting = DAQ_pb2.Setting()  # type: ignore[unresolved-attribute]
                 setting.device = drf
                 setting.value.CopyFrom(_value_to_proto_value(value, for_write=True))
                 valid_items.append((i, drf, setting))
@@ -435,7 +441,7 @@ class _DaqCore:
         rpc_results: dict[int, WriteResult] = {}
 
         if valid_items:
-            request = DAQ_pb2.SettingList()
+            request = DAQ_pb2.SettingList()  # type: ignore[unresolved-attribute]
             for _, _, proto_setting in valid_items:
                 request.setting.append(proto_setting)
 
@@ -515,7 +521,7 @@ class _DaqCore:
 
         while not stop_check():
             try:
-                request = DAQ_pb2.ReadingList()
+                request = DAQ_pb2.ReadingList()  # type: ignore[unresolved-attribute]
                 for drf in drfs:
                     request.drf.append(drf)
 
@@ -949,6 +955,7 @@ class GRPCBackend(Backend):
         self._ensure_reactor()
         assert self._loop is not None, "Reactor loop not initialized"
         assert self._core is not None
+        core = self._core
 
         handle = _GRPCSubscriptionHandle(
             backend=self,
@@ -960,7 +967,7 @@ class GRPCBackend(Backend):
         # Create the streaming task on the reactor loop
         async def _create_task():
             return asyncio.ensure_future(
-                self._core.stream(
+                core.stream(
                     drfs,
                     handle._dispatch,
                     lambda: handle._stopped,

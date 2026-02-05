@@ -925,10 +925,12 @@ class DPMHTTPBackend(Backend):
                 scaled_setting = ScaledSetting_struct()
                 scaled_setting.ref_id = ref_id
                 scaled_setting.data = [float(v) for v in value]
+        elif isinstance(value, dict):
+            raise TypeError("write_many() does not support alarm dicts; use write() instead")
         else:
             scaled_setting = ScaledSetting_struct()
             scaled_setting.ref_id = ref_id
-            scaled_setting.data = [float(value)]  # type: ignore[arg-type]  # numeric Value
+            scaled_setting.data = [float(value)]
 
         return raw_setting, scaled_setting, text_setting
 
@@ -1110,11 +1112,11 @@ class DPMHTTPBackend(Backend):
                 text_settings.append(text)
 
         if raw_settings:
-            apply_req.raw_array = raw_settings
+            apply_req.raw_array = raw_settings  # type: ignore[unresolved-attribute]
         if scaled_settings:
-            apply_req.scaled_array = scaled_settings
+            apply_req.scaled_array = scaled_settings  # type: ignore[unresolved-attribute]
         if text_settings:
-            apply_req.text_array = text_settings
+            apply_req.text_array = text_settings  # type: ignore[unresolved-attribute]
 
         conn.send_message(apply_req)
 

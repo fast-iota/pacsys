@@ -8,7 +8,7 @@ from dataclasses import replace
 from datetime import datetime
 import queue
 import threading
-from typing import Iterator, Callable
+from typing import Any, Iterator, Callable
 
 from pacsys.acnet.errors import ERR_NOPROP, ERR_OK, ERR_RETRY, FACILITY_ACNET, FACILITY_DBM
 from pacsys.backends import Backend
@@ -61,7 +61,7 @@ def _get_range(drf: str) -> ARRAY_RANGE | BYTE_RANGE | None:
         return None
 
 
-def _apply_range(drf: str, value: Value, rng: ARRAY_RANGE | BYTE_RANGE | None) -> Value:
+def _apply_range(drf: str, value: Any, rng: ARRAY_RANGE | BYTE_RANGE | None) -> Any:
     """Slice value according to a DRF range. Returns value unchanged if no range."""
     if rng is None:
         return value
@@ -82,6 +82,7 @@ def _apply_range(drf: str, value: Value, rng: ARRAY_RANGE | BYTE_RANGE | None) -
             if rng.mode == "full":
                 return value[:]
             if rng.mode == "single":
+                assert rng.offset is not None
                 return value[rng.offset : rng.offset + 1]
             offset = rng.offset if rng.offset is not None else 0
             length = rng.length
@@ -94,7 +95,7 @@ def _apply_range(drf: str, value: Value, rng: ARRAY_RANGE | BYTE_RANGE | None) -
     return value
 
 
-def _write_range(existing: Value, value: Value, rng: ARRAY_RANGE | BYTE_RANGE) -> Value:
+def _write_range(existing: Any, value: Any, rng: ARRAY_RANGE | BYTE_RANGE) -> Any:
     """Slice-assign value into existing array/bytes at the given range.
 
     Returns a new object with the slice replaced (copies numpy arrays
@@ -115,6 +116,7 @@ def _write_range(existing: Value, value: Value, rng: ARRAY_RANGE | BYTE_RANGE) -
         if rng.mode == "full":
             out[:] = value
         elif rng.mode == "single":
+            assert rng.low is not None
             out[rng.low] = value
         else:
             low = rng.low if rng.low is not None else 0
@@ -127,6 +129,7 @@ def _write_range(existing: Value, value: Value, rng: ARRAY_RANGE | BYTE_RANGE) -
         if rng.mode == "full":
             out[:] = value
         elif rng.mode == "single":
+            assert rng.offset is not None
             out[rng.offset : rng.offset + 1] = value
         else:
             offset = rng.offset if rng.offset is not None else 0
@@ -725,7 +728,7 @@ class FakeBackend(Backend):
         for sub in subs:
             sub._set_error(exception)
 
-    def remove(self, handle: FakeSubscriptionHandle) -> None:
+    def remove(self, handle: SubscriptionHandle) -> None:
         """Remove a subscription.
 
         Args:

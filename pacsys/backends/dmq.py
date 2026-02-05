@@ -398,6 +398,15 @@ def _resolve_reply(
         reply = unmarshal_reply(iter(body))
     except Exception as e:
         logger.warning(f"Failed to unmarshal reply: {e}")
+        # Try to resolve index via routing key so callers get an immediate
+        # error instead of waiting for a timeout.
+        if routing_key.startswith("R."):
+            idx = drf_to_idx.get(routing_key[2:])
+            if idx is not None:
+                err = ErrorSample_reply()
+                err.facilityCode = FACILITY_ACNET
+                err.errorNumber = ERR_RETRY
+                return err, idx, None
         return None
     if isinstance(reply, ErrorSample_reply) and reply.errorNumber == DMQ_PENDING_ERROR:
         return None

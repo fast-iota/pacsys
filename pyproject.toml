@@ -5,7 +5,7 @@ requires = [
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "acsys"
+name = "pacsys"
 authors = [{name = "Nikita Kuklev"}]
 version = "0.1.0"
 license = {text = "GPL-3.0-or-later"}
@@ -73,7 +73,7 @@ addopts = "--ignore=tests/real"
 
 [tool.ruff]
 line-length = 120
-exclude = ["acsys", "pacsys/_proto"]
+exclude = ["stub-acsys", "pacsys/_proto"]
 
 [tool.ty.environment]
 python-version = "3.10"
@@ -83,7 +83,7 @@ include = ["pacsys/", "tests/"]
 exclude = [
     "reference_code/",
     "pacsys/_proto/",
-    "acsys/",
+    "stub-acsys/",
 ]
 
 [tool.ty.rules]

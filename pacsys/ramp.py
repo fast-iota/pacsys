@@ -63,6 +63,7 @@ from typing import TYPE_CHECKING, ClassVar, Optional
 
 if TYPE_CHECKING:
     from pacsys.backends import Backend
+    from pacsys.types import WriteResult
 
 
 def _get_backend(backend: Optional["Backend"]) -> "Backend":
@@ -262,13 +263,16 @@ class Ramp:
         device: str,
         slot: int = 0,
         backend: Optional["Backend"] = None,
-    ) -> None:
+    ) -> WriteResult:
         """Write ramp table to a corrector magnet.
 
         Args:
             device: Device name or DRF string
             slot: Ramp slot index (default 0)
             backend: Optional backend. If None, uses global default.
+
+        Returns:
+            WriteResult from the backend
 
         Raises:
             RuntimeError: If write fails
@@ -282,6 +286,7 @@ class Ramp:
         result = be.write(drf, self.to_bytes())
         if not result.success:
             raise RuntimeError(f"Failed to write ramp table: {result.message}")
+        return result
 
     @classmethod
     def modify(

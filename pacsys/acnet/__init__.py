@@ -1,20 +1,15 @@
 """
-pacsys.acnet - Thread-based ACNET communication layer.
+pacsys.acnet - ACNET communication layer.
 
 This module provides a Python implementation of the ACNET protocol
 used for communication with the Fermilab accelerator control system.
 
-Two connection types are available:
-- AcnetConnection: UDP connection to local ACNET daemon
-- AcnetConnectionTCP: TCP connection to remote daemon (via acsys-proxy)
-
-Key Components:
-- AcnetConnection: UDP communication with local ACNET daemon
-- AcnetConnectionTCP: TCP communication with remote ACNET daemon
-- AcnetPacket: Packet parsing for requests, replies, and messages
-- rad50: RAD50 character encoding/decoding
-- errors: ACNET status codes and exceptions
-- constants: Protocol constants
+Connection types:
+- AcnetConnection: UDP connection to local ACNET daemon (sync)
+- AcnetConnectionTCP: TCP connection to remote daemon (sync, threaded reactor)
+- AcnetConnectionUDP: UDP connection to remote daemon (sync, threaded reactor)
+- AsyncAcnetConnectionTCP: TCP connection to remote daemon (async, pure asyncio)
+- AsyncAcnetConnectionUDP: UDP connection to remote daemon (async, pure asyncio)
 
 Example (UDP - local daemon):
     from pacsys.acnet import AcnetConnection
@@ -30,7 +25,7 @@ Example (UDP - local daemon):
             reply_handler=handle_reply
         )
 
-Example (TCP - remote via acsys-proxy):
+Example (TCP - sync via acsys-proxy):
     from pacsys.acnet import AcnetConnectionTCP
 
     with AcnetConnectionTCP("acsys-proxy.fnal.gov") as conn:
@@ -39,6 +34,20 @@ Example (TCP - remote via acsys-proxy):
 
         conn.send_request(
             node=conn.get_node("CLXSRV"),
+            task="DPM",
+            data=b"request data",
+            reply_handler=handle_reply
+        )
+
+Example (TCP - async via acsys-proxy):
+    from pacsys.acnet import AsyncAcnetConnectionTCP
+
+    async with AsyncAcnetConnectionTCP("acsys-proxy.fnal.gov") as conn:
+        async def handle_reply(reply):
+            print(f"Got reply: status={reply.status}")
+
+        await conn.send_request(
+            node=await conn.get_node("CLXSRV"),
             task="DPM",
             data=b"request data",
             reply_handler=handle_reply
@@ -54,7 +63,13 @@ from .connection_dpm import (
     DPMReading,
 )
 from .dpm_acnet import DPMAcnet
-from .connection_tcp import ACSYS_PROXY_HOST, AcnetConnectionTCP, AcnetRequestContext, NodeStats
+from .async_connection import (
+    AsyncAcnetConnectionBase,
+    AsyncAcnetConnectionTCP,
+    AsyncAcnetConnectionUDP,
+    AsyncRequestContext,
+)
+from .connection_sync import ACSYS_PROXY_HOST, AcnetConnectionTCP, AcnetConnectionUDP, AcnetRequestContext, NodeStats
 from .constants import (
     ACNET_HEADER_SIZE,
     ACNET_PORT,
@@ -108,7 +123,12 @@ __all__ = [
     # Connections
     "AcnetConnection",
     "AcnetConnectionTCP",
+    "AcnetConnectionUDP",
+    "AsyncAcnetConnectionBase",
+    "AsyncAcnetConnectionTCP",
+    "AsyncAcnetConnectionUDP",
     "AcnetRequestContext",
+    "AsyncRequestContext",
     "NodeStats",
     "ACSYS_PROXY_HOST",
     # DPM Connection (direct HTTP)

@@ -118,6 +118,38 @@ class TestDeviceReadOperations:
         assert result.value == 72.5
         mock_backend.get.assert_called_once()
 
+    def test_get_with_prop_builds_drf(self, mock_backend):
+        dev = Device("M:OUTTMP", backend=mock_backend)
+        dev.get(prop="setting")
+        drf = mock_backend.get.call_args[0][0]
+        assert ".SETTING" in drf
+        assert "@I" in drf
+
+    def test_get_with_prop_and_field(self, mock_backend):
+        dev = Device("M:OUTTMP", backend=mock_backend)
+        dev.get(prop="status", field="on")
+        drf = mock_backend.get.call_args[0][0]
+        assert ".STATUS" in drf
+        assert ".ON" in drf
+        assert "@I" in drf
+
+    def test_get_with_field_but_no_prop_raises(self, mock_backend):
+        dev = Device("M:OUTTMP", backend=mock_backend)
+        with pytest.raises(ValueError, match="field requires prop"):
+            dev.get(field="raw")
+
+    def test_get_with_prop_preserves_range(self, mock_backend):
+        dev = Device("M:OUTTMP[0:10]", backend=mock_backend)
+        dev.get(prop="setting")
+        drf = mock_backend.get.call_args[0][0]
+        assert "[0:10]" in drf
+        assert ".SETTING" in drf
+
+    def test_get_with_invalid_prop_raises(self, mock_backend):
+        dev = Device("M:OUTTMP", backend=mock_backend)
+        with pytest.raises(KeyError):
+            dev.get(prop="nonexistent")
+
     def test_read_with_timeout(self, mock_backend):
         dev = Device("M:OUTTMP", backend=mock_backend)
         dev.read(timeout=5.0)

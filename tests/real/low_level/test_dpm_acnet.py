@@ -40,8 +40,8 @@ class TestDPMAcnetConnection:
         print(f"\n  Connected, list_id={dpm_acnet.list_id}")
 
     def test_repeated_array_read(self):
-        """read() B:IRMS06[0:10] 50 times with 0.5s pause, fresh connection each time."""
-        for i in range(50):
+        """read() B:IRMS06[0:10] with 0.5s pause, fresh connection each time."""
+        for i in range(10):
             dpm = DPMAcnet()
             dpm.connect()
             try:

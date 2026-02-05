@@ -1,8 +1,64 @@
-# Low-Level ACNET
+# ACNET protocol
 
 This page documents the low-level ACNET protocol for advanced users who need to communicate directly with frontends or implement custom protocols.
 
-## ACNET Concepts
+!!! danger "Low-level protocol -- prefer higher-level APIs"
+    This module provides direct access to ACNET protocol primitives. It is strongly recommeded to use the higher-level `pacsys` APIs instead. Only use `AcnetConnection` directly when you need custom ACNET interactions.
+
+!!! warning "TCP connection restrictions"
+    `acnetd` services running on clx and most other central nodes restrict certain tasks from being reachable by TCP.
+    Specifically, `GETS32,RETDAT,FTPMAN,SETS32,SETDAT,DBNEWS,STATES`. If you want to access those, you will need to
+    use `AcnetConnectionUDP` while running on one of the nodes directly. At that point, you should REALLY know what
+    you are doing and why.
+
+## ACNET implementation in PACSys
+
+### TCP example
+Ping an ACNET node (CLX74) to verify connectivity:
+
+```python
+import queue
+from pacsys.acnet import AcnetConnectionTCP, node_parts
+
+with AcnetConnectionTCP("acsys-proxy.fnal.gov") as conn:
+    # Look up node address
+    node = conn.get_node("CLX74")
+    trunk, n = node_parts(node)
+    print(f"CLX74 = {node} (trunk={trunk}, node={n})")
+
+    # Send ping (request to "ACNET" task with 2-byte payload)
+    reply_queue = queue.Queue()
+    conn.send_request(
+        node=node,
+        task="ACNET",
+        data=b"\x00\x00",
+        reply_handler=reply_queue.put,
+        timeout=5000,
+    )
+
+    reply = reply_queue.get(timeout=5)
+    print(f"Reply: status={reply.status}, data={reply.data!r}, last={reply.last}")
+```
+
+### Implementation
+
+- **`AsyncAcnetConnectionBase`** (`pacsys/acnet/async_connection.py`) — Protocol core (commands, dispatch, tracking). Transport-agnostic — subclasses provide framing via abstract methods (`_open_transport`, `_close_transport`, `_send_frame`, `_start_read_loop`).
+  - **`AsyncAcnetConnectionTCP`** — TCP stream with 4-byte length-prefix framing and handshake, typically used via `acsys-proxy.fnal.gov:6802`.
+  - **`AsyncAcnetConnectionUDP`** — UDP datagrams (no length prefix); uses `asyncio.DatagramProtocol` for receive callbacks.
+- **`AcnetConnectionTCP`** / **`AcnetConnectionUDP`** (`pacsys/acnet/connection_sync.py`) — Synchronous wrappers. Run the async core on a dedicated reactor thread and expose a blocking API via `run_coroutine_threadsafe`.
+
+The TCP protocol uses length-prefixed framing with 4 message types. UDP protocol is same messages without length prefix:
+
+| Type | Code | Direction | Purpose |
+|------|------|-----------|---------|
+| PING | 0 | Both | Keepalive (ignored) |
+| COMMAND | 1 | Client → acnetd | All commands (connect, send request, cancel, etc.) |
+| ACK | 2 | acnetd → Client | Response to every COMMAND |
+| DATA | 3 | acnetd → Client | ACNET packets (replies, requests, messages, cancels) |
+
+Every command follows a request/response pattern: the client sends a COMMAND and waits for a single ACK. ACNET data packets (replies from remote nodes) arrive separately as DATA messages. Reply handlers are registered per request ID and called on the reactor thread — consumers must use thread-safe primitives (e.g. `queue.Queue`, `threading.Event`) to receive data.
+
+## ACNET protocol details
 
 When discussing ACNET, people generally refer to the entire control system infrastructure - protocols, frontends, and central services. Here we focus specifically on the **ACNET UDP packet protocol**.
 

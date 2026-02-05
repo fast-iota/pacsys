@@ -215,9 +215,30 @@ class Device:
         assert isinstance(value, str), f"Expected str from DESCRIPTION, got {type(value).__name__}"
         return value
 
-    def get(self, timeout: float | None = None) -> Reading:
-        """Read device with full metadata."""
-        return self._get_backend().get(self.drf, timeout)
+    def get(
+        self,
+        *,
+        prop: str | None = None,
+        field: str | None = None,
+        timeout: float | None = None,
+    ) -> Reading:
+        """Read device with full metadata (timestamp, cycle, meta).
+
+        Args:
+            prop: Property name ('reading', 'setting', 'status', 'analog',
+                  'digital', 'description'). If None, uses device's base DRF.
+            field: Optional field override (e.g., 'raw', 'on', 'scaled').
+                   Only valid when prop is specified.
+            timeout: Operation timeout in seconds.
+        """
+        if prop is None:
+            if field is not None:
+                raise ValueError("field requires prop to be specified")
+            return self._get_backend().get(self.drf, timeout)
+        p = DRF_PROPERTY[prop.upper()]
+        resolved = self._resolve_field(field, p)
+        drf = self._build_drf(p, resolved, "I")
+        return self._get_backend().get(drf, timeout)
 
     def info(self, timeout: float | None = None):
         """Fetch device metadata from DevDB (cached).

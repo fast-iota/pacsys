@@ -196,6 +196,8 @@ def parse_request(device_str: str) -> DataRequest:
         prop_obj = parse_property(prop)
         prop_explicit = True
     else:
+        if field is not None:
+            raise ValueError(f"Invalid DRF '{device_str}': '{prop}' is not a property, ambiguous with field '{field}'")
         prop_obj = get_default_property(device_str)
         field = prop
 

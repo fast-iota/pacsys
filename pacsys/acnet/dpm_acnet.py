@@ -38,7 +38,7 @@ from pacsys.dpm_protocol import (
     unmarshal_reply,
 )
 
-from .connection_tcp import ACSYS_PROXY_HOST, AcnetConnectionTCP  # noqa: E402
+from .connection_sync import ACSYS_PROXY_HOST, AcnetConnectionTCP  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

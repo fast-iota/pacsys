@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools >= 64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "acsys"
+authors = [{name = "Nikita Kuklev"}]
+version = "0.1.0"
+license = {text = "GPL-3.0-or-later"}
+description = "Redirect package for pacsys — install 'pacsys' instead"
+readme = "README.md"
+classifiers = [
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.10",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering",
+    "Intended Audience :: Science/Research",
+    "Development Status :: 4 - Beta"
+]
+dependencies = ["pacsys == 0.1.0"]
+requires-python = ">=3.10"
+
+[project.urls]
+Homepage = "https://github.com/fast-iota/pacsys"
+Documentation = "https://fast-iota.github.io/pacsys/"
+Repository = "https://github.com/fast-iota/pacsys"
