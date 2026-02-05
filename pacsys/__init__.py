@@ -32,7 +32,7 @@ from pacsys.types import (
     ReadingCallback,
     ErrorCallback,
 )
-from pacsys.errors import DeviceError, AuthenticationError
+from pacsys.errors import DeviceError, AuthenticationError, ACLError
 from pacsys.device import Device, ScalarDevice, ArrayDevice, TextDevice
 from pacsys.types import BasicControl  # noqa: F401
 from pacsys.alarm_block import (
@@ -59,6 +59,7 @@ from pacsys.ssh import (  # noqa: F401
     SSHCommandError,
     SSHTimeoutError,
 )
+from pacsys.acl_session import ACLSession  # noqa: F401
 
 if TYPE_CHECKING:
     from pacsys.backends.dpm_http import DPMHTTPBackend
@@ -827,6 +828,7 @@ __all__ = [
     # Errors
     "DeviceError",
     "AuthenticationError",
+    "ACLError",
     # Device classes
     "Device",
     "ScalarDevice",
@@ -856,6 +858,8 @@ __all__ = [
     "SSHConnectionError",
     "SSHCommandError",
     "SSHTimeoutError",
+    # ACL Session
+    "ACLSession",
     # Simple API functions
     "read",
     "get",

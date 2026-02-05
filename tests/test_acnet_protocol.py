@@ -92,7 +92,7 @@ class TestRad50:
         assert decoded == "TOOLON"
 
     def test_known_values(self):
-        """Test against known encoded values from Java implementation."""
+        """Test against known encoded values."""
         # Space encodes to 0
         assert encode("      ") == 0
         # "A" in first position: index 1 * 40^2 = 1600

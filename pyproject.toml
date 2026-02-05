@@ -32,7 +32,7 @@ dependencies = [
     "protobuf",
     "pika",
     "gssapi",
-    "paramiko",
+    "paramiko[gssapi]",
 ]
 requires-python = ">=3.10"
 

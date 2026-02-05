@@ -57,3 +57,18 @@ class AuthenticationError(Exception):
 
     def __repr__(self) -> str:
         return f"AuthenticationError({self.message!r})"
+
+
+class ACLError(Exception):
+    """Raised when an ACL command fails.
+
+    This exception is raised when:
+    - A one-shot ACL command exits with non-zero status
+    - An ACL session receives an error response
+    - The ACL prompt times out
+    - The ACL process exits unexpectedly
+    """
+
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(message)

@@ -1,7 +1,7 @@
 """
-Low-level tests for DPM/HTTP connection (direct TCP to acsys-proxy).
+Low-level tests for DPM/HTTP connection.
 
-Tests the raw TCP + PC binary protocol layer without the Backend abstraction.
+Tests the raw TCP + SDD DPM.proto binary protocol layer without the Backend abstraction.
 
 Run with: pytest tests/real/low_level/test_dpm_http.py -v -s
 """

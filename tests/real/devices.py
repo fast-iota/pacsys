@@ -430,6 +430,14 @@ requires_ssh = pytest.mark.skipif(
     reason="SSH tests require PACSYS_TEST_SSH_JUMP and PACSYS_TEST_SSH_DEST env vars (see tests/real/.env.ssh)",
 )
 
+ACL_JUMP_HOST = os.environ.get("PACSYS_TEST_ACL_JUMP", "")
+ACL_DEST_HOST = os.environ.get("PACSYS_TEST_ACL_DEST", "")
+
+requires_acl_ssh = pytest.mark.skipif(
+    not ACL_JUMP_HOST or not ACL_DEST_HOST,
+    reason="ACL-over-SSH tests require PACSYS_TEST_ACL_JUMP and PACSYS_TEST_ACL_DEST env vars (see tests/real/.env.ssh)",
+)
+
 requires_write_enabled = pytest.mark.skipif(
     not os.environ.get("PACSYS_TEST_WRITE"),
     reason="Set PACSYS_TEST_WRITE=1 to enable write tests",

@@ -24,6 +24,7 @@ import select
 import socket
 import socketserver
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Optional, Union
@@ -495,18 +496,19 @@ class SSHClient:
 
         chan = transport.open_session()
         try:
-            if timeout is not None:
-                chan.settimeout(timeout)
             chan.exec_command(command)
 
             if input is not None:
                 chan.sendall(input.encode())
             chan.shutdown_write()
 
+            deadline = time.monotonic() + timeout if timeout is not None else None
             stdout_chunks: list[bytes] = []
             stderr_chunks: list[bytes] = []
 
             while True:
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise SSHTimeoutError(f"Command timed out after {timeout}s: {command!r}")
                 # Read stdout
                 if chan.recv_ready():
                     data = chan.recv(65536)
@@ -520,7 +522,7 @@ class SSHClient:
                 # Check if done
                 if chan.exit_status_ready() and not chan.recv_ready() and not chan.recv_stderr_ready():
                     break
-                # Small sleep to avoid busy loop, but let select handle it when possible
+                # Small sleep to avoid busy loop
                 if not chan.recv_ready() and not chan.recv_stderr_ready() and not chan.exit_status_ready():
                     chan.status_event.wait(0.1)
 
@@ -530,8 +532,6 @@ class SSHClient:
 
             return CommandResult(command=command, exit_code=exit_code, stdout=stdout, stderr=stderr)
 
-        except socket.timeout as e:
-            raise SSHTimeoutError(f"Command timed out after {timeout}s: {command!r}") from e
         finally:
             chan.close()
 
@@ -555,15 +555,17 @@ class SSHClient:
 
         chan = transport.open_session()
         try:
-            if timeout is not None:
-                chan.settimeout(timeout)
             chan.exec_command(command)
             chan.shutdown_write()
 
+            deadline = time.monotonic() + timeout if timeout is not None else None
             buf = ""
             stderr_chunks: list[bytes] = []
 
             while True:
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise SSHTimeoutError(f"Command timed out after {timeout}s: {command!r}")
+
                 if chan.recv_ready():
                     data = chan.recv(65536).decode(errors="replace")
                     buf += data
@@ -589,8 +591,6 @@ class SSHClient:
                 stderr = b"".join(stderr_chunks).decode(errors="replace")
                 raise SSHCommandError(command, exit_code, stderr)
 
-        except socket.timeout as e:
-            raise SSHTimeoutError(f"Command timed out after {timeout}s: {command!r}") from e
         finally:
             chan.close()
 
@@ -621,6 +621,98 @@ class SSHClient:
         tunnel = Tunnel(local_port, remote_host, remote_port, transport)
         self._tunnels.append(tunnel)
         return tunnel
+
+    def open_channel(self, command: str, timeout: float | None = None) -> paramiko.Channel:
+        """Open an SSH channel executing a command, with stdin kept open for interactive use.
+
+        Unlike exec(), the channel's stdin is NOT closed after opening, allowing
+        interactive input. The caller is responsible for closing the channel.
+
+        Args:
+            command: Command to execute on the remote host
+            timeout: Channel timeout in seconds (None = no timeout)
+
+        Returns:
+            paramiko.Channel with the command running and stdin open
+        """
+        transport = self._final_transport
+        if not transport.is_active():
+            raise SSHConnectionError("Transport is no longer active")
+
+        chan = transport.open_session()
+        if timeout is not None:
+            chan.settimeout(timeout)
+        chan.exec_command(command)
+        return chan
+
+    def acl(self, command: str | list[str], timeout: float | None = None) -> str:
+        """Execute ACL command(s) and return output text.
+
+        Commands are written to a temp script file on the remote host and
+        executed as ``acl /tmp/pacsys_acl_XXXX.acl``.
+
+        Args:
+            command: ACL command string, or list of commands
+                     (semicolons in a string are treated as one line).
+            timeout: Command timeout in seconds (default 30.0)
+
+        Returns:
+            Command output with ACL prompts stripped
+
+        Raises:
+            ACLError: If the ACL process exits with non-zero status
+            ValueError: If command list is empty
+        """
+        from pacsys.acl_session import _strip_acl_output
+
+        effective_timeout = timeout or 30.0
+
+        if isinstance(command, str):
+            command = [command]
+        if not command:
+            raise ValueError("command list must not be empty")
+        return self._acl_script(command, effective_timeout, _strip_acl_output)
+
+    def _acl_script(self, commands: list[str], timeout: float, strip_fn) -> str:
+        """Write commands to a temp script on the remote host and run via acl."""
+        import uuid
+
+        from pacsys.errors import ACLError
+
+        script = "\n".join(commands) + "\n"
+        name = f"/tmp/pacsys_acl_{uuid.uuid4().hex[:8]}.acl"
+
+        # Write script file
+        write_result = self.exec(f"cat > {name}", input=script, timeout=timeout)
+        if not write_result.ok:
+            raise ACLError(f"Failed to write ACL script: {write_result.stderr.strip()}")
+
+        try:
+            result = self.exec(f"acl {name}", timeout=timeout)
+            # ACL exits non-zero on script errors (bad device, etc.) but
+            # still produces useful output. Only raise on real failures.
+            if not result.ok and (result.stderr.strip() or not result.stdout.strip()):
+                msg = result.stderr.strip() or f"exit code {result.exit_code}"
+                raise ACLError(f"ACL script failed: {msg}")
+            return strip_fn(result.stdout)
+        finally:
+            self.exec(f"rm -f {name}", timeout=5.0)
+
+    def acl_session(self, *, timeout: float = 30.0):
+        """Open a persistent ACL interpreter session.
+
+        The session keeps an ``acl`` process alive over an SSH channel.
+        State (variables, symbols) persists between send() calls.
+
+        Args:
+            timeout: Default timeout for prompt detection in seconds
+
+        Returns:
+            ACLSession (use as context manager or call close())
+        """
+        from pacsys.acl_session import ACLSession
+
+        return ACLSession(self, timeout=timeout)
 
     def sftp(self) -> SFTPSession:
         """Open an SFTP session on the remote host.

@@ -108,18 +108,18 @@ def _acl_read_command(drf: str) -> tuple[str, str, str]:
     Maps DRF components to ACL qualifiers:
 
     - ``.RAW`` field → ``/raw`` device qualifier (hex output)
-    - ``@e,XX`` event → ``/ftd=evtXX`` device qualifier + ``/pendwait`` command qualifier
+    - ``@e,XX`` event → ``/event='e,XX'`` device qualifier + ``/pendwait`` command qualifier
     - ``@I`` / default → stripped (ACL always reads immediately)
     - ``@p,NNN`` → raises DeviceError (streaming not supported)
 
     Note: ``/pendwait`` is a **command** qualifier (before device), while
-    ``/raw`` and ``/ftd=`` are **device** qualifiers (after device).
+    ``/raw`` and ``/event=`` are **device** qualifiers (after device).
     Without ``/pendwait``, clock event reads return cached data instead of
     waiting for the event to fire.
 
     Returns:
         ``(command, cleaned_drf, qualifiers)``
-        e.g. ``("read/pendwait", "M:OUTTMP.RAW", "/raw/ftd=evt02")``
+        e.g. ``("read/pendwait", "M:OUTTMP.RAW", "/raw/event='e,02'")``
     """
     req = parse_request(drf)
     command = "read"
@@ -582,35 +582,36 @@ class ACLBackend(Backend):
 
         Issues one HTTP request per field (ON, READY, REMOTE, POSITIVE, RAMP).
         Fields that don't exist on the device (DIO_NOATT) are omitted from
-        the dict, matching DPM's behavior.  If ALL fields error (e.g.
-        nonexistent device), returns an error Reading.
+        the dict, matching DPM's behavior.  Any other ACL error (e.g.
+        nonexistent device → DBM_NOREC) immediately fails the whole read.
         """
         device = parse_request(drf).device
         now = datetime.now()
         status: dict[str, bool] = {}
-        last_error: str | None = None
 
         for key, field in zip(_BASIC_STATUS_KEYS, _BASIC_STATUS_FIELDS):
-            try:
-                url = self._build_url([f"{device}.STATUS.{field}"])
-                line = self._fetch(url, timeout).strip().splitlines()[0]
-                is_err, msg = _is_error_response(line)
-                if is_err:
-                    last_error = msg
-                elif "= True" in line:
-                    status[key] = True
-                elif "= False" in line:
-                    status[key] = False
-                # DIO_NOATT responses don't match _is_error_response (device
-                # name prefix breaks the regex) and don't match True/False,
-                # so the key is simply omitted — matching DPM behavior.
-            except (DeviceError, IndexError) as e:
-                last_error = str(e)
+            url = self._build_url([f"{device}.STATUS.{field}"])
+            line = self._fetch(url, timeout).strip().splitlines()[0]
 
-        if not status and last_error:
-            return Reading(
-                drf=drf, value_type=ValueType.BASIC_STATUS, error_code=ERR_RETRY, message=last_error, timestamp=now
-            )
+            # DIO_NOATT means the device lacks this attribute — omit the
+            # key, matching DPM behavior.  The response format includes the
+            # device name before the error code ("- Z:ACLTST DIO_NOATT"),
+            # so we check the line directly rather than relying on
+            # _is_error_response (whose regex expects a bare error code).
+            if "DIO_NOATT" in line:
+                continue
+
+            is_err, msg = _is_error_response(line)
+            if is_err:
+                return Reading(
+                    drf=drf, value_type=ValueType.BASIC_STATUS, error_code=ERR_RETRY, message=msg, timestamp=now
+                )
+
+            if "= True" in line:
+                status[key] = True
+            elif "= False" in line:
+                status[key] = False
+
         return Reading(drf=drf, value_type=ValueType.BASIC_STATUS, value=status, error_code=ERR_OK, timestamp=now)
 
     def close(self) -> None:

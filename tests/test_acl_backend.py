@@ -517,14 +517,40 @@ class TestBasicStatusRead:
                 assert reading.value == {"on": False, "ready": True, "positive": False, "ramp": False}
 
     def test_nonexistent_device_returns_error(self):
-        """All fields error (DIO_NO_SUCH) → error Reading."""
-        error_line = "Invalid device name (Z:NOTFND) in read device command at line 0 - DIO_NO_SUCH"
+        """First non-NOATT error (DBM_NOREC) immediately fails the whole read."""
+        error_line = "Invalid device name (Z:NOTFND) in read device command at line 1 - DBM_NOREC"
         with mock.patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.side_effect = [MockACLResponse(error_line)] * 5
+            # Only 1 response needed — first field error aborts
+            mock_urlopen.return_value = MockACLResponse(error_line)
             with ACLBackend() as backend:
                 reading = backend.get("Z:NOTFND.STATUS")
                 assert reading.is_error
-                assert "DIO_NO_SUCH" in reading.message
+                assert "DBM_NOREC" in reading.message
+
+    def test_non_noatt_error_mid_loop_fails(self):
+        """A non-NOATT error on any field fails the whole status read."""
+        with mock.patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = [
+                MockACLResponse("N:LGXS is on = True"),
+                MockACLResponse("N:LGXS is ready = True"),
+                # Unexpected error on REMOTE — should fail immediately
+                MockACLResponse("Error in read device command - DIO_NOSCALE"),
+            ]
+            with ACLBackend() as backend:
+                reading = backend.get("N|LGXS")
+                assert reading.is_error
+                assert "DIO_NOSCALE" in reading.message
+
+    def test_http_error_propagates(self):
+        """HTTP error during status field read propagates as DeviceError."""
+        with mock.patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = [
+                MockACLResponse("N:LGXS is on = False"),
+                urllib.error.HTTPError(url="http://x", code=500, msg="ISE", hdrs={}, fp=None),
+            ]
+            with ACLBackend() as backend:
+                with pytest.raises(DeviceError, match="HTTP 500"):
+                    backend.get("N|LGXS")
 
     def test_get_many_mixes_status_and_normal(self):
         """get_many routes status DRFs through per-field reads, others through batch."""
