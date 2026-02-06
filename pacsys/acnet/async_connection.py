@@ -420,7 +420,12 @@ class AsyncAcnetConnectionBase:
                 ack_data = await asyncio.wait_for(self._pending_ack, timeout=5.0)
             except asyncio.TimeoutError:
                 self._pending_ack = None
-                logger.error("Timeout waiting for ack")
+                # A late ACK could arrive and be consumed by the next
+                # command, permanently desynchronizing the stream.
+                # Kill the transport so the connection cannot be reused.
+                logger.error("Timeout waiting for ack — closing transport to prevent desync")
+                self._connected = False
+                await self._close_transport()
                 raise AcnetUnavailableError()
 
             if self._trace:
