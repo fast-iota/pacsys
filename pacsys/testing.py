@@ -12,6 +12,7 @@ from typing import Any, Iterator, Callable
 
 from pacsys.acnet.errors import ERR_NOPROP, ERR_OK, ERR_RETRY, FACILITY_ACNET, FACILITY_DBM
 from pacsys.backends import Backend
+from pacsys.backends._dispatch import CallbackDispatcher
 from pacsys.drf3 import parse_request
 from pacsys.drf3.field import DEFAULT_FIELD_FOR_PROPERTY
 from pacsys.drf3.range import ARRAY_RANGE, BYTE_RANGE
@@ -20,6 +21,7 @@ from pacsys.types import (
     Reading,
     WriteResult,
     BackendCapability,
+    DispatchMode,
     ValueType,
     DeviceMeta,
     SubscriptionHandle,
@@ -176,11 +178,13 @@ class FakeSubscriptionHandle(SubscriptionHandle):
         callback: ReadingCallback | None,
         on_error: ErrorCallback | None,
         remover: Callable[["FakeSubscriptionHandle"], None],
+        dispatcher: CallbackDispatcher | None = None,
     ):
         self._drfs = set(drfs)
         self._callback = callback
         self._on_error = on_error
         self._remover = remover
+        self._dispatcher = dispatcher
         self._queue: queue.Queue[Reading | None] = queue.Queue()
         self._stopped = False
         self._exc: Exception | None = None
@@ -237,7 +241,10 @@ class FakeSubscriptionHandle(SubscriptionHandle):
             return
 
         if self._callback:
-            self._callback(reading, self)
+            if self._dispatcher is not None:
+                self._dispatcher.dispatch_reading(self._callback, reading, self)
+            else:
+                self._callback(reading, self)
         else:
             self._queue.put(reading)
 
@@ -245,7 +252,10 @@ class FakeSubscriptionHandle(SubscriptionHandle):
         """Internal: set error and notify callback."""
         self._exc = exc
         if self._on_error:
-            self._on_error(exc, self)
+            if self._dispatcher is not None:
+                self._dispatcher.dispatch_error(self._on_error, exc, self)
+            else:
+                self._on_error(exc, self)
         else:
             self._queue.put(None)  # Unblock iterator
 
@@ -277,7 +287,7 @@ class FakeBackend(Backend):
         assert fake.reads == ["M:OUTTMP", "M:BADDEV", "M:OUTTMP.SETTING@I"]
     """
 
-    def __init__(self):
+    def __init__(self, dispatch_mode: DispatchMode = DispatchMode.DIRECT):
         """Create a fake backend with no configured readings."""
         self._readings: dict[str, Reading] = {}
         self._errors: dict[str, tuple[int, str]] = {}
@@ -287,6 +297,8 @@ class FakeBackend(Backend):
         self._subscriptions: list[FakeSubscriptionHandle] = []
         self._lock = threading.Lock()
         self._closed = False
+        self._dispatch_mode = dispatch_mode
+        self._dispatcher = CallbackDispatcher(dispatch_mode)
 
     # ─────────────────────────────────────────────────────────────────────
     # Configuration Methods (call these in test setup)
@@ -300,7 +312,7 @@ class FakeBackend(Backend):
         units: str | None = None,
         description: str | None = None,
         timestamp: datetime | None = None,
-        cycle: int = 0,
+        cycle: int | None = None,
     ) -> None:
         """Pre-configure a successful reading for a device.
 
@@ -311,7 +323,7 @@ class FakeBackend(Backend):
             units: Optional units string
             description: Optional device description
             timestamp: Optional timestamp for the reading
-            cycle: Cycle number (default: 0)
+            cycle: Cycle number (None if not available)
         """
         device_name = get_device_name(drf)
 
@@ -664,7 +676,7 @@ class FakeBackend(Backend):
         Returns:
             FakeSubscriptionHandle for managing subscription
         """
-        handle = FakeSubscriptionHandle(drfs, callback, on_error, self._remove_subscription)
+        handle = FakeSubscriptionHandle(drfs, callback, on_error, self._remove_subscription, self._dispatcher)
         with self._lock:
             self._subscriptions.append(handle)
         return handle
@@ -677,7 +689,7 @@ class FakeBackend(Backend):
         units: str | None = None,
         description: str | None = None,
         timestamp: datetime | None = None,
-        cycle: int = 0,
+        cycle: int | None = None,
     ) -> None:
         """Emit a reading to all matching subscriptions.
 
@@ -690,7 +702,7 @@ class FakeBackend(Backend):
             units: Optional units string
             description: Optional device description
             timestamp: Optional timestamp (default: now)
-            cycle: Cycle number (default: 0)
+            cycle: Cycle number (None if not available)
         """
         device_name = get_device_name(drf)
         meta = DeviceMeta(
@@ -756,6 +768,7 @@ class FakeBackend(Backend):
     def close(self) -> None:
         """Close backend and stop all subscriptions."""
         self.stop_streaming()
+        self._dispatcher.close()
         self._closed = True
 
 

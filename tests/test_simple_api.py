@@ -90,7 +90,7 @@ def error_reading():
         value=None,
         message="Device not found",
         timestamp=None,
-        cycle=0,
+        cycle=None,
         meta=None,
     )
 

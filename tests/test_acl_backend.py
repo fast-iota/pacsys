@@ -12,9 +12,9 @@ Tests cover:
 - Timeout handling
 """
 
-import urllib.error
 from unittest import mock
 
+import httpx
 import pytest
 
 from pacsys.backends.acl import (
@@ -232,8 +232,8 @@ class TestSingleDeviceRead:
     """Tests for single device read/get operations."""
 
     def test_read_scalar_success(self):
-        with mock.patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.return_value = MockACLResponse("M:OUTTMP       =  72.5 DegF")
+        with mock.patch("httpx.Client.get") as mock_get:
+            mock_get.return_value = MockACLResponse("M:OUTTMP       =  72.5 DegF")
             backend = ACLBackend()
             try:
                 value = backend.read("M:OUTTMP")
@@ -242,8 +242,8 @@ class TestSingleDeviceRead:
                 backend.close()
 
     def test_read_text_success(self):
-        with mock.patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.return_value = MockACLResponse("M:OUTTMP = Outdoor Temperature")
+        with mock.patch("httpx.Client.get") as mock_get:
+            mock_get.return_value = MockACLResponse("M:OUTTMP = Outdoor Temperature")
             backend = ACLBackend()
             try:
                 value = backend.read("M:OUTTMP.DESCRIPTION")
@@ -252,8 +252,8 @@ class TestSingleDeviceRead:
                 backend.close()
 
     def test_get_returns_reading(self):
-        with mock.patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.return_value = MockACLResponse("M:OUTTMP       =  72.5 DegF")
+        with mock.patch("httpx.Client.get") as mock_get:
+            mock_get.return_value = MockACLResponse("M:OUTTMP       =  72.5 DegF")
             backend = ACLBackend()
             try:
                 reading = backend.get("M:OUTTMP")
@@ -266,9 +266,9 @@ class TestSingleDeviceRead:
 
     def test_read_error_raises_device_error(self):
         """ACL error triggers fallback which also errors → DeviceError."""
-        with mock.patch("urllib.request.urlopen") as mock_urlopen:
+        with mock.patch("httpx.Client.get") as mock_get:
             # Both batch and individual read return the error
-            mock_urlopen.return_value = MockACLResponse("Invalid device name (M:BADDEV) in read command - DIO_NO_SUCH")
+            mock_get.return_value = MockACLResponse("Invalid device name (M:BADDEV) in read command - DIO_NO_SUCH")
             backend = ACLBackend()
             try:
                 with pytest.raises(DeviceError):
@@ -277,8 +277,8 @@ class TestSingleDeviceRead:
                 backend.close()
 
     def test_get_error_returns_error_reading(self):
-        with mock.patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.return_value = MockACLResponse("Invalid device name (M:BADDEV) in read command - DIO_NO_SUCH")
+        with mock.patch("httpx.Client.get") as mock_get:
+            mock_get.return_value = MockACLResponse("Invalid device name (M:BADDEV) in read command - DIO_NO_SUCH")
             backend = ACLBackend()
             try:
                 reading = backend.get("M:BADDEV")
@@ -292,8 +292,8 @@ class TestRawRead:
     """Tests for .RAW field reading."""
 
     def test_get_raw_returns_bytes(self):
-        with mock.patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.return_value = MockACLResponse("M:OUTTMP = 0x42900000")
+        with mock.patch("httpx.Client.get") as mock_get:
+            mock_get.return_value = MockACLResponse("M:OUTTMP = 0x42900000")
             with ACLBackend() as backend:
                 reading = backend.get("M:OUTTMP.RAW")
                 assert reading.value == bytes.fromhex("42900000")
@@ -301,8 +301,8 @@ class TestRawRead:
                 assert reading.ok
 
     def test_batch_mixed_raw_and_scaled(self):
-        with mock.patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.return_value = MockACLResponse("M:OUTTMP = 0x42900000\nG:AMANDA       =  66")
+        with mock.patch("httpx.Client.get") as mock_get:
+            mock_get.return_value = MockACLResponse("M:OUTTMP = 0x42900000\nG:AMANDA       =  66")
             with ACLBackend() as backend:
                 readings = backend.get_many(["M:OUTTMP.RAW", "G:AMANDA"])
                 assert readings[0].value == bytes.fromhex("42900000")
@@ -312,8 +312,8 @@ class TestRawRead:
 
     def test_raw_fallback_individual(self):
         """Raw reads work through the individual-fallback path."""
-        with mock.patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.side_effect = [
+        with mock.patch("httpx.Client.get") as mock_get:
+            mock_get.side_effect = [
                 # Batch: error triggers fallback
                 MockACLResponse("Invalid device - DIO_NO_SUCH"),
                 # Individual: M:OUTTMP.RAW succeeds
@@ -333,8 +333,8 @@ class TestMultipleDeviceRead:
 
     def test_batch_success(self):
         """All devices succeed in a single batch request."""
-        with mock.patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.return_value = MockACLResponse("M:OUTTMP       =  72.5 DegF\nG:AMANDA       =  66")
+        with mock.patch("httpx.Client.get") as mock_get:
+            mock_get.return_value = MockACLResponse("M:OUTTMP       =  72.5 DegF\nG:AMANDA       =  66")
             backend = ACLBackend()
             try:
                 readings = backend.get_many(["M:OUTTMP", "G:AMANDA"])
@@ -346,10 +346,10 @@ class TestMultipleDeviceRead:
 
     def test_fallback_on_batch_error(self):
         """Bad device in batch triggers individual fallback."""
-        with mock.patch("urllib.request.urlopen") as mock_urlopen:
+        with mock.patch("httpx.Client.get") as mock_get:
             # First call (batch) returns error
             # Subsequent calls (individual) return per-device results
-            mock_urlopen.side_effect = [
+            mock_get.side_effect = [
                 # Batch: ACL aborts on bad device
                 MockACLResponse("Invalid device name (Z:BAD) - DIO_NO_SUCH"),
                 # Individual: M:OUTTMP succeeds
@@ -374,8 +374,8 @@ class TestMultipleDeviceRead:
 
     def test_fallback_on_line_count_mismatch(self):
         """Fewer lines than DRFs triggers individual fallback."""
-        with mock.patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.side_effect = [
+        with mock.patch("httpx.Client.get") as mock_get:
+            mock_get.side_effect = [
                 # Batch: only 1 line for 2 devices
                 MockACLResponse("M:OUTTMP       =  72.5 DegF"),
                 # Individual reads
@@ -396,14 +396,8 @@ class TestHTTPErrors:
     """Tests for HTTP error handling."""
 
     def test_http_error_returns_error_readings(self):
-        with mock.patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.side_effect = urllib.error.HTTPError(
-                url="http://example.com",
-                code=503,
-                msg="Service Unavailable",
-                hdrs={},
-                fp=None,
-            )
+        with mock.patch("httpx.Client.get") as mock_get:
+            mock_get.return_value = MockACLResponse("", status_code=503)
             backend = ACLBackend()
             try:
                 readings = backend.get_many(["M:OUTTMP", "G:AMANDA"])
@@ -413,9 +407,9 @@ class TestHTTPErrors:
             finally:
                 backend.close()
 
-    def test_url_error(self):
-        with mock.patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
+    def test_connection_error(self):
+        with mock.patch("httpx.Client.get") as mock_get:
+            mock_get.side_effect = httpx.ConnectError("Connection refused")
             backend = ACLBackend()
             try:
                 with pytest.raises(DeviceError, match="ACL request failed"):
@@ -424,8 +418,8 @@ class TestHTTPErrors:
                 backend.close()
 
     def test_timeout_error(self):
-        with mock.patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.side_effect = TimeoutError("timed out")
+        with mock.patch("httpx.Client.get") as mock_get:
+            mock_get.side_effect = httpx.ReadTimeout("timed out")
             backend = ACLBackend()
             try:
                 with pytest.raises(DeviceError, match="timed out"):
@@ -479,8 +473,8 @@ class TestBasicStatusRead:
 
     def test_all_fields_present(self):
         """All 5 status fields return True/False → full dict."""
-        with mock.patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.side_effect = [
+        with mock.patch("httpx.Client.get") as mock_get:
+            mock_get.side_effect = [
                 MockACLResponse("N:LGXS is on = False"),
                 MockACLResponse("N:LGXS is ready = False"),
                 MockACLResponse("N:LGXS is remote = True"),
@@ -501,8 +495,8 @@ class TestBasicStatusRead:
 
     def test_missing_attribute_omitted(self):
         """DIO_NOATT for remote → key omitted from dict (matches DPM)."""
-        with mock.patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.side_effect = [
+        with mock.patch("httpx.Client.get") as mock_get:
+            mock_get.side_effect = [
                 MockACLResponse("Z:ACLTST is on = False"),
                 MockACLResponse("Z:ACLTST is ready = True"),
                 MockACLResponse("Error determining status text in read device command at line 1 - Z:ACLTST DIO_NOATT"),
@@ -519,9 +513,9 @@ class TestBasicStatusRead:
     def test_nonexistent_device_returns_error(self):
         """First non-NOATT error (DBM_NOREC) immediately fails the whole read."""
         error_line = "Invalid device name (Z:NOTFND) in read device command at line 1 - DBM_NOREC"
-        with mock.patch("urllib.request.urlopen") as mock_urlopen:
+        with mock.patch("httpx.Client.get") as mock_get:
             # Only 1 response needed - first field error aborts
-            mock_urlopen.return_value = MockACLResponse(error_line)
+            mock_get.return_value = MockACLResponse(error_line)
             with ACLBackend() as backend:
                 reading = backend.get("Z:NOTFND.STATUS")
                 assert reading.is_error
@@ -529,8 +523,8 @@ class TestBasicStatusRead:
 
     def test_non_noatt_error_mid_loop_fails(self):
         """A non-NOATT error on any field fails the whole status read."""
-        with mock.patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.side_effect = [
+        with mock.patch("httpx.Client.get") as mock_get:
+            mock_get.side_effect = [
                 MockACLResponse("N:LGXS is on = True"),
                 MockACLResponse("N:LGXS is ready = True"),
                 # Unexpected error on REMOTE - should fail immediately
@@ -543,10 +537,10 @@ class TestBasicStatusRead:
 
     def test_http_error_propagates(self):
         """HTTP error during status field read propagates as DeviceError."""
-        with mock.patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.side_effect = [
+        with mock.patch("httpx.Client.get") as mock_get:
+            mock_get.side_effect = [
                 MockACLResponse("N:LGXS is on = False"),
-                urllib.error.HTTPError(url="http://x", code=500, msg="ISE", hdrs={}, fp=None),
+                MockACLResponse("", status_code=500),
             ]
             with ACLBackend() as backend:
                 with pytest.raises(DeviceError, match="HTTP 500"):
@@ -554,8 +548,8 @@ class TestBasicStatusRead:
 
     def test_get_many_mixes_status_and_normal(self):
         """get_many routes status DRFs through per-field reads, others through batch."""
-        with mock.patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.side_effect = [
+        with mock.patch("httpx.Client.get") as mock_get:
+            mock_get.side_effect = [
                 # Batch for normal DRF (recursive get_many runs first)
                 MockACLResponse("M:OUTTMP       =  72.5 DegF"),
                 # 5 status field reads for N|LGXS
@@ -598,23 +592,23 @@ class TestOperationAfterClose:
 class TestTimeout:
     """Tests for timeout handling."""
 
-    def test_custom_timeout_passed_to_urlopen(self):
-        with mock.patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.return_value = MockACLResponse("M:OUTTMP = 72.5")
+    def test_custom_timeout_passed_to_client(self):
+        with mock.patch("httpx.Client.get") as mock_get:
+            mock_get.return_value = MockACLResponse("M:OUTTMP = 72.5")
             backend = ACLBackend(timeout=3.0)
             try:
                 backend.read("M:OUTTMP")
-                assert mock_urlopen.call_args[1]["timeout"] == 3.0
+                assert mock_get.call_args.kwargs["timeout"] == 3.0
             finally:
                 backend.close()
 
     def test_per_call_timeout_overrides_default(self):
-        with mock.patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.return_value = MockACLResponse("M:OUTTMP = 72.5")
+        with mock.patch("httpx.Client.get") as mock_get:
+            mock_get.return_value = MockACLResponse("M:OUTTMP = 72.5")
             backend = ACLBackend(timeout=10.0)
             try:
                 backend.read("M:OUTTMP", timeout=2.0)
-                assert mock_urlopen.call_args[1]["timeout"] == 2.0
+                assert mock_get.call_args.kwargs["timeout"] == 2.0
             finally:
                 backend.close()
 

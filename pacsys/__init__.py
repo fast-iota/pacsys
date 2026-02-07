@@ -24,6 +24,7 @@ from pacsys.types import (
     DeviceSpec,
     ValueType,
     BackendCapability,
+    DispatchMode,
     DeviceMeta,
     Reading,
     WriteResult,
@@ -54,12 +55,20 @@ from pacsys.ssh import (  # noqa: F401
     CommandResult,
     Tunnel,
     SFTPSession,
+    RemoteProcess,
     SSHError,
     SSHConnectionError,
     SSHCommandError,
     SSHTimeoutError,
 )
 from pacsys.acl_session import ACLSession  # noqa: F401
+from pacsys.devdb import (  # noqa: F401
+    DeviceInfoResult,
+    PropertyInfo,
+    StatusBitDef,
+    ExtStatusBitDef,
+    ControlCommandDef,
+)
 
 if TYPE_CHECKING:
     from pacsys.backends.dpm_http import DPMHTTPBackend
@@ -509,6 +518,7 @@ def dpm(
     timeout: Optional[float] = None,
     auth: Optional[Auth] = None,
     role: Optional[str] = None,
+    dispatch_mode: DispatchMode = DispatchMode.WORKER,
 ) -> "DPMHTTPBackend":
     """Create a DPM backend instance with its own connection pool.
 
@@ -523,6 +533,7 @@ def dpm(
         auth: Authentication object (KerberosAuth for writes)
         role: Role for authenticated operations (e.g., "testing")
               Required for write operations.
+        dispatch_mode: How streaming callbacks are dispatched (default: WORKER)
 
     Returns:
         DPMHTTPBackend instance (use as context manager or call close() when done)
@@ -537,7 +548,9 @@ def dpm(
             print(f"Authenticated as: {backend.principal}")
             result = backend.write("M:OUTTMP", 72.5)
     """
-    return dpm_http(host=host, port=port, pool_size=pool_size, timeout=timeout, auth=auth, role=role)
+    return dpm_http(
+        host=host, port=port, pool_size=pool_size, timeout=timeout, auth=auth, role=role, dispatch_mode=dispatch_mode
+    )
 
 
 def dpm_http(
@@ -547,6 +560,7 @@ def dpm_http(
     timeout: Optional[float] = None,
     auth: Optional[Auth] = None,
     role: Optional[str] = None,
+    dispatch_mode: DispatchMode = DispatchMode.WORKER,
 ) -> "DPMHTTPBackend":
     """Create a DPM HTTP backend with independent streaming subscriptions.
 
@@ -591,6 +605,7 @@ def dpm_http(
             timeout=effective_timeout,
             auth=auth,
             role=role,
+            dispatch_mode=dispatch_mode,
         )
     )
 
@@ -600,6 +615,7 @@ def grpc(
     port: Optional[int] = None,
     auth: Optional[Auth] = None,
     timeout: Optional[float] = None,
+    dispatch_mode: DispatchMode = DispatchMode.WORKER,
 ) -> "GRPCBackend":
     """Create a gRPC backend instance.
 
@@ -636,7 +652,7 @@ def grpc(
     """
     from pacsys.backends.grpc_backend import GRPCBackend
 
-    return _track(GRPCBackend(host=host, port=port, auth=auth, timeout=timeout))
+    return _track(GRPCBackend(host=host, port=port, auth=auth, timeout=timeout, dispatch_mode=dispatch_mode))
 
 
 def acl(
@@ -669,6 +685,7 @@ def dmq(
     timeout: Optional[float] = None,
     auth: Optional[Auth] = None,
     write_session_ttl: Optional[float] = None,
+    dispatch_mode: DispatchMode = DispatchMode.WORKER,
 ) -> "DMQBackend":
     """Create a DMQ backend instance (RabbitMQ/AMQP).
 
@@ -708,6 +725,7 @@ def dmq(
         kwargs["auth"] = auth
     if write_session_ttl is not None:
         kwargs["write_session_ttl"] = write_session_ttl
+    kwargs["dispatch_mode"] = dispatch_mode
 
     return _track(DMQBackend(**kwargs))
 
@@ -818,6 +836,7 @@ __all__ = [
     "DeviceSpec",
     "ValueType",
     "BackendCapability",
+    "DispatchMode",
     "DeviceMeta",
     "Reading",
     "WriteResult",
@@ -825,6 +844,7 @@ __all__ = [
     "CombinedStream",
     "ReadingCallback",
     "ErrorCallback",
+    "BasicControl",
     # Errors
     "DeviceError",
     "AuthenticationError",
@@ -848,18 +868,29 @@ __all__ = [
     "DigitalStatus",
     # Verify
     "Verify",
+    # Ramp
+    "Ramp",
+    "CorrectorRamp",
+    "BoosterRamp",
     # SSH
     "SSHClient",
     "SSHHop",
     "CommandResult",
     "Tunnel",
     "SFTPSession",
+    "RemoteProcess",
     "SSHError",
     "SSHConnectionError",
     "SSHCommandError",
     "SSHTimeoutError",
     # ACL Session
     "ACLSession",
+    # DevDB result types
+    "DeviceInfoResult",
+    "PropertyInfo",
+    "StatusBitDef",
+    "ExtStatusBitDef",
+    "ControlCommandDef",
     # Simple API functions
     "read",
     "get",

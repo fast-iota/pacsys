@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from pacsys.backends.grpc_backend import GRPC_AVAILABLE
+from pacsys.types import DispatchMode
 
 
 class TestDPMHTTPBackendStreaming:
@@ -80,6 +81,26 @@ class TestDPMHTTPBackendStreaming:
         finally:
             backend.close()
 
+    def test_defaults_to_worker_dispatch(self):
+        """DPMHTTPBackend defaults to WORKER dispatch mode."""
+        from pacsys.backends.dpm_http import DPMHTTPBackend
+
+        backend = DPMHTTPBackend()
+        try:
+            assert backend.dispatch_mode is DispatchMode.WORKER
+        finally:
+            backend.close()
+
+    def test_accepts_direct_dispatch(self):
+        """DPMHTTPBackend accepts DIRECT dispatch mode."""
+        from pacsys.backends.dpm_http import DPMHTTPBackend
+
+        backend = DPMHTTPBackend(dispatch_mode=DispatchMode.DIRECT)
+        try:
+            assert backend.dispatch_mode is DispatchMode.DIRECT
+        finally:
+            backend.close()
+
 
 @pytest.mark.skipif(not GRPC_AVAILABLE, reason="grpc/protobuf not installed")
 class TestGRPCBackendStreaming:
@@ -125,6 +146,26 @@ class TestGRPCBackendStreaming:
         try:
             with pytest.raises(TypeError, match="Expected _GRPCSubscriptionHandle"):
                 backend.remove("not a handle")
+        finally:
+            backend.close()
+
+    def test_defaults_to_worker_dispatch(self):
+        """GRPCBackend defaults to WORKER dispatch mode."""
+        from pacsys.backends.grpc_backend import GRPCBackend
+
+        backend = GRPCBackend()
+        try:
+            assert backend.dispatch_mode is DispatchMode.WORKER
+        finally:
+            backend.close()
+
+    def test_accepts_direct_dispatch(self):
+        """GRPCBackend accepts DIRECT dispatch mode."""
+        from pacsys.backends.grpc_backend import GRPCBackend
+
+        backend = GRPCBackend(dispatch_mode=DispatchMode.DIRECT)
+        try:
+            assert backend.dispatch_mode is DispatchMode.DIRECT
         finally:
             backend.close()
 

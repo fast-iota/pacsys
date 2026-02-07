@@ -11,6 +11,7 @@ from pacsys.types import (
     Reading,
     WriteResult,
     BackendCapability,
+    DispatchMode,
     SubscriptionHandle,
     ReadingCallback,
     ErrorCallback,
@@ -95,6 +96,16 @@ class Backend(ABC):
         Override in auth-capable backends.
         """
         return None
+
+    @property
+    def dispatch_mode(self) -> DispatchMode:
+        """
+        How streaming callbacks are dispatched.
+
+        WORKER (default): callbacks run on a dedicated worker thread.
+        DIRECT: callbacks run inline on the reactor thread.
+        """
+        return getattr(self, "_dispatch_mode", DispatchMode.WORKER)
 
     @abstractmethod
     def read(self, drf: str, timeout: Optional[float] = None) -> Value:

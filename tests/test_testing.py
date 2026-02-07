@@ -10,13 +10,15 @@ Tests cover:
 - Integration with Device objects
 """
 
+import threading
+
 import pytest
 from datetime import datetime
 import numpy as np
 
 from pacsys.acnet.errors import ERR_NOPROP, ERR_RETRY, FACILITY_DBM
 from pacsys.testing import FakeBackend
-from pacsys.types import ValueType
+from pacsys.types import DispatchMode, ValueType
 from pacsys.errors import DeviceError
 from pacsys.device import Device, ScalarDevice, ArrayDevice
 
@@ -1434,3 +1436,44 @@ class TestStreamingUsagePatterns:
         assert collected[1] == ("G:AMANDA", 1.234)
         assert collected[2] == ("M:OUTTMP", 73.0)
         handle.stop()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dispatch Mode Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestFakeBackendDispatchMode:
+    def test_defaults_to_direct(self):
+        """FakeBackend defaults to DIRECT dispatch for test convenience."""
+        fake = FakeBackend()
+        assert fake.dispatch_mode is DispatchMode.DIRECT
+        fake.close()
+
+    def test_direct_delivers_synchronously(self):
+        """DIRECT mode delivers callback on the calling thread."""
+        fake = FakeBackend(dispatch_mode=DispatchMode.DIRECT)
+        collected = []
+
+        handle = fake.subscribe(["M:OUTTMP"], callback=lambda r, h: collected.append(r.value))
+        fake.emit_reading("M:OUTTMP", 42.0)
+        assert collected == [42.0]
+        handle.stop()
+        fake.close()
+
+    def test_worker_delivers_on_background_thread(self):
+        """WORKER mode delivers callback on a background thread."""
+        fake = FakeBackend(dispatch_mode=DispatchMode.WORKER)
+        tids = []
+        event = threading.Event()
+
+        def cb(reading, handle):
+            tids.append(threading.current_thread().ident)
+            event.set()
+
+        handle = fake.subscribe(["M:OUTTMP"], callback=cb)
+        fake.emit_reading("M:OUTTMP", 42.0)
+        assert event.wait(2.0)
+        assert tids[0] != threading.current_thread().ident
+        handle.stop()
+        fake.close()

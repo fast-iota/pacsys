@@ -16,12 +16,11 @@ Usage:
 import logging
 import os
 import re
-import ssl
-import urllib.error
 import urllib.parse
-import urllib.request
 from datetime import datetime
 from typing import Optional
+
+import httpx
 
 from pacsys.acnet.errors import ERR_OK, ERR_RETRY, ERR_TIMEOUT
 from pacsys.backends import Backend
@@ -322,11 +321,7 @@ class ACLBackend(Backend):
         self._base_url = effective_url
         self._timeout = effective_timeout
         self._closed = False
-        self._ssl_context: ssl.SSLContext | None = None
-        if not verify_ssl:
-            self._ssl_context = ssl.create_default_context()
-            self._ssl_context.check_hostname = False
-            self._ssl_context.verify_mode = ssl.CERT_NONE
+        self._client = httpx.Client(verify=verify_ssl, timeout=effective_timeout)
 
         logger.debug(f"ACLBackend initialized: base_url={effective_url}, timeout={effective_timeout}")
 
@@ -394,28 +389,29 @@ class ACLBackend(Backend):
             DeviceError: If HTTP request fails
         """
         try:
-            with urllib.request.urlopen(url, timeout=timeout, context=self._ssl_context) as response:
-                return response.read().decode("utf-8")
-        except urllib.error.HTTPError as e:
+            response = self._client.get(url, timeout=timeout)
+            response.raise_for_status()
+            return response.text
+        except httpx.HTTPStatusError as e:
             raise DeviceError(
                 drf="",
                 facility_code=0,
                 error_code=ERR_RETRY,
-                message=f"ACL request failed ({url}): HTTP {e.code} {e.reason}",
+                message=f"ACL request failed ({url}): HTTP {e.response.status_code}",
             )
-        except urllib.error.URLError as e:
-            raise DeviceError(
-                drf="",
-                facility_code=0,
-                error_code=ERR_RETRY,
-                message=f"ACL request failed ({self._base_url}): {e.reason}",
-            )
-        except TimeoutError:
+        except httpx.TimeoutException:
             raise DeviceError(
                 drf="",
                 facility_code=0,
                 error_code=ERR_TIMEOUT,
                 message=f"ACL request timed out after {timeout}s ({self._base_url})",
+            )
+        except httpx.TransportError as e:
+            raise DeviceError(
+                drf="",
+                facility_code=0,
+                error_code=ERR_RETRY,
+                message=f"ACL request failed ({self._base_url}): {e}",
             )
 
     def read(self, drf: str, timeout: Optional[float] = None) -> Value:
@@ -484,18 +480,23 @@ class ACLBackend(Backend):
         try:
             response_text = self._fetch(url, effective_timeout)
         except DeviceError as e:
-            # HTTP-level error - all devices fail
-            return [
-                Reading(
-                    drf=drf,
-                    value_type=ValueType.SCALAR,
-                    facility_code=e.facility_code,
-                    error_code=e.error_code,
-                    message=e.message,
-                    timestamp=datetime.now(),
-                )
-                for drf in drfs
-            ]
+            if e.error_code == ERR_TIMEOUT:
+                # Server is unresponsive — individual reads would each timeout too.
+                return [
+                    Reading(
+                        drf=drf,
+                        value_type=ValueType.SCALAR,
+                        facility_code=e.facility_code,
+                        error_code=e.error_code,
+                        message=e.message,
+                        timestamp=datetime.now(),
+                    )
+                    for drf in drfs
+                ]
+            # HTTP/URL error (e.g. 400 from one bad DRF) — fall back to
+            # individual reads to isolate which devices actually failed.
+            logger.debug("ACL batch HTTP error, falling back to individual reads: %s", e.message)
+            return self._get_many_individual(drfs, effective_timeout)
 
         logger.debug(f"ACL batch response: {response_text[:200]}")
 
@@ -534,7 +535,19 @@ class ACLBackend(Backend):
             url = self._build_url([drf])
             try:
                 response_text = self._fetch(url, timeout)
-                line = response_text.strip().splitlines()[0]
+                lines = response_text.strip().splitlines()
+                if not lines:
+                    readings.append(
+                        Reading(
+                            drf=drf,
+                            value_type=ValueType.SCALAR,
+                            error_code=ERR_RETRY,
+                            message="Empty response from ACL",
+                            timestamp=now,
+                        )
+                    )
+                    continue
+                line = lines[0]
                 is_error, error_msg = _is_error_response(line)
                 if is_error:
                     readings.append(
@@ -591,7 +604,16 @@ class ACLBackend(Backend):
 
         for key, field in zip(_BASIC_STATUS_KEYS, _BASIC_STATUS_FIELDS):
             url = self._build_url([f"{device}.STATUS.{field}"])
-            line = self._fetch(url, timeout).strip().splitlines()[0]
+            lines = self._fetch(url, timeout).strip().splitlines()
+            if not lines:
+                return Reading(
+                    drf=drf,
+                    value_type=ValueType.BASIC_STATUS,
+                    error_code=ERR_RETRY,
+                    message=f"Empty response from ACL for {field}",
+                    timestamp=now,
+                )
+            line = lines[0]
 
             # DIO_NOATT means the device lacks this attribute - omit the
             # key, matching DPM behavior.  The response format includes the
@@ -615,8 +637,9 @@ class ACLBackend(Backend):
         return Reading(drf=drf, value_type=ValueType.BASIC_STATUS, value=status, error_code=ERR_OK, timestamp=now)
 
     def close(self) -> None:
-        """Close the backend. No resources to clean up for HTTP client."""
+        """Close the backend and underlying HTTP client."""
         self._closed = True
+        self._client.close()
         logger.debug("ACLBackend closed")
 
     def __repr__(self) -> str:

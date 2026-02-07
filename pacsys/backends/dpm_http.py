@@ -28,11 +28,13 @@ from pacsys.auth import Auth, KerberosAuth
 from pacsys.backends import Backend, timestamp_from_millis
 import socket
 
+from pacsys.backends._dispatch import CallbackDispatcher
 from pacsys.dpm_connection import DPM_HANDSHAKE, MAX_MESSAGE_SIZE, DPMConnection, DPMConnectionError
 from pacsys.errors import AuthenticationError, DeviceError
 from pacsys.pool import ConnectionPool
 from pacsys.types import (
     BackendCapability,
+    DispatchMode,
     DeviceMeta,
     ErrorCallback,
     Reading,
@@ -434,6 +436,7 @@ class DPMHTTPBackend(Backend):
         timeout: float = DEFAULT_TIMEOUT,
         auth: Optional[Auth] = None,
         role: Optional[str] = None,
+        dispatch_mode: DispatchMode = DispatchMode.WORKER,
     ):
         """
         Initialize DPM HTTP backend.
@@ -466,6 +469,10 @@ class DPMHTTPBackend(Backend):
         self._pool: Optional[ConnectionPool] = None
         self._pool_lock = threading.Lock()
         self._closed = False
+
+        # Callback dispatcher
+        self._dispatch_mode = dispatch_mode
+        self._dispatcher = CallbackDispatcher(dispatch_mode)
 
         # Streaming state -- asyncio reactor (matches gRPC backend pattern)
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -1350,10 +1357,7 @@ class DPMHTTPBackend(Backend):
                                 meta=None,
                             )
                             if callback is not None:
-                                try:
-                                    callback(reading, handle)
-                                except Exception as e:
-                                    logger.error(f"Error in callback: {e}")
+                                self._dispatcher.dispatch_reading(callback, reading, handle)
                             else:
                                 try:
                                     handle._queue.put_nowait(reading)
@@ -1383,10 +1387,7 @@ class DPMHTTPBackend(Backend):
                     reading = self._reply_to_reading(reply, drf, meta)
 
                     if callback is not None:
-                        try:
-                            callback(reading, handle)
-                        except Exception as e:
-                            logger.error(f"Error in callback: {e}")
+                        self._dispatcher.dispatch_reading(callback, reading, handle)
                     else:
                         try:
                             handle._queue.put_nowait(reading)
@@ -1408,20 +1409,14 @@ class DPMHTTPBackend(Backend):
                 handle._exc = e
                 handle._stopped = True
                 if handle._on_error is not None:
-                    try:
-                        handle._on_error(e, handle)
-                    except Exception as cb_err:
-                        logger.error(f"Error in on_error callback: {cb_err}")
+                    self._dispatcher.dispatch_error(handle._on_error, e, handle)
         except Exception as e:
             if not handle._stopped:
                 handle._exc = e
                 handle._stopped = True
                 logger.error(f"Unexpected streaming error: {e}")
                 if handle._on_error is not None:
-                    try:
-                        handle._on_error(e, handle)
-                    except Exception as cb_err:
-                        logger.error(f"Error in on_error callback: {cb_err}")
+                    self._dispatcher.dispatch_error(handle._on_error, e, handle)
         finally:
             await conn.close()
             # Remove handle so dead subscriptions don't accumulate
@@ -1571,6 +1566,7 @@ class DPMHTTPBackend(Backend):
 
         # Stop streaming first
         self.stop_streaming()
+        self._dispatcher.close()
 
         # Stop the event loop and join reactor thread
         loop = self._loop

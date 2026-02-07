@@ -23,8 +23,10 @@ from pacsys.auth import Auth, JWTAuth
 from pacsys.backends import Backend, validate_alarm_dict
 from pacsys.drf_utils import prepare_for_write
 from pacsys.errors import AuthenticationError, DeviceError
+from pacsys.backends._dispatch import CallbackDispatcher
 from pacsys.types import (
     BackendCapability,
+    DispatchMode,
     ErrorCallback,
     Reading,
     ReadingCallback,
@@ -294,6 +296,26 @@ def _reply_to_readings(reply, drfs: list[str]) -> list[Reading]:
     return []
 
 
+def _aggregate_timed_readings(readings: list[Reading]) -> Reading:
+    """Collapse multiple scalar readings into a single TIMED_SCALAR_ARRAY reading.
+
+    The gRPC server packs high-frequency / logger data as multiple Reading
+    messages inside one Readings container.  We aggregate them into the same
+    shape the HTTP backend produces for TimedScalarArray replies.
+    """
+    data = np.array([r.value for r in readings], dtype=float)
+    micros = np.array(
+        [int(r.timestamp.timestamp() * 1e6) if r.timestamp else 0 for r in readings],
+        dtype=np.int64,
+    )
+    return Reading(
+        drf=readings[0].drf,
+        value_type=ValueType.TIMED_SCALAR_ARRAY,
+        value={"data": data, "micros": micros},
+        timestamp=readings[0].timestamp,
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Async Core -- all gRPC I/O lives here
 # ─────────────────────────────────────────────────────────────────────────────
@@ -369,7 +391,10 @@ class _DaqCore:
 
                 readings = _reply_to_readings(reply, drfs)
                 if readings:
-                    results[index] = readings[-1]
+                    if len(readings) > 1:
+                        results[index] = _aggregate_timed_readings(readings)
+                    else:
+                        results[index] = readings[0]
                     received_count += 1
 
                 if received_count >= expected_count:
@@ -531,6 +556,8 @@ class _DaqCore:
                     metadata=self._metadata(),
                 )
 
+                stream_start = time.monotonic()
+
                 async for reply in call:
                     if stop_check():
                         call.cancel()
@@ -538,7 +565,11 @@ class _DaqCore:
 
                     for reading in _reply_to_readings(reply, drfs):
                         dispatch_fn(reading)
-                        backoff = _RECONNECT_INITIAL_DELAY  # reset on success
+
+                    # Only reset backoff after sustained healthy streaming to
+                    # prevent flapping connections from retrying at min interval.
+                    if time.monotonic() - stream_start >= _RECONNECT_MAX_DELAY:
+                        backoff = _RECONNECT_INITIAL_DELAY
 
                 # Stream ended normally (server called onCompleted). This
                 # happens for @I events and on graceful server shutdown.
@@ -630,6 +661,8 @@ class _GRPCSubscriptionHandle(SubscriptionHandle):
         self._ref_ids: list[int] = list(range(len(drfs)))
         self._exc: Optional[Exception] = None
         self._task: Optional[asyncio.Task] = None
+        self._drop_count = 0
+        self._last_drop_log = 0.0
 
     @property
     def ref_ids(self) -> list[int]:
@@ -649,17 +682,19 @@ class _GRPCSubscriptionHandle(SubscriptionHandle):
             return
 
         if self._callback is not None:
-            try:
-                self._callback(reading, self)
-            except Exception as e:
-                logger.error(f"Error in subscription callback: {e}")
+            self._backend._dispatcher.dispatch_reading(self._callback, reading, self)
         else:
             try:
                 self._queue.put_nowait(reading)
             except queue.Full:
-                logger.warning(
-                    f"gRPC subscription queue full ({_DEFAULT_QUEUE_MAXSIZE}), dropping reading for {reading.drf}"
-                )
+                self._drop_count += 1
+                now = time.monotonic()
+                if now - self._last_drop_log >= 5.0:
+                    logger.warning(
+                        f"gRPC subscription queue full ({_DEFAULT_QUEUE_MAXSIZE}), dropped {self._drop_count} readings"
+                    )
+                    self._drop_count = 0
+                    self._last_drop_log = now
 
     def _dispatch_error(self, exc: Exception, *, fatal: bool) -> None:
         """Called from the reactor thread on stream error."""
@@ -667,10 +702,7 @@ class _GRPCSubscriptionHandle(SubscriptionHandle):
             self._exc = exc
 
         if self._on_error is not None:
-            try:
-                self._on_error(exc, self)
-            except Exception as cb_err:
-                logger.error(f"Error in on_error callback: {cb_err}")
+            self._backend._dispatcher.dispatch_error(self._on_error, exc, self)
 
     def readings(
         self,
@@ -741,6 +773,7 @@ class GRPCBackend(Backend):
         port: Optional[int] = None,
         auth: Optional[Auth] = None,
         timeout: Optional[float] = None,
+        dispatch_mode: DispatchMode = DispatchMode.WORKER,
     ):
         if not GRPC_AVAILABLE:
             raise ImportError(
@@ -772,6 +805,10 @@ class GRPCBackend(Backend):
         self._core: Optional[_DaqCore] = None
         self._closed = False
         self._reactor_lock = threading.Lock()
+
+        # Callback dispatcher
+        self._dispatch_mode = dispatch_mode
+        self._dispatcher = CallbackDispatcher(dispatch_mode)
 
         # Tracked subscriptions
         self._handles: list[_GRPCSubscriptionHandle] = []
@@ -1021,6 +1058,7 @@ class GRPCBackend(Backend):
             self._closed = True
 
         self.stop_streaming()
+        self._dispatcher.close()
 
         # Close the async core
         if self._core is not None and self._loop is not None:

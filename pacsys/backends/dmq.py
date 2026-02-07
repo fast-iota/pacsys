@@ -9,10 +9,12 @@ import logging
 import os
 import queue
 import socket
+import sys
 import threading
 import time
 import uuid
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Iterator, Optional
 
@@ -25,6 +27,7 @@ from pika.channel import Channel
 from pacsys.acnet.errors import ERR_OK, ERR_RETRY, ERR_TIMEOUT, FACILITY_ACNET
 from pacsys.auth import Auth, KerberosAuth
 from pacsys.backends import Backend, timestamp_from_millis, validate_alarm_dict
+from pacsys.backends._dispatch import CallbackDispatcher
 from pacsys.errors import AuthenticationError, DeviceError
 from pacsys.backends.dmq_protocol import (
     ReadingRequest_request,
@@ -61,6 +64,7 @@ from pacsys.backends.dmq_protocol import (
 from pacsys.types import (
     BackendCapability,
     BasicControl,
+    DispatchMode,
     ErrorCallback,
     Reading,
     ReadingCallback,
@@ -96,7 +100,7 @@ WRITE_HEARTBEAT_INTERVAL = 5.0
 DEFAULT_WRITE_SESSION_TTL = 600.0
 
 # Maximum concurrent write sessions (protects against channel exhaustion)
-MAX_WRITE_SESSIONS = 256
+MAX_WRITE_SESSIONS = 512
 
 # Map backend-agnostic BasicControl enum → SDD protocol constants.
 # Only commands 0-6 have SDD enum values; LOCAL/REMOTE/TRIP (7-9) are
@@ -162,6 +166,8 @@ class _ReadJob:
     drfs: list[str]
     prepared_drfs: list[str]
     drf_to_idx: dict[str, int]
+    # Reverse index: prepared_drf → all indices (handles duplicates in O(1))
+    drf_to_all_indices: dict[str, list[int]] = field(default_factory=dict)
     readings: dict[int, Reading] = field(default_factory=dict)
     done_event: threading.Event = field(default_factory=threading.Event)
     channel: Optional[Channel] = None
@@ -441,6 +447,8 @@ class _DMQSubscriptionHandle(SubscriptionHandle):
         self._stopped = False
         self._exc: Optional[Exception] = None
         self._ref_ids: list[int] = list(range(1, len(drfs) + 1))
+        self._drop_count = 0
+        self._last_drop_log = 0.0
 
     @property
     def ref_ids(self) -> list[int]:
@@ -544,6 +552,7 @@ class DMQBackend(Backend):
         timeout: float = DEFAULT_TIMEOUT,
         auth: Optional[Auth] = None,
         write_session_ttl: float = DEFAULT_WRITE_SESSION_TTL,
+        dispatch_mode: DispatchMode = DispatchMode.WORKER,
     ):
         """
         Initialize DMQ backend.
@@ -578,6 +587,10 @@ class DMQBackend(Backend):
         self._write_session_ttl = write_session_ttl
         self._closed = False
 
+        # Callback dispatcher
+        self._dispatch_mode = dispatch_mode
+        self._dispatcher = CallbackDispatcher(dispatch_mode)
+
         # Streaming state (SelectConnection model)
         self._stream_lock = threading.Lock()
         self._subscriptions: dict[str, _SelectSubscription] = {}
@@ -591,6 +604,9 @@ class DMQBackend(Backend):
         self._standby_channels: list[_StandbyChannel] = []  # pre-warmed channels
         self._standby_target = 5  # target pool size
         self._standby_pending = 0  # channels being created
+
+        # Thread pool for blocking GSS operations (avoids blocking IO loop)
+        self._gss_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="pacsys-gss")
 
         # Cache local IP (used in INIT, SETTING messages)
         self._local_ip = _get_host_address()
@@ -658,24 +674,45 @@ class DMQBackend(Backend):
         ]
         return bytes(ctx.get_signature(b"".join(parts)))
 
+    def _create_gss_auth(self, on_done, on_error) -> None:
+        """Create GSS context + token in thread pool, deliver result on IO thread.
+
+        Avoids blocking the pika IO loop with KDC network I/O.
+        on_done(ctx, token) and on_error(exc) are called on the IO thread.
+        """
+
+        def do_gss():
+            try:
+                ctx = self._create_gss_context()
+                token = ctx.step()
+            except Exception:
+                err = sys.exc_info()[1]
+                conn = self._select_connection
+                if conn and conn.is_open:
+                    conn.ioloop.add_callback_threadsafe(lambda: on_error(err))
+                return
+            conn = self._select_connection
+            if conn and conn.is_open:
+                conn.ioloop.add_callback_threadsafe(lambda: on_done(ctx, token))
+
+        self._gss_executor.submit(do_gss)
+
     def _send_init(
         self,
         channel: Channel,
         exchange_name: str,
         drfs: list[str],
+        ctx: Any,
+        token: bytes,
     ) -> str:
-        """Send INIT request to start a job.
+        """Send INIT request to start a job (IO thread).
 
-        Creates a GSS context, includes the token and MIC signature in the INIT message
-        for server authentication.
+        ctx and token must be pre-computed (via _create_gss_auth or in the
+        calling thread) to avoid blocking the IO loop.
 
         Returns:
             message_id for correlation
         """
-        # Create GSS context and get token for authentication
-        ctx = self._create_gss_context()
-        token = ctx.step()
-
         # Create ReadingRequest
         req = ReadingRequest_request()
         req.dataRequest = list(drfs)
@@ -728,10 +765,15 @@ class DMQBackend(Backend):
             return []
 
         prepared_drfs = [ensure_immediate_event(drf) for drf in drfs]
+        # Build reverse index: prepared_drf → all indices (for dedup-aware O(1) lookup)
+        drf_to_all: dict[str, list[int]] = defaultdict(list)
+        for i, d in enumerate(prepared_drfs):
+            drf_to_all[d].append(i)
         job = _ReadJob(
             drfs=drfs,
             prepared_drfs=prepared_drfs,
             drf_to_idx={drf: i for i, drf in enumerate(prepared_drfs)},
+            drf_to_all_indices=dict(drf_to_all),
         )
 
         self._ensure_io_thread()
@@ -787,12 +829,22 @@ class DMQBackend(Backend):
             job.channel = channel
             job.exchange_name = exchange_name
             job.queue_name = queue_name
-            self._send_init(channel, exchange_name, job.prepared_drfs)
-            job.consumer_tag = channel.basic_consume(
-                queue=queue_name,
-                on_message_callback=lambda ch, method, props, body: self._on_read_message(job, ch, method, body),
-                auto_ack=False,
-            )
+
+            def on_gss_done(ctx, token):
+                if job.done_event.is_set():
+                    return
+                self._send_init(channel, exchange_name, job.prepared_drfs, ctx, token)
+                job.consumer_tag = channel.basic_consume(
+                    queue=queue_name,
+                    on_message_callback=lambda ch, method, props, body: self._on_read_message(job, ch, method, body),
+                    auto_ack=False,
+                )
+
+            def on_gss_error(exc):
+                logger.error(f"GSS context creation failed for read: {exc}")
+                self._complete_read(job)
+
+            self._create_gss_auth(on_gss_done, on_gss_error)
 
         self._setup_channel_async(on_ready=on_ready)
 
@@ -805,10 +857,11 @@ class DMQBackend(Backend):
         reply, idx, ref_id = result
         # Fill this index and any unfilled duplicates with the same prepared DRF.
         # The server deduplicates requests, so only one reply arrives per unique device.
+        # Uses pre-built reverse index for O(K) lookup (K = duplicates) instead of O(N).
         drf = job.prepared_drfs[idx]
         filled = False
-        for i, d in enumerate(job.prepared_drfs):
-            if d == drf and i not in job.readings:
+        for i in job.drf_to_all_indices.get(drf, ()):
+            if i not in job.readings:
                 job.readings[i] = _reply_to_reading(reply, job.drfs[i], ref_id)
                 filled = True
         if filled and len(job.readings) >= len(job.drfs):
@@ -1194,20 +1247,30 @@ class DMQBackend(Backend):
         results: list[WriteResult | None],
         tracker: _WriteCompletionTracker,
     ) -> None:
-        """Convert standby channel to active write session (IO thread)."""
-        device = get_device_name(init_drf)
-        try:
-            # Generate GSS context (fast, <1ms)
-            ctx = self._create_gss_context()
-            token = ctx.step()
-        except Exception as e:
-            logger.error(f"GSS context creation failed for {device}: {e}")
-            tracker.abort(AuthenticationError(f"GSS context creation failed: {e}"))
-            return
+        """Convert standby channel to active write session (IO thread).
 
-        # Channel already has R.# and Q bindings from standby setup.
-        # Server replies use R.# routing keys, no S.# binding needed.
-        self._on_write_bind_complete(standby, init_drf, ctx, token, drf_settings, results, tracker)
+        GSS context creation is offloaded to a thread pool to avoid
+        blocking the IO loop with KDC network I/O.
+        """
+        device = get_device_name(init_drf)
+
+        def on_gss_done(ctx, token):
+            # Channel already has R.# and Q bindings from standby setup.
+            # Server replies use R.# routing keys, no S.# binding needed.
+            self._on_write_bind_complete(standby, init_drf, ctx, token, drf_settings, results, tracker)
+
+        def on_gss_error(exc):
+            logger.error(f"GSS context creation failed for {device}: {exc}")
+            # Close the standby channel that was popped from the pool —
+            # without this it stays open but is tracked nowhere (leak).
+            try:
+                if standby.channel.is_open:
+                    standby.channel.close()
+            except Exception:
+                pass
+            tracker.abort(AuthenticationError(f"GSS context creation failed: {exc}"))
+
+        self._create_gss_auth(on_gss_done, on_gss_error)
 
     def _on_write_bind_complete(
         self,
@@ -1608,12 +1671,22 @@ class DMQBackend(Backend):
         # Block until done or timeout
         effective_timeout = timeout if timeout is not None else self._timeout
         if not tracker.done_event.wait(effective_timeout):
-            # Timeout - abort and fill in errors
+            # Timeout — schedule abort on IO thread and wait for it to finish
+            # before touching results.  This avoids a race where the main thread
+            # overwrites a successful result with ERR_TIMEOUT.
             init_drfs_involved = {prepare_for_write(drf) for drf, _ in settings}
-            self._select_connection.ioloop.add_callback_threadsafe(
-                lambda: self._abort_pending_writes(init_drfs_involved)
-            )
-            # Fill timeout errors for missing results
+            abort_done = threading.Event()
+
+            def do_abort():
+                self._abort_pending_writes(init_drfs_involved)
+                abort_done.set()
+
+            self._select_connection.ioloop.add_callback_threadsafe(do_abort)
+            abort_done.wait(timeout=2.0)
+
+            # Fill timeout errors for results the IO thread didn't cover
+            # (e.g. devices that never got a session).  Safe now because
+            # _abort_pending_writes has finished and cleared pending state.
             for i, (drf, _) in enumerate(settings):
                 if results[i] is None:
                     results[i] = WriteResult(
@@ -1742,10 +1815,7 @@ class DMQBackend(Backend):
                 sub.handle._stopped = True
                 sub.handle._wake_queue()
                 if sub.handle._on_error is not None:
-                    try:
-                        sub.handle._on_error(reason, sub.handle)
-                    except Exception:
-                        pass
+                    self._dispatcher.dispatch_error(sub.handle._on_error, reason, sub.handle)
         # Stop the ioloop (will exit the thread)
         try:
             connection.ioloop.stop()
@@ -1839,10 +1909,7 @@ class DMQBackend(Backend):
         sub.handle._wake_queue()
         if sub.handle._on_error is not None and sub.handle._exc is None:
             sub.handle._exc = reason
-            try:
-                sub.handle._on_error(reason, sub.handle)
-            except Exception:
-                pass
+            self._dispatcher.dispatch_error(sub.handle._on_error, reason, sub.handle)
 
     def _on_message(
         self,
@@ -1862,18 +1929,19 @@ class DMQBackend(Backend):
         handle = sub.handle
 
         if sub.callback is not None:
-            # Run callback (note: blocking callbacks will stall IO loop)
-            try:
-                sub.callback(reading, handle)
-            except Exception as e:
-                logger.error(f"Error in subscription callback: {e}")
+            self._dispatcher.dispatch_reading(sub.callback, reading, handle)
         else:
             try:
                 handle._queue.put_nowait(reading)
             except queue.Full:
-                logger.warning(
-                    f"DMQ subscription queue full ({_DEFAULT_QUEUE_MAXSIZE}), dropping reading for {reading.drf}"
-                )
+                handle._drop_count += 1
+                now = time.monotonic()
+                if now - handle._last_drop_log >= 5.0:
+                    logger.warning(
+                        f"DMQ subscription queue full ({_DEFAULT_QUEUE_MAXSIZE}), dropped {handle._drop_count} readings"
+                    )
+                    handle._drop_count = 0
+                    handle._last_drop_log = now
 
     def _cancel_subscription_async(self, sub: _SelectSubscription) -> None:
         """Schedule subscription cancellation on the IO loop."""
@@ -2068,6 +2136,8 @@ class DMQBackend(Backend):
         # Write state (_write_sessions, _standby_channels) is cleared on the
         # IO thread during connection close to avoid cross-thread mutation.
         self.stop_streaming()
+        self._dispatcher.close()
+        self._gss_executor.shutdown(wait=False)
 
         # After IO thread has joined, safe to clear any remnants
         self._write_sessions.clear()

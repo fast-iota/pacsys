@@ -74,6 +74,18 @@ with pacsys.subscribe(["M:OUTTMP@p,1000"]) as stream:
     for reading, _ in stream.readings(timeout=30):
         print(f"{reading.name}: {reading.value}")
 
+# Stream with callback dispatch mode
+# WORKER (default): callbacks on dedicated worker thread, protects reactor
+# DIRECT: callbacks inline on reactor thread (lower latency)
+from pacsys import DispatchMode
+with pacsys.dpm(dispatch_mode=DispatchMode.DIRECT) as backend:
+    handle = backend.subscribe(
+        ["M:OUTTMP@p,1000"],
+        callback=lambda r, h: print(r.value),
+    )
+    import time; time.sleep(10)
+    handle.stop()
+
 # Write (requires authentication)
 from pacsys import KerberosAuth
 with pacsys.dpm(auth=KerberosAuth(), role="testing") as backend:

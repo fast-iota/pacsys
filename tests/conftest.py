@@ -50,7 +50,7 @@ def error_reading():
         value=None,
         message="Device not found",
         timestamp=None,
-        cycle=0,
+        cycle=None,
         meta=None,
     )
 
@@ -69,7 +69,7 @@ def mock_backend():
         value=72.5,
         message=None,
         timestamp=None,
-        cycle=0,
+        cycle=None,
         meta=None,
     )
     return backend
@@ -128,47 +128,18 @@ def mock_dpm_socket():
 
 
 class MockACLResponse:
-    """Mock HTTP response for ACL backend testing."""
+    """Mock httpx.Response for ACL backend testing."""
 
-    def __init__(self, text: str, code: int = 200):
+    def __init__(self, text: str, status_code: int = 200):
         self.text = text
-        self.code = code
+        self.status_code = status_code
 
-    def read(self):
-        return self.text.encode("utf-8")
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import httpx
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        pass
-
-
-@pytest.fixture
-def mock_acl_urlopen():
-    """Fixture that provides a mock urlopen for ACL backend testing.
-
-    Usage:
-        def test_something(mock_acl_urlopen):
-            mock_acl_urlopen.set_response("72.5")
-            backend = ACLBackend()
-            value = backend.read("M:OUTTMP")
-    """
-
-    class _MockURLOpen:
-        def __init__(self):
-            self._response = MockACLResponse("0.0")
-            self._patch = None
-
-        def set_response(self, text: str, code: int = 200):
-            self._response = MockACLResponse(text, code)
-
-        def __enter__(self):
-            self._patch = mock.patch("urllib.request.urlopen", return_value=self._response)
-            self._mock = self._patch.__enter__()
-            return self
-
-        def __exit__(self, *args):
-            self._patch.__exit__(*args)
-
-    return _MockURLOpen()
+            raise httpx.HTTPStatusError(
+                f"HTTP {self.status_code}",
+                request=httpx.Request("GET", "http://test"),
+                response=self,
+            )

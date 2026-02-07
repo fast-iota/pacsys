@@ -26,6 +26,17 @@ ReadingCallback = Callable[["Reading", "SubscriptionHandle"], None]
 ErrorCallback = Callable[[Exception, "SubscriptionHandle"], None]
 
 
+class DispatchMode(Enum):
+    """How streaming callbacks are dispatched.
+
+    WORKER: callbacks run on a dedicated worker thread (default, protects reactor)
+    DIRECT: callbacks run inline on the reactor thread (50ms slow-callback warning)
+    """
+
+    WORKER = "worker"
+    DIRECT = "direct"
+
+
 class BackendCapability(Flag):
     """Capabilities supported by a backend."""
 
@@ -106,7 +117,7 @@ class Reading:
     value: Optional[Value] = None
     message: Optional[str] = None
     timestamp: Optional[datetime] = None
-    cycle: int = 0
+    cycle: Optional[int] = None
     meta: Optional[DeviceMeta] = None
 
     @property
