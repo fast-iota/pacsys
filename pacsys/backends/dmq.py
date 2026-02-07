@@ -641,6 +641,15 @@ class DMQBackend(Backend):
     def timeout(self) -> float:
         return self._timeout
 
+    def _check_not_io_thread(self) -> None:
+        """Raise if called from the IO thread to prevent deadlock."""
+        if self._io_thread is not None and threading.current_thread() is self._io_thread:
+            raise RuntimeError(
+                "Cannot call blocking backend methods from the IO thread "
+                "(e.g. from a DIRECT mode streaming callback). "
+                "Use DispatchMode.WORKER or offload to another thread."
+            )
+
     def _sign_message(
         self,
         ctx,
@@ -905,6 +914,7 @@ class DMQBackend(Backend):
 
     def get_many(self, drfs: list[str], timeout: Optional[float] = None) -> list[Reading]:
         """Read multiple devices in a single batch."""
+        self._check_not_io_thread()
         if self._closed:
             raise RuntimeError("Backend is closed")
 
@@ -1114,14 +1124,17 @@ class DMQBackend(Backend):
             except Exception:
                 pass
 
-        # Fail any pending writes
+        # Fail any pending writes — signal each tracker exactly once
+        trackers: dict[int, _WriteCompletionTracker] = {}
         for corr_id, (i, drf, results_list, pending_tracker) in list(session.pending.items()):
             if results_list[i] is None:
                 results_list[i] = WriteResult(
                     drf=drf, facility_code=FACILITY_ACNET, error_code=ERR_RETRY, message=f"Session closed: {reason}"
                 )
-            pending_tracker.device_complete()
+            trackers.setdefault(id(pending_tracker), pending_tracker)
         session.pending.clear()
+        for tracker in trackers.values():
+            tracker.device_complete()
 
         # Send DROP and close channel
         if session.channel is not None and session.channel.is_open:
@@ -1360,14 +1373,17 @@ class DMQBackend(Backend):
                         conn.ioloop.remove_timeout(handle)
                     except Exception:
                         pass
-            # Fail any pending writes
+            # Fail any pending writes — signal each tracker exactly once
+            trackers: dict[int, _WriteCompletionTracker] = {}
             for corr_id, (i, drf, results_list, pending_tracker) in list(session.pending.items()):
                 if results_list[i] is None:
                     results_list[i] = WriteResult(
                         drf=drf, facility_code=FACILITY_ACNET, error_code=ERR_RETRY, message=f"Channel closed: {reason}"
                     )
-                pending_tracker.device_complete()
+                trackers.setdefault(id(pending_tracker), pending_tracker)
             session.pending.clear()
+            for tracker in trackers.values():
+                tracker.device_complete()
         logger.debug(f"Write session closed for {init_drf}: {reason}")
 
     def _send_settings_async(
@@ -1400,9 +1416,6 @@ class DMQBackend(Backend):
 
                 mic = self._sign_message(session.gss_context, body, message_id)
 
-                session.pending[message_id] = (i, drf, results, tracker)
-                pending_for_device += 1
-
                 session.channel.basic_publish(
                     exchange=session.exchange_name,
                     routing_key=f"S.{session.init_drf}",
@@ -1412,6 +1425,9 @@ class DMQBackend(Backend):
                         headers={"signature": mic, "host-address": self._local_ip},
                     ),
                 )
+                # Register pending AFTER successful publish to avoid orphaned entries
+                session.pending[message_id] = (i, drf, results, tracker)
+                pending_for_device += 1
                 logger.debug(f"Sent SETTING for {session.device} (rk=S.{session.init_drf}), msg_id={message_id[:8]}")
 
             except Exception as e:
@@ -1485,11 +1501,17 @@ class DMQBackend(Backend):
         # (oldest pending) when correlationId is missing or unknown.
         if corr_id and corr_id in session.pending:
             i, drf, results, tracker = session.pending.pop(corr_id)
-        elif session.pending:
-            # FIFO fallback: match oldest pending write
+        elif len(session.pending) == 1:
+            # Unambiguous FIFO fallback: only safe with exactly one pending write
             oldest_key = next(iter(session.pending))
             i, drf, results, tracker = session.pending.pop(oldest_key)
             logger.debug(f"Write response matched via FIFO fallback (corr_id={corr_id!r})")
+        elif session.pending:
+            logger.warning(
+                f"Write response with unrecognized correlation_id={corr_id!r} and "
+                f"{len(session.pending)} ambiguous pending writes — dropping response"
+            )
+            return
         else:
             return
 
@@ -1647,6 +1669,7 @@ class DMQBackend(Backend):
         if not settings:
             return []
 
+        self._check_not_io_thread()
         if self._closed:
             raise RuntimeError("Backend is closed")
 
@@ -1790,7 +1813,8 @@ class DMQBackend(Backend):
         """Called when SelectConnection is closed."""
         logger.info(f"SelectConnection closed: {reason}")
 
-        # Fail all pending writes
+        # Fail all pending writes — signal each tracker exactly once
+        trackers: dict[int, _WriteCompletionTracker] = {}
         for session in self._write_sessions.values():
             for corr_id, (i, drf, results, tracker) in list(session.pending.items()):
                 if results[i] is None:
@@ -1800,8 +1824,10 @@ class DMQBackend(Backend):
                         error_code=ERR_RETRY,
                         message=f"Connection closed: {reason}",
                     )
-                tracker.device_complete()
+                trackers.setdefault(id(tracker), tracker)
             session.pending.clear()
+        for tracker in trackers.values():
+            tracker.device_complete()
 
         # Clear write state
         self._write_sessions.clear()
@@ -1994,6 +2020,7 @@ class DMQBackend(Backend):
         Uses SelectConnection with a shared IO thread for all subscriptions.
         Each subscription gets its own channel on the shared connection.
         """
+        self._check_not_io_thread()
         if self._closed:
             raise RuntimeError("Backend is closed")
 

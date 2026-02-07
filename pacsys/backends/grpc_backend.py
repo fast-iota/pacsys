@@ -1003,14 +1003,18 @@ class GRPCBackend(Backend):
 
         # Create the streaming task on the reactor loop
         async def _create_task():
-            return asyncio.ensure_future(
-                core.stream(
-                    drfs,
-                    handle._dispatch,
-                    lambda: handle._stopped,
-                    handle._dispatch_error,
-                )
-            )
+            async def _run_stream():
+                try:
+                    await core.stream(
+                        drfs,
+                        handle._dispatch,
+                        lambda: handle._stopped,
+                        handle._dispatch_error,
+                    )
+                finally:
+                    handle._stopped = True
+
+            return asyncio.ensure_future(_run_stream())
 
         handle._task = asyncio.run_coroutine_threadsafe(_create_task(), self._loop).result(timeout=5.0)
 
