@@ -535,16 +535,17 @@ class TestBasicStatusRead:
                 assert reading.is_error
                 assert "DIO_NOSCALE" in reading.message
 
-    def test_http_error_propagates(self):
-        """HTTP error during status field read propagates as DeviceError."""
+    def test_http_error_returns_error_reading(self):
+        """HTTP error during status field read returns error Reading, not exception."""
         with mock.patch("httpx.Client.get") as mock_get:
             mock_get.side_effect = [
                 MockACLResponse("N:LGXS is on = False"),
                 MockACLResponse("", status_code=500),
             ]
             with ACLBackend() as backend:
-                with pytest.raises(DeviceError, match="HTTP 500"):
-                    backend.get("N|LGXS")
+                reading = backend.get("N|LGXS")
+                assert reading.is_error
+                assert "HTTP 500" in reading.message
 
     def test_get_many_mixes_status_and_normal(self):
         """get_many routes status DRFs through per-field reads, others through batch."""

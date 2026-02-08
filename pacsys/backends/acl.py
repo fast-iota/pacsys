@@ -604,7 +604,17 @@ class ACLBackend(Backend):
 
         for key, field in zip(_BASIC_STATUS_KEYS, _BASIC_STATUS_FIELDS):
             url = self._build_url([f"{device}.STATUS.{field}"])
-            lines = self._fetch(url, timeout).strip().splitlines()
+            try:
+                lines = self._fetch(url, timeout).strip().splitlines()
+            except DeviceError as e:
+                return Reading(
+                    drf=drf,
+                    value_type=ValueType.BASIC_STATUS,
+                    facility_code=e.facility_code,
+                    error_code=e.error_code,
+                    message=e.message,
+                    timestamp=now,
+                )
             if not lines:
                 return Reading(
                     drf=drf,
