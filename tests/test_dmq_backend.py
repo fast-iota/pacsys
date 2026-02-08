@@ -677,8 +677,11 @@ class MockSelectChannelWithWriteSupport(MockSelectChannel):
         self._write_thread_started = False
 
     def basic_publish(self, exchange="", routing_key="", body=b"", properties=None):
-        """Capture SETTING messages."""
+        """Capture INIT and SETTING messages."""
         super().basic_publish(exchange, routing_key, body, properties)
+        # INIT triggers a PENDING response (confirms S.# binding)
+        if routing_key == "I":
+            self._init_received = True
         # Queue write response if this is a SETTING message (use message_id
         # as the response correlation_id, matching Java server behavior)
         if routing_key.startswith("S.") and properties and getattr(properties, "message_id", None):
@@ -698,9 +701,26 @@ class MockSelectChannelWithWriteSupport(MockSelectChannel):
             self._write_thread_started = True
 
             def deliver_write_responses():
+                pending_sent = False
                 for _ in range(300):  # ~6 seconds max
                     if not self._is_open:
                         break
+                    # Send PENDING once after INIT (confirms S.# binding)
+                    if not pending_sent and getattr(self, "_init_received", False) and self._on_message_callback:
+                        pending_sent = True
+                        pending_reply = ErrorSample_reply()
+                        pending_reply.facilityCode = 0
+                        pending_reply.errorNumber = 1  # DMQ_PENDING_ERROR
+                        pending_reply.time = 0
+                        method = mock.MagicMock()
+                        method.routing_key = "R.pending"
+                        method.delivery_tag = 0
+                        props = mock.MagicMock()
+                        props.correlation_id = None
+                        try:
+                            self._on_message_callback(self, method, props, bytes(pending_reply.marshal()))
+                        except Exception:
+                            pass
                     while self._pending_writes and self._on_message_callback:
                         corr_id = self._pending_writes.pop(0)
                         response_bytes = self._write_response_factory(corr_id)
@@ -850,8 +870,8 @@ class TestDMQBackendWrite:
             finally:
                 backend.close()
 
-    def test_write_auth_failure_raises(self):
-        """Test that GSS context failure during async write raises AuthenticationError."""
+    def test_write_auth_failure_returns_error_result(self):
+        """Test that GSS context failure during async write returns error WriteResult."""
         factory, mock_conn = create_write_select_connection_factory()
 
         def failing_gss():
@@ -865,8 +885,9 @@ class TestDMQBackendWrite:
         ):
             backend = DMQBackend(host="localhost", auth=_create_mock_auth())
             try:
-                with pytest.raises(AuthenticationError, match="GSS context creation failed"):
-                    backend.write(TEMP_DEVICE, TEMP_VALUE, timeout=5.0)
+                result = backend.write(TEMP_DEVICE, TEMP_VALUE, timeout=5.0)
+                assert not result.success
+                assert "GSS context creation failed" in (result.message or "")
             finally:
                 backend.close()
 
