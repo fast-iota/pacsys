@@ -78,7 +78,7 @@ if TYPE_CHECKING:
     from pacsys.backends.dmq import DMQBackend
     from pacsys.devdb import DevDBClient
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 logger = logging.getLogger(__name__)
 

@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pacsys"
 authors = [{name = "Nikita Kuklev"}]
-version = "0.1.0"
+version = "0.2.0"
 license = {text = "GPL-3.0-or-later"}
 description = "Pure-python library for Fermilab control system"
 readme = "README.md"

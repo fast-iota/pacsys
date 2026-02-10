@@ -40,6 +40,7 @@ from pacsys.backends.dmq_protocol import (
     ErrorSample_reply,
     StringSample_reply,
 )
+from pacsys.acnet.errors import FACILITY_DMQ
 from pacsys.types import Reading, ValueType
 from tests.devices import (
     TEMP_DEVICE,
@@ -714,7 +715,7 @@ class MockSelectChannelWithWriteSupport(MockSelectChannel):
                     if not pending_sent and getattr(self, "_init_received", False) and self._on_message_callback:
                         pending_sent = True
                         pending_reply = ErrorSample_reply()
-                        pending_reply.facilityCode = 0
+                        pending_reply.facilityCode = FACILITY_DMQ
                         pending_reply.errorNumber = 1  # DMQ_PENDING_ERROR
                         pending_reply.time = 0
                         method = mock.MagicMock()

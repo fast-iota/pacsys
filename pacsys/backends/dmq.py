@@ -21,7 +21,7 @@ import pika.spec
 from pika.adapters.select_connection import SelectConnection
 from pika.channel import Channel
 
-from pacsys.acnet.errors import ERR_OK, ERR_RETRY, ERR_TIMEOUT, FACILITY_ACNET
+from pacsys.acnet.errors import ERR_OK, ERR_RETRY, ERR_TIMEOUT, FACILITY_ACNET, FACILITY_DMQ
 from pacsys.auth import Auth, KerberosAuth
 from pacsys.backends import Backend, timestamp_from_millis, validate_alarm_dict
 from pacsys.backends._dispatch import CallbackDispatcher
@@ -401,7 +401,11 @@ def _resolve_reply(
                 err.errorNumber = ERR_RETRY
                 return err, idx, None
         return None
-    if isinstance(reply, ErrorSample_reply) and reply.errorNumber == DMQ_PENDING_ERROR:
+    if (
+        isinstance(reply, ErrorSample_reply)
+        and reply.errorNumber == DMQ_PENDING_ERROR
+        and reply.facilityCode == FACILITY_DMQ
+    ):
         return None
     ref_id = getattr(reply, "ref_id", None)
     idx: int | None = None
@@ -1473,7 +1477,11 @@ class DMQBackend(Backend):
                 )
 
         # PENDING confirms S.# binding is in place — flush queued writes
-        if isinstance(reply, ErrorSample_reply) and reply.errorNumber == DMQ_PENDING_ERROR:
+        if (
+            isinstance(reply, ErrorSample_reply)
+            and reply.errorNumber == DMQ_PENDING_ERROR
+            and reply.facilityCode == FACILITY_DMQ
+        ):
             if not session.init_confirmed:
                 self._flush_queued_writes(session)
             return
