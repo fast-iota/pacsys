@@ -2,7 +2,7 @@
 
 ## What is PACSys?
 
-PACSys is a Python library that lets you interact with ACNET (aka ACSys) without needing to understand the underlying protocols. It provides a modern mix of interfaces and sync/async programming to enable performance Python scripting.
+PACSys is a Python library that lets you interact with ACNET (aka ACSys) without needing to understand the underlying protocols. It provides a synchronous API with async internals to enable performance Python scripting.
 
 High level features:
 
@@ -49,7 +49,7 @@ PACSys connects to services using backends:
 | **DPM/gRPC** | TCP + gRPC | JWT token (for writes) |
 | **DMQ** | TCP + AMQP + binary protocol | Kerberos (mandatory) |
 | **ACL/HTTP** | TCP + HTTP/CGI | None (read-only) |
-| **ACL/SSH** | TCP + SSH | Kerberos (mandatory) |
+| **SSH utilities** | TCP + SSH | Kerberos (mandatory) |
 
 See [Backends](backends/index.md) for details.
 
@@ -90,7 +90,7 @@ desc = dev.description()               # DESCRIPTION (str)
 
 # Full reading with metadata
 reading = dev.get()
-print(f"{reading.value} {reading.units}")
+print(f"{reading.value} {reading.units}")  # e.g. "72.5 DegF"
 
 # Typed devices enforce return types
 temp = ScalarDevice("M:OUTTMP")        # read() -> float

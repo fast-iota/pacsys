@@ -135,7 +135,12 @@ with AnalogAlarm.modify("Z:ACLTST") as alarm:
     alarm.maximum = 100.0
 ```
 
-### NOM_TOL vs MIN_MAX (Raw Alarm Block)
+### NOM_TOL vs MIN_MAX
+
+Just use `minimum`/`maximum` in engineering units -- DPM handles the NOM_TOL/MIN_MAX conversion server-side. To set a nom/tol-style alarm, convert to min/max yourself: `minimum = nom - tol`, `maximum = nom + tol`.
+
+<details>
+<summary>Raw alarm block internals</summary>
 
 The raw 20-byte alarm block has a `limit_type` flag (K bits 8-9) that controls how
 the two 4-byte value fields are interpreted:
@@ -170,16 +175,12 @@ coordinate system instead:
 This means `minimum`/`maximum` always work correctly regardless of the device's
 underlying limit mode - DPM transparently handles the conversion.
 
-#### Why pacsys only exposes minimum/maximum
-
 No backend protocol (DPM PC binary, gRPC protobuf, DMQ SDD) has structured fields for
 nominal/tolerance - they all only expose `minimum` and `maximum` in engineering units.
-Since DPM correctly converts min/max writes to nom/tol storage when needed, there is
-no loss of functionality. The `limit_type` flag is only accessible via raw byte writes,
-but writing raw values requires knowing the device's transform to convert engineering
-units back to primary units, which pacsys cannot do client-side.
+The `limit_type` flag is only accessible via raw byte writes, but writing raw values
+requires knowing the device's transform, which pacsys cannot do client-side.
 
-**To set a nominal/tolerance-style alarm, convert to min/max yourself:**
+</details>
 
 ```python
 nominal = 50.0
@@ -347,7 +348,7 @@ The backends handle this differently:
   structured alarm message. Each field triggers a server-side read-modify-write of
   the 20-byte alarm block.
 
-Read-only keys (`alarm_status`, `abort`, `tries_now`) are silently skipped.
+Read-only keys (`alarm_status`, `tries_now`) are silently skipped.
 
 See [Writing Guide - Alarm Configuration](../guide/writing.md#alarm-configuration-writes) for details.
 

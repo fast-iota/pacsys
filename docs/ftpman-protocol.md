@@ -25,7 +25,6 @@ All FTPMAN packets are ACNET request/reply payloads sent to the **FTPMAN** task 
 from pacsys.acnet import AcnetConnectionTCP, FTPClient, FTPDevice
 
 with AcnetConnectionTCP() as conn:
-    conn.connect()
     ftp = FTPClient(conn)
 
     node = conn.get_node("MUONFE")
@@ -41,7 +40,6 @@ with AcnetConnectionTCP() as conn:
 from pacsys.acnet import AcnetConnectionTCP, FTPClient, FTPDevice
 
 with AcnetConnectionTCP() as conn:
-    conn.connect()
     ftp = FTPClient(conn)
     node = conn.get_node("MUONFE")
     dev = FTPDevice(di=27235, pi=12, ssdn=b"\x00\x00B\x00?!\x00\x00")
@@ -59,7 +57,6 @@ with AcnetConnectionTCP() as conn:
 from pacsys.acnet import AcnetConnectionTCP, FTPClient, FTPDevice
 
 with AcnetConnectionTCP() as conn:
-    conn.connect()
     ftp = FTPClient(conn)
     node = conn.get_node("MUONFE")
     dev = FTPDevice(di=27235, pi=12, ssdn=b"\x00\x00B\x00?!\x00\x00")
@@ -87,7 +84,6 @@ with AcnetConnectionTCP() as conn:
 from pacsys.acnet import AcnetConnectionTCP, FTPClient, FTPDevice
 
 with AcnetConnectionTCP() as conn:
-    conn.connect()
     ftp = FTPClient(conn)
     node = conn.get_node("MUONFE")
     dev = FTPDevice(di=27235, pi=12, ssdn=b"\x00\x00B\x00?!\x00\x00")
@@ -114,7 +110,6 @@ with AcnetConnectionTCP() as conn:
 from pacsys.acnet import AcnetConnectionTCP, FTPClient, FTPDevice
 
 with AcnetConnectionTCP() as conn:
-    conn.connect()
     ftp = FTPClient(conn)
     node = conn.get_node("MUONFE")
     dev = FTPDevice(di=27235, pi=12, ssdn=b"\x00\x00B\x00?!\x00\x00")
@@ -141,7 +136,6 @@ For large captures that exceed `retrieval_max` (512 for most classes):
 from pacsys.acnet import AcnetConnectionTCP, FTPClient, FTPDevice
 
 with AcnetConnectionTCP() as conn:
-    conn.connect()
     ftp = FTPClient(conn)
     node = conn.get_node("MUONFE")
     dev = FTPDevice(di=27235, pi=12, ssdn=b"\x00\x00B\x00?!\x00\x00")

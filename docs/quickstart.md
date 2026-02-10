@@ -33,7 +33,7 @@ print(f"Temperature: {temperature}")
 
 # With metadata
 reading = pacsys.get("M:OUTTMP")
-print(f"{reading.value} {reading.units}")
+print(f"{reading.value} {reading.units}")  # e.g. "72.5 DegF"
 
 # Multiple devices at once
 readings = pacsys.get_many(["M:OUTTMP", "G:AMANDA"])
@@ -129,10 +129,13 @@ re-configuring with `configure()`).
 |----------|-------------|---------|
 | `PACSYS_DPM_HOST` | DPM proxy hostname | acsys-proxy.fnal.gov |
 | `PACSYS_DPM_PORT` | DPM proxy port | 6802 |
-| `PACSYS_TIMEOUT` | Default timeout (seconds) | 10.0 |
+| `PACSYS_TIMEOUT` | Default timeout (seconds) | 5.0 |
 | `PACSYS_JWT_TOKEN` | JWT token for gRPC auth | - |
 | `PACSYS_DMQ_HOST` | RabbitMQ broker host | appsrv2.fnal.gov |
 | `PACSYS_DMQ_PORT` | RabbitMQ broker port | 5672 |
+| `PACSYS_POOL_SIZE` | DPM connection pool size | 4 |
+| `PACSYS_DEVDB_HOST` | DevDB gRPC hostname | localhost |
+| `PACSYS_DEVDB_PORT` | DevDB gRPC port | 6802 |
 
 ---
 

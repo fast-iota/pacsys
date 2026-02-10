@@ -64,6 +64,11 @@ Create explicit backend instances for more control.
       show_root_heading: true
       heading_level: 3
 
+::: pacsys.dpm_http
+    options:
+      show_root_heading: true
+      heading_level: 3
+
 ---
 
 ## Types
@@ -142,6 +147,13 @@ Create explicit backend instances for more control.
 ### AuthenticationError
 
 ::: pacsys.errors.AuthenticationError
+    options:
+      show_root_heading: true
+      heading_level: 3
+
+### ReadError
+
+::: pacsys.errors.ReadError
     options:
       show_root_heading: true
       heading_level: 3

@@ -23,6 +23,7 @@ ACNET (Accelerator Control NETwork) is the control system used at Fermilab's par
 ## Device API (recommended)
 
 ```python
+import pacsys
 from pacsys import Device, ScalarDevice, ArrayDevice, Verify, KerberosAuth
 
 # Create a device -- DRF is validated immediately
@@ -36,7 +37,7 @@ alarm = dev.analog_alarm()             # ANALOG alarm
 
 # Full reading with metadata
 reading = dev.get()
-print(f"{reading.value} {reading.units}")
+print(f"{reading.value} {reading.units}")  # e.g. "72.5 DegF"
 
 # Write with automatic readback verification
 with pacsys.dpm(auth=KerberosAuth(), role="testing") as backend:

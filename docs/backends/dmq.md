@@ -63,11 +63,14 @@ with pacsys.dmq(auth=auth) as backend:
 | `host` | appsrv2.fnal.gov | `PACSYS_DMQ_HOST` |
 | `port` | 5672 | `PACSYS_DMQ_PORT` |
 | `vhost` | / | - |
-| `timeout` | 10.0 | - |
+| `timeout` | 5.0 | - |
 
 ## For the Curious: How DMQ Writes Work
 
-Under the hood, a DMQ write involves a surprisingly intricate dance between your client, RabbitMQ, and the DMQ server. Here's what happens when you call `backend.write("Z:ACLTST", 45.0)`:
+A DMQ write involves a 4-step AMQP dance: channel setup (private exchange + queue), INIT handshake (GSS-signed `SettingRequest` to `amq.topic`), value send (routing key must exactly match INIT DRF string), and response consumption. Sessions are cached per device; subsequent writes skip steps 1-2.
+
+<details>
+<summary>Full protocol details</summary>
 
 ### 1. Channel Setup
 
@@ -151,6 +154,8 @@ caches sessions per device and maintains a pool of pre-warmed "standby"
 channels. Subsequent writes to the same device reuse the existing session,
 skipping steps 1-2 entirely. Sessions are cleaned up after 10 minutes of
 inactivity.
+
+</details>
 
 ## When to Use
 

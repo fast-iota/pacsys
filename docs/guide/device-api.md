@@ -114,6 +114,9 @@ dev.positive()
 dev.negative()
 dev.ramp()
 dev.dc()
+dev.local()
+dev.remote()
+dev.trip()
 ```
 
 ### Alarm Settings

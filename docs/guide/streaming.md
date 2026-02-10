@@ -16,7 +16,7 @@ with pacsys.subscribe(["M:OUTTMP@p,1000"]) as stream:
         print(f"{reading.name}: {reading.value}")
 ```
 
-The `@p,1000` means "send data every 1000 milliseconds." See [DRF Events](../drf.md) for all event types.
+The `@p,1000` means "send data every 1000 milliseconds." The `timeout` is a **total wall-clock timeout** from the first `.readings()` call (not a per-reading idle timeout). See [DRF Events](../drf.md) for all event types.
 
 !!! tip "Always Use Context Manager"
     The `with` statement ensures the subscription is properly cleaned up. Without it, you must call `stream.stop()` manually.
@@ -131,7 +131,7 @@ handle = pacsys.subscribe(
 
 ## CombinedStream
 
-Combine multiple independent subscriptions into a single iterable, ordered by timestamp:
+Combine multiple independent subscriptions into a single iterable:
 
 ```python
 from pacsys import CombinedStream
@@ -140,12 +140,9 @@ with pacsys.dpm() as backend:
     sub1 = backend.subscribe(["M:OUTTMP@p,1000"])
     sub2 = backend.subscribe(["G:AMANDA@p,500"])
 
-    combined = CombinedStream([sub1, sub2])
-
-    for reading, handle in combined.readings(timeout=30):
-        print(f"{reading.name}: {reading.value}")
-
-    combined.stop()
+    with CombinedStream([sub1, sub2]) as combined:
+        for reading, handle in combined.readings(timeout=30):
+            print(f"{reading.name}: {reading.value}")
 ```
 
 Each `subscribe()` call creates its own TCP connection (on DPM/HTTP), so subscriptions are truly independent - stopping one doesn't affect the others.

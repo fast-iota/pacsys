@@ -37,7 +37,7 @@ def encode(s: str) -> int:
 
     Example:
         >>> encode("DPM")
-        0x000004A2
+        0x1b8d
     """
     # Pad or truncate to exactly 6 characters
     s = s.ljust(6)[:6]

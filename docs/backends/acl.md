@@ -14,6 +14,12 @@ sequenceDiagram
     CGI-->>App: DEVICE = VALUE UNITS (one per line)
 ```
 
+## Configuration
+
+| Parameter | Default | Environment Variable |
+|-----------|---------|---------------------|
+| `base_url` | www-bd.fnal.gov | `PACSYS_ACL_URL` |
+
 ## Characteristics
 
 - **No authentication**: Anyone can read

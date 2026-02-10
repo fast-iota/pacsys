@@ -294,10 +294,10 @@ print(f"Failed: {results[1].error_code}")
 
 ## Backend Differences
 
-| Feature | DPM/HTTP | DPM/gRPC | DMQ |
+| Feature | DPM/HTTP | gRPC | DMQ |
 |---------|----------|----------|-----|
 | Auth type | Kerberos + role | JWT | Kerberos (no role) |
-| Alarm dict write | Yes (sequential) | No | No |
+| Alarm dict write | Yes (sequential) | No | Yes (atomic) |
 | Verify | Via Device API | Via Device API | Via Device API |
 | Batch write | `write_many()` | `write_many()` | `write_many()` |
 

@@ -53,13 +53,13 @@ The parser normalizes DRF strings for consistent comparison:
 | Property qualifier → `:` | `M_OUTTMP` → `M:OUTTMP` |
 | Aliases → canonical names | `.READ` → `.READING` |
 | Default field omitted | `.READING.SCALED` → `.READING` |
-| Case: device preserved, rest uppercase | `m:outtmp.read` → `m:OUTTMP.READING` |
+| Case: device name preserved, rest uppercase | `m:outtmp.read` → `m:outtmp.READING` |
 
 ```python
 from pacsys.drf3 import parse_request
 
 req = parse_request("m:outtmp.read@p,1000")
-print(req.to_canonical())  # "m:OUTTMP.READING@p,1000"
+print(req.to_canonical())  # "m:outtmp.READING@p,1000"
 ```
 
 ---
@@ -162,13 +162,15 @@ Fields select specific data flavors within a property:
 |-------|-------------|
 | `SCALED` | Engineering units (default) |
 | `PRIMARY` | Primary/volts units |
+| `VOLTS` | Volts units |
+| `COMMON` | Common (engineering) units |
 | `RAW` | Raw binary data |
 
 ### Status Fields
 
 | Field | Description |
 |-------|-------------|
-| `ALL` | All status bits (default) |
+| `ALL` | All status bits |
 | `ON`, `READY`, `REMOTE`, `POSITIVE`, `RAMP` | Individual bits |
 | `TEXT`, `EXTENDED_TEXT` | Human-readable status |
 
@@ -181,6 +183,10 @@ Fields select specific data flavors within a property:
 | `RAW_MIN`, `RAW_MAX`, `RAW_NOM`, `RAW_TOL` | Raw limits |
 | `ALARM_ENABLE`, `ALARM_STATUS` | Enable/status flags |
 | `TRIES_NEEDED`, `TRIES_NOW` | Alarm trip counts |
+| `ALARM_FTD` | Sampling configuration |
+| `ABORT`, `ABORT_INHIBIT` | Abort flags |
+| `FLAGS` | Alarm flags word |
+| `MASK` | Digital alarm mask |
 
 ---
 
@@ -204,13 +210,11 @@ Continuous data at fixed intervals:
 | Syntax | Meaning |
 |--------|---------|
 | `@p,1000` | Every 1000ms |
-| `@p,1S` | Every 1 second |
+| `@p,1000` | Every 1000ms (= 1 second) |
 | `@p,500,TRUE` | 500ms, immediate first reading |
 | `@q,1000` | Non-continuous (only on change) |
 
-Time units: `S` (seconds), `M` (milliseconds, default), `U` (microseconds)
-
-Frequency units: `H` (Hertz), `K` (kilohertz)
+All periodic values are in **milliseconds** (no unit suffixes). The Java server accepts unit suffixes but they are not implemented in pacsys.
 
 ### Clock Event (`@E`)
 
