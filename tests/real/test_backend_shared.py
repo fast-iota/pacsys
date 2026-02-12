@@ -246,7 +246,7 @@ class TestBackendErrors:
     def test_get_nonexistent_returns_error(self, read_backend: Backend):
         """get() returns error Reading for nonexistent device."""
         time.sleep(0.5)  # DMQ needs cooldown after prior error test
-        reading = read_backend.get(NONEXISTENT_DEVICE, timeout=TIMEOUT_READ)
+        reading = read_backend.get(NONEXISTENT_DEVICE, timeout=10.0)
         assert not reading.ok
         assert reading.error_code != 0
 
