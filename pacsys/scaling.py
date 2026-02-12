@@ -187,6 +187,21 @@ def _check_unsigned(value: int, size: int) -> int:
     return value
 
 
+def _java_int_cast(v: float) -> int:
+    """Emulate Java ``(int) doubleValue`` narrowing conversion (JLS 5.1.3).
+
+    Java saturates at Integer.MIN/MAX for out-of-range doubles and
+    returns 0 for NaN.  Python's ``int()`` raises or returns big ints.
+    """
+    if math.isnan(v):
+        return 0
+    if v >= 2147483647.0:
+        return 2147483647
+    if v <= -2147483648.0:
+        return -2147483648
+    return int(v)
+
+
 # ---- Primary transform: raw -> primary -----------------
 
 
@@ -407,7 +422,7 @@ def _primary_unscale(value: float, p_index: int, input_len: int) -> int:
                 raise ScalingError("Corrupt data")
         elif input_len == 4:
             raise ScalingError("Bad scale")
-        return int(value)
+        return _java_int_cast(value)
     if p_index == 22:
         # DEC float encode: IEEE float * 4 then word-swap
         state = _float_to_int(float(value * 4.0))
@@ -462,7 +477,7 @@ def _primary_unscale(value: float, p_index: int, input_len: int) -> int:
     if p_index == 46:
         if value < 0.0:
             raise ScalingError("Corrupt data")
-        unsigned_state = int(value)
+        unsigned_state = _java_int_cast(value)
         if unsigned_state < 0:
             unsigned_state = -unsigned_state
         return unsigned_state
@@ -495,7 +510,7 @@ def _primary_unscale(value: float, p_index: int, input_len: int) -> int:
             raise ScalingError("Data size invalid")
         return _check_unsigned(int(value * 3276.8 + 32768.0), input_len)
     if p_index == 58:
-        unsigned_state = int(value * 256.0)
+        unsigned_state = _java_int_cast(value * 256.0)
         if unsigned_state < 0:
             unsigned_state = -unsigned_state
         return unsigned_state
@@ -513,7 +528,7 @@ def _primary_unscale(value: float, p_index: int, input_len: int) -> int:
             return int(value * 128.0)
         if input_len == 2:
             return int(value * 32768.0)
-        return int(value * 2147483648.0)
+        return _java_int_cast(value * 2147483648.0)
     if p_index == 66:
         if value <= 0.0:
             raise ScalingError("Value out of range")
@@ -876,7 +891,12 @@ def _common_scale(data: float, c_index: int, constants: tuple[float, ...]) -> fl
         if len(c) < 6:
             raise ScalingError("Insufficient constants")
         if x < c[0]:
-            return c[1] * (x ** c[2])
+            # math.pow raises ValueError for negative base with fractional exp;
+            # Java Math.pow returns NaN — propagate as NaN to match.
+            try:
+                return c[1] * math.pow(x, c[2])
+            except ValueError:
+                return math.nan
         return c[3] * math.exp(c[4] * x + c[5])
 
     if c_index == 78:
@@ -945,7 +965,7 @@ def _binary_search(
             return _common_scale(primary, c_index, constants)
         except OverflowError:
             return math.inf
-        except ValueError:
+        except (ValueError, ZeroDivisionError):
             return math.nan
 
     cuupr = _f(puupr) - target
@@ -1024,7 +1044,7 @@ def _root_bisection(
             return _common_scale(primary, c_index, constants)
         except OverflowError:
             return math.inf
-        except ValueError:
+        except (ValueError, ZeroDivisionError):
             return math.nan
 
     f = _f(x1) - target
@@ -1213,23 +1233,23 @@ def _common_unscale(
         return state
 
     if c_index == 76:
-        a = c[1] * (c[0] ** c[2])  # breakpoint y-value
+        a = c[1] * math.pow(c[0], c[2])  # breakpoint y-value
         b = c[3] * c[4]  # slope sign of right branch
         if c[1] > 0 and b > 0:
             if xx < a:
-                return (xx / c[1]) ** (1.0 / c[2])
+                return math.pow(xx / c[1], 1.0 / c[2])
             return (math.log(xx / c[3]) - c[5]) / c[4]
         if c[1] < 0 and b < 0:
             if xx >= a:
-                return (xx / c[1]) ** (1.0 / c[2])
+                return math.pow(xx / c[1], 1.0 / c[2])
             return (math.log(xx / c[3]) - c[5]) / c[4]
         if c[1] > 0 and b < 0:
             if xx < a:
-                return (xx / c[1]) ** (1.0 / c[2])
+                return math.pow(xx / c[1], 1.0 / c[2])
             raise ScalingError("Value out of range")
         # c[1] < 0 and b > 0
         if xx >= a:
-            return (xx / c[1]) ** (1.0 / c[2])
+            return math.pow(xx / c[1], 1.0 / c[2])
         raise ScalingError("Value out of range")
 
     if c_index == 78:
