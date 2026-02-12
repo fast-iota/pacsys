@@ -11,6 +11,7 @@ See SPECIFICATION.md for full API reference.
 """
 
 import atexit
+import importlib
 import logging
 import os
 import threading
@@ -32,43 +33,10 @@ from pacsys.types import (
     CombinedStream,
     ReadingCallback,
     ErrorCallback,
+    BasicControl,
 )
 from pacsys.errors import DeviceError, AuthenticationError, ACLError, ReadError
 from pacsys.device import Device, ScalarDevice, ArrayDevice, TextDevice
-from pacsys.types import BasicControl  # noqa: F401
-from pacsys.alarm_block import (
-    AlarmBlock,
-    AnalogAlarm,
-    DigitalAlarm,
-    AlarmFlags,
-    FTD,
-    LimitType,
-    DataType,
-    DataLength,
-)
-from pacsys.ramp import Ramp, CorrectorRamp, BoosterRamp  # noqa: F401
-from pacsys.digital_status import StatusBit, DigitalStatus  # noqa: F401
-from pacsys.verify import Verify  # noqa: F401
-from pacsys.ssh import (  # noqa: F401
-    SSHClient,
-    SSHHop,
-    CommandResult,
-    Tunnel,
-    SFTPSession,
-    RemoteProcess,
-    SSHError,
-    SSHConnectionError,
-    SSHCommandError,
-    SSHTimeoutError,
-)
-from pacsys.acl_session import ACLSession  # noqa: F401
-from pacsys.devdb import (  # noqa: F401
-    DeviceInfoResult,
-    PropertyInfo,
-    StatusBitDef,
-    ExtStatusBitDef,
-    ControlCommandDef,
-)
 
 if TYPE_CHECKING:
     from pacsys.backends import Backend
@@ -77,6 +45,7 @@ if TYPE_CHECKING:
     from pacsys.backends.acl import ACLBackend
     from pacsys.backends.dmq import DMQBackend
     from pacsys.devdb import DevDBClient
+    from pacsys.ssh import SSHClient, SSHHop
     from pacsys.supervised import SupervisedServer
 
 __version__ = "0.2.0"
@@ -903,11 +872,60 @@ def supervised(
 # Lazy Imports
 # ─────────────────────────────────────────────────────────────────────────────
 
+_LAZY_IMPORTS: dict[str, str] = {
+    # alarm_block
+    "AlarmBlock": "pacsys.alarm_block",
+    "AnalogAlarm": "pacsys.alarm_block",
+    "DigitalAlarm": "pacsys.alarm_block",
+    "AlarmFlags": "pacsys.alarm_block",
+    "FTD": "pacsys.alarm_block",
+    "LimitType": "pacsys.alarm_block",
+    "DataType": "pacsys.alarm_block",
+    "DataLength": "pacsys.alarm_block",
+    # scaling
+    "Scaler": "pacsys.scaling",
+    "ScalingError": "pacsys.scaling",
+    # ramp
+    "Ramp": "pacsys.ramp",
+    "CorrectorRamp": "pacsys.ramp",
+    "BoosterRamp": "pacsys.ramp",
+    # digital_status
+    "StatusBit": "pacsys.digital_status",
+    "DigitalStatus": "pacsys.digital_status",
+    # verify
+    "Verify": "pacsys.verify",
+    # ssh
+    "SSHClient": "pacsys.ssh",
+    "SSHHop": "pacsys.ssh",
+    "CommandResult": "pacsys.ssh",
+    "Tunnel": "pacsys.ssh",
+    "SFTPSession": "pacsys.ssh",
+    "RemoteProcess": "pacsys.ssh",
+    "SSHError": "pacsys.ssh",
+    "SSHConnectionError": "pacsys.ssh",
+    "SSHCommandError": "pacsys.ssh",
+    "SSHTimeoutError": "pacsys.ssh",
+    # acl_session
+    "ACLSession": "pacsys.acl_session",
+    # devdb
+    "DeviceInfoResult": "pacsys.devdb",
+    "PropertyInfo": "pacsys.devdb",
+    "StatusBitDef": "pacsys.devdb",
+    "ExtStatusBitDef": "pacsys.devdb",
+    "ControlCommandDef": "pacsys.devdb",
+}
 
-def __getattr__(name):
+
+def __getattr__(name: str):
+    if name in _LAZY_IMPORTS:
+        mod = importlib.import_module(_LAZY_IMPORTS[name])
+        val = getattr(mod, name)
+        # Cache on module to avoid repeated __getattr__ calls
+        globals()[name] = val
+        return val
     if name == "acnet":
-        from pacsys import acnet
-
+        acnet = importlib.import_module("pacsys.acnet")
+        globals()["acnet"] = acnet
         return acnet
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
@@ -963,6 +981,9 @@ __all__ = [
     "DigitalStatus",
     # Verify
     "Verify",
+    # Scaling
+    "Scaler",
+    "ScalingError",
     # Ramp
     "Ramp",
     "CorrectorRamp",
