@@ -112,8 +112,8 @@ def _validate_device_name(drf: str) -> None:
 
 __all__ = [
     "Ramp",
-    "RecyclerQuadRamp",
-    "RecyclerQuadRampGroup",
+    "RecyclerQRamp",
+    "RecyclerQRampGroup",
     "RecyclerSRamp",
     "RecyclerSRampGroup",
     "RecyclerSCRamp",
@@ -430,7 +430,7 @@ class Ramp:
         return "\n".join(lines)
 
 
-class RecyclerQuadRamp(Ramp):
+class RecyclerQRamp(Ramp):
     """Recycler quad ramp table (453 CAMAC card).
 
     Scaling: p_index=2 (raw / 3276.8), c_index=6 with C1=2.0, C2=1.0
@@ -502,6 +502,7 @@ class BoosterQRamp(Ramp):
     """
 
     update_rate_hz: ClassVar[int] = 100_000  # C473 CAMAC card: 100 KHz fixed
+    max_time: ClassVar[float | None] = 66_660.0  # 6666 ticks * 10 us ≈ one Booster cycle
     scaler: ClassVar[Scaler | None] = Scaler(p_index=2, c_index=6, constants=(6.5, 1.0), input_len=2)
 
 
@@ -828,10 +829,10 @@ class _RampGroupModifyContext:
         return False
 
 
-class RecyclerQuadRampGroup(RampGroup):
-    """RampGroup for Recycler quads using RecyclerQuadRamp transforms."""
+class RecyclerQRampGroup(RampGroup):
+    """RampGroup for Recycler quads using RecyclerQRamp transforms."""
 
-    base = RecyclerQuadRamp
+    base = RecyclerQRamp
 
 
 class RecyclerSRampGroup(RampGroup):

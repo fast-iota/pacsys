@@ -18,17 +18,22 @@ import struct
 
 from pacsys.dpm_protocol import (
     AddToList_reply,
+    AnalogAlarm_reply,
     ApplySettings_reply,
     Authenticate_reply,
+    BasicStatus_reply,
     DeviceInfo_reply,
+    ListStatus_reply,
     OpenList_reply,
     ProtocolError,
+    Raw_reply,
     Scalar_reply,
     ScalarArray_reply,
     SettingStatus_struct,
     StartList_reply,
     Status_reply,
     Text_reply,
+    TextArray_reply,
     unmarshal_request,
 )
 from pacsys.types import ValueType
@@ -479,6 +484,107 @@ def make_status_reply(
     return reply
 
 
+def make_list_status_reply(
+    list_id: int = 1,
+    status: int = 0,
+) -> ListStatus_reply:
+    """Create a ListStatus_reply (heartbeat/keepalive)."""
+    reply = ListStatus_reply()
+    reply.list_id = list_id
+    reply.status = status
+    return reply
+
+
+def make_raw_reply(
+    data: bytes = RAW_BYTES,
+    ref_id: int = 1,
+    timestamp: int = TIMESTAMP_MILLIS,
+    status: int = 0,
+) -> Raw_reply:
+    """Create a Raw_reply with sensible defaults."""
+    reply = Raw_reply()
+    reply.ref_id = ref_id
+    reply.timestamp = timestamp
+    reply.cycle = 0
+    reply.status = status
+    reply.data = data
+    return reply
+
+
+def make_text_array_reply(
+    texts: list[str] | None = None,
+    ref_id: int = 1,
+    timestamp: int = TIMESTAMP_MILLIS,
+    status: int = 0,
+) -> TextArray_reply:
+    """Create a TextArray_reply with sensible defaults."""
+    reply = TextArray_reply()
+    reply.ref_id = ref_id
+    reply.timestamp = timestamp
+    reply.cycle = 0
+    reply.status = status
+    reply.data = list(texts) if texts is not None else list(TEXT_ARRAY_VALUES)
+    return reply
+
+
+def make_analog_alarm_reply(
+    ref_id: int = 1,
+    timestamp: int = TIMESTAMP_MILLIS,
+    minimum: float = -10.0,
+    maximum: float = 100.0,
+    alarm_enable: bool = True,
+    alarm_status: bool = False,
+    abort: bool = False,
+    abort_inhibit: bool = False,
+    tries_needed: int = 3,
+    tries_now: int = 0,
+) -> AnalogAlarm_reply:
+    """Create an AnalogAlarm_reply with sensible defaults."""
+    reply = AnalogAlarm_reply()
+    reply.ref_id = ref_id
+    reply.timestamp = timestamp
+    reply.cycle = 0
+    reply.minimum = minimum
+    reply.maximum = maximum
+    reply.alarm_enable = alarm_enable
+    reply.alarm_status = alarm_status
+    reply.abort = abort
+    reply.abort_inhibit = abort_inhibit
+    reply.tries_needed = tries_needed
+    reply.tries_now = tries_now
+    return reply
+
+
+def make_basic_status_reply(
+    ref_id: int = 1,
+    timestamp: int = TIMESTAMP_MILLIS,
+    on: bool | None = True,
+    ready: bool | None = True,
+    remote: bool | None = True,
+    positive: bool | None = None,
+    ramp: bool | None = None,
+) -> BasicStatus_reply:
+    """Create a BasicStatus_reply with sensible defaults.
+
+    Fields set to None are omitted (simulates DIO_NOATT).
+    """
+    reply = BasicStatus_reply()
+    reply.ref_id = ref_id
+    reply.timestamp = timestamp
+    reply.cycle = 0
+    if on is not None:
+        reply.on = on
+    if ready is not None:
+        reply.ready = ready
+    if remote is not None:
+        reply.remote = remote
+    if positive is not None:
+        reply.positive = positive
+    if ramp is not None:
+        reply.ramp = ramp
+    return reply
+
+
 def make_auth_reply(service_name: str = "dpm") -> Authenticate_reply:
     """Create an Authenticate_reply for DPM auth handshake."""
     reply = Authenticate_reply()
@@ -577,3 +683,48 @@ VALUE_TYPE_MATRIX = [
     ("digital_alarm", DIGITAL_ALARM_DATA, ValueType.DIGITAL_ALARM, "digital alarm dict"),
     ("basic_status", BASIC_STATUS_DATA, ValueType.BASIC_STATUS, "status dict"),
 ]
+
+
+# =============================================================================
+# Async Mock for _DpmStreamCore Testing
+# =============================================================================
+
+
+class MockAsyncDPMConnection:
+    """Async mock of _AsyncDPMConnection for unit-testing _DpmStreamCore.
+
+    Operates at the message level (returns unmarshalled reply objects)
+    rather than the byte level. When replies are exhausted, raises
+    DPMConnectionError to terminate the recv loop.
+    """
+
+    def __init__(self, list_id: int = 1, replies: list | None = None):
+        self._list_id = list_id
+        self._replies = list(replies) if replies else []
+        self._index = 0
+        self.sent_messages: list = []
+
+    @property
+    def list_id(self):
+        return self._list_id
+
+    async def connect(self):
+        pass
+
+    async def send_message(self, msg):
+        self.sent_messages.append(msg)
+
+    async def send_messages_batch(self, msgs):
+        self.sent_messages.extend(msgs)
+
+    async def recv_message(self):
+        if self._index >= len(self._replies):
+            from pacsys.dpm_connection import DPMConnectionError
+
+            raise DPMConnectionError("No more replies")
+        reply = self._replies[self._index]
+        self._index += 1
+        return reply
+
+    async def close(self):
+        pass

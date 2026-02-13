@@ -150,6 +150,58 @@ def _reply_to_value_and_type(reply) -> tuple[Optional[Value], Optional[ValueType
     return None, None
 
 
+def _reply_to_reading(reply, drf: str, meta: Optional[DeviceMeta]) -> Reading:
+    """Convert a DPM reply to a Reading object."""
+    if isinstance(reply, Status_reply):
+        facility, error = parse_error(reply.status)
+        return Reading(
+            drf=drf,
+            value_type=ValueType.SCALAR,
+            facility_code=facility,
+            error_code=error,
+            value=None,
+            message=status_message(facility, error),
+            timestamp=timestamp_from_millis(reply.timestamp) if reply.timestamp else None,
+            cycle=reply.cycle,
+            meta=meta,
+        )
+
+    value, value_type = _reply_to_value_and_type(reply)
+
+    # Unknown reply type -- return error reading
+    if value_type is None:
+        return Reading(
+            drf=drf,
+            value_type=ValueType.SCALAR,
+            facility_code=FACILITY_ACNET,
+            error_code=ERR_RETRY,
+            value=None,
+            message=f"Unknown reply type: {type(reply).__name__}",
+            timestamp=None,
+            cycle=0,
+            meta=meta,
+        )
+
+    # Alarm/status replies have no status field -- receiving them means success (0)
+    status = reply.status if hasattr(reply, "status") else 0
+    timestamp = reply.timestamp
+    cycle = reply.cycle
+
+    facility, error = parse_error(status)
+
+    return Reading(
+        drf=drf,
+        value_type=value_type,
+        facility_code=facility,
+        error_code=error,
+        value=value,
+        message=status_message(facility, error),
+        timestamp=timestamp_from_millis(timestamp) if timestamp else None,
+        cycle=cycle,
+        meta=meta,
+    )
+
+
 def _device_info_to_meta(info: DeviceInfo_reply) -> DeviceMeta:
     """Convert DeviceInfo_reply to DeviceMeta."""
     return DeviceMeta(
@@ -348,10 +400,122 @@ class _DPMHTTPSubscriptionHandle(BufferedSubscriptionHandle):
         self._ref_ids = list(range(1, len(drfs) + 1))
         self._task: Optional[asyncio.Task] = None
 
+    def _dispatch(self, reading: Reading) -> None:
+        """Called from the reactor thread to deliver a reading."""
+        if self._stopped:
+            return
+        if self._callback is not None:
+            self._backend._dispatcher.dispatch_reading(self._callback, reading, self)
+        else:
+            super()._dispatch(reading)
+
+    def _dispatch_error(self, exc: Exception) -> None:
+        """Called from the reactor thread on stream error (always fatal for DPM)."""
+        self._signal_error(exc)
+        if self._on_error is not None:
+            self._backend._dispatcher.dispatch_error(self._on_error, exc, self)
+
     def stop(self) -> None:
         """Stop this subscription and cancel its async task."""
         if not self._stopped:
             self._backend.remove(self)
+
+
+class _DpmStreamCore:
+    """Pure-async DPM streaming protocol logic.
+
+    Manages AddToList/StartList setup and the recv loop for a single
+    streaming subscription. Takes functional callbacks for dispatch,
+    stop checking, and error handling — knows nothing about threads,
+    handles, or user callbacks.
+    """
+
+    def __init__(self, conn: _AsyncDPMConnection):
+        self._conn = conn
+
+    async def stream(
+        self,
+        drfs: list[str],
+        dispatch_fn,
+        stop_check,
+        error_fn,
+    ) -> None:
+        metas: dict[int, DeviceMeta] = {}
+        drf_map: dict[int, str] = {}
+
+        try:
+            list_id = self._conn.list_id
+
+            # Batch all AddToList + StartList into a single TCP write
+            setup_msgs = []
+            for i, drf in enumerate(drfs):
+                ref_id = i + 1
+                drf_map[ref_id] = drf
+                add_req = AddToList_request()
+                add_req.list_id = list_id
+                add_req.ref_id = ref_id
+                add_req.drf_request = drf
+                setup_msgs.append(add_req)
+
+            start_req = StartList_request()
+            start_req.list_id = list_id
+            setup_msgs.append(start_req)
+            await self._conn.send_messages_batch(setup_msgs)
+
+            # Receive loop
+            while not stop_check():
+                reply = await self._conn.recv_message()
+
+                if isinstance(reply, AddToList_reply):
+                    if reply.status != 0:
+                        drf = drf_map.get(reply.ref_id)
+                        if drf is not None:
+                            facility, error = parse_error(reply.status)
+                            reading = Reading(
+                                drf=drf,
+                                value_type=ValueType.SCALAR,
+                                facility_code=facility,
+                                error_code=error,
+                                value=None,
+                                message=status_message(facility, error) or f"AddToList failed (status={reply.status})",
+                                timestamp=None,
+                                cycle=0,
+                                meta=None,
+                            )
+                            dispatch_fn(reading)
+                    continue
+
+                if isinstance(reply, StartList_reply):
+                    if reply.status != 0:
+                        logger.warning(f"StartList returned status {reply.status}")
+                    continue
+
+                if isinstance(reply, ListStatus_reply):
+                    continue
+
+                if isinstance(reply, DeviceInfo_reply):
+                    metas[reply.ref_id] = _device_info_to_meta(reply)
+                    continue
+
+                if hasattr(reply, "ref_id"):
+                    ref_id = reply.ref_id
+                    drf = drf_map.get(ref_id)
+                    if drf is None:
+                        logger.warning(f"Data for unknown ref_id={ref_id}")
+                        continue
+                    meta = metas.get(ref_id)
+                    reading = _reply_to_reading(reply, drf, meta)
+                    dispatch_fn(reading)
+
+        except asyncio.CancelledError:
+            pass  # Normal shutdown via task.cancel()
+        except (asyncio.IncompleteReadError, DPMConnectionError, OSError) as e:
+            if not stop_check():
+                error_fn(e)
+        except Exception as e:
+            if not stop_check():
+                logger.error(f"Unexpected streaming error: {e}")
+                error_fn(e)
 
 
 class DPMHTTPBackend(Backend):
@@ -666,7 +830,7 @@ class DPMHTTPBackend(Backend):
                     )
                 )
             else:
-                readings.append(self._reply_to_reading(reply, original_drf, meta))
+                readings.append(_reply_to_reading(reply, original_drf, meta))
 
         if transport_error is not None or has_timeout:
             raise ReadError(readings, str(transport_error or "Request timeout")) from transport_error
@@ -1320,160 +1484,25 @@ class DPMHTTPBackend(Backend):
     async def _stream_subscription(self, handle: _DPMHTTPSubscriptionHandle) -> None:
         """Async coroutine that manages a single streaming subscription.
 
-        Creates its own TCP connection, sends AddToList/StartList, then
-        loops receiving replies until cancelled or connection error.
+        Creates its own TCP connection, delegates protocol logic to
+        _DpmStreamCore, owns connection lifecycle and handle cleanup.
         """
         conn = _AsyncDPMConnection(self._host, self._port, self._timeout)
-        drfs = handle._drfs
-        callback = handle._callback
-        # Per-device metadata, keyed by ref_id
-        metas: dict[int, DeviceMeta] = {}
-        # DRF by ref_id for reading construction
-        drf_map: dict[int, str] = {}
         try:
             await conn.connect()
-            list_id = conn.list_id
-
-            # Batch all AddToList + StartList into a single TCP write
-            setup_msgs = []
-            for i, drf in enumerate(drfs):
-                ref_id = i + 1
-                drf_map[ref_id] = drf
-                add_req = AddToList_request()
-                add_req.list_id = list_id
-                add_req.ref_id = ref_id
-                add_req.drf_request = drf
-                setup_msgs.append(add_req)
-
-            start_req = StartList_request()
-            start_req.list_id = list_id
-            setup_msgs.append(start_req)
-            await conn.send_messages_batch(setup_msgs)
-
-            # Receive loop
-            while not handle._stopped:
-                reply = await conn.recv_message()
-
-                if isinstance(reply, AddToList_reply):
-                    if reply.status != 0:
-                        # Report failed device addition as error reading
-                        drf = drf_map.get(reply.ref_id)
-                        if drf is not None:
-                            facility, error = parse_error(reply.status)
-                            reading = Reading(
-                                drf=drf,
-                                value_type=ValueType.SCALAR,
-                                facility_code=facility,
-                                error_code=error,
-                                value=None,
-                                message=status_message(facility, error) or f"AddToList failed (status={reply.status})",
-                                timestamp=None,
-                                cycle=0,
-                                meta=None,
-                            )
-                            if callback is not None:
-                                self._dispatcher.dispatch_reading(callback, reading, handle)
-                            else:
-                                handle._dispatch(reading)
-                    continue
-
-                if isinstance(reply, StartList_reply):
-                    if reply.status != 0:
-                        logger.warning(f"StartList returned status {reply.status}")
-                    continue
-
-                if isinstance(reply, ListStatus_reply):
-                    continue
-
-                if isinstance(reply, DeviceInfo_reply):
-                    metas[reply.ref_id] = _device_info_to_meta(reply)
-                    continue
-
-                if hasattr(reply, "ref_id"):
-                    ref_id = reply.ref_id
-                    drf = drf_map.get(ref_id)
-                    if drf is None:
-                        logger.warning(f"Data for unknown ref_id={ref_id}")
-                        continue
-                    meta = metas.get(ref_id)
-                    reading = self._reply_to_reading(reply, drf, meta)
-
-                    if callback is not None:
-                        self._dispatcher.dispatch_reading(callback, reading, handle)
-                    else:
-                        handle._dispatch(reading)
-
-        except asyncio.CancelledError:
-            pass  # Normal shutdown via task.cancel()
-        except (asyncio.IncompleteReadError, DPMConnectionError, OSError) as e:
-            if not handle._stopped:
-                handle._signal_error(e)
-                if handle._on_error is not None:
-                    self._dispatcher.dispatch_error(handle._on_error, e, handle)
-        except Exception as e:
-            if not handle._stopped:
-                handle._signal_error(e)
-                logger.error(f"Unexpected streaming error: {e}")
-                if handle._on_error is not None:
-                    self._dispatcher.dispatch_error(handle._on_error, e, handle)
+            core = _DpmStreamCore(conn)
+            await core.stream(
+                drfs=handle._drfs,
+                dispatch_fn=handle._dispatch,
+                stop_check=lambda: handle._stopped,
+                error_fn=handle._dispatch_error,
+            )
         finally:
             await conn.close()
             handle._signal_stop()
-            # Remove handle so dead subscriptions don't accumulate
             with self._handles_lock:
                 if handle in self._handles:
                     self._handles.remove(handle)
-
-    def _reply_to_reading(self, reply, drf: str, meta: Optional[DeviceMeta]) -> Reading:
-        """Convert a DPM reply to a Reading object."""
-        if isinstance(reply, Status_reply):
-            facility, error = parse_error(reply.status)
-            return Reading(
-                drf=drf,
-                value_type=ValueType.SCALAR,
-                facility_code=facility,
-                error_code=error,
-                value=None,
-                message=status_message(facility, error),
-                timestamp=timestamp_from_millis(reply.timestamp) if reply.timestamp else None,
-                cycle=reply.cycle,
-                meta=meta,
-            )
-
-        value, value_type = _reply_to_value_and_type(reply)
-
-        # Unknown reply type -- return error reading
-        if value_type is None:
-            return Reading(
-                drf=drf,
-                value_type=ValueType.SCALAR,
-                facility_code=FACILITY_ACNET,
-                error_code=ERR_RETRY,
-                value=None,
-                message=f"Unknown reply type: {type(reply).__name__}",
-                timestamp=None,
-                cycle=0,
-                meta=meta,
-            )
-
-        # Alarm/status replies have no status field -- receiving them means success (0)
-        status = reply.status if hasattr(reply, "status") else 0
-        timestamp = reply.timestamp
-        cycle = reply.cycle
-
-        facility, error = parse_error(status)
-
-        return Reading(
-            drf=drf,
-            value_type=value_type,
-            facility_code=facility,
-            error_code=error,
-            value=value,
-            message=status_message(facility, error),
-            timestamp=timestamp_from_millis(timestamp) if timestamp else None,
-            cycle=cycle,
-            meta=meta,
-        )
 
     def subscribe(
         self,

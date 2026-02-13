@@ -14,7 +14,7 @@ from pacsys.ramp import (
     Ramp,
     RampGroup,
     RecyclerHVSQRamp,
-    RecyclerQuadRamp,
+    RecyclerQRamp,
     RecyclerSCRamp,
     RecyclerSRamp,
     read_ramps,
@@ -148,7 +148,7 @@ class TestToBytes:
 _ALL_RAMP_CLASSES = [
     pytest.param(BoosterHVRamp, id="BoosterHV"),
     pytest.param(BoosterQRamp, id="BoosterQ"),
-    pytest.param(RecyclerQuadRamp, id="RecyclerQuad"),
+    pytest.param(RecyclerQRamp, id="RecyclerQ"),
     pytest.param(RecyclerSRamp, id="RecyclerS"),
     pytest.param(RecyclerSCRamp, id="RecyclerSC"),
     pytest.param(RecyclerHVSQRamp, id="RecyclerHVSQ"),

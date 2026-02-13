@@ -81,6 +81,16 @@ class TestDPMHTTPBackendStreaming:
         finally:
             backend.close()
 
+    def test_subscribe_on_closed_backend_raises(self):
+        """subscribe() on closed backend raises."""
+        from pacsys.backends.dpm_http import DPMHTTPBackend
+
+        backend = DPMHTTPBackend()
+        backend.close()
+
+        with pytest.raises(RuntimeError, match="Backend is closed"):
+            backend.subscribe(["M:OUTTMP@p,1000"])
+
     def test_defaults_to_worker_dispatch(self):
         """DPMHTTPBackend defaults to WORKER dispatch mode."""
         from pacsys.backends.dpm_http import DPMHTTPBackend

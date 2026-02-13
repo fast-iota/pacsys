@@ -1,6 +1,6 @@
 # Ramp Tables
 
-The `Ramp` (and its subclass `BoosterHVRamp`) classes provide convenient interface for reading and writing ramp tables. `RampGroup` (and `BoosterHVRampGroup`) provide batched 2D-array access for multiple devices. This is a partial reimplementation of Java `RampDevice`.
+The `Ramp` class provide convenient interface for reading and writing ramp tables. Multi-device `RampGroup` provides batched 2D-array access. This is a partial reimplementation of Java `RampDevice`.
 
 ---
 
@@ -13,30 +13,32 @@ byte[0:1] = value (int16 LE)  -- F(t) amplitude
 byte[2:3] = time  (int16 LE)  -- delta time (clock ticks)
 ```
 
-The total slot size is 256 bytes. Ramp slots are indexed starting at 0, and can be manipulated using SETTING property - `SETTING{N*256:256}.RAW` ({offset:length}) for ramp `N`.
+The total slot size is 256 bytes. Ramp slots are indexed starting at 0, and can be manipulated using SETTING property `SETTING{N*256:256}.RAW` for ramp `N`.
 
 ### Value Scaling
 
-Values are converted between raw int16 and engineering units. There are two ways to define the scaling:
-
-1. **Set `scaler`** to a `Scaler` instance (recommended for standard ACNET transforms — parameters from the device database).
-2. **Override transform classmethods** for custom/non-standard transforms.
-
-When using the `Scaler`, the standard two-stage ACNET transform chain is applied automatically:
+Values are converted between raw int16 and engineering units. The standard two-stage ACNET transform chain is:
 
 ```
 Forward:  engineering = common_scale(primary_scale(raw))
 Inverse:  raw = primary_unscale(common_unscale(engineering))
 ```
 
-| Class | Card | Example | Primary (p_index) | Common (c_index) | Combined |
-|-------|------|---------|-------------------|-----------------|----------|
-| `BoosterHVRamp` | C473 | B:HS23 | raw / 3276.8 (2) | primary × 4.0 (6, C1=4.0, C2=1.0) | raw × 4.0 / 3276.8 |
-| `BoosterQRamp` | C473 | B:QS23 | raw / 3276.8 (2) | primary × 6.5 (6, C1=6.5, C2=1.0) | raw × 6.5 / 3276.8 |
-| `RecyclerQuadRamp` | C453 | R:QT606 | raw / 3276.8 (2) | primary × 2.0 (6, C1=2.0, C2=1.0) | raw × 2.0 / 3276.8 |
-| `RecyclerSRamp` | C453 | R:S202T | raw / 3276.8 (2) | primary × 1.2 (6, C1=12.0, C2=10.0) | raw × 12.0 / (3276.8 × 10.0) |
-| `RecyclerSCRamp` | C475 | R:SC319 | raw / 3276.8 (2) | primary × 1.2000000477 (6, C1=1.2000000477, C2=1.0) | raw × 1.2000000477 / 3276.8 |
-| `RecyclerHVSQRamp` | C453 | R:H626, R:SQ410 | raw / 3276.8 (2) | primary × 1.2 (6, C1=12.0, C2=10.0) | raw × 12.0 / (3276.8 × 10.0) |
+There are two ways to define the scaling:
+
+1. Set `scaler` to a `Scaler` instance (recommended for standard ACNET transforms).
+2. Override transform classmethods for custom/non-standard transforms.
+
+Pre-defined subclasses for common elements:
+
+| Class | Card | Example | Primary (p_index) | Common (c_index) |
+|-------|------|---------|-------------------|-----------------|
+| `BoosterHVRamp` | C473 | B:HS23T, B:SSS23T, B:SXS23T | raw / 3276.8 (2) | primary × 4.0 (6, C1=4.0, C2=1.0) |
+| `BoosterQRamp` | C473 | B:QS23T | raw / 3276.8 (2) | primary × 6.5 (6, C1=6.5, C2=1.0) |
+| `RecyclerQRamp` | C453 | R:QT606T | raw / 3276.8 (2) | primary × 2.0 (6, C1=2.0, C2=1.0) |
+| `RecyclerSRamp` | C453 | R:S202T | raw / 3276.8 (2) | primary × 1.2 (6, C1=12.0, C2=10.0) |
+| `RecyclerSCRamp` | C475 | R:SC319T | raw / 3276.8 (2) | primary × 1.2000000477 (6, C1=1.2000000477, C2=1.0) |
+| `RecyclerHVSQRamp` | C453 | R:H626T, R:SQ410T | raw / 3276.8 (2) | primary × 1.2 (6, C1=12.0, C2=10.0) |
 
 ### Time Scaling
 
@@ -61,8 +63,8 @@ Different card types have different update rates:
 |-------|-----------------|-------------|----------|
 | `Ramp` (default) | 10,000 Hz | 100 µs | (none) |
 | `BoosterHVRamp` | 100,000 Hz | 10 µs | 66,660 µs (~one 15 Hz cycle) |
-| `BoosterQRamp` | 100,000 Hz | 10 µs | (none) |
-| `RecyclerQuadRamp` | 720 Hz | 1,389 µs | (none) |
+| `BoosterQRamp` | 100,000 Hz | 10 µs | 66,660 µs (~one 15 Hz cycle) |
+| `RecyclerQRamp` | 720 Hz | 1,389 µs | (none) |
 | `RecyclerSRamp` | 720 Hz | 1,389 µs | (none) |
 | `RecyclerSCRamp` | 100,000 Hz | 10 µs | (none) |
 | `RecyclerHVSQRamp` | 720 Hz | 1,389 µs | (none) |
@@ -148,7 +150,7 @@ write_ramps(ramps, slot=2)              # override slot for all
 
 ## RampGroup (2D Array Semantics)
 
-`RampGroup` stores ramp data for multiple devices as 2D numpy arrays with shape `(64, N_devices)`. Axis 0 is the point index, axis 1 is the device. Use `BoosterHVRampGroup` for Booster correctors.
+`RampGroup` stores ramp data for multiple devices as 2D numpy arrays with shape `(64, N_devices)`. Axis 0 is the point index, axis 1 is the device.
 
 ```python
 from pacsys import BoosterHVRampGroup
@@ -201,6 +203,9 @@ with BoosterHVRampGroup.modify(["B:HS23T", "B:HS24T"], slot=0) as group:
 
 ## Custom Machine Types
 
+!!! info
+    When the new DevDB service is deployed in a more production-ready state, device property scaling will be automatic for known channels. For now, this step is kept manual.
+
 ### Using Scaler (recommended)
 
 Set the `scaler` class variable to a `Scaler` instance with the device's scaling parameters from the database (`p_index`, `c_index`, and constants). This is what `BoosterHVRamp` uses:
@@ -226,7 +231,7 @@ with pacsys.devdb() as db:
     info = db.get_device_info(["B:HS23T"])
     prop = info["B:HS23T"].setting
     scaler = Scaler.from_property_info(prop, input_len=2)
-    print(scaler)  # Scaler(p_index=2, c_index=2, constants=(4.0, 1.0, 0.0), input_len=2)
+    print(scaler)  # Scaler(p_index=2, c_index=6, constants=(4.0, 1.0), input_len=2)
 ```
 
 See [Scaling](../scaling.md) for details on `Scaler`, transform indices, and supported operations.

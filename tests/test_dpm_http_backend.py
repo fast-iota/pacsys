@@ -9,7 +9,6 @@ Tests cover:
 - Reply type mapping (scalar, array, text, raw, alarms, status)
 - Timestamp conversion
 - Context manager usage
-- Streaming API surface
 - Factory function
 """
 
@@ -415,86 +414,6 @@ class TestReplyTypes:
                 assert reading.value == b"\x01\x02\x03\x04"
             finally:
                 backend.close()
-
-
-# =============================================================================
-# Streaming API Surface Tests
-# =============================================================================
-
-
-class TestDPMHTTPBackendStreaming:
-    """Tests for DPMHTTPBackend streaming methods."""
-
-    def test_subscribe_requires_drfs(self):
-        """subscribe() requires non-empty drfs."""
-        backend = DPMHTTPBackend()
-        try:
-            with pytest.raises(ValueError, match="drfs cannot be empty"):
-                backend.subscribe([])
-        finally:
-            backend.close()
-
-    def test_subscribe_on_closed_backend_raises(self):
-        """subscribe() on closed backend raises."""
-        backend = DPMHTTPBackend()
-        backend.close()
-
-        with pytest.raises(RuntimeError, match="Backend is closed"):
-            backend.subscribe(["M:OUTTMP@p,1000"])
-
-    def test_callback_mode_cannot_iterate(self):
-        """Callback-mode handle cannot be iterated."""
-        from pacsys.backends.dpm_http import _DPMHTTPSubscriptionHandle
-
-        backend = DPMHTTPBackend()
-        try:
-            handle = _DPMHTTPSubscriptionHandle(
-                backend=backend,
-                drfs=["M:OUTTMP@p,1000"],
-                callback=lambda r, h: None,
-            )
-
-            with pytest.raises(RuntimeError, match="Cannot iterate subscription with callback"):
-                list(handle.readings(timeout=0))
-        finally:
-            backend.close()
-
-    def test_subscription_handle_context_manager(self):
-        """Handle works as context manager."""
-        from pacsys.backends.dpm_http import _DPMHTTPSubscriptionHandle
-
-        backend = DPMHTTPBackend()
-        try:
-            handle = _DPMHTTPSubscriptionHandle(
-                backend=backend,
-                drfs=["M:OUTTMP@p,1000"],
-                callback=None,
-            )
-
-            with handle as h:
-                assert h is handle
-                assert not handle.stopped
-
-            assert handle.stopped
-        finally:
-            backend.close()
-
-    def test_remove_with_wrong_handle_type(self):
-        """remove() rejects wrong handle types."""
-        backend = DPMHTTPBackend()
-        try:
-            with pytest.raises(TypeError, match="Expected _DPMHTTPSubscriptionHandle"):
-                backend.remove("not a handle")
-        finally:
-            backend.close()
-
-    def test_close_calls_stop_streaming(self):
-        """close() calls stop_streaming()."""
-        backend = DPMHTTPBackend()
-        backend.stop_streaming = MagicMock()
-        backend.close()
-
-        backend.stop_streaming.assert_called_once()
 
 
 # =============================================================================

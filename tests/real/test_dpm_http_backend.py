@@ -24,7 +24,7 @@ from pacsys.ramp import (
     BoosterHVRamp,
     BoosterQRamp,
     RecyclerHVSQRamp,
-    RecyclerQuadRamp,
+    RecyclerQRamp,
     RecyclerSCRamp,
     RecyclerSRamp,
 )
@@ -250,7 +250,7 @@ class TestDeviceDigitalStatus:
 _RAMP_DEVICES = [
     pytest.param(BoosterHVRamp, "B:HS23T", id="BoosterHV"),
     pytest.param(BoosterQRamp, "B:QS23T", id="BoosterQ"),
-    pytest.param(RecyclerQuadRamp, "R:QT606T", id="RecyclerQuad"),
+    pytest.param(RecyclerQRamp, "R:QT606T", id="RecyclerQ"),
     pytest.param(RecyclerSRamp, "R:S202T", id="RecyclerS"),
     pytest.param(RecyclerSCRamp, "R:SC319T", id="RecyclerSC"),
     pytest.param(RecyclerHVSQRamp, "R:H626T", id="RecyclerHVSQ"),
