@@ -1,6 +1,6 @@
 # Ramp Tables
 
-The `Ramp` class provide convenient interface for reading and writing ramp tables. Multi-device `RampGroup` provides batched 2D-array access. This is a partial reimplementation of Java `RampDevice`.
+The `Ramp` class provides convenient interface for reading and writing ramp tables. Multi-device `RampGroup` provides batched 2D-array access.
 
 ---
 
@@ -410,3 +410,4 @@ See references for more details and configuration.
 - [C465 CAMAC module documentation](http://www-bd.fnal.gov/controls/camac_modules/c465.htm)
 - [C465 associated device listing](http://www-bd.fnal.gov/controls/micro_p/camac.doc/465.lis)
 - [C473 module](https://www-bd.fnal.gov/controls/camac_modules/c473.pdf)
+- Java `RampDevice` class

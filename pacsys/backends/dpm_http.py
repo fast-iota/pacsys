@@ -488,6 +488,8 @@ class _DpmStreamCore:
                 if isinstance(reply, StartList_reply):
                     if reply.status != 0:
                         logger.warning(f"StartList returned status {reply.status}")
+                        error_fn(DPMConnectionError(f"StartList failed (status={reply.status})"))
+                        return
                     continue
 
                 if isinstance(reply, ListStatus_reply):

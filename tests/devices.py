@@ -23,6 +23,7 @@ from pacsys.dpm_protocol import (
     Authenticate_reply,
     BasicStatus_reply,
     DeviceInfo_reply,
+    DigitalAlarm_reply,
     ListStatus_reply,
     OpenList_reply,
     ProtocolError,
@@ -34,6 +35,7 @@ from pacsys.dpm_protocol import (
     Status_reply,
     Text_reply,
     TextArray_reply,
+    TimedScalarArray_reply,
     unmarshal_request,
 )
 from pacsys.types import ValueType
@@ -582,6 +584,52 @@ def make_basic_status_reply(
         reply.positive = positive
     if ramp is not None:
         reply.ramp = ramp
+    return reply
+
+
+def make_digital_alarm_reply(
+    ref_id: int = 1,
+    timestamp: int = TIMESTAMP_MILLIS,
+    nominal: int = 0xFF,
+    mask: int = 0x0F,
+    alarm_enable: bool = True,
+    alarm_status: bool = False,
+    abort: bool = False,
+    abort_inhibit: bool = False,
+    tries_needed: int = 3,
+    tries_now: int = 0,
+) -> DigitalAlarm_reply:
+    """Create a DigitalAlarm_reply with sensible defaults."""
+    reply = DigitalAlarm_reply()
+    reply.ref_id = ref_id
+    reply.timestamp = timestamp
+    reply.cycle = 0
+    reply.nominal = nominal
+    reply.mask = mask
+    reply.alarm_enable = alarm_enable
+    reply.alarm_status = alarm_status
+    reply.abort = abort
+    reply.abort_inhibit = abort_inhibit
+    reply.tries_needed = tries_needed
+    reply.tries_now = tries_now
+    return reply
+
+
+def make_timed_scalar_array_reply(
+    values: list[float] | None = None,
+    micros: list[int] | None = None,
+    ref_id: int = 1,
+    timestamp: int = TIMESTAMP_MILLIS,
+    status: int = 0,
+) -> TimedScalarArray_reply:
+    """Create a TimedScalarArray_reply with sensible defaults."""
+    reply = TimedScalarArray_reply()
+    reply.ref_id = ref_id
+    reply.timestamp = timestamp
+    reply.cycle = 0
+    reply.status = status
+    reply.data = list(values) if values is not None else list(ARRAY_VALUES)
+    reply.micros = list(micros) if micros is not None else []
     return reply
 
 

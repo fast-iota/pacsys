@@ -13,6 +13,7 @@ from pacsys.dpm_connection import DPMConnectionError
 from pacsys.types import ValueType
 
 from tests.devices import (
+    ARRAY_VALUES,
     TEMP_DEVICE,
     TEMP_DEVICE_2,
     TEMP_VALUE,
@@ -25,6 +26,7 @@ from tests.devices import (
     make_analog_alarm_reply,
     make_basic_status_reply,
     make_device_info,
+    make_digital_alarm_reply,
     make_list_status_reply,
     make_raw_reply,
     make_scalar_array_reply,
@@ -33,6 +35,7 @@ from tests.devices import (
     make_status_reply,
     make_text_array_reply,
     make_text_reply,
+    make_timed_scalar_array_reply,
 )
 
 
@@ -191,10 +194,10 @@ class TestDpmStreamCore:
         assert len(dispatched) == 1
         assert dispatched[0].value == TEMP_VALUE
 
-    # -- StartList failure logged ------------------------------------------
+    # -- StartList failure calls error_fn and exits -------------------------
 
-    def test_start_list_failure_continues(self):
-        """StartList with error status is logged but recv loop continues."""
+    def test_start_list_failure_calls_error_fn(self):
+        """StartList with error status calls error_fn and exits recv loop."""
         conn = MockAsyncDPMConnection(
             replies=[
                 make_start_list(status=99),
@@ -202,19 +205,22 @@ class TestDpmStreamCore:
                 make_scalar_reply(ref_id=1),
             ]
         )
-        dispatched = []
+        dispatched, errors = [], []
 
         self._run(
             self._core(conn).stream(
                 drfs=[TEMP_DEVICE],
                 dispatch_fn=dispatched.append,
                 stop_check=lambda: False,
-                error_fn=lambda e: None,
+                error_fn=errors.append,
             )
         )
 
-        # Stream should continue after bad StartList
-        assert len(dispatched) == 1
+        # No data arrives after a failed StartList
+        assert not dispatched
+        assert len(errors) == 1
+        assert isinstance(errors[0], DPMConnectionError)
+        assert "status=99" in str(errors[0])
 
     # -- Connection error calls error_fn -----------------------------------
 
@@ -474,6 +480,10 @@ class TestDpmStreamCore:
         assert r.value["maximum"] == 100.0
         assert r.value["alarm_enable"] is True
         assert r.value["alarm_status"] is False
+        assert r.value["abort"] is False
+        assert r.value["abort_inhibit"] is False
+        assert r.value["tries_needed"] == 3
+        assert r.value["tries_now"] == 0
 
     # -- BasicStatus_reply dispatched --------------------------------------
 
@@ -507,6 +517,100 @@ class TestDpmStreamCore:
         # positive and ramp were not set (None) → omitted from dict
         assert "positive" not in r.value
         assert "ramp" not in r.value
+
+    # -- DigitalAlarm_reply dispatched -------------------------------------
+
+    def test_digital_alarm_reply_dispatched(self):
+        """DigitalAlarm_reply produces DIGITAL_ALARM reading with correct dict."""
+        conn = MockAsyncDPMConnection(
+            replies=[
+                make_start_list(),
+                make_device_info(name=TEMP_DEVICE, ref_id=1),
+                make_digital_alarm_reply(ref_id=1, nominal=0xFF, mask=0x0F),
+            ]
+        )
+        dispatched = []
+
+        self._run(
+            self._core(conn).stream(
+                drfs=[f"{TEMP_DEVICE}.DIGITAL_ALARM@p,1000"],
+                dispatch_fn=dispatched.append,
+                stop_check=lambda: False,
+                error_fn=lambda e: None,
+            )
+        )
+
+        assert len(dispatched) == 1
+        r = dispatched[0]
+        assert r.value_type == ValueType.DIGITAL_ALARM
+        assert r.ok
+        assert r.value["nominal"] == 0xFF
+        assert r.value["mask"] == 0x0F
+        assert r.value["alarm_enable"] is True
+        assert r.value["alarm_status"] is False
+        assert r.value["abort"] is False
+        assert r.value["abort_inhibit"] is False
+        assert r.value["tries_needed"] == 3
+        assert r.value["tries_now"] == 0
+
+    # -- TimedScalarArray_reply with micros --------------------------------
+
+    def test_timed_scalar_array_with_micros_dispatched(self):
+        """TimedScalarArray_reply with micros produces TIMED_SCALAR_ARRAY dict."""
+        values = [1.0, 2.0, 3.0]
+        micros = [1000, 2000, 3000]
+        conn = MockAsyncDPMConnection(
+            replies=[
+                make_start_list(),
+                make_device_info(name="D:TIMED", ref_id=1),
+                make_timed_scalar_array_reply(values=values, micros=micros, ref_id=1),
+            ]
+        )
+        dispatched = []
+
+        self._run(
+            self._core(conn).stream(
+                drfs=["D:TIMED@e,8,1000"],
+                dispatch_fn=dispatched.append,
+                stop_check=lambda: False,
+                error_fn=lambda e: None,
+            )
+        )
+
+        assert len(dispatched) == 1
+        r = dispatched[0]
+        assert r.value_type == ValueType.TIMED_SCALAR_ARRAY
+        assert r.ok
+        assert list(r.value["data"]) == values
+        assert list(r.value["micros"]) == micros
+
+    # -- TimedScalarArray_reply without micros -----------------------------
+
+    def test_timed_scalar_array_without_micros_dispatched(self):
+        """TimedScalarArray_reply without micros falls back to SCALAR_ARRAY."""
+        conn = MockAsyncDPMConnection(
+            replies=[
+                make_start_list(),
+                make_device_info(name="D:ARR", ref_id=1),
+                make_timed_scalar_array_reply(values=ARRAY_VALUES, ref_id=1),
+            ]
+        )
+        dispatched = []
+
+        self._run(
+            self._core(conn).stream(
+                drfs=["D:ARR@p,1000"],
+                dispatch_fn=dispatched.append,
+                stop_check=lambda: False,
+                error_fn=lambda e: None,
+            )
+        )
+
+        assert len(dispatched) == 1
+        r = dispatched[0]
+        assert r.value_type == ValueType.SCALAR_ARRAY
+        assert r.ok
+        assert list(r.value) == ARRAY_VALUES
 
     # -- Mixed valid and invalid devices -----------------------------------
 
