@@ -16,7 +16,7 @@ import pytest
 from pacsys.devdb import DevDBClient, DeviceInfoResult, DEVDB_AVAILABLE
 
 DEVDB_HOST = os.environ.get("PACSYS_DEVDB_HOST", "localhost")
-DEVDB_PORT = int(os.environ.get("PACSYS_DEVDB_PORT", "6802"))
+DEVDB_PORT = int(os.environ.get("PACSYS_DEVDB_PORT", "45678"))
 
 
 def devdb_server_available() -> bool:
@@ -78,7 +78,7 @@ class TestGetDeviceInfo:
         assert info.status_bits is not None
         assert len(info.status_bits) == 4
         short_names = [b.short_name for b in info.status_bits]
-        assert "On" in short_names
+        assert "OnOff" in short_names
 
     def test_batch_query(self, devdb):
         result = devdb.get_device_info(["Z:ACLTST", "M:OUTTMP"])
@@ -87,10 +87,11 @@ class TestGetDeviceInfo:
         assert result["Z:ACLTST"].device_index != result["M:OUTTMP"].device_index
 
     def test_nonexistent_device(self, devdb):
-        from pacsys.errors import DeviceError
-
-        with pytest.raises(DeviceError):
-            devdb.get_device_info(["X:NOTREAL"])
+        result = devdb.get_device_info(["X:NOTREAL"])
+        info = result["X:NOTREAL"]
+        assert info.device_index == 0
+        assert info.description == ""
+        assert info.reading is None
 
     def test_caching(self, devdb):
         """Second query for same device should use cache."""

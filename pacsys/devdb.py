@@ -7,7 +7,7 @@ information like scaling parameters, control commands, and status bit definition
 Usage:
     import pacsys
 
-    with pacsys.devdb(host="localhost", port=45678) as db:
+    with pacsys.devdb() as db:
         info = db.get_device_info(["Z:ACLTST", "M:OUTTMP"])
         print(info["Z:ACLTST"].description)
 """
@@ -352,7 +352,7 @@ class DevDBClient:
     """Synchronous gRPC client for DevDB device metadata queries.
 
     Args:
-        host: DevDB gRPC server hostname (default: from PACSYS_DEVDB_HOST or localhost)
+        host: DevDB gRPC server hostname (default: from PACSYS_DEVDB_HOST or ad-services.fnal.gov/services.devdb)
         port: DevDB gRPC server port (default: from PACSYS_DEVDB_PORT or 6802)
         timeout: RPC timeout in seconds (default: 5.0)
         cache_ttl: TTL for cached results in seconds (default: 3600.0)
@@ -371,13 +371,15 @@ class DevDBClient:
         if not DEVDB_AVAILABLE:
             raise ImportError(f"gRPC not available for DevDB: {_import_error}")
 
-        self._host = host if host is not None else os.environ.get("PACSYS_DEVDB_HOST", "localhost")
+        self._host = (
+            host if host is not None else os.environ.get("PACSYS_DEVDB_HOST", "ad-services.fnal.gov/services.devdb")
+        )
         self._port = port if port is not None else int(os.environ.get("PACSYS_DEVDB_PORT", "6802"))
         self._timeout = timeout if timeout is not None else 5.0
         self._cache = _TTLCache(cache_ttl)
         self._closed = False
 
-        target = f"{self._host}:{self._port}"
+        target = self._host if "/" in self._host else f"{self._host}:{self._port}"
         self._channel = grpc.insecure_channel(target)
         self._stub = DevDB_pb2_grpc.DevDBStub(self._channel)
         logger.debug("DevDB client connected to %s", target)

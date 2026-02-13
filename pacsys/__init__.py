@@ -165,7 +165,7 @@ def configure(
         dpm_port: DPM proxy port (default: from PACSYS_DPM_PORT or 6802)
         pool_size: Connection pool size (default: from PACSYS_POOL_SIZE or 4)
         default_timeout: Default operation timeout in seconds (default: from PACSYS_TIMEOUT or 5.0)
-        devdb_host: DevDB gRPC hostname (default: from PACSYS_DEVDB_HOST or localhost)
+        devdb_host: DevDB gRPC hostname (default: from PACSYS_DEVDB_HOST or ad-services.fnal.gov/services.devdb)
         devdb_port: DevDB gRPC port (default: from PACSYS_DEVDB_PORT or 6802)
         backend: Backend type - one of "dpm", "grpc", "dmq", "acl" (default: "dpm")
         auth: Authentication object (KerberosAuth or JWTAuth) for writes
@@ -339,20 +339,13 @@ def _get_global_devdb() -> Optional["DevDBClient"]:
         if _devdb_initialized:
             return _global_devdb
 
-        host = _config_devdb_host or _env_devdb_host
-        if host is None:
-            _devdb_initialized = True
-            return None
-
         from pacsys.devdb import DevDBClient, DEVDB_AVAILABLE
 
         if not DEVDB_AVAILABLE:
-            from pacsys.devdb import _import_error
-
-            logger.warning("DevDB configured (host=%s) but gRPC not available: %s", host, _import_error)
             _devdb_initialized = True
             return None
 
+        host = _config_devdb_host or _env_devdb_host or "ad-services.fnal.gov/services.devdb"
         port = _config_devdb_port or _env_devdb_port or 6802
         _global_devdb = DevDBClient(host=host, port=port)
         _devdb_initialized = True
@@ -810,7 +803,7 @@ def devdb(
     and status bit definitions from the master PostgreSQL database.
 
     Args:
-        host: DevDB gRPC hostname (default: from PACSYS_DEVDB_HOST or localhost)
+        host: DevDB gRPC hostname (default: from PACSYS_DEVDB_HOST or ad-services.fnal.gov/services.devdb)
         port: DevDB gRPC port (default: from PACSYS_DEVDB_PORT or 6802)
         timeout: RPC timeout in seconds (default: 5.0)
         cache_ttl: Cache TTL in seconds (default: 3600.0)
@@ -822,7 +815,7 @@ def devdb(
         ImportError: If grpc package is not available
 
     Example:
-        with pacsys.devdb(host="localhost", port=45678) as db:
+        with pacsys.devdb() as db:
             info = db.get_device_info(["Z:ACLTST"])
             print(info["Z:ACLTST"].description)
     """
