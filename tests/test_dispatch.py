@@ -92,7 +92,7 @@ class TestWorkerMode:
         assert not thread.is_alive()
 
     def test_callback_exception_doesnt_crash_worker(self):
-        """A failing callback doesn't kill the worker — next dispatch still works."""
+        """A failing callback doesn't kill the worker - next dispatch still works."""
         d = CallbackDispatcher(DispatchMode.WORKER)
         ok = threading.Event()
 

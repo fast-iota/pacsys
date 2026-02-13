@@ -426,7 +426,7 @@ class _DpmStreamCore:
 
     Manages AddToList/StartList setup and the recv loop for a single
     streaming subscription. Takes functional callbacks for dispatch,
-    stop checking, and error handling — knows nothing about threads,
+    stop checking, and error handling - knows nothing about threads,
     handles, or user callbacks.
     """
 
@@ -985,7 +985,7 @@ class DPMHTTPBackend(Backend):
                 logger.debug(f"Reusing authenticated write connection (list_id={wc.conn.list_id})")
                 return wc
 
-            # Pool exhausted — check concurrent limit before creating new
+            # Pool exhausted - check concurrent limit before creating new
             if self._write_in_flight >= _MAX_WRITE_CONNECTIONS:
                 raise RuntimeError(f"Too many concurrent write connections ({_MAX_WRITE_CONNECTIONS})")
             self._write_in_flight += 1

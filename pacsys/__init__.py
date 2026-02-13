@@ -167,7 +167,7 @@ def configure(
         default_timeout: Default operation timeout in seconds (default: from PACSYS_TIMEOUT or 5.0)
         devdb_host: DevDB gRPC hostname (default: from PACSYS_DEVDB_HOST or localhost)
         devdb_port: DevDB gRPC port (default: from PACSYS_DEVDB_PORT or 6802)
-        backend: Backend type — one of "dpm", "grpc", "dmq", "acl" (default: "dpm")
+        backend: Backend type - one of "dpm", "grpc", "dmq", "acl" (default: "dpm")
         auth: Authentication object (KerberosAuth or JWTAuth) for writes
         role: Role for authenticated operations (e.g., "testing")
 

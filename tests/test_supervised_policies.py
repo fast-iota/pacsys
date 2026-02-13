@@ -1,4 +1,4 @@
-"""Tests for supervised mode policy system — pure unit tests, no server needed."""
+"""Tests for supervised mode policy system - pure unit tests, no server needed."""
 
 import time
 

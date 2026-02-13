@@ -657,7 +657,7 @@ class FakeBackend(Backend):
         """
         self._read_history.append(drf)
 
-        # @N means "never send data" — reading with it is semantically invalid
+        # @N means "never send data" - reading with it is semantically invalid
         try:
             req = parse_request(drf)
             if isinstance(req.event, NeverEvent):
@@ -704,7 +704,7 @@ class FakeBackend(Backend):
         """
         self._read_history.append(drf)
 
-        # @N means "never send data" — reading with it is semantically invalid
+        # @N means "never send data" - reading with it is semantically invalid
         try:
             req = parse_request(drf)
             if isinstance(req.event, NeverEvent):
@@ -730,7 +730,7 @@ class FakeBackend(Backend):
                 message=message,
             )
 
-        # Check for configured reading — return with caller's DRF
+        # Check for configured reading - return with caller's DRF
         if reading is not None:
             value = reading.value
             timestamp = reading.timestamp

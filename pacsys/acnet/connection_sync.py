@@ -1,5 +1,5 @@
 """
-Synchronous ACNET connections — thin wrappers around async connection classes.
+Synchronous ACNET connections - thin wrappers around async connection classes.
 
 Manages a dedicated asyncio reactor thread and delegates all operations
 to the async core via run_coroutine_threadsafe.
@@ -101,11 +101,11 @@ class _SyncAcnetConnectionBase:
         self._reactor_thread: Optional[threading.Thread] = None
 
     def _create_async(self) -> AsyncAcnetConnectionBase:
-        """Factory method — subclasses return the appropriate async connection type."""
+        """Factory method - subclasses return the appropriate async connection type."""
         raise NotImplementedError
 
     # ------------------------------------------------------------------
-    # Properties — proxy to async core
+    # Properties - proxy to async core
     # ------------------------------------------------------------------
 
     @property
@@ -209,7 +209,7 @@ class _SyncAcnetConnectionBase:
         self._reactor_thread = None
 
     # ------------------------------------------------------------------
-    # Public commands — delegate to async core
+    # Public commands - delegate to async core
     # ------------------------------------------------------------------
 
     def send_request(
@@ -288,15 +288,15 @@ class _SyncAcnetConnectionBase:
         self._run_sync(self._core.send_reply(request, data, status, last))
 
     def _send_keepalive(self):
-        """Send keepalive — exposed for tests."""
+        """Send keepalive - exposed for tests."""
         self._run_sync(self._core._send_keepalive())
 
     # ------------------------------------------------------------------
-    # Internal — exposed for test mocking compatibility
+    # Internal - exposed for test mocking compatibility
     # ------------------------------------------------------------------
 
     def _xact(self, content: bytes) -> bytes:
-        """Send command and wait for ACK — sync wrapper for test mocking."""
+        """Send command and wait for ACK - sync wrapper for test mocking."""
         return self._run_sync(self._core._xact(content))
 
     # ------------------------------------------------------------------

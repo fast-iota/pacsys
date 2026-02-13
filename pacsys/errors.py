@@ -15,7 +15,7 @@ class ReadError(Exception):
     """Transport failure during a batch read.
 
     Raised when get_many() encounters a client-side transport error
-    (timeout, connection drop, auth failure) — NOT for server-side ACNET
+    (timeout, connection drop, auth failure) - NOT for server-side ACNET
     errors like DIO_NOATT which are returned as error Readings.
 
     Attributes:

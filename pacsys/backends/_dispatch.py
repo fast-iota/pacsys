@@ -84,7 +84,7 @@ class CallbackDispatcher:
             try:
                 self._queue.put_nowait(None)
             except queue.Full:
-                # Queue is full — drain one item to make room for sentinel
+                # Queue is full - drain one item to make room for sentinel
                 try:
                     self._queue.get_nowait()
                 except queue.Empty:
@@ -109,7 +109,7 @@ class CallbackDispatcher:
             now = time.monotonic()
             if now - self._last_drop_warn_time >= _WARN_INTERVAL:
                 logger.warning(
-                    "Dispatch queue full (%d items), dropping callback — callback is too slow for the data rate",
+                    "Dispatch queue full (%d items), dropping callback - callback is too slow for the data rate",
                     _QUEUE_MAX_SIZE,
                 )
                 self._last_drop_warn_time = now

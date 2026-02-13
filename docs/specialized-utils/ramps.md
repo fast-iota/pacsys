@@ -97,7 +97,7 @@ Ramp state is read on context entrance and changes are written on context exit; 
 ```python
 from pacsys import BoosterHVRamp
 
-# Read — stores device and slot on the ramp
+# Read - stores device and slot on the ramp
 ramp = BoosterHVRamp.read("B:HS23T", slot=0)
 ramp.device  # "B:HS23T"
 ramp.slot    # 0
@@ -122,7 +122,7 @@ Read or write multiple devices in a single backend call using `read_ramps()` / `
 ```python
 from pacsys import BoosterHVRamp, read_ramps, write_ramps
 
-# Batched read — single get_many call
+# Batched read - single get_many call
 ramps = BoosterHVRamp.read_many(["B:HS23T", "B:HS24T", "B:HS25T"], slot=0)
 # or equivalently:
 ramps = read_ramps(BoosterHVRamp, ["B:HS23T", "B:HS24T", "B:HS25T"], slot=0)
@@ -130,7 +130,7 @@ ramps = read_ramps(BoosterHVRamp, ["B:HS23T", "B:HS24T", "B:HS25T"], slot=0)
 for ramp in ramps:
     print(f"{ramp.device}: {ramp.values[0]:.2f} A")
 
-# Batched write — single write_many call
+# Batched write - single write_many call
 write_ramps(ramps)
 ```
 
@@ -140,7 +140,7 @@ write_ramps(ramps)
 write_ramps(ramp)                       # single Ramp
 write_ramps([ramp1, ramp2])             # list[Ramp]
 write_ramps(group)                      # RampGroup
-write_ramps([group1, group2, ramp3])    # mixed — flattened
+write_ramps([group1, group2, ramp3])    # mixed - flattened
 write_ramps(ramps, slot=2)              # override slot for all
 ```
 
@@ -169,7 +169,7 @@ group.values += 0.5               # broadcast across all points and devices
 
 ### Device Indexing
 
-`group['B:HS23T']` returns a view-backed `Ramp` — mutations propagate both ways:
+`group['B:HS23T']` returns a view-backed `Ramp` - mutations propagate both ways:
 
 ```python
 ramp = group['B:HS23T']

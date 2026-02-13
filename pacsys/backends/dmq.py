@@ -788,7 +788,7 @@ class DMQBackend(Backend):
                 return
 
             if job.done_event.is_set():
-                # Timeout fired while GSS was executing — don't start a ghost job
+                # Timeout fired while GSS was executing - don't start a ghost job
                 try:
                     if channel.is_open:
                         channel.close()
@@ -1031,7 +1031,7 @@ class DMQBackend(Backend):
                 except Exception:
                     pass
 
-        # Fail any queued and pending writes — signal each tracker exactly once
+        # Fail any queued and pending writes - signal each tracker exactly once
         trackers: dict[int, _WriteCompletionTracker] = {}
         for q_settings, q_results, q_tracker in session.queued_sends:
             for i, drf, _ in q_settings:
@@ -1137,7 +1137,7 @@ class DMQBackend(Backend):
                 if session.init_confirmed:
                     self._send_settings_async(session, drf_settings, results, tracker)
                 else:
-                    # S.# not yet bound — queue until PENDING arrives
+                    # S.# not yet bound - queue until PENDING arrives
                     session.queued_sends.append((drf_settings, results, tracker))
                 return
             else:
@@ -1189,7 +1189,7 @@ class DMQBackend(Backend):
         """Create write session: GSS auth + INIT + session setup (IO thread).
 
         Drains all writes queued in ``_pending_session_setups[init_drf]``.
-        GSS context created inline — accepts first-call KDC latency (~50-500ms);
+        GSS context created inline - accepts first-call KDC latency (~50-500ms);
         cached Kerberos ticket thereafter (<1ms).
         """
         queued_writes = self._pending_session_setups.pop(init_drf, [])
@@ -1274,7 +1274,7 @@ class DMQBackend(Backend):
         channel.add_on_close_callback(lambda ch, reason: self._on_write_session_channel_closed(init_drf, reason))
         self._write_sessions[init_drf] = session
 
-        # Start consuming — PENDING may arrive immediately after this
+        # Start consuming - PENDING may arrive immediately after this
         session.consumer_tag = channel.basic_consume(
             queue=queue_name,
             on_message_callback=lambda ch, m, p, b: self._on_write_message(session, ch, m, p, b),
@@ -1335,7 +1335,7 @@ class DMQBackend(Backend):
                         conn.ioloop.remove_timeout(handle)
                     except Exception:
                         pass
-            # Fail any pending and queued writes — signal each tracker exactly once
+            # Fail any pending and queued writes - signal each tracker exactly once
             trackers: dict[int, _WriteCompletionTracker] = {}
             for q_settings, q_results, q_tracker in session.queued_sends:
                 for i, drf, _ in q_settings:
@@ -1477,7 +1477,7 @@ class DMQBackend(Backend):
                     f"corr={corr_id and corr_id[:8]} pending={in_pending}"
                 )
 
-        # PENDING confirms S.# binding is in place — flush queued writes
+        # PENDING confirms S.# binding is in place - flush queued writes
         if (
             isinstance(reply, ErrorSample_reply)
             and reply.errorNumber == DMQ_PENDING_ERROR
@@ -1544,7 +1544,7 @@ class DMQBackend(Backend):
                 continue
             if not session.pending and not session.queued_sends:
                 continue
-            # Mark all queued and pending writes as timed out — signal each tracker once
+            # Mark all queued and pending writes as timed out - signal each tracker once
             trackers: dict[int, _WriteCompletionTracker] = {}
             for q_settings, q_results, q_tracker in session.queued_sends:
                 for i, drf, _ in q_settings:
@@ -1706,7 +1706,7 @@ class DMQBackend(Backend):
         # Block until done or timeout
         effective_timeout = timeout if timeout is not None else self._timeout
         if not tracker.done_event.wait(effective_timeout):
-            # Timeout — schedule abort on IO thread and wait for it to finish
+            # Timeout - schedule abort on IO thread and wait for it to finish
             # before touching results.  This avoids a race where the main thread
             # overwrites a successful result with ERR_TIMEOUT.
             init_drfs_involved = {prepare_for_write(drf) for drf, _ in settings}
@@ -1760,10 +1760,10 @@ class DMQBackend(Backend):
         """Start the IO thread and SelectConnection if not already running."""
         with self._stream_lock:
             if self._io_thread is not None and self._io_thread.is_alive():
-                # Thread exists — still verify connection is ready before returning
+                # Thread exists - still verify connection is ready before returning
                 if self._connection_ready.is_set() and self._connection_error is None:
                     return
-                # Connection not ready yet (startup in progress) — fall through to wait
+                # Connection not ready yet (startup in progress) - fall through to wait
             else:
                 if self._closed:
                     raise RuntimeError("Backend is closed")
@@ -1831,7 +1831,7 @@ class DMQBackend(Backend):
         """Called when SelectConnection is closed."""
         logger.info(f"SelectConnection closed: {reason}")
 
-        # Fail all pending writes — signal each tracker exactly once
+        # Fail all pending writes - signal each tracker exactly once
         trackers: dict[int, _WriteCompletionTracker] = {}
 
         # Fail writes queued during channel setup
@@ -1885,7 +1885,7 @@ class DMQBackend(Backend):
         self._write_sessions.clear()
 
         # Notify all active subscriptions of the connection loss
-        # Copy under lock, dispatch outside — callbacks may call remove()/stop_streaming()
+        # Copy under lock, dispatch outside - callbacks may call remove()/stop_streaming()
         with self._stream_lock:
             subs = list(self._subscriptions.values())
             self._subscriptions.clear()
@@ -2000,7 +2000,7 @@ class DMQBackend(Backend):
         with self._stream_lock:
             was_active = self._subscriptions.pop(sub.sub_id, None) is not None
         if not was_active:
-            return  # user-initiated close via remove() — already cleaned up
+            return  # user-initiated close via remove() - already cleaned up
         sub.handle._signal_error(reason)
         if sub.handle._on_error is not None:
             self._dispatcher.dispatch_error(sub.handle._on_error, reason, sub.handle)

@@ -26,7 +26,7 @@ class _TestRamp(Ramp):
     """Identity-transform ramp for infrastructure tests.
 
     raw == engineering, raw_ticks == microseconds.
-    No validation bounds — tests focus on mechanics, not limits.
+    No validation bounds - tests focus on mechanics, not limits.
     """
 
     update_rate_hz = 1_000_000  # 1 MHz → 1 us/tick
@@ -211,7 +211,7 @@ class TestValidation:
             ramp.to_bytes()
 
     def test_inf_time_raises(self):
-        """Inf time is caught — by max_time if set, by finite check otherwise."""
+        """Inf time is caught - by max_time if set, by finite check otherwise."""
         ramp = BoosterHVRamp(values=np.zeros(64), times=np.zeros(64))
         ramp.times[0] = float("inf")
         with pytest.raises(ValueError):
@@ -387,7 +387,7 @@ class TestModifyContext:
                 pass
 
     def test_modify_sub_lsb_change_no_write(self, fake_backend):
-        """Sub-LSB change quantizes to same raw bytes — no write."""
+        """Sub-LSB change quantizes to same raw bytes - no write."""
         _setup_devices(fake_backend, ["B:HS23T"])
         with _TestRamp.modify("B:HS23T", slot=0, backend=fake_backend) as ramp:
             ramp.values[0] += 0.4  # 100.0 → 100.4, rounds to raw 100

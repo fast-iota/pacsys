@@ -1,5 +1,5 @@
 """
-Async ACNET connection — pure asyncio implementation with pluggable transport.
+Async ACNET connection - pure asyncio implementation with pluggable transport.
 
 AsyncAcnetConnectionBase holds all protocol logic (commands, dispatch, tracking).
 Subclasses provide transport-specific framing:
@@ -10,7 +10,7 @@ The sync wrappers (AcnetConnectionTCP / AcnetConnectionUDP) schedule calls via
 run_coroutine_threadsafe.
 
 Key design decisions:
-- Single event loop: no locks needed — reply_handlers and reply_buffer
+- Single event loop: no locks needed - reply_handlers and reply_buffer
   are only mutated from the event loop.
 - Reply buffering: when ACK+reply arrive in the same TCP batch, the reply
   is buffered until send_request() registers its handler.
@@ -205,9 +205,9 @@ class AsyncAcnetConnectionBase:
         self._raw_handle = 0
         self._handle_name = ""
 
-        # Command serialization — one command at a time
+        # Command serialization - one command at a time
         self._cmd_lock = asyncio.Lock()
-        # ACK delivery — only one pending at a time (under _cmd_lock)
+        # ACK delivery - only one pending at a time (under _cmd_lock)
         self._pending_ack: Optional[asyncio.Future] = None
 
         # State
@@ -220,7 +220,7 @@ class AsyncAcnetConnectionBase:
         # Buffered replies for requests not yet registered.
         # Stores (reply, monotonic_time) tuples for causality checking.
         self._reply_buffer: dict[RequestId, list[tuple]] = defaultdict(list)
-        # Recently cancelled/completed request IDs — prevents _reply_buffer leak
+        # Recently cancelled/completed request IDs - prevents _reply_buffer leak
         self._dead_requests: set[RequestId] = set()
         # Incoming request tracking
         self._requests_in: dict[ReplyId, AcnetRequest] = {}
@@ -259,7 +259,7 @@ class AsyncAcnetConnectionBase:
         return self._port
 
     # ------------------------------------------------------------------
-    # Abstract transport methods — subclasses must implement
+    # Abstract transport methods - subclasses must implement
     # ------------------------------------------------------------------
 
     async def _open_transport(self):
@@ -423,7 +423,7 @@ class AsyncAcnetConnectionBase:
                 # A late ACK could arrive and be consumed by the next
                 # command, permanently desynchronizing the stream.
                 # Kill the transport so the connection cannot be reused.
-                logger.error("Timeout waiting for ack — closing transport to prevent desync")
+                logger.error("Timeout waiting for ack - closing transport to prevent desync")
                 self._connected = False
                 await self._close_transport()
                 raise AcnetUnavailableError()
@@ -457,7 +457,7 @@ class AsyncAcnetConnectionBase:
         await self._xact(content)
 
     # ------------------------------------------------------------------
-    # Frame dispatch (sync — runs in read loop / UDP callback, no awaits)
+    # Frame dispatch (sync - runs in read loop / UDP callback, no awaits)
     # ------------------------------------------------------------------
 
     def _dispatch_frame(self, msg_type: int, data: bytes):
@@ -500,7 +500,7 @@ class AsyncAcnetConnectionBase:
 
         No race condition: if handler isn't registered yet, buffer the reply.
         send_request() will drain the buffer when it registers the handler.
-        All runs on the event loop — no locks needed.
+        All runs on the event loop - no locks needed.
         """
         context = self._reply_handlers.get(reply.request_id)
 
@@ -1100,5 +1100,5 @@ class AsyncAcnetConnectionUDP(AsyncAcnetConnectionBase):
         self._udp_transport.sendto(content)
 
     def _start_read_loop(self):
-        """No-op — UDP protocol callbacks drive dispatch."""
+        """No-op - UDP protocol callbacks drive dispatch."""
         self._read_task = None

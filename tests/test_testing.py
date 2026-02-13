@@ -1563,7 +1563,7 @@ class TestEventPerturbation:
         assert fake.read("M:OUTTMP") == 72.5
 
     def test_immediate_event_zero_offset(self):
-        """@I has zero offset — value is exact even on fallback."""
+        """@I has zero offset - value is exact even on fallback."""
         fake = FakeBackend()
         fake.set_reading("M:OUTTMP", 72.5)
         assert fake.read("M:OUTTMP@I") == 72.5

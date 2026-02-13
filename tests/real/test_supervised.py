@@ -218,7 +218,7 @@ def _assert_values_equivalent(direct_val, proxied_val, tol):
     elif isinstance(direct_val, str) and isinstance(proxied_val, str):
         assert direct_val == proxied_val, f"string mismatch: direct={direct_val!r}, proxied={proxied_val!r}"
     elif isinstance(direct_val, bytes) and isinstance(proxied_val, bytes):
-        # Raw encoding may differ between gRPC (full protobuf) and HTTP paths —
+        # Raw encoding may differ between gRPC (full protobuf) and HTTP paths -
         # just verify both produced bytes
         pass
     elif isinstance(direct_val, dict) and isinstance(proxied_val, dict):
@@ -325,7 +325,7 @@ class TestSupervisedProxyStreaming:
 
 
 # =============================================================================
-# Write Tests — raw gRPC stub helpers
+# Write Tests - raw gRPC stub helpers
 # =============================================================================
 #
 # GRPCBackend.write() requires client-side JWTAuth, but the supervised proxy
@@ -378,7 +378,7 @@ def _stub_write(stub, drf, value, *, timeout=TIMEOUT_READ):
 def write_proxy(real_write_backend):
     """SupervisedServer wrapping authenticated backend + raw gRPC stub.
 
-    Yields (stub, server) — stub is a DAQStub connected to the proxy.
+    Yields (stub, server) - stub is a DAQStub connected to the proxy.
     """
     srv = SupervisedServer(real_write_backend, port=0)
     srv.start()
@@ -505,7 +505,7 @@ class TestSupervisedReadOnlyPolicy:
 
     def test_readonly_blocks_write(self, readonly_server):
         """Write attempt returns PERMISSION_DENIED gRPC error."""
-        # Use raw gRPC stub — GRPCBackend.write() requires client-side JWTAuth
+        # Use raw gRPC stub - GRPCBackend.write() requires client-side JWTAuth
         with grpc.insecure_channel(f"localhost:{readonly_server.port}") as ch:
             stub = DAQ_pb2_grpc.DAQStub(ch)
             request = DAQ_pb2.SettingList()
@@ -536,7 +536,7 @@ class TestSupervisedDeviceAccessPolicy:
             reading = client.get(SCALAR_DEVICE, timeout=TIMEOUT_READ)
             assert reading.ok, f"Allowed device read failed: {reading.message}"
 
-            # G:AMANDA should be blocked — server returns PERMISSION_DENIED
+            # G:AMANDA should be blocked - server returns PERMISSION_DENIED
             with pytest.raises(ReadError) as exc_info:
                 client.get(SCALAR_DEVICE_2, timeout=TIMEOUT_READ)
             assert_permission_denied(exc_info)

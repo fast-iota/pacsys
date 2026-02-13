@@ -42,10 +42,10 @@ with AcnetConnectionTCP("acsys-proxy.fnal.gov") as conn:
 
 ### Implementation
 
-- **`AsyncAcnetConnectionBase`** (`pacsys/acnet/async_connection.py`) — Protocol core (commands, dispatch, tracking). Transport-agnostic — subclasses provide framing via abstract methods (`_open_transport`, `_close_transport`, `_send_frame`, `_start_read_loop`).
-  - **`AsyncAcnetConnectionTCP`** — TCP stream with 4-byte length-prefix framing and handshake, typically used via `acsys-proxy.fnal.gov:6802`.
-  - **`AsyncAcnetConnectionUDP`** — UDP datagrams (no length prefix); uses `asyncio.DatagramProtocol` for receive callbacks.
-- **`AcnetConnectionTCP`** / **`AcnetConnectionUDP`** (`pacsys/acnet/connection_sync.py`) — Synchronous wrappers. Run the async core on a dedicated reactor thread and expose a blocking API via `run_coroutine_threadsafe`.
+- **`AsyncAcnetConnectionBase`** (`pacsys/acnet/async_connection.py`) - Protocol core (commands, dispatch, tracking). Transport-agnostic - subclasses provide framing via abstract methods (`_open_transport`, `_close_transport`, `_send_frame`, `_start_read_loop`).
+  - **`AsyncAcnetConnectionTCP`** - TCP stream with 4-byte length-prefix framing and handshake, typically used via `acsys-proxy.fnal.gov:6802`.
+  - **`AsyncAcnetConnectionUDP`** - UDP datagrams (no length prefix); uses `asyncio.DatagramProtocol` for receive callbacks.
+- **`AcnetConnectionTCP`** / **`AcnetConnectionUDP`** (`pacsys/acnet/connection_sync.py`) - Synchronous wrappers. Run the async core on a dedicated reactor thread and expose a blocking API via `run_coroutine_threadsafe`.
 
 The TCP protocol uses length-prefixed framing with 4 message types. UDP protocol is same messages without length prefix:
 
@@ -56,7 +56,7 @@ The TCP protocol uses length-prefixed framing with 4 message types. UDP protocol
 | ACK | 2 | acnetd → Client | Response to every COMMAND |
 | DATA | 3 | acnetd → Client | ACNET packets (replies, requests, messages, cancels) |
 
-Every command follows a request/response pattern: the client sends a COMMAND and waits for a single ACK. ACNET data packets (replies from remote nodes) arrive separately as DATA messages. Reply handlers are registered per request ID and called on the reactor thread — consumers must use thread-safe primitives (e.g. `queue.Queue`, `threading.Event`) to receive data.
+Every command follows a request/response pattern: the client sends a COMMAND and waits for a single ACK. ACNET data packets (replies from remote nodes) arrive separately as DATA messages. Reply handlers are registered per request ID and called on the reactor thread - consumers must use thread-safe primitives (e.g. `queue.Queue`, `threading.Event`) to receive data.
 
 ## ACNET protocol details
 

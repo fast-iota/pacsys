@@ -215,7 +215,7 @@ class TestBackendValueTypes:
             pytest.skip("ACL does not support all structured value types")
         if self._is_grpc(read_backend):
             pytest.skip(
-                "DPM gRPC server has unsynchronized StreamObserver.onNext() — "
+                "DPM gRPC server has unsynchronized StreamObserver.onNext() - "
                 "concurrent ACNET callbacks corrupt HTTP/2 framing with 12+ mixed devices"
             )
 

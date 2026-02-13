@@ -136,7 +136,7 @@ class Ramp:
     Value scaling is handled in one of two ways:
 
     1. Set ``scaler`` to a ``Scaler`` instance (recommended for standard
-       ACNET transforms — use parameters from the device database).
+       ACNET transforms - use parameters from the device database).
 
     2. Override the four transform classmethods for custom/non-standard
        transforms.
@@ -639,10 +639,10 @@ def write_ramps(
     for ramp in flat:
         dev = ramp.device
         if dev is None:
-            raise ValueError("Ramp has no device set — read() first or set .device")
+            raise ValueError("Ramp has no device set - read() first or set .device")
         s = slot if slot is not None else ramp.slot
         if s is None:
-            raise ValueError(f"No slot for device {dev} — read() first or set .slot")
+            raise ValueError(f"No slot for device {dev} - read() first or set .slot")
         name = get_device_name(dev)
         drf = type(ramp)._make_drf(name, s)
         settings.append((drf, ramp.to_bytes()))

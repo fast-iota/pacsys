@@ -892,7 +892,7 @@ def _common_scale(data: float, c_index: int, constants: tuple[float, ...]) -> fl
             raise ScalingError("Insufficient constants")
         if x < c[0]:
             # math.pow raises ValueError for negative base with fractional exp;
-            # Java Math.pow returns NaN — propagate as NaN to match.
+            # Java Math.pow returns NaN - propagate as NaN to match.
             try:
                 return c[1] * math.pow(x, c[2])
             except ValueError:

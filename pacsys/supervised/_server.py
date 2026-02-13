@@ -186,7 +186,7 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
 
     async def Alarms(self, request, context):
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details("Alarms not supported — Backend ABC has no alarms method")
+        context.set_details("Alarms not supported - Backend ABC has no alarms method")
         from pacsys._proto.controls.service.DAQ.v1 import DAQ_pb2
 
         return DAQ_pb2.AlarmsReply()  # type: ignore[unresolved-attribute]

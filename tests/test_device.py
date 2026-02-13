@@ -30,13 +30,13 @@ from pacsys.verify import Verify
 
 @pytest.fixture
 def fake():
-    """FakeBackend with DRF validation — catches malformed DRF strings."""
+    """FakeBackend with DRF validation - catches malformed DRF strings."""
     return FakeBackend()
 
 
 @pytest.fixture
 def mock_backend():
-    """MagicMock backend — only for tests needing side_effect sequences."""
+    """MagicMock backend - only for tests needing side_effect sequences."""
     backend = mock.MagicMock()
     backend.read.return_value = 72.5
     backend.get.return_value = Reading(
@@ -111,7 +111,7 @@ class TestDeviceImmutability:
 
 
 class TestDeviceReadOperations:
-    """Tests for Device read and get operations — uses FakeBackend for DRF validation."""
+    """Tests for Device read and get operations - uses FakeBackend for DRF validation."""
 
     def test_read_delegates_to_backend(self, fake):
         fake.set_reading("M:OUTTMP.READING", 72.5)
@@ -248,7 +248,7 @@ class TestArrayDevice:
     )
     def test_array_device_raises_on_wrong_type(self, fake, bad_value, vtype):
         fake.set_reading("B:HS23T.READING", bad_value, value_type=vtype)
-        dev = ArrayDevice("B:HS23T", backend=fake)  # No range — tests type check, not range
+        dev = ArrayDevice("B:HS23T", backend=fake)  # No range - tests type check, not range
         with pytest.raises(TypeError, match="Expected array"):
             dev.read()
 
@@ -323,7 +323,7 @@ class TestEdgeCases:
 
 
 class TestDeviceReadMethods:
-    """Tests for property-specific read methods — FakeBackend validates all DRFs."""
+    """Tests for property-specific read methods - FakeBackend validates all DRFs."""
 
     def test_read_default_field(self, fake):
         fake.set_reading("M:OUTTMP.READING", 72.5)
@@ -451,7 +451,7 @@ class TestDeviceFieldValidation:
 
 
 class TestDeviceWriteMethods:
-    """Tests for Device write methods — FakeBackend validates DRF and records writes."""
+    """Tests for Device write methods - FakeBackend validates DRF and records writes."""
 
     def test_write_basic(self, fake):
         fake.set_reading("M:OUTTMP.SETTING", 0.0)
@@ -536,7 +536,7 @@ class TestDeviceAlarmSetters:
 
 # ─── Verify flow tests ─────────────────────────────────────────────────
 # These tests need side_effect sequences and assert_not_called, so they
-# use MagicMock — they test orchestration logic, not DRF construction.
+# use MagicMock - they test orchestration logic, not DRF construction.
 
 
 class TestDeviceVerify:

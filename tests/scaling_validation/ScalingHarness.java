@@ -1,4 +1,4 @@
-// ScalingHarness.java — standalone Java scaling validation harness
+// ScalingHarness.java - standalone Java scaling validation harness
 //
 // Protocol: reads CSV from stdin, writes "OK\t<result>" or "ERR\t<message>" to stdout
 //   PS,<p_index>,<input_len>,<raw>                      -> primary scale

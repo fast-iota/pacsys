@@ -15,7 +15,7 @@ def reading_to_proto_reply(reading: Reading, index: int) -> "DAQ_pb2.ReadingRepl
     """Convert a Reading to a ReadingReply proto message.
 
     Readings without usable data (errors AND warnings-without-data) use the
-    status oneof — matching real DPM gRPC server behavior. Only readings with
+    status oneof - matching real DPM gRPC server behavior. Only readings with
     actual values use the readings oneof.
     """
     reply = DAQ_pb2.ReadingReply()  # type: ignore[unresolved-attribute]

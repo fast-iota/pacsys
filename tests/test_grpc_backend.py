@@ -970,7 +970,7 @@ class TestDaqCoreStream:
         async def fake_sleep(t):
             sleeps.append(t)
 
-        # Proxy time module — only intercept monotonic(), leave asyncio alone
+        # Proxy time module - only intercept monotonic(), leave asyncio alone
         mono_values = iter(
             [
                 0,  # attempt 1: stream_start (error before any reply check)
@@ -1217,7 +1217,7 @@ class TestDaqCoreStream:
                 )
             )
 
-        # sleeps: 1.0 (err1), 2.0 (err2 — NOT reset), 4.0 (err3 — keeps growing)
+        # sleeps: 1.0 (err1), 2.0 (err2 - NOT reset), 4.0 (err3 - keeps growing)
         assert sleeps == [1.0, 2.0, 4.0]
 
 

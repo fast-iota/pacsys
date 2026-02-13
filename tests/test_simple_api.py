@@ -66,7 +66,7 @@ def fake():
 
 @pytest.fixture
 def mock_backend():
-    """MagicMock — only for backend factory/init tests."""
+    """MagicMock - only for backend factory/init tests."""
     backend = mock.MagicMock(spec=DPMHTTPBackend)
     return backend
 

@@ -481,7 +481,7 @@ class ACLBackend(Backend):
             response_text = self._fetch(url, effective_timeout)
         except DeviceError as e:
             if e.error_code == ERR_TIMEOUT:
-                # Server is unresponsive — individual reads would each timeout too.
+                # Server is unresponsive - individual reads would each timeout too.
                 readings = [
                     Reading(
                         drf=drf,
@@ -494,7 +494,7 @@ class ACLBackend(Backend):
                     for drf in drfs
                 ]
                 raise ReadError(readings, e.message or "ACL request timeout") from e
-            # HTTP/URL error (e.g. 400 from one bad DRF) — fall back to
+            # HTTP/URL error (e.g. 400 from one bad DRF) - fall back to
             # individual reads to isolate which devices actually failed.
             logger.debug("ACL batch HTTP error, falling back to individual reads: %s", e.message)
             return self._get_many_individual(drfs, effective_timeout)

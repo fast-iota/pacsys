@@ -69,7 +69,7 @@ class BufferedSubscriptionHandle(SubscriptionHandle):
             self._cond.notify()
 
     def _signal_stop(self) -> None:
-        """Idempotent stop — wake all waiters."""
+        """Idempotent stop - wake all waiters."""
         if self._stopped:
             return
         with self._cond:
@@ -77,7 +77,7 @@ class BufferedSubscriptionHandle(SubscriptionHandle):
             self._cond.notify_all()
 
     def _signal_error(self, exc: Exception) -> None:
-        """Idempotent error — first error wins, then stop."""
+        """Idempotent error - first error wins, then stop."""
         with self._cond:
             if self._exc is None:
                 self._exc = exc
@@ -102,7 +102,7 @@ class BufferedSubscriptionHandle(SubscriptionHandle):
                 if self._buf:
                     reading = self._buf.popleft()
                 else:
-                    # No data — check terminal conditions
+                    # No data - check terminal conditions
                     if self._exc is not None:
                         raise self._exc
                     if self._stopped:

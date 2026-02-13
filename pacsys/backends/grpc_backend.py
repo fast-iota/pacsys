@@ -72,12 +72,12 @@ _RECONNECT_MAX_DELAY = 30.0
 _RECONNECT_BACKOFF_FACTOR = 2.0
 
 # gRPC status codes the DPM server actually produces:
-#   UNAVAILABLE  — server down / connection refused (gRPC transport)
-#   CANCELLED    — client cancel or server shutdown mid-stream
-#   DEADLINE_EXCEEDED — client-side timeout (handled separately in _grpc_error_code)
-#   UNKNOWN      — unhandled Java exception in set() path only
+#   UNAVAILABLE  - server down / connection refused (gRPC transport)
+#   CANCELLED    - client cancel or server shutdown mid-stream
+#   DEADLINE_EXCEEDED - client-side timeout (handled separately in _grpc_error_code)
+#   UNKNOWN      - unhandled Java exception in set() path only
 # The DPM server never returns UNAUTHENTICATED, PERMISSION_DENIED, or
-# INVALID_ARGUMENT — auth failures are ACNET errors inside ReadingReply.status.
+# INVALID_ARGUMENT - auth failures are ACNET errors inside ReadingReply.status.
 _RETRYABLE_STATUS_CODES = (
     frozenset({grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.CANCELLED}) if GRPC_AVAILABLE else frozenset()
 )
@@ -303,7 +303,7 @@ def _reply_to_readings(reply, drfs: list[str]) -> list[Reading]:
 def _aggregate_proto_readings(reading_list, drf: str, now: datetime) -> Reading:
     """Aggregate proto readings directly into a TIMED_SCALAR_ARRAY.
 
-    Skips intermediate Reading objects — extracts values and timestamps
+    Skips intermediate Reading objects - extracts values and timestamps
     straight from the proto messages to avoid N datetime round-trips
     and N throwaway allocations.
     """
@@ -676,7 +676,7 @@ class _GRPCSubscriptionHandle(BufferedSubscriptionHandle):
     def _dispatch_error(self, exc: Exception, *, fatal: bool) -> None:
         """Called from the reactor thread on stream error.
 
-        Only fatal errors stop the iterator — retryable errors are handled by
+        Only fatal errors stop the iterator - retryable errors are handled by
         the stream's reconnection loop and should not terminate consumption.
         """
         if fatal:
@@ -816,7 +816,7 @@ class GRPCBackend(Backend):
                 fut = asyncio.run_coroutine_threadsafe(core.connect(), self._loop)
                 fut.result(timeout=self._timeout)
             except Exception:
-                # Connect failed — tear down reactor so next call retries cleanly
+                # Connect failed - tear down reactor so next call retries cleanly
                 self._loop.call_soon_threadsafe(self._loop.stop)
                 if self._reactor_thread is not None:
                     self._reactor_thread.join(timeout=2.0)

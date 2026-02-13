@@ -227,7 +227,7 @@ class TestCombinedStream:
         t_late = datetime(2025, 1, 1, 0, 0, 1)
 
         # Emit both readings first so they're buffered in the queues,
-        # then stop — this avoids timing-dependent batch boundaries.
+        # then stop - this avoids timing-dependent batch boundaries.
         fake.emit_reading("G:AMANDA", 10.0, timestamp=t_late)
         fake.emit_reading("M:OUTTMP", 20.0, timestamp=t_early)
 

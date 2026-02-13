@@ -1,4 +1,4 @@
-"""Tests for pacsys.scaling — client-side scaling transforms."""
+"""Tests for pacsys.scaling - client-side scaling transforms."""
 
 from __future__ import annotations
 

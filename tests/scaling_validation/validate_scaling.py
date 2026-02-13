@@ -301,10 +301,10 @@ def generate_common_unscale_vectors(
         if math.isnan(common_out) or math.isinf(common_out):
             continue
         # Skip degenerate inverse cases:
-        # c20: inverse has c[0]^2 in denominator — needs c[0] != 0
+        # c20: inverse has c[0]^2 in denominator - needs c[0] != 0
         if c_index == 20 and len(constants) >= 1 and constants[0] == 0.0:
             continue
-        # c48: 1/x singularity — binary search limits include x=0
+        # c48: 1/x singularity - binary search limits include x=0
         if c_index == 48:
             continue
         p_index = _choose_p_index_for_unscale(c_index, primary_in)
@@ -372,7 +372,7 @@ def results_match(
     if py_ok != java_ok:
         return False, f"py={'OK' if py_ok else 'ERR'}({py_val}) java={'OK' if java_ok else 'ERR'}({java_val})"
 
-    # Both OK — compare numeric values
+    # Both OK - compare numeric values
     try:
         pv = float(py_val)
         jv = float(java_val)
