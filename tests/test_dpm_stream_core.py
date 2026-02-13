@@ -526,7 +526,16 @@ class TestDpmStreamCore:
             replies=[
                 make_start_list(),
                 make_device_info(name=TEMP_DEVICE, ref_id=1),
-                make_digital_alarm_reply(ref_id=1, nominal=0xFF, mask=0x0F),
+                make_digital_alarm_reply(
+                    ref_id=1,
+                    nominal=0xFF,
+                    mask=0x0F,
+                    alarm_status=True,
+                    abort=True,
+                    abort_inhibit=True,
+                    tries_needed=5,
+                    tries_now=2,
+                ),
             ]
         )
         dispatched = []
@@ -547,11 +556,11 @@ class TestDpmStreamCore:
         assert r.value["nominal"] == 0xFF
         assert r.value["mask"] == 0x0F
         assert r.value["alarm_enable"] is True
-        assert r.value["alarm_status"] is False
-        assert r.value["abort"] is False
-        assert r.value["abort_inhibit"] is False
-        assert r.value["tries_needed"] == 3
-        assert r.value["tries_now"] == 0
+        assert r.value["alarm_status"] is True
+        assert r.value["abort"] is True
+        assert r.value["abort_inhibit"] is True
+        assert r.value["tries_needed"] == 5
+        assert r.value["tries_now"] == 2
 
     # -- TimedScalarArray_reply with micros --------------------------------
 
@@ -581,7 +590,12 @@ class TestDpmStreamCore:
         r = dispatched[0]
         assert r.value_type == ValueType.TIMED_SCALAR_ARRAY
         assert r.ok
+        import numpy as np
+
+        assert isinstance(r.value["data"], np.ndarray)
         assert list(r.value["data"]) == values
+        assert isinstance(r.value["micros"], np.ndarray)
+        assert r.value["micros"].dtype == np.int64
         assert list(r.value["micros"]) == micros
 
     # -- TimedScalarArray_reply without micros -----------------------------

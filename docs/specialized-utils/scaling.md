@@ -1,9 +1,10 @@
 # Scaling Transforms
 
-ACNET scaling system is a the two-stage pipeline that converts raw device data (ADC/DAC integers) to engineering units and back. PACSys provides a client-side implementationthat mirrors Java DPM scaling service.
+ACNET scaling system is a the two-stage pipeline that converts raw device integers to engineering units and back. PACSys provides a client-side implementationthat mirrors Java DPM scaling service.
+
 !!! warning "Low-level feature - most users don't need this"
     It is recommended to use the official scaling service or avoid .RAW entirely.
-    ACNET backends (DPM, gRPC, DMQ) return **already-scaled** engineering values. The `Scaler` class is only needed when working with time/performance-critical loops (e.g., fast setting of ramp tables).
+    ACNET backends (DPM, gRPC, DMQ) return **already-scaled** engineering values. The `Scaler` class is only needed when working with performance-critical loops (e.g., fast setting of ramp tables).
 
 ## Overview
 
@@ -303,10 +304,10 @@ Scaling also applies to parts of other properties.
 |----------|-------------|---------|
 | READING | Primary + Common | Standard two-stage pipeline |
 | SETTING | Primary + Common | Same pipeline, different p_index/c_index/constants |
-| STATUS | Basic/Digital status | Per-device bit masks, not numerical scaling |
-| CONTROL | Control commands | Maps operation names to raw values |
-| ANALOG alarm | Alarm scaling | 20-byte structure with tolerance values scaled through Primary+Common |
-| DIGITAL alarm | Alarm scaling | 20-byte structure with nominal/mask values |
+| STATUS | [NO SCALING] | Per-device bit masks, not numerical scaling |
+| CONTROL | [NO SCALING]  | Maps operation names to raw values |
+| ANALOG alarm | Primary + Common | 20-byte structure with tolerance values scaled through Primary+Common |
+| DIGITAL alarm | [NO SCALING] | 20-byte structure with nominal/mask values |
 
 ---
 
@@ -341,6 +342,6 @@ Basic status originally defined 4 attributes (ON, READY, REMOTE, POSITIVE). A 5t
 
 ## See Also
 
-- [Ramp Tables](specialized-utils/ramps.md) - uses scaling transforms for corrector magnet waveforms
-- [DRF Format](drf.md) - `.RAW` qualifier and property syntax
-- [Reading Devices](guide/reading.md) --standard (server-scaled) reads
+- [Ramp Tables](ramps.md) - uses scaling transforms for corrector magnet waveforms
+- [DRF Format](../drf.md) - `.RAW` qualifier and property syntax
+- [Reading Devices](../guide/reading.md) --standard (server-scaled) reads

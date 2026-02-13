@@ -5,8 +5,6 @@ The `AnalogAlarm` and `DigitalAlarm` classes provide convenient interfaces for r
 !!! info "Reference"
     For low-level alarm block structure details, see the [MOOC Property Documentation](https://www-bd.fnal.gov/controls/micro_p/mooc_project/prop.html).
 
----
-
 ## Overview
 
 | Type | Monitors | Alarms When |

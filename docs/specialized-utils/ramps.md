@@ -2,8 +2,6 @@
 
 The `Ramp` class provides convenient interface for reading and writing ramp tables. Multi-device `RampGroup` provides batched 2D-array access.
 
----
-
 ## Overview
 
 Each ramp **slot** contains 64 points stored as raw bytes in the SETTING property. Each point is 4 bytes little-endian: a signed int16 **value** followed by a signed int16 **time (clock ticks)**.
@@ -234,7 +232,7 @@ with pacsys.devdb() as db:
     print(scaler)  # Scaler(p_index=2, c_index=6, constants=(4.0, 1.0), input_len=2)
 ```
 
-See [Scaling](../scaling.md) for details on `Scaler`, transform indices, and supported operations.
+See [Scaling](scaling.md) for details on `Scaler`, transform indices, and supported operations.
 
 ### Manual Transforms
 
