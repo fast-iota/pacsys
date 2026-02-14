@@ -12,6 +12,7 @@ from pacsys.dpm_protocol import (
     DeviceInfo_reply,
     ListStatus_reply,
     Scalar_reply,
+    SettingStatus_struct,
     StartList_reply,
     Status_reply,
     ApplySettings_reply,
@@ -65,6 +66,18 @@ def _status_ok(ref_id=0):
 
 def _list_status():
     return ListStatus_reply()
+
+
+def _apply_settings_reply(pairs):
+    """Build ApplySettings_reply with SettingStatus_struct list."""
+    reply = ApplySettings_reply()
+    reply.status = []
+    for ref_id, status in pairs:
+        s = SettingStatus_struct()
+        s.ref_id = ref_id
+        s.status = status
+        reply.status.append(s)
+    return reply
 
 
 class FakeAsyncConn:
@@ -176,14 +189,11 @@ class TestReadMany:
 class TestWriteMany:
     @pytest.mark.asyncio
     async def test_write_single(self, make_core):
-        apply_reply = ApplySettings_reply()
-        apply_reply.status = [0]
-
         replies = [
             _add_ok(1),
             _device_info(1),
             _start_ok(),
-            apply_reply,
+            _apply_settings_reply([(1, 0)]),
         ]
         core, conn = make_core(replies)
         core._settings_enabled = True
@@ -212,9 +222,7 @@ class TestWriteMany:
 
         core.enable_settings = fake_enable
 
-        apply_reply = ApplySettings_reply()
-        apply_reply.status = [0]
-        conn._replies = [_add_ok(1), _device_info(1), _start_ok(), apply_reply]
+        conn._replies = [_add_ok(1), _device_info(1), _start_ok(), _apply_settings_reply([(1, 0)])]
 
         results = await core.write_many([("M:OUTTMP.SETTING@N", 72.5)], timeout=2.0)
         core.authenticate.assert_awaited_once()
@@ -222,10 +230,7 @@ class TestWriteMany:
 
     @pytest.mark.asyncio
     async def test_write_with_role(self, make_core):
-        apply_reply = ApplySettings_reply()
-        apply_reply.status = [0]
-
-        replies = [_add_ok(1), _device_info(1), _start_ok(), apply_reply]
+        replies = [_add_ok(1), _device_info(1), _start_ok(), _apply_settings_reply([(1, 0)])]
         core, conn = make_core(replies, role="testing")
         core._settings_enabled = True
         core._auth = mock.MagicMock()

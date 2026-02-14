@@ -185,3 +185,26 @@ class TestAsyncDPMMisc:
         await backend.close()
         with pytest.raises(RuntimeError, match="closed"):
             await backend.read("M:OUTTMP")
+
+    @pytest.mark.asyncio
+    async def test_closed_backend_write_raises(self):
+        auth = mock.MagicMock(spec=KerberosAuth)
+        b = AsyncDPMHTTPBackend(host="localhost", port=6802, auth=auth)
+        await b.close()
+        with pytest.raises(RuntimeError, match="closed"):
+            await b.write("M:OUTTMP", 72.5)
+
+    @pytest.mark.asyncio
+    async def test_closed_backend_subscribe_raises(self, backend):
+        await backend.close()
+        with pytest.raises(RuntimeError, match="closed"):
+            await backend.subscribe(["M:OUTTMP@p,1000"])
+
+    def test_pool_size_zero_raises(self):
+        with pytest.raises(ValueError, match="pool_size"):
+            AsyncDPMHTTPBackend(host="localhost", port=6802, pool_size=0)
+
+    @pytest.mark.asyncio
+    async def test_subscribe_empty_drfs_raises(self, backend):
+        with pytest.raises(ValueError, match="drfs cannot be empty"):
+            await backend.subscribe([])

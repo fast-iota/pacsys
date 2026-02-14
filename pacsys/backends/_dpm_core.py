@@ -295,7 +295,7 @@ class _AsyncDpmCore:
                     if reply.ref_id not in data_replies:
                         data_replies[reply.ref_id] = reply
                         received_count += 1
-        except (BrokenPipeError, ConnectionResetError, OSError, asyncio.IncompleteReadError) as e:
+        except (BrokenPipeError, ConnectionResetError, OSError, asyncio.IncompleteReadError, DPMConnectionError) as e:
             conn_broken = True
             transport_error = e
         finally:
@@ -498,6 +498,12 @@ class _AsyncDpmCore:
         add_errors: dict[int, int],
     ) -> list[WriteResult]:
         """Convert ApplySettings_reply + add_errors into WriteResult list."""
+        # Build ref_id → status map from SettingStatus_struct list
+        status_map: dict[int, int] = {}
+        if apply_reply is not None:
+            for status_struct in apply_reply.status:
+                status_map[status_struct.ref_id] = status_struct.status
+
         results: list[WriteResult] = []
         for i, (drf, _) in enumerate(settings):
             ref_id = i + 1
@@ -511,8 +517,8 @@ class _AsyncDpmCore:
                         message=status_message(facility, error) or "AddToList failed",
                     )
                 )
-            elif apply_reply is not None and i < len(apply_reply.status):
-                facility, error = parse_error(apply_reply.status[i])
+            elif ref_id in status_map:
+                facility, error = parse_error(status_map[ref_id])
                 results.append(
                     WriteResult(
                         drf=drf,

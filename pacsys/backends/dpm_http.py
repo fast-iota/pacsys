@@ -251,45 +251,49 @@ class _AsyncDPMConnection:
         except asyncio.TimeoutError:
             raise DPMConnectionError(f"Connection to {self._host}:{self._port} timed out")
 
-        # Set TCP_NODELAY and SO_KEEPALIVE on the underlying socket
-        sock = self._writer.get_extra_info("socket")
-        if sock is not None:
-            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-
-        self._writer.write(DPM_HANDSHAKE)
-        await self._writer.drain()
-
-        # Read OpenList reply (same detection as sync: first 4 bytes)
         try:
-            first_bytes = await asyncio.wait_for(self._reader.readexactly(4), timeout=self._timeout)
-        except asyncio.TimeoutError:
-            raise DPMConnectionError("Handshake timed out reading initial reply")
-        if first_bytes == b"HTTP":
-            # Read rest of HTTP status line for useful error message
+            # Set TCP_NODELAY and SO_KEEPALIVE on the underlying socket
+            sock = self._writer.get_extra_info("socket")
+            if sock is not None:
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+
+            self._writer.write(DPM_HANDSHAKE)
+            await self._writer.drain()
+
+            # Read OpenList reply (same detection as sync: first 4 bytes)
             try:
-                rest = await asyncio.wait_for(self._reader.readline(), timeout=2.0)
-                status_line = "HTTP" + rest.decode("utf-8", errors="replace").rstrip()
-            except Exception:
-                status_line = "HTTP error (could not read status)"
-            raise DPMConnectionError(f"DPM server at {self._host}:{self._port} returned HTTP error: {status_line}")
+                first_bytes = await asyncio.wait_for(self._reader.readexactly(4), timeout=self._timeout)
+            except asyncio.TimeoutError:
+                raise DPMConnectionError("Handshake timed out reading initial reply")
+            if first_bytes == b"HTTP":
+                # Read rest of HTTP status line for useful error message
+                try:
+                    rest = await asyncio.wait_for(self._reader.readline(), timeout=2.0)
+                    status_line = "HTTP" + rest.decode("utf-8", errors="replace").rstrip()
+                except Exception:
+                    status_line = "HTTP error (could not read status)"
+                raise DPMConnectionError(f"DPM server at {self._host}:{self._port} returned HTTP error: {status_line}")
 
-        length = struct.unpack(">I", first_bytes)[0]
-        if length == 0 or length > MAX_MESSAGE_SIZE:
-            raise DPMConnectionError(f"Invalid message length: {length}")
+            length = struct.unpack(">I", first_bytes)[0]
+            if length == 0 or length > MAX_MESSAGE_SIZE:
+                raise DPMConnectionError(f"Invalid message length: {length}")
 
-        try:
-            data = await asyncio.wait_for(self._reader.readexactly(length), timeout=self._timeout)
-        except asyncio.TimeoutError:
-            raise DPMConnectionError("Handshake timed out reading message body")
-        try:
-            reply = unmarshal_reply(iter(data))
-        except (ProtocolError, StopIteration) as e:
-            raise DPMConnectionError(f"Protocol error during handshake: {e}")
+            try:
+                data = await asyncio.wait_for(self._reader.readexactly(length), timeout=self._timeout)
+            except asyncio.TimeoutError:
+                raise DPMConnectionError("Handshake timed out reading message body")
+            try:
+                reply = unmarshal_reply(iter(data))
+            except (ProtocolError, StopIteration) as e:
+                raise DPMConnectionError(f"Protocol error during handshake: {e}")
 
-        if not isinstance(reply, OpenList_reply):
-            raise DPMConnectionError(f"Expected OpenList reply, got {type(reply).__name__}")
-        self._list_id = reply.list_id
+            if not isinstance(reply, OpenList_reply):
+                raise DPMConnectionError(f"Expected OpenList reply, got {type(reply).__name__}")
+            self._list_id = reply.list_id
+        except BaseException:
+            await self.close()
+            raise
 
     async def send_message(self, msg) -> None:
         """Send a length-prefixed SDD message."""

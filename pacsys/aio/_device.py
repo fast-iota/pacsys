@@ -45,6 +45,43 @@ class AsyncDevice(_DeviceBase):
             return bool(value)
         return value
 
+    async def digital_status(self, timeout: float | None = None):
+        """Fetch full digital status (BIT_VALUE + BIT_NAMES + BIT_VALUES)."""
+        from pacsys.digital_status import DigitalStatus
+        from pacsys.errors import DeviceError
+
+        backend = self._get_backend()
+        name = self.name
+        extra = f"<-{self._request.extra.name}" if self._request.extra else ""
+
+        readings = await backend.get_many(
+            [
+                f"{name}.STATUS.BIT_VALUE@I{extra}",
+                f"{name}.STATUS.BIT_NAMES@I{extra}",
+                f"{name}.STATUS.BIT_VALUES@I{extra}",
+            ],
+            timeout=timeout,
+        )
+        for r in readings:
+            if r.is_error:
+                raise DeviceError(r.drf, r.facility_code, r.error_code, r.message)
+
+        raw_value = readings[0].value
+        bit_names = readings[1].value
+        bit_values = readings[2].value
+        if not isinstance(raw_value, (int, float)):
+            raise TypeError(f"Expected numeric BIT_VALUE, got {type(raw_value).__name__}")
+        if not isinstance(bit_names, list):
+            raise TypeError(f"Expected list for BIT_NAMES, got {type(bit_names).__name__}")
+        if not isinstance(bit_values, list):
+            raise TypeError(f"Expected list for BIT_VALUES, got {type(bit_values).__name__}")
+        return DigitalStatus.from_bit_arrays(
+            device=name,
+            raw_value=int(raw_value),
+            bit_names=bit_names,  # type: ignore[arg-type]
+            bit_values=bit_values,  # type: ignore[arg-type]
+        )
+
     async def analog_alarm(self, *, field: str | None = None, timeout: float | None = None) -> Value:
         """Read ANALOG alarm property."""
         drf = self._build_drf(DRF_PROPERTY.ANALOG, self._resolve_field(field, DRF_PROPERTY.ANALOG), "I")

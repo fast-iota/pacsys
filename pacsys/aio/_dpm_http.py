@@ -21,12 +21,10 @@ from pacsys.backends._dpm_core import _AsyncDpmCore
 
 logger = logging.getLogger(__name__)
 
-# Alarm field maps (same as DPMHTTPBackend, duplicated for standalone use)
+# Alarm field maps — must match sync DPMHTTPBackend exactly
 _ANALOG_ALARM_FIELDS = {
     "minimum": "MIN",
     "maximum": "MAX",
-    "nominal": "NOM",
-    "tolerance": "TOL",
     "alarm_enable": "ALARM_ENABLE",
     "abort_inhibit": "ABORT_INHIBIT",
     "tries_needed": "TRIES_NEEDED",
@@ -95,6 +93,8 @@ class AsyncDPMHTTPBackend(AsyncBackend):
         auth: Optional[KerberosAuth] = None,
         role: Optional[str] = None,
     ):
+        if pool_size < 1:
+            raise ValueError(f"pool_size must be >= 1, got {pool_size}")
         self._host = host
         self._port = port
         self._pool_size = pool_size
@@ -106,6 +106,10 @@ class AsyncDPMHTTPBackend(AsyncBackend):
         self._pool_count = 0
         self._pool_lock = asyncio.Lock()
         self._handles: list[AsyncSubscriptionHandle] = []
+
+    def _check_closed(self) -> None:
+        if self._closed:
+            raise RuntimeError("Backend is closed")
 
     async def _create_core(self) -> _AsyncDpmCore:
         """Create and connect a new core."""
@@ -121,8 +125,7 @@ class AsyncDPMHTTPBackend(AsyncBackend):
 
     async def _borrow_core(self) -> _AsyncDpmCore:
         """Borrow a core from the read pool, creating if needed."""
-        if self._closed:
-            raise RuntimeError("Backend is closed")
+        self._check_closed()
         try:
             return self._pool.get_nowait()
         except asyncio.QueueEmpty:
@@ -132,7 +135,11 @@ class AsyncDPMHTTPBackend(AsyncBackend):
                 core = await self._create_core()
                 self._pool_count += 1
                 return core
-        return await self._pool.get()
+        # Pool is full — wait with timeout to avoid permanent hangs
+        try:
+            return await asyncio.wait_for(self._pool.get(), timeout=self._timeout)
+        except asyncio.TimeoutError:
+            raise RuntimeError("Connection pool exhausted (all cores busy)")
 
     async def _release_core(self, core: _AsyncDpmCore) -> None:
         """Return a core to the pool."""
@@ -142,13 +149,13 @@ class AsyncDPMHTTPBackend(AsyncBackend):
             await core.close()
 
     async def _discard_core(self, core: _AsyncDpmCore) -> None:
-        """Close and discard a core (on error)."""
-        async with self._pool_lock:
-            self._pool_count = max(0, self._pool_count - 1)
+        """Close and discard a core (on error), freeing a pool slot."""
         try:
             await core.close()
         except Exception:
             pass
+        async with self._pool_lock:
+            self._pool_count = max(0, self._pool_count - 1)
 
     # ── Properties ────────────────────────────────────────────────────────
 
@@ -194,7 +201,7 @@ class AsyncDPMHTTPBackend(AsyncBackend):
             result = await core.read_many(drfs, effective_timeout)
             await self._release_core(core)
             return result
-        except Exception:
+        except BaseException:
             await self._discard_core(core)
             raise
 
@@ -230,6 +237,7 @@ class AsyncDPMHTTPBackend(AsyncBackend):
     ) -> list[WriteResult]:
         if not settings:
             return []
+        self._check_closed()
         if not isinstance(self._auth, KerberosAuth):
             raise AuthenticationError("Backend not configured for authenticated operations. Pass auth=KerberosAuth().")
         effective_timeout = timeout if timeout is not None else self._timeout
@@ -241,7 +249,7 @@ class AsyncDPMHTTPBackend(AsyncBackend):
             result = await core.write_many(prepared, timeout=effective_timeout)
             await core.close()
             return result
-        except Exception:
+        except BaseException:
             try:
                 await core.close()
             except Exception:
@@ -256,6 +264,9 @@ class AsyncDPMHTTPBackend(AsyncBackend):
         callback: Optional[ReadingCallback] = None,
         on_error: Optional[ErrorCallback] = None,
     ) -> AsyncSubscriptionHandle:
+        self._check_closed()
+        if not drfs:
+            raise ValueError("drfs cannot be empty")
         core = await self._create_core()
         handle = AsyncSubscriptionHandle()
         handle._task = asyncio.ensure_future(
@@ -298,7 +309,10 @@ class AsyncDPMHTTPBackend(AsyncBackend):
         while not self._pool.empty():
             try:
                 core = self._pool.get_nowait()
-                await core.close()
-            except (asyncio.QueueEmpty, Exception):
+            except asyncio.QueueEmpty:
                 break
+            try:
+                await core.close()
+            except Exception:
+                pass
         self._pool_count = 0

@@ -16,6 +16,7 @@ Or run specific test file:
 import functools
 
 import pytest
+import pytest_asyncio
 
 from pacsys.drf_utils import get_device_name
 
@@ -164,6 +165,69 @@ def dmq_backend():
     backend.close()
 
 
+@pytest_asyncio.fixture
+async def async_dpm_http_backend():
+    """Create an AsyncDPMHTTPBackend for testing."""
+    from pacsys.aio._dpm_http import AsyncDPMHTTPBackend
+
+    backend = AsyncDPMHTTPBackend()
+    yield backend
+    await backend.close()
+
+
+@pytest_asyncio.fixture
+async def async_grpc_backend():
+    """Create an AsyncGRPCBackend for testing."""
+    from pacsys.aio._grpc import AsyncGRPCBackend
+
+    backend = AsyncGRPCBackend()
+    yield backend
+    await backend.close()
+
+
+@pytest_asyncio.fixture(params=["dpm_http", "grpc"])
+async def async_read_backend(request):
+    """Parametrized fixture that yields each async read-capable backend."""
+    backend_type = request.param
+
+    if backend_type == "dpm_http":
+        if not dpm_server_available():
+            pytest.skip("DPM server not available")
+        from pacsys.aio._dpm_http import AsyncDPMHTTPBackend
+
+        backend = AsyncDPMHTTPBackend()
+    elif backend_type == "grpc":
+        if not grpc_server_available():
+            pytest.skip("gRPC server not available")
+        from pacsys.aio._grpc import AsyncGRPCBackend
+
+        backend = AsyncGRPCBackend()
+    else:
+        raise ValueError(f"Unknown backend type: {backend_type}")
+
+    yield backend
+    await backend.close()
+
+
+@pytest_asyncio.fixture(params=["dpm_http"])
+async def async_write_backend(request):
+    """Parametrized fixture that yields each async write-capable backend."""
+    if not kerberos_available():
+        pytest.skip("Kerberos credentials not available")
+    if request.param == "dpm_http":
+        if not dpm_server_available():
+            pytest.skip("DPM server not available")
+        from pacsys.auth import KerberosAuth
+        from pacsys.aio._dpm_http import AsyncDPMHTTPBackend
+
+        backend = AsyncDPMHTTPBackend(auth=KerberosAuth(), role="testing")
+    else:
+        raise ValueError(f"Unknown backend type: {request.param}")
+
+    yield backend
+    await backend.close()
+
+
 @pytest.fixture(params=["dmq", "dpm_http", "grpc", "acl"])
 def read_backend(request):
     """Parametrized fixture that yields each read-capable backend.
@@ -284,6 +348,18 @@ def reset_global_backend():
     pacsys.shutdown()
 
 
+@pytest.fixture(autouse=True)
+def reset_async_global_backend():
+    """Reset async global backend before and after each test."""
+    import pacsys.aio as aio
+
+    aio._global_async_backend = None
+    aio._async_backend_initialized = False
+    yield
+    aio._global_async_backend = None
+    aio._async_backend_initialized = False
+
+
 # =============================================================================
 # Write Safety Guard
 # =============================================================================
@@ -347,3 +423,17 @@ def _enforce_write_allowlist(monkeypatch):
             monkeypatch.setattr(GRPCBackend, "write_many", _guard_write_many(GRPCBackend.write_many))
     except ImportError:
         pass  # grpcio not installed
+
+    # Async backends
+    from pacsys.aio._dpm_http import AsyncDPMHTTPBackend
+
+    monkeypatch.setattr(AsyncDPMHTTPBackend, "write", _guard_write(AsyncDPMHTTPBackend.write))
+    monkeypatch.setattr(AsyncDPMHTTPBackend, "write_many", _guard_write_many(AsyncDPMHTTPBackend.write_many))
+
+    try:
+        from pacsys.aio._grpc import AsyncGRPCBackend
+
+        monkeypatch.setattr(AsyncGRPCBackend, "write", _guard_write(AsyncGRPCBackend.write))
+        monkeypatch.setattr(AsyncGRPCBackend, "write_many", _guard_write_many(AsyncGRPCBackend.write_many))
+    except ImportError:
+        pass

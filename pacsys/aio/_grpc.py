@@ -45,12 +45,19 @@ class AsyncGRPCBackend(AsyncBackend):
         self._core: Optional[_DaqCore] = None
         self._connected = False
         self._closed = False
+        self._connect_lock = asyncio.Lock()
         self._handles: list[AsyncSubscriptionHandle] = []
 
     async def _ensure_connected(self):
         if self._closed:
             raise RuntimeError("Backend is closed")
-        if not self._connected:
+        if self._connected:
+            return
+        async with self._connect_lock:
+            if self._closed:
+                raise RuntimeError("Backend is closed")
+            if self._connected:
+                return
             self._core = _DaqCore(self._host, self._port, self._auth, self._timeout)
             await self._core.connect()
             self._connected = True
@@ -121,11 +128,20 @@ class AsyncGRPCBackend(AsyncBackend):
         callback: Optional[ReadingCallback] = None,
         on_error: Optional[ErrorCallback] = None,
     ) -> AsyncSubscriptionHandle:
+        if not drfs:
+            raise ValueError("drfs cannot be empty")
         await self._ensure_connected()
         assert self._core is not None
         handle = AsyncSubscriptionHandle()
+
+        def _error_adapter(exc, fatal=False):
+            if fatal:
+                handle._signal_error(exc)
+            else:
+                logger.warning("gRPC stream transient error (will retry): %s", exc)
+
         handle._task = asyncio.ensure_future(
-            self._core.stream(drfs, handle._dispatch, handle._is_stopped, handle._signal_error)
+            self._core.stream(drfs, handle._dispatch, handle._is_stopped, _error_adapter)
         )
         if callback:
             handle._callback_task = asyncio.ensure_future(_callback_feeder(handle, callback, on_error))

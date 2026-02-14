@@ -169,3 +169,37 @@ class TestAsyncGRPCMisc:
         await backend.close()
         with pytest.raises(RuntimeError, match="closed"):
             await backend.read("M:OUTTMP")
+
+    @pytest.mark.asyncio
+    async def test_subscribe_empty_drfs_raises(self, backend):
+        with pytest.raises(ValueError, match="drfs cannot be empty"):
+            await backend.subscribe([])
+
+    @pytest.mark.asyncio
+    async def test_subscribe_error_adapter_nonfatal(self, backend):
+        """Non-fatal gRPC errors don't kill the subscription."""
+
+        async def fake_stream(drfs, dispatch_fn, stop_check, error_fn):
+            # gRPC _DaqCore.stream calls error_fn with fatal=False for transient errors
+            error_fn(RuntimeError("transport error"), fatal=False)
+            # Stream should NOT be stopped — subscription continues retrying
+            assert not stop_check()
+
+        backend._core.stream = fake_stream
+        handle = await backend.subscribe(["M:OUTTMP@p,1000"])
+        await asyncio.sleep(0.05)
+        # Handle should NOT be stopped by a non-fatal error
+        assert not handle.stopped
+
+    @pytest.mark.asyncio
+    async def test_subscribe_error_adapter_fatal(self, backend):
+        """Fatal gRPC errors stop the subscription."""
+
+        async def fake_stream(drfs, dispatch_fn, stop_check, error_fn):
+            error_fn(RuntimeError("fatal error"), fatal=True)
+
+        backend._core.stream = fake_stream
+        handle = await backend.subscribe(["M:OUTTMP@p,1000"])
+        await asyncio.sleep(0.05)
+        assert handle.stopped
+        assert isinstance(handle.exc, RuntimeError)
