@@ -42,6 +42,15 @@ Documentation = "https://fast-iota.github.io/pacsys/"
 Repository = "https://github.com/fast-iota/pacsys"
 Issues = "https://github.com/fast-iota/pacsys/issues"
 
+[project.scripts]
+acget = "pacsys.cli.get:main"
+acput = "pacsys.cli.put:main"
+acmonitor = "pacsys.cli.monitor:main"
+acinfo = "pacsys.cli.info:main"
+pacsys-get = "pacsys.cli.get:main"
+pacsys-put = "pacsys.cli.put:main"
+pacsys-monitor = "pacsys.cli.monitor:main"
+pacsys-info = "pacsys.cli.info:main"
 
 [project.optional-dependencies]
 dev = [
@@ -132,6 +141,11 @@ invalid-return-type = "warn"
 unsupported-operator = "warn"
 invalid-assignment = "warn"
 unresolved-attribute = "ignore"
+
+[[tool.ty.overrides]]
+include = ["pacsys/cli/"]
+[tool.ty.overrides.rules]
+invalid-argument-type = "warn"
 
 [[tool.ty.overrides]]
 include = ["tests/"]

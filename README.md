@@ -139,6 +139,33 @@ with pacsys.ssh("clx01.fnal.gov") as ssh:
     result = ssh.acl("read M:OUTTMP") # "M:OUTTMP       =  72.500 DegF"
 ```
 
+## CLI Tools
+
+pacsys includes EPICS-style command-line tools:
+
+```bash
+# Read devices
+acget M:OUTTMP
+acget -t M:OUTTMP G:AMANDA
+acget -f .3f M:OUTTMP
+acget --format json M:OUTTMP
+
+# Write devices (requires authentication)
+acput -a kerberos M:OUTTMP 72.5
+acput -a kerberos --verify --tolerance 0.5 M:OUTTMP 72.5
+
+# Monitor (streaming)
+acmonitor M:OUTTMP
+acmonitor -n 10 M:OUTTMP@p,500
+acmonitor --format json M:OUTTMP
+
+# Device info
+acinfo M:OUTTMP
+acinfo -v M:OUTTMP
+```
+
+All tools are also available as `pacsys-get`, `pacsys-put`, `pacsys-monitor`, `pacsys-info`.
+
 ## Installation
 
 ```bash
