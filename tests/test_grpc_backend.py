@@ -18,6 +18,7 @@ Tests cover:
 import asyncio
 import logging
 import os
+import threading
 import time
 from unittest import mock
 
@@ -206,12 +207,31 @@ def _make_backend_with_stub(stub, auth=None):
     return backend
 
 
+def _close_backend_fast_for_tests(backend):
+    """Fast shutdown for mocked backends to avoid per-test join timeout tax."""
+    if backend._closed:
+        return
+    backend._closed = True
+    backend.stop_streaming()
+    backend._dispatcher.close()
+    backend._core = None
+
+    loop = backend._loop
+    thread = backend._reactor_thread
+    if loop is not None:
+        loop.call_soon_threadsafe(loop.stop)
+    if thread is not None and thread is not threading.current_thread():
+        thread.join(timeout=0.1)
+    backend._loop = None
+    backend._reactor_thread = None
+
+
 @pytest.fixture
 def backend_with_mock_stub(mock_stub):
     """GRPCBackend (no auth) with mocked stub -- for read tests."""
     backend = _make_backend_with_stub(mock_stub)
     yield backend, mock_stub
-    backend.close()
+    _close_backend_fast_for_tests(backend)
 
 
 @pytest.fixture
@@ -220,7 +240,7 @@ def auth_backend_with_mock_stub(mock_stub, sample_jwt):
     auth = JWTAuth(token=sample_jwt)
     backend = _make_backend_with_stub(mock_stub, auth=auth)
     yield backend, mock_stub
-    backend.close()
+    _close_backend_fast_for_tests(backend)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

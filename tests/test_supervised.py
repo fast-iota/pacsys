@@ -54,15 +54,42 @@ class TestEventClassify:
 # ── Server Lifecycle ──────────────────────────────────────────────────────
 
 
-@pytest.fixture
+def _seed_backend(backend: FakeBackend) -> None:
+    backend.set_reading("M:OUTTMP", 72.5)
+    backend.set_reading("G:AMANDA", 42.0)
+
+
+@pytest.fixture(scope="module")
 def fake_backend():
     fb = FakeBackend()
-    fb.set_reading("M:OUTTMP", 72.5)
-    fb.set_reading("G:AMANDA", 42.0)
+    _seed_backend(fb)
     return fb
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
+def policy_backend():
+    fb = FakeBackend()
+    _seed_backend(fb)
+    return fb
+
+
+@pytest.fixture(autouse=True)
+def reset_fake_backend(request):
+    if "fake_backend" in request.fixturenames or "server" in request.fixturenames:
+        fb = request.getfixturevalue("fake_backend")
+        fb.reset()
+        _seed_backend(fb)
+
+
+@pytest.fixture(autouse=True)
+def reset_policy_backend(request):
+    if "server_with_policy" in request.fixturenames:
+        policy_backend = request.getfixturevalue("policy_backend")
+        policy_backend.reset()
+        _seed_backend(policy_backend)
+
+
+@pytest.fixture(scope="module")
 def server(fake_backend):
     """Start a SupervisedServer on an OS-assigned port, yield it, then stop."""
     srv = SupervisedServer(fake_backend, port=0)
@@ -71,10 +98,10 @@ def server(fake_backend):
     srv.stop()
 
 
-@pytest.fixture
-def server_with_policy(fake_backend):
+@pytest.fixture(scope="module")
+def server_with_policy(policy_backend):
     """Server with ReadOnlyPolicy."""
-    srv = SupervisedServer(fake_backend, port=0, policies=[ReadOnlyPolicy()])
+    srv = SupervisedServer(policy_backend, port=0, policies=[ReadOnlyPolicy()])
     srv.start()
     yield srv
     srv.stop()
