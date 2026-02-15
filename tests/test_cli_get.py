@@ -206,8 +206,6 @@ class TestArrayWithRange:
 
         assert rc == 0
         output = buf.getvalue()
-        assert "0.0" in output
-        assert "1.0" in output
-        assert "2.0" in output
+        assert "0 1 2" in output
         # Elements beyond the slice should not appear
-        assert "9.0" not in output
+        assert "9" not in output

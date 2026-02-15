@@ -128,9 +128,7 @@ class TestFormatValue:
 
         arr = np.array([1.0, 2.0, 3.0])
         result = format_value(arr, None)
-        assert "1.0" in result
-        assert "2.0" in result
-        assert "3.0" in result
+        assert result == "1 2 3"
 
     def test_numpy_array_with_format(self):
         from pacsys.cli._common import format_value
@@ -149,9 +147,7 @@ class TestFormatValue:
         from pacsys.cli._common import format_value
 
         result = format_value([1.0, 2.0, 3.0], None)
-        assert "1.0" in result
-        assert "2.0" in result
-        assert "3.0" in result
+        assert result == "1 2 3"
 
     def test_integer_value(self):
         from pacsys.cli._common import format_value
@@ -174,6 +170,11 @@ class TestFormatValue:
         from pacsys.cli._common import format_value
 
         assert format_value(10.0, ".2f") == "10.00"
+
+    def test_whole_float_binary_format(self):
+        from pacsys.cli._common import format_value
+
+        assert format_value(10.0, "b") == "1010"
 
     def test_hex_format(self):
         from pacsys.cli._common import format_value
@@ -258,9 +259,7 @@ class TestFormatReading:
         r = self._make_reading(value=arr, units=None)
         result = format_reading(r, fmt="terse", number_format=None, array_slice=slice(0, 3))
         # Should only show first 3 elements
-        assert "0.0" in result
-        assert "1.0" in result
-        assert "2.0" in result
+        assert result == "0 1 2"
 
     def test_number_format(self):
         from pacsys.cli._common import format_reading

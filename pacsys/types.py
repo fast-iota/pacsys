@@ -6,15 +6,20 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Union, Optional, Callable, Iterator, TYPE_CHECKING
 from enum import Enum, Flag, IntEnum, auto
-import numpy as np
 
 if TYPE_CHECKING:
+    import numpy as np
     from pacsys.device import Device
 
 from pacsys.drf_utils import get_device_name as _get_device_name
 
 # Value types supported by ACNET
-Value = Union[float, int, str, bytes, np.ndarray, list, dict]
+# np.ndarray is only in the annotation at type-check time; at runtime the
+# alias omits it (numpy is heavy to import and not needed for annotation eval).
+if TYPE_CHECKING:
+    Value = Union[float, int, str, bytes, np.ndarray, list, dict]
+else:
+    Value = Union[float, int, str, bytes, list, dict]
 
 # Type alias for functions accepting DRF strings or Device objects
 DeviceSpec = Union[str, "Device"]

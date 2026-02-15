@@ -4,8 +4,6 @@ import json
 import sys
 from dataclasses import dataclass
 
-import numpy as np
-
 from pacsys.cli._common import (
     EXIT_DEVICE_ERROR,
     EXIT_OK,
@@ -99,7 +97,9 @@ def _format_analog_alarm_compact(alarm, number_format: str | None = None) -> str
         for k, v in alarm.items():
             if k == "units":
                 continue
-            val_str = format_value(v, number_format) if isinstance(v, (int, float, np.integer, np.floating)) else str(v)
+            _np = sys.modules.get("numpy")
+            _num = (int, float, _np.integer, _np.floating) if _np is not None else (int, float)
+            val_str = format_value(v, number_format) if isinstance(v, _num) else str(v)
             parts.append(f"{k}={val_str}")
         result = ", ".join(parts)
         if units:
@@ -294,12 +294,14 @@ def _reading_to_json(reading) -> dict:
     if not reading.ok:
         return {"error": reading.message or f"error {reading.error_code}"}
     val = reading.value
-    if isinstance(val, np.ndarray):
-        val = val.tolist()
-    elif isinstance(val, np.integer):
-        val = int(val)
-    elif isinstance(val, np.floating):
-        val = float(val)
+    np = sys.modules.get("numpy")
+    if np is not None:
+        if isinstance(val, np.ndarray):
+            val = val.tolist()
+        elif isinstance(val, np.integer):
+            val = int(val)
+        elif isinstance(val, np.floating):
+            val = float(val)
     return {
         "value": val,
         "units": reading.units or None,

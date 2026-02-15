@@ -6,8 +6,6 @@ import signal
 import sys
 from typing import Any, Callable, Optional, Union
 
-import numpy as np
-
 import pacsys
 from pacsys.drf_utils import get_device_name
 from pacsys.types import Reading, WriteResult
@@ -139,20 +137,22 @@ def format_value(value: Any, number_format: Optional[str]) -> str:
     numpy arrays and lists: space-joined elements, each formatted if spec given.
     Scalars: format() if spec. Strings: str().
     """
-    if isinstance(value, np.ndarray):
-        if number_format:
-            return " ".join(format(v, number_format) for v in value)
-        return " ".join(str(v) for v in value)
+    np = sys.modules.get("numpy")
+    if np is not None and isinstance(value, np.ndarray):
+        fmt = number_format or "g"
+        return " ".join(format(v, fmt) for v in value)
     if isinstance(value, list):
         if number_format:
             return " ".join(format(v, number_format) for v in value)
-        return " ".join(str(v) for v in value)
+        return " ".join(format(v, "g") if isinstance(v, float) else str(v) for v in value)
     if isinstance(value, str):
         return value
+    if isinstance(value, float) and value.is_integer() and number_format:
+        value = int(value)
     if number_format:
         return format(value, number_format)
-    if isinstance(value, float) and value.is_integer():
-        return str(int(value))
+    if isinstance(value, float):
+        return format(value, "g")
     return str(value)
 
 
@@ -198,7 +198,8 @@ def format_reading(
 
     # Get displayable value
     val = reading.value
-    if array_slice is not None and isinstance(val, np.ndarray):
+    np = sys.modules.get("numpy")
+    if array_slice is not None and np is not None and isinstance(val, np.ndarray):
         val = val[array_slice]
 
     formatted = format_value(val, number_format)
@@ -269,12 +270,14 @@ def format_write_result(result: WriteResult, *, fmt: str) -> str:
 
 def _json_safe(value: Any) -> Any:
     """Convert numpy types to Python native for JSON serialization."""
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-    if isinstance(value, np.integer):
-        return int(value)
-    if isinstance(value, np.floating):
-        return float(value)
+    np = sys.modules.get("numpy")
+    if np is not None:
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, np.integer):
+            return int(value)
+        if isinstance(value, np.floating):
+            return float(value)
     return value
 
 

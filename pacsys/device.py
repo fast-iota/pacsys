@@ -12,14 +12,13 @@ from __future__ import annotations
 import time
 from typing import Optional, TYPE_CHECKING
 
-import numpy as np
-
 from pacsys._device_base import _DeviceBase, CONTROL_STATUS_MAP
 from pacsys.drf3 import parse_request
 from pacsys.drf3.property import DRF_PROPERTY
 from pacsys.types import Value, Reading, WriteResult, BasicControl
 
 if TYPE_CHECKING:
+    import numpy as np
     from pacsys.backends import Backend
     from pacsys.digital_status import DigitalStatus
     from pacsys.verify import Verify
@@ -440,6 +439,8 @@ class ArrayDevice(Device):
 
     def read(self, *, field: str | None = None, timeout: float | None = None) -> np.ndarray:
         """Read array value. Raises TypeError if not array."""
+        import numpy as np
+
         value = Device.read(self, field=field, timeout=timeout)
         if isinstance(value, np.ndarray):
             return value
