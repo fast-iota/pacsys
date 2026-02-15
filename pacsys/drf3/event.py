@@ -1,3 +1,4 @@
+import math
 import re
 from typing import Optional
 
@@ -5,23 +6,30 @@ from typing import Optional
 _TIME_FREQ_RE = re.compile(r"^(\d+)([SMUHK])?$", re.IGNORECASE)
 
 
+def _java_round(x: float) -> int:
+    """Match Java Math.round() -- floor(x + 0.5), rounds .5 up."""
+    return math.floor(x + 0.5)
+
+
 def _parse_time_freq(raw: str) -> int:
-    """Parse a DRF2 time-freq value and return milliseconds."""
+    """Parse a DRF2 time-freq value and return milliseconds (matches Java TimeFreq)."""
     m = _TIME_FREQ_RE.match(raw)
     if m is None:
         raise ValueError(f"Bad time-freq value: {raw}")
     num = int(m.group(1))
     unit = (m.group(2) or "M").upper()
+    if num == 0:
+        return 0
     if unit == "S":
         return num * 1000
     if unit == "M":
         return num
     if unit == "U":
-        return max(num // 1000, 1) if num else 0
+        return _java_round(num / 1000)
     if unit == "H":
-        return int(1000 / num) if num else 0
+        return _java_round(1000 / num)
     if unit == "K":
-        return max(int(1 / num), 1) if num else 0
+        return _java_round(1000 / (num * 1000))
     raise ValueError(f"Bad time-freq unit: {unit}")
 
 

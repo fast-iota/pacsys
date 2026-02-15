@@ -51,6 +51,42 @@ def mouttmp():
 
 
 @requires_acnet_tcp
+class TestFTPRead:
+    """Basic FTP read: start continuous stream, grab first data, verify, stop."""
+
+    def test_read_mouttmp(self, acnet_tcp_connection, mouttmp):
+        """Read M:OUTTMP via FTP continuous and verify we get valid data."""
+        conn = acnet_tcp_connection
+        node = conn.get_node(MUONFE_NODE)
+        ftp = FTPClient(conn)
+
+        with ftp.start_continuous(
+            node=node,
+            devices=[mouttmp],
+            rate_hz=720,
+            return_period=4,
+            timeout=10.0,
+        ) as stream:
+            assert stream.setup_statuses == [0]
+
+            # Grab the first non-empty batch
+            points = []
+            for batch in stream.readings(timeout=2.0):
+                if MOUTTMP_DI in batch:
+                    points = batch[MOUTTMP_DI]
+                    break
+
+            assert points, "Expected at least one FTP data point"
+
+            # Verify structure: timestamps non-negative, raw values are plausible int16
+            for pt in points[:5]:
+                assert pt.timestamp_us >= 0
+                assert -32768 <= pt.raw_value <= 32767
+
+            print(f"\n  Read {len(points)} points, first: ts={points[0].timestamp_us} us, raw={points[0].raw_value}")
+
+
+@requires_acnet_tcp
 class TestFTPClassCodes:
     """Test FTP class code queries against live front-ends."""
 
