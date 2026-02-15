@@ -48,11 +48,6 @@ class DAQStub(object):
                 request_serializer=proto_dot_controls_dot_service_dot_DAQ_dot_v1_dot_DAQ__pb2.SettingList.SerializeToString,
                 response_deserializer=proto_dot_controls_dot_service_dot_DAQ_dot_v1_dot_DAQ__pb2.SettingReply.FromString,
                 _registered_method=True)
-        self.Alarms = channel.unary_unary(
-                '/services.daq.DAQ/Alarms',
-                request_serializer=proto_dot_controls_dot_service_dot_DAQ_dot_v1_dot_DAQ__pb2.DeviceList.SerializeToString,
-                response_deserializer=proto_dot_controls_dot_service_dot_DAQ_dot_v1_dot_DAQ__pb2.AlarmsReply.FromString,
-                _registered_method=True)
 
 
 class DAQServicer(object):
@@ -90,14 +85,6 @@ class DAQServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def Alarms(self, request, context):
-        """The parameter contains an array of device names.
-
-        """
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
 
 def add_DAQServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -110,11 +97,6 @@ def add_DAQServicer_to_server(servicer, server):
                     servicer.Set,
                     request_deserializer=proto_dot_controls_dot_service_dot_DAQ_dot_v1_dot_DAQ__pb2.SettingList.FromString,
                     response_serializer=proto_dot_controls_dot_service_dot_DAQ_dot_v1_dot_DAQ__pb2.SettingReply.SerializeToString,
-            ),
-            'Alarms': grpc.unary_unary_rpc_method_handler(
-                    servicer.Alarms,
-                    request_deserializer=proto_dot_controls_dot_service_dot_DAQ_dot_v1_dot_DAQ__pb2.DeviceList.FromString,
-                    response_serializer=proto_dot_controls_dot_service_dot_DAQ_dot_v1_dot_DAQ__pb2.AlarmsReply.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -175,33 +157,6 @@ class DAQ(object):
             '/services.daq.DAQ/Set',
             proto_dot_controls_dot_service_dot_DAQ_dot_v1_dot_DAQ__pb2.SettingList.SerializeToString,
             proto_dot_controls_dot_service_dot_DAQ_dot_v1_dot_DAQ__pb2.SettingReply.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def Alarms(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/services.daq.DAQ/Alarms',
-            proto_dot_controls_dot_service_dot_DAQ_dot_v1_dot_DAQ__pb2.DeviceList.SerializeToString,
-            proto_dot_controls_dot_service_dot_DAQ_dot_v1_dot_DAQ__pb2.AlarmsReply.FromString,
             options,
             channel_credentials,
             insecure,
