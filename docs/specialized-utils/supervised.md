@@ -47,7 +47,7 @@ SupervisedServer(backend, port=50051, host="[::]", policies=None)
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `backend` | `Backend` | *(required)* | Any backend instance to proxy |
+| `backend` | `Backend \| AsyncBackend` | *(required)* | Any backend instance to proxy |
 | `port` | `int` | `50051` | Port to listen on (use `0` for OS-assigned) |
 | `host` | `str` | `[::]` | Bind address |
 | `policies` | `list[Policy]` | `None` | Policy chain for access control |
@@ -355,6 +355,23 @@ handler.setFormatter(logging.Formatter(
 logger = logging.getLogger("pacsys.supervised")
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
+```
+
+---
+
+## Using with Async Backends
+
+SupervisedServer also accepts `AsyncBackend` instances from `pacsys.aio`.
+When an async backend is provided, the server calls its methods directly
+on the gRPC event loop — no executor threads, no callback bridges.
+
+```python
+import pacsys.aio as aio
+from pacsys.supervised import SupervisedServer
+
+backend = aio.dpm()
+with SupervisedServer(backend, port=50051) as srv:
+    srv.run()
 ```
 
 ---

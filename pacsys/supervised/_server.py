@@ -11,6 +11,7 @@ import grpc
 from grpc import aio as grpc_aio
 
 from pacsys._proto.controls.service.DAQ.v1 import DAQ_pb2_grpc
+from pacsys.aio._backends import AsyncBackend
 from pacsys.backends import Backend
 from pacsys.backends.grpc_backend import _proto_value_to_python
 from pacsys.drf_utils import get_device_name
@@ -29,7 +30,7 @@ _STREAM_QUEUE_MAXSIZE = 10_000
 class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
     """DAQ service implementation that proxies to a Backend."""
 
-    def __init__(self, backend: Backend, policies: list[Policy]):
+    def __init__(self, backend: Backend | AsyncBackend, policies: list[Policy]):
         self._backend = backend
         self._policies = policies
 
@@ -87,45 +88,79 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
         try:
             if all_oneshot(final_drfs):
                 # One-shot: use get_many
-                readings = await asyncio.to_thread(self._backend.get_many, final_drfs)
+                if isinstance(self._backend, AsyncBackend):
+                    readings = await self._backend.get_many(final_drfs)
+                else:
+                    readings = await asyncio.to_thread(self._backend.get_many, final_drfs)
                 for i, reading in enumerate(readings):
                     yield reading_to_proto_reply(reading, i)
                 elapsed = (time.monotonic() - start) * 1000
                 logger.info("rpc=Read peer=%s elapsed_ms=%.1f items=%d", peer, elapsed, len(readings))
             else:
-                # Streaming: use subscribe with callback bridging to async queue
-                queue: asyncio.Queue = asyncio.Queue(maxsize=_STREAM_QUEUE_MAXSIZE)
-                loop = asyncio.get_running_loop()
+                # Streaming path
                 item_count = 0
-                # Build index map for O(1) lookup (#4)
-                drf_index = {drf: i for i, drf in enumerate(final_drfs)}
+                # Multimap: same DRF at multiple positions → fan out readings
+                drf_indices: dict[str, list[int]] = {}
+                for i, drf in enumerate(final_drfs):
+                    drf_indices.setdefault(drf, []).append(i)
 
-                def _enqueue(reading):
+                if isinstance(self._backend, AsyncBackend):
+                    # Async backend: consume handle.readings() directly
+                    logger.debug("stream peer=%s event=started items=%d", peer, len(final_drfs))
+                    handle = await self._backend.subscribe(final_drfs)
                     try:
-                        queue.put_nowait(reading)
-                    except asyncio.QueueFull:
-                        pass  # backpressure: drop newest under overload (#1)
+                        while not context.cancelled():
+                            try:
+                                async for reading, _ in handle.readings(timeout=1.0):
+                                    if context.cancelled():
+                                        break
+                                    indices = drf_indices.get(reading.drf)
+                                    if indices is None:
+                                        raise ValueError(f"Backend returned unexpected DRF {reading.drf!r}")
+                                    for idx in indices:
+                                        yield reading_to_proto_reply(reading, idx)
+                                        item_count += 1
+                                else:
+                                    break  # generator returned normally (handle stopped)
+                            except asyncio.TimeoutError:
+                                continue  # check cancelled and retry
+                    finally:
+                        await handle.stop()
+                        logger.debug("stream peer=%s event=stopped items=%d", peer, item_count)
+                else:
+                    # Sync backend: bridge via queue + call_soon_threadsafe
+                    queue: asyncio.Queue = asyncio.Queue(maxsize=_STREAM_QUEUE_MAXSIZE)
+                    loop = asyncio.get_running_loop()
 
-                def on_reading(reading, handle):
-                    try:
-                        loop.call_soon_threadsafe(_enqueue, reading)
-                    except RuntimeError:
-                        pass  # loop closed during shutdown (#3)
-
-                logger.debug("stream peer=%s event=started items=%d", peer, len(final_drfs))
-                handle = await asyncio.to_thread(self._backend.subscribe, final_drfs, on_reading)
-                try:
-                    while not context.cancelled():
+                    def _enqueue(reading):
                         try:
-                            reading = await asyncio.wait_for(queue.get(), timeout=1.0)
-                        except asyncio.TimeoutError:
-                            continue
-                        idx = drf_index.get(reading.drf, 0)
-                        yield reading_to_proto_reply(reading, idx)
-                        item_count += 1
-                finally:
-                    await asyncio.to_thread(handle.stop)
-                    logger.debug("stream peer=%s event=stopped items=%d", peer, item_count)
+                            queue.put_nowait(reading)
+                        except asyncio.QueueFull:
+                            pass  # backpressure: drop newest under overload (#1)
+
+                    def on_reading(reading, handle):
+                        try:
+                            loop.call_soon_threadsafe(_enqueue, reading)
+                        except RuntimeError:
+                            pass  # loop closed during shutdown (#3)
+
+                    logger.debug("stream peer=%s event=started items=%d", peer, len(final_drfs))
+                    handle = await asyncio.to_thread(self._backend.subscribe, final_drfs, on_reading)
+                    try:
+                        while not context.cancelled():
+                            try:
+                                reading = await asyncio.wait_for(queue.get(), timeout=1.0)
+                            except asyncio.TimeoutError:
+                                continue
+                            indices = drf_indices.get(reading.drf)
+                            if indices is None:
+                                raise ValueError(f"Backend returned unexpected DRF {reading.drf!r}")
+                            for idx in indices:
+                                yield reading_to_proto_reply(reading, idx)
+                                item_count += 1
+                    finally:
+                        await asyncio.to_thread(handle.stop)
+                        logger.debug("stream peer=%s event=stopped items=%d", peer, item_count)
 
         except ValueError as e:
             context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
@@ -184,7 +219,10 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
             # ctx.values carries the (potentially modified) values positionally
             backend_settings = [(drf, val) for drf, (_, val) in zip(decision.ctx.drfs, decision.ctx.values)]
 
-            results = await asyncio.to_thread(self._backend.write_many, backend_settings)
+            if isinstance(self._backend, AsyncBackend):
+                results = await self._backend.write_many(backend_settings)
+            else:
+                results = await asyncio.to_thread(self._backend.write_many, backend_settings)
             reply = DAQ_pb2.SettingReply()  # type: ignore[unresolved-attribute]
             for result in results:
                 reply.status.append(write_result_to_proto_status(result))
@@ -237,13 +275,13 @@ class SupervisedServer:
 
     def __init__(
         self,
-        backend: Backend,
+        backend: Backend | AsyncBackend,
         port: int = 50051,
         host: str = "[::]",
         policies: Optional[list[Policy]] = None,
     ):
-        if not isinstance(backend, Backend):
-            raise TypeError(f"backend must be a Backend instance, got {type(backend).__name__}")
+        if not isinstance(backend, (Backend, AsyncBackend)):
+            raise TypeError(f"backend must be a Backend or AsyncBackend instance, got {type(backend).__name__}")
         if port < 0 or port > 65535:
             raise ValueError(f"port must be 0-65535, got {port}")
 

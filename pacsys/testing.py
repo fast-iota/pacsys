@@ -30,6 +30,8 @@ from pacsys.types import (
     ReadingCallback,
     ErrorCallback,
 )
+from pacsys.aio._backends import AsyncBackend as _AsyncBackend
+from pacsys.aio._subscription import AsyncSubscriptionHandle
 from pacsys.errors import DeviceError
 from pacsys.drf3.event import NeverEvent
 from pacsys.drf_utils import get_device_name
@@ -987,6 +989,108 @@ class FakeBackend(Backend):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Async fake backend
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class AsyncFakeBackend(_AsyncBackend):
+    """Async fake backend for testing. Wraps FakeBackend for state management."""
+
+    def __init__(self):
+        self._sync = FakeBackend(dispatch_mode=DispatchMode.DIRECT)
+        self._closed = False
+        self._handles: list[AsyncSubscriptionHandle] = []
+        self._sync_handles: list[FakeSubscriptionHandle] = []
+
+    # -- Configuration (delegated to sync backend) ----------------------------
+
+    def set_reading(self, drf, value, **kwargs):
+        self._sync.set_reading(drf, value, **kwargs)
+
+    def set_error(self, drf, error_code, message):
+        self._sync.set_error(drf, error_code, message)
+
+    def reset(self):
+        self._sync.reset()
+        self._handles.clear()
+        self._sync_handles.clear()
+        self._closed = False
+
+    # -- Inspection -----------------------------------------------------------
+
+    def was_read(self, drf):
+        return self._sync.was_read(drf)
+
+    def was_written(self, drf):
+        return self._sync.was_written(drf)
+
+    @property
+    def reads(self):
+        return self._sync.reads
+
+    @property
+    def writes(self):
+        return self._sync.writes
+
+    # -- AsyncBackend interface -----------------------------------------------
+
+    @property
+    def capabilities(self) -> BackendCapability:
+        return self._sync.capabilities
+
+    async def read(self, drf, timeout=None):
+        self._check_closed()
+        return self._sync.read(drf, timeout=timeout)
+
+    async def get(self, drf, timeout=None):
+        self._check_closed()
+        return self._sync.get(drf, timeout=timeout)
+
+    async def get_many(self, drfs, timeout=None):
+        self._check_closed()
+        return self._sync.get_many(drfs, timeout=timeout)
+
+    async def write(self, drf, value, timeout=None):
+        self._check_closed()
+        return self._sync.write(drf, value, timeout=timeout)
+
+    async def write_many(self, settings, timeout=None):
+        self._check_closed()
+        return self._sync.write_many(settings, timeout=timeout)
+
+    async def subscribe(self, drfs, callback=None, on_error=None):
+        self._check_closed()
+        handle = AsyncSubscriptionHandle()
+        self._handles.append(handle)
+
+        def _on_reading(reading, _sync_handle):
+            handle._dispatch(reading)
+
+        sync_handle = self._sync.subscribe(drfs, callback=_on_reading)
+        self._sync_handles.append(sync_handle)
+        return handle
+
+    def emit_reading(self, drf, value, **kwargs):
+        self._sync.emit_reading(drf, value, **kwargs)
+
+    async def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        for h in self._handles:
+            await h.stop()
+        self._handles.clear()
+        for sh in self._sync_handles:
+            sh.stop()
+        self._sync_handles.clear()
+        self._sync.close()
+
+    def _check_closed(self):
+        if self._closed:
+            raise RuntimeError("Backend is closed")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Optional pytest integration
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1028,4 +1132,4 @@ except ImportError:
     pass
 
 
-__all__ = ["FakeBackend", "FakeSubscriptionHandle"]
+__all__ = ["FakeBackend", "FakeSubscriptionHandle", "AsyncFakeBackend"]

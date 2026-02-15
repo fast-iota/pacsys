@@ -10,7 +10,7 @@ from grpc import aio as grpc_aio
 from pacsys._proto.controls.service.DAQ.v1 import DAQ_pb2, DAQ_pb2_grpc
 from pacsys.supervised import ReadOnlyPolicy, SupervisedServer, ValueRangePolicy
 from pacsys.supervised._event_classify import all_oneshot, is_oneshot_event
-from pacsys.testing import FakeBackend
+from pacsys.testing import AsyncFakeBackend, FakeBackend
 
 
 # ── Event Classification ──────────────────────────────────────────────────
@@ -57,7 +57,7 @@ class TestEventClassify:
 # ── Server Lifecycle ──────────────────────────────────────────────────────
 
 
-def _seed_backend(backend: FakeBackend) -> None:
+def _seed_backend(backend) -> None:
     backend.set_reading("M:OUTTMP", 72.5)
     backend.set_reading("G:AMANDA", 42.0)
 
@@ -234,6 +234,41 @@ class TestStreamingRead:
                 values = [r.readings.reading[0].data.scalar for r in replies]
                 assert values == [pytest.approx(70.0), pytest.approx(71.0), pytest.approx(72.0)]
 
+    def test_duplicate_drfs_fan_out(self, fake_backend):
+        """Subscribe to [X, Y, X] — one X emit yields exactly 2 replies at indices 0 and 2."""
+        with SupervisedServer(fake_backend, port=0) as srv:
+            with _make_channel(srv) as ch:
+                stub = DAQ_pb2_grpc.DAQStub(ch)
+                request = DAQ_pb2.ReadingList()
+                request.drf.append("M:OUTTMP@p,1000")
+                request.drf.append("G:AMANDA@p,1000")
+                request.drf.append("M:OUTTMP@p,1000")
+
+                def emit():
+                    time.sleep(0.3)
+                    fake_backend.emit_reading("M:OUTTMP@p,1000", 99.0)
+                    time.sleep(0.5)  # wait so we can detect over-duplication
+                    fake_backend.emit_reading("G:AMANDA@p,1000", 55.0)
+
+                emitter = threading.Thread(target=emit, daemon=True)
+                emitter.start()
+
+                replies = []
+                for reply in stub.Read(request, timeout=3.0):
+                    replies.append(reply)
+                    if len(replies) >= 3:
+                        break
+
+                # First emit (M:OUTTMP) → exactly 2 replies at index 0 and 2
+                # Second emit (G:AMANDA) → 1 reply at index 1
+                assert len(replies) == 3
+                m_replies = [r for r in replies if r.readings.reading[0].data.scalar == pytest.approx(99.0)]
+                assert len(m_replies) == 2
+                assert sorted(r.index for r in m_replies) == [0, 2]
+                g_replies = [r for r in replies if r.readings.reading[0].data.scalar == pytest.approx(55.0)]
+                assert len(g_replies) == 1
+                assert g_replies[0].index == 1
+
 
 # ── Set Tests ─────────────────────────────────────────────────────────────
 
@@ -342,6 +377,202 @@ class TestValueRangePolicyIntegration:
             setting.value.scalar = 200.0
             request.setting.append(setting)
 
+            with pytest.raises(grpc.RpcError) as exc_info:
+                stub.Set(request, timeout=5.0)
+            assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED
+
+
+# ── Async Backend Tests ──────────────────────────────────────────────────
+
+
+@pytest.fixture(scope="module")
+def async_backend():
+    fb = AsyncFakeBackend()
+    _seed_backend(fb)
+    return fb
+
+
+@pytest.fixture(autouse=True)
+def reset_async_backend(request):
+    if "async_server" in request.fixturenames:
+        fb = request.getfixturevalue("async_backend")
+        fb.reset()
+        _seed_backend(fb)
+
+
+@pytest.fixture(scope="module")
+def async_server(async_backend):
+    """Start a SupervisedServer with AsyncFakeBackend on an OS-assigned port."""
+    srv = SupervisedServer(async_backend, port=0)
+    srv.start()
+    yield srv
+    srv.stop()
+
+
+class TestAsyncOneshotRead:
+    def test_single_device(self, async_server):
+        with _make_channel(async_server) as ch:
+            stub = DAQ_pb2_grpc.DAQStub(ch)
+            request = DAQ_pb2.ReadingList()
+            request.drf.append("M:OUTTMP@I")
+
+            replies = list(stub.Read(request, timeout=5.0))
+            assert len(replies) == 1
+            reply = replies[0]
+            assert reply.WhichOneof("value") == "readings"
+            reading = reply.readings.reading[0]
+            assert reading.data.scalar == pytest.approx(72.5)
+
+    def test_multiple_devices(self, async_server):
+        with _make_channel(async_server) as ch:
+            stub = DAQ_pb2_grpc.DAQStub(ch)
+            request = DAQ_pb2.ReadingList()
+            request.drf.append("M:OUTTMP@I")
+            request.drf.append("G:AMANDA@I")
+
+            replies = list(stub.Read(request, timeout=5.0))
+            assert len(replies) == 2
+            values = {}
+            for r in replies:
+                rd = r.readings.reading[0]
+                values[r.index] = rd.data.scalar
+            assert values[0] == pytest.approx(72.5)
+            assert values[1] == pytest.approx(42.0)
+
+    def test_error_reading(self, async_backend, async_server):
+        async_backend.set_error("M:BADDEV", -42, "Device not found")
+        with _make_channel(async_server) as ch:
+            stub = DAQ_pb2_grpc.DAQStub(ch)
+            request = DAQ_pb2.ReadingList()
+            request.drf.append("M:BADDEV@I")
+
+            replies = list(stub.Read(request, timeout=5.0))
+            assert len(replies) == 1
+            reply = replies[0]
+            assert reply.WhichOneof("value") == "status"
+            assert reply.status.status_code == -42
+
+
+class TestAsyncSet:
+    def test_single_write(self, async_backend, async_server):
+        with _make_channel(async_server) as ch:
+            stub = DAQ_pb2_grpc.DAQStub(ch)
+            request = DAQ_pb2.SettingList()
+            setting = DAQ_pb2.Setting()
+            setting.device = "M:OUTTMP"
+            setting.value.scalar = 80.0
+            request.setting.append(setting)
+
+            reply = stub.Set(request, timeout=5.0)
+            assert len(reply.status) == 1
+            assert reply.status[0].status_code == 0
+            assert async_backend.was_written("M:OUTTMP")
+
+
+class TestAsyncStreamingRead:
+    def test_streaming_read(self, async_backend):
+        with SupervisedServer(async_backend, port=0) as srv:
+            with _make_channel(srv) as ch:
+                stub = DAQ_pb2_grpc.DAQStub(ch)
+                request = DAQ_pb2.ReadingList()
+                request.drf.append("M:OUTTMP@p,1000")
+
+                def emit():
+                    time.sleep(0.3)
+                    for i in range(3):
+                        async_backend.emit_reading("M:OUTTMP@p,1000", 70.0 + i)
+                        time.sleep(0.05)
+
+                emitter = threading.Thread(target=emit, daemon=True)
+                emitter.start()
+
+                replies = []
+                for reply in stub.Read(request, timeout=3.0):
+                    replies.append(reply)
+                    if len(replies) >= 3:
+                        break
+
+                assert len(replies) == 3
+                values = [r.readings.reading[0].data.scalar for r in replies]
+                assert values == [pytest.approx(70.0), pytest.approx(71.0), pytest.approx(72.0)]
+
+    def test_duplicate_drfs_fan_out(self, async_backend):
+        """Async path: [X, Y, X] — one X emit yields exactly 2 replies at indices 0 and 2."""
+        with SupervisedServer(async_backend, port=0) as srv:
+            with _make_channel(srv) as ch:
+                stub = DAQ_pb2_grpc.DAQStub(ch)
+                request = DAQ_pb2.ReadingList()
+                request.drf.append("M:OUTTMP@p,1000")
+                request.drf.append("G:AMANDA@p,1000")
+                request.drf.append("M:OUTTMP@p,1000")
+
+                def emit():
+                    time.sleep(0.3)
+                    async_backend.emit_reading("M:OUTTMP@p,1000", 99.0)
+                    time.sleep(0.5)
+                    async_backend.emit_reading("G:AMANDA@p,1000", 55.0)
+
+                emitter = threading.Thread(target=emit, daemon=True)
+                emitter.start()
+
+                replies = []
+                for reply in stub.Read(request, timeout=3.0):
+                    replies.append(reply)
+                    if len(replies) >= 3:
+                        break
+
+                assert len(replies) == 3
+                m_replies = [r for r in replies if r.readings.reading[0].data.scalar == pytest.approx(99.0)]
+                assert len(m_replies) == 2
+                assert sorted(r.index for r in m_replies) == [0, 2]
+                g_replies = [r for r in replies if r.readings.reading[0].data.scalar == pytest.approx(55.0)]
+                assert len(g_replies) == 1
+                assert g_replies[0].index == 1
+
+
+# ── Async Policy Enforcement Tests ───────────────────────────────────────
+
+
+@pytest.fixture(scope="module")
+def async_policy_backend():
+    fb = AsyncFakeBackend()
+    _seed_backend(fb)
+    return fb
+
+
+@pytest.fixture(autouse=True)
+def reset_async_policy_backend(request):
+    if "async_server_with_policy" in request.fixturenames:
+        fb = request.getfixturevalue("async_policy_backend")
+        fb.reset()
+        _seed_backend(fb)
+
+
+@pytest.fixture(scope="module")
+def async_server_with_policy(async_policy_backend):
+    srv = SupervisedServer(async_policy_backend, port=0, policies=[ReadOnlyPolicy()])
+    srv.start()
+    yield srv
+    srv.stop()
+
+
+class TestAsyncPolicyEnforcement:
+    def test_read_allowed_with_readonly_policy(self, async_server_with_policy):
+        with _make_channel(async_server_with_policy) as ch:
+            stub = DAQ_pb2_grpc.DAQStub(ch)
+            request = DAQ_pb2.ReadingList()
+            request.drf.append("M:OUTTMP@I")
+            replies = list(stub.Read(request, timeout=5.0))
+            assert len(replies) == 1
+
+    def test_set_blocked_with_readonly_policy(self, async_server_with_policy):
+        with _make_channel(async_server_with_policy) as ch:
+            stub = DAQ_pb2_grpc.DAQStub(ch)
+            request = DAQ_pb2.SettingList()
+            setting = DAQ_pb2.Setting()
+            setting.device = "M:OUTTMP"
+            setting.value.scalar = 80.0
+            request.setting.append(setting)
             with pytest.raises(grpc.RpcError) as exc_info:
                 stub.Set(request, timeout=5.0)
             assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED
