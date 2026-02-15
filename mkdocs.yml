@@ -24,6 +24,7 @@ nav:
     - Alarms: specialized-utils/alarms.md
     - Ramps: specialized-utils/ramps.md
     - Scaling: specialized-utils/scaling.md
+    - Supervised Mode: specialized-utils/supervised.md
   - Low-Level ACNET:
     - ACNET Protocol: acnet-protocol.md
     - FTPMAN Protocol: ftpman-protocol.md
