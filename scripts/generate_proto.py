@@ -141,3 +141,7 @@ def main():
     print(f"Generated {len(generated)} files in {OUTPUT_DIR}")
     for f in sorted(generated):
         print(f"  {f.relative_to(ROOT)}")
+
+
+if __name__ == "__main__":
+    main()

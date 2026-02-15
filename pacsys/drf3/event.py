@@ -9,9 +9,9 @@ def parse_event(parse_str: Optional[str]):
         raise ValueError("event string must not be empty")
     char = parse_str[0].upper()
     if char == "U":
-        return DefaultEvent(parse_str, char)
+        return DefaultEvent()
     elif char == "I":
-        return ImmediateEvent(parse_str, char)
+        return ImmediateEvent()
     elif char in ["P", "Q"]:
         return PeriodicEvent(parse_str, char)
     elif char == "E":

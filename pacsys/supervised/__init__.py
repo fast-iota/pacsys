@@ -23,6 +23,9 @@ from ._policies import (
     RateLimitPolicy,
     ReadOnlyPolicy,
     RequestContext,
+    SlewLimit,
+    SlewRatePolicy,
+    ValueRangePolicy,
     evaluate_policies,
 )
 from ._server import SupervisedServer
@@ -35,5 +38,8 @@ __all__ = [
     "ReadOnlyPolicy",
     "DeviceAccessPolicy",
     "RateLimitPolicy",
+    "ValueRangePolicy",
+    "SlewLimit",
+    "SlewRatePolicy",
     "evaluate_policies",
 ]

@@ -33,21 +33,26 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
         self._backend = backend
         self._policies = policies
 
-    def _check_policies(self, drfs: list[str], rpc_method: str, context) -> Optional[PolicyDecision]:
-        """Run policy chain. Returns denial decision or None if allowed."""
-        if not self._policies:
-            return None
+    def _check_policies(
+        self, drfs: list[str], rpc_method: str, context, *, values=None, raw_request=None
+    ) -> PolicyDecision:
+        """Run policy chain. Always returns a PolicyDecision (with ctx on allow)."""
         peer = context.peer() or "unknown"
-        # Extract metadata as dict
         metadata = {}
         invocation_metadata = context.invocation_metadata()
         if invocation_metadata:
             metadata = {k: v for k, v in invocation_metadata}
-        ctx = RequestContext(drfs=drfs, rpc_method=rpc_method, peer=peer, metadata=metadata)
-        decision = evaluate_policies(self._policies, ctx)
-        if not decision.allowed:
-            return decision
-        return None
+        ctx = RequestContext(
+            drfs=drfs,
+            rpc_method=rpc_method,
+            peer=peer,
+            metadata=metadata,
+            values=values or [],
+            raw_request=raw_request,
+        )
+        if not self._policies:
+            return PolicyDecision(allowed=True, ctx=ctx)
+        return evaluate_policies(self._policies, ctx)
 
     async def Read(self, request, context):
         drfs = list(request.drf)
@@ -62,20 +67,27 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
             devices += f" (+{len(drfs) - 5} more)"
 
         # Policy check
-        denial = self._check_policies(drfs, "Read", context)
-        if denial is not None:
-            logger.warning("rpc=Read peer=%s devices=%s decision=denied reason=%s", peer, devices, denial.reason)
+        try:
+            decision = self._check_policies(drfs, "Read", context, raw_request=request)
+        except Exception as e:
+            logger.error("rpc=Read peer=%s policy error=%s", peer, e, exc_info=True)
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(f"Policy error: {e}")
+            return
+        if not decision.allowed:
+            logger.warning("rpc=Read peer=%s devices=%s decision=denied reason=%s", peer, devices, decision.reason)
             context.set_code(grpc.StatusCode.PERMISSION_DENIED)
-            context.set_details(denial.reason)
+            context.set_details(decision.reason)
             return
 
         logger.info("rpc=Read peer=%s devices=%s decision=allowed", peer, devices)
+        final_drfs = decision.ctx.drfs
         start = time.monotonic()
 
         try:
-            if all_oneshot(drfs):
+            if all_oneshot(final_drfs):
                 # One-shot: use get_many
-                readings = await asyncio.to_thread(self._backend.get_many, drfs)
+                readings = await asyncio.to_thread(self._backend.get_many, final_drfs)
                 for i, reading in enumerate(readings):
                     yield reading_to_proto_reply(reading, i)
                 elapsed = (time.monotonic() - start) * 1000
@@ -86,18 +98,22 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
                 loop = asyncio.get_running_loop()
                 item_count = 0
                 # Build index map for O(1) lookup (#4)
-                drf_index = {drf: i for i, drf in enumerate(drfs)}
+                drf_index = {drf: i for i, drf in enumerate(final_drfs)}
 
-                def on_reading(reading, handle):
+                def _enqueue(reading):
                     try:
-                        loop.call_soon_threadsafe(queue.put_nowait, reading)
-                    except RuntimeError:
-                        pass  # loop closed during shutdown (#3)
+                        queue.put_nowait(reading)
                     except asyncio.QueueFull:
                         pass  # backpressure: drop newest under overload (#1)
 
-                logger.debug("stream peer=%s event=started items=%d", peer, len(drfs))
-                handle = await asyncio.to_thread(self._backend.subscribe, drfs, on_reading)
+                def on_reading(reading, handle):
+                    try:
+                        loop.call_soon_threadsafe(_enqueue, reading)
+                    except RuntimeError:
+                        pass  # loop closed during shutdown (#3)
+
+                logger.debug("stream peer=%s event=started items=%d", peer, len(final_drfs))
+                handle = await asyncio.to_thread(self._backend.subscribe, final_drfs, on_reading)
                 try:
                     while not context.cancelled():
                         try:
@@ -140,23 +156,33 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
         if len(drfs) > 5:
             devices += f" (+{len(drfs) - 5} more)"
 
+        # Extract values before policy check so policies can inspect them
+        values = []
+        for s in settings_proto:
+            value, _ = _proto_value_to_python(s.value)
+            values.append((s.device, value))
+
         # Policy check
-        denial = self._check_policies(drfs, "Set", context)
-        if denial is not None:
-            logger.warning("rpc=Set peer=%s devices=%s decision=denied reason=%s", peer, devices, denial.reason)
+        try:
+            decision = self._check_policies(drfs, "Set", context, values=values, raw_request=request)
+        except Exception as e:
+            logger.error("rpc=Set peer=%s policy error=%s", peer, e, exc_info=True)
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(f"Policy error: {e}")
+            return DAQ_pb2.SettingReply()  # type: ignore[unresolved-attribute]
+        if not decision.allowed:
+            logger.warning("rpc=Set peer=%s devices=%s decision=denied reason=%s", peer, devices, decision.reason)
             context.set_code(grpc.StatusCode.PERMISSION_DENIED)
-            context.set_details(denial.reason)
+            context.set_details(decision.reason)
             return DAQ_pb2.SettingReply()  # type: ignore[unresolved-attribute]
 
         logger.info("rpc=Set peer=%s devices=%s decision=allowed", peer, devices)
         start = time.monotonic()
 
         try:
-            # Convert proto settings to backend format
-            backend_settings = []
-            for s in settings_proto:
-                value, _ = _proto_value_to_python(s.value)
-                backend_settings.append((s.device, value))
+            # Build backend settings: ctx.drfs is authoritative for targets,
+            # ctx.values carries the (potentially modified) values positionally
+            backend_settings = [(drf, val) for drf, (_, val) in zip(decision.ctx.drfs, decision.ctx.values)]
 
             results = await asyncio.to_thread(self._backend.write_many, backend_settings)
             reply = DAQ_pb2.SettingReply()  # type: ignore[unresolved-attribute]
@@ -183,13 +209,6 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(f"Backend error: {e}")
             return DAQ_pb2.SettingReply()  # type: ignore[unresolved-attribute]
-
-    async def Alarms(self, request, context):
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details("Alarms not supported - Backend ABC has no alarms method")
-        from pacsys._proto.controls.service.DAQ.v1 import DAQ_pb2
-
-        return DAQ_pb2.AlarmsReply()  # type: ignore[unresolved-attribute]
 
 
 class SupervisedServer:

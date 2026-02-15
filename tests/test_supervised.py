@@ -8,7 +8,7 @@ import pytest
 from grpc import aio as grpc_aio
 
 from pacsys._proto.controls.service.DAQ.v1 import DAQ_pb2, DAQ_pb2_grpc
-from pacsys.supervised import ReadOnlyPolicy, SupervisedServer
+from pacsys.supervised import ReadOnlyPolicy, SupervisedServer, ValueRangePolicy
 from pacsys.supervised._event_classify import all_oneshot, is_oneshot_event
 from pacsys.testing import FakeBackend
 
@@ -17,20 +17,20 @@ from pacsys.testing import FakeBackend
 
 
 class TestEventClassify:
-    def test_no_event_is_oneshot(self):
-        assert is_oneshot_event("M:OUTTMP")
+    def test_no_event_is_streaming(self):
+        assert not is_oneshot_event("M:OUTTMP")
 
     def test_immediate_is_oneshot(self):
         assert is_oneshot_event("M:OUTTMP@I")
 
-    def test_default_is_oneshot(self):
-        assert is_oneshot_event("M:OUTTMP@U")
+    def test_default_is_streaming(self):
+        assert not is_oneshot_event("M:OUTTMP@U")
 
     def test_never_is_oneshot(self):
         assert is_oneshot_event("M:OUTTMP@N")
 
-    def test_oneshot_periodic_is_oneshot(self):
-        assert is_oneshot_event("M:OUTTMP@Q,1000")
+    def test_change_monitored_periodic_is_streaming(self):
+        assert not is_oneshot_event("M:OUTTMP@Q,1000")
 
     def test_continuous_periodic_is_streaming(self):
         assert not is_oneshot_event("M:OUTTMP@p,1000")
@@ -42,10 +42,13 @@ class TestEventClassify:
         assert not is_oneshot_event("M:OUTTMP@S,G:AMANDA,0,12,>")
 
     def test_all_oneshot_true(self):
-        assert all_oneshot(["M:OUTTMP@I", "G:AMANDA"])
+        assert all_oneshot(["M:OUTTMP@I", "G:AMANDA@N"])
 
     def test_all_oneshot_false_mixed(self):
         assert not all_oneshot(["M:OUTTMP@I", "G:AMANDA@p,1000"])
+
+    def test_all_oneshot_false_bare(self):
+        assert not all_oneshot(["M:OUTTMP@I", "G:AMANDA"])
 
     def test_all_oneshot_empty(self):
         assert all_oneshot([])
@@ -148,7 +151,7 @@ class TestOneshotRead:
         with _make_channel(server) as ch:
             stub = DAQ_pb2_grpc.DAQStub(ch)
             request = DAQ_pb2.ReadingList()
-            request.drf.append("M:OUTTMP")
+            request.drf.append("M:OUTTMP@I")
 
             replies = list(stub.Read(request, timeout=5.0))
             assert len(replies) == 1
@@ -162,8 +165,8 @@ class TestOneshotRead:
         with _make_channel(server) as ch:
             stub = DAQ_pb2_grpc.DAQStub(ch)
             request = DAQ_pb2.ReadingList()
-            request.drf.append("M:OUTTMP")
-            request.drf.append("G:AMANDA")
+            request.drf.append("M:OUTTMP@I")
+            request.drf.append("G:AMANDA@I")
 
             replies = list(stub.Read(request, timeout=5.0))
             assert len(replies) == 2
@@ -182,7 +185,7 @@ class TestOneshotRead:
         with _make_channel(server) as ch:
             stub = DAQ_pb2_grpc.DAQStub(ch)
             request = DAQ_pb2.ReadingList()
-            request.drf.append("M:BADDEV")
+            request.drf.append("M:BADDEV@I")
 
             replies = list(stub.Read(request, timeout=5.0))
             assert len(replies) == 1
@@ -270,7 +273,7 @@ class TestPolicyEnforcement:
         with _make_channel(server_with_policy) as ch:
             stub = DAQ_pb2_grpc.DAQStub(ch)
             request = DAQ_pb2.ReadingList()
-            request.drf.append("M:OUTTMP")
+            request.drf.append("M:OUTTMP@I")
 
             replies = list(stub.Read(request, timeout=5.0))
             assert len(replies) == 1
@@ -289,16 +292,56 @@ class TestPolicyEnforcement:
             assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED
 
 
-# ── Alarms Tests ──────────────────────────────────────────────────────────
+# ── ValueRangePolicy Integration Tests ───────────────────────────────────
 
 
-class TestAlarms:
-    def test_alarms_unimplemented(self, server):
-        with _make_channel(server) as ch:
+@pytest.fixture(scope="module")
+def range_backend():
+    fb = FakeBackend()
+    _seed_backend(fb)
+    return fb
+
+
+@pytest.fixture(autouse=True)
+def reset_range_backend(request):
+    if "server_with_range_policy" in request.fixturenames:
+        fb = request.getfixturevalue("range_backend")
+        fb.reset()
+        _seed_backend(fb)
+
+
+@pytest.fixture(scope="module")
+def server_with_range_policy(range_backend):
+    """Server with ValueRangePolicy limiting M:* to [0, 100]."""
+    srv = SupervisedServer(range_backend, port=0, policies=[ValueRangePolicy(limits={"M:*": (0.0, 100.0)})])
+    srv.start()
+    yield srv
+    srv.stop()
+
+
+class TestValueRangePolicyIntegration:
+    def test_in_range_write_succeeds(self, server_with_range_policy):
+        with _make_channel(server_with_range_policy) as ch:
             stub = DAQ_pb2_grpc.DAQStub(ch)
-            request = DAQ_pb2.DeviceList()
-            request.device.append("M:OUTTMP")
+            request = DAQ_pb2.SettingList()
+            setting = DAQ_pb2.Setting()
+            setting.device = "M:OUTTMP"
+            setting.value.scalar = 50.0
+            request.setting.append(setting)
+
+            reply = stub.Set(request, timeout=5.0)
+            assert len(reply.status) == 1
+            assert reply.status[0].status_code == 0
+
+    def test_out_of_range_write_denied(self, server_with_range_policy):
+        with _make_channel(server_with_range_policy) as ch:
+            stub = DAQ_pb2_grpc.DAQStub(ch)
+            request = DAQ_pb2.SettingList()
+            setting = DAQ_pb2.Setting()
+            setting.device = "M:OUTTMP"
+            setting.value.scalar = 200.0
+            request.setting.append(setting)
 
             with pytest.raises(grpc.RpcError) as exc_info:
-                stub.Alarms(request, timeout=5.0)
-            assert exc_info.value.code() == grpc.StatusCode.UNIMPLEMENTED
+                stub.Set(request, timeout=5.0)
+            assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED

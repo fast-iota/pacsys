@@ -2,27 +2,22 @@
 
 from pacsys.drf3 import parse_request
 from pacsys.drf3.event import (
-    DefaultEvent,
     ImmediateEvent,
     NeverEvent,
-    PeriodicEvent,
 )
 
 
 def is_oneshot_event(drf: str) -> bool:
-    """True for @I, @U, @N, @Q (non-continuous periodic), or no event.
+    """True only for @I or @N.
 
-    False for @P (continuous periodic), @E (clock), @S (state).
+    Everything else is streaming: no event and @U both resolve to the
+    device's default event which is typically @p,1000 (periodic).
+    @P, @Q, @E, @S are all explicitly repetitive.
     """
     req = parse_request(drf)
     event = req.event
-    if event is None:
+    if isinstance(event, (ImmediateEvent, NeverEvent)):
         return True
-    if isinstance(event, (DefaultEvent, ImmediateEvent, NeverEvent)):
-        return True
-    if isinstance(event, PeriodicEvent):
-        # Use mode char not .cont (parser has case-sensitivity issue with lowercase p)
-        return event.mode == "Q"
     return False
 
 
