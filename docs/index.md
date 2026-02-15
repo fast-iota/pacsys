@@ -1,5 +1,3 @@
-# PACSys - Pure-Python library for Fermilab's control system
-
 PACSys is a Python library that lets you interact with ACNET (aka ACSys).
 
 High-level features:
@@ -16,7 +14,6 @@ Low-level features:
 - **FTPMAN for snapshots** - yes, really
 - **SSH utilities and ACL-over-SSH** - authenticated command runners, useful for ACL/DABBEL
 - **DevDB integration** - formatted interpretation of device properties (auto-used if available)
-
 
 ## Example
 
@@ -36,7 +33,7 @@ with pacsys.subscribe(["M:OUTTMP@p,1000"]) as stream:
 pacsys.write("Z:ACLTST", 72.5)
 ```
 
-See the [Quickstart](quickstart.md) for more examples or jump directly to relevant user guide section.
+See the [Quickstart](quickstart.md) for more examples.
 
 ## Backends
 
@@ -61,5 +58,5 @@ pip install pacsys
 
 - [Quick Start Guide](quickstart.md) - Detailed examples for reading, writing, and streaming
 - [DRF Format](drf.md) - Device addressing syntax (properties, events, ranges)
-- [Backends](backends/index.md) - Connection options and architecture diagrams
-- [API Reference](api.md) - Complete API documentation
+- [Backends](backends/index.md) - More details on connection options
+- [User guide](guide/reading.md) - Start reading user guide

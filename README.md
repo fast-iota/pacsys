@@ -31,7 +31,7 @@ pip install pacsys
 
 ```python
 import pacsys
-from pacsys import Device, ScalarDevice, ArrayDevice, Verify, KerberosAuth
+from pacsys import Device, Verify, KerberosAuth
 
 # Create a device -- DRF is validated immediately
 dev = Device("M:OUTTMP")
@@ -45,9 +45,6 @@ alarm = dev.analog_alarm()             # ANALOG alarm
 # Full reading with metadata
 reading = dev.get()
 print(f"{reading.value} {reading.units}")  # e.g. "72.5 DegF"
-
-# Typed devices enforce return types
-temp = ScalarDevice("M:OUTTMP")        # read() -> float
 
 # Write with automatic readback verification
 result = dev.write(72.5, verify=Verify(tolerance=0.5))
