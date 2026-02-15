@@ -50,8 +50,6 @@ for r in readings:
 ## Stream Data
 
 ```python
-import pacsys
-
 with pacsys.subscribe(["M:OUTTMP@p,1000"]) as stream:
     for reading, handle in stream.readings(timeout=30):
         print(f"{reading.name}: {reading.value}")
@@ -61,6 +59,15 @@ with pacsys.subscribe(["M:OUTTMP@p,1000"]) as stream:
 
 The `@p,1000` means "send data every 1000 milliseconds". For streaming, a repeating event type must be specified.
 
+Or use the Device API:
+
+```python
+dev = pacsys.Device("M:OUTTMP@p,1000")
+with dev.subscribe() as stream:
+    for reading, _ in stream.readings(timeout=30):
+        print(reading.value)
+```
+
 :material-arrow-right: [Streaming Guide](guide/streaming.md) - callbacks, CombinedStream, error handling
 
 ---
@@ -68,10 +75,7 @@ The `@p,1000` means "send data every 1000 milliseconds". For streaming, a repeat
 ## Write a Value
 
 ```python
-from pacsys import KerberosAuth
-import pacsys
-
-auth = KerberosAuth()  # requires kinit beforehand
+auth = pacsys.KerberosAuth()  # requires kinit beforehand
 
 with pacsys.dpm(auth=auth, role="testing") as backend:
     result = backend.write("Z:ACLTST", 45.0)
@@ -99,8 +103,7 @@ PACSys automatically converts READING to SETTING and STATUS to CONTROL when writ
 value = pacsys.read("M:OUTTMP")
 
 # Explicit backend
-from pacsys import KerberosAuth
-with pacsys.dmq(auth=KerberosAuth()) as backend:
+with pacsys.dmq(auth=pacsys.KerberosAuth()) as backend:
     value = backend.read("M:OUTTMP")
 ```
 

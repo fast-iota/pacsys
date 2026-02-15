@@ -221,6 +221,38 @@ with pacsys.subscribe(["M:OUTTMP@E,0F"]) as stream:
 
 ---
 
+## Device API
+
+The `Device` class has a `subscribe()` method that builds the DRF automatically:
+
+```python
+from pacsys import Device
+
+dev = Device("M:OUTTMP@p,1000")
+
+# Iterator mode
+with dev.subscribe() as stream:
+    for reading, _ in stream.readings(timeout=10):
+        print(reading.value)
+
+# Callback mode
+handle = dev.subscribe(callback=lambda r, h: print(r.value))
+```
+
+Subscribe to specific properties or override the event:
+
+```python
+dev = Device("M:OUTTMP")
+
+with dev.subscribe(prop="setting", event="p,1000") as stream:
+    for reading, _ in stream.readings(timeout=10):
+        print(f"Setpoint: {reading.value}")
+```
+
+:material-arrow-right: [Device API Guide](device-api.md#streaming) - full `subscribe()` reference
+
+---
+
 ## Explicit Backend
 
 All backends support streaming with the same API:

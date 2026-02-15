@@ -218,6 +218,66 @@ assert result.verified
 
 ---
 
+## Streaming
+
+Subscribe to a device for continuous updates using `subscribe()`. The device must have an event (set at construction or via `event=`).
+
+### Iterator Mode
+
+```python
+dev = Device("M:OUTTMP@p,1000")
+
+with dev.subscribe() as stream:
+    for reading, handle in stream.readings(timeout=30):
+        print(f"{reading.value}")
+        if reading.value > 100:
+            stream.stop()
+```
+
+### Callback Mode
+
+```python
+dev = Device("M:OUTTMP")
+
+handle = dev.subscribe(
+    callback=lambda r, h: print(r.value),
+    event="p,1000",
+)
+import time; time.sleep(10)
+handle.stop()
+```
+
+### Property and Field
+
+```python
+dev = Device("M:OUTTMP@p,1000")
+
+# Stream a specific property
+with dev.subscribe(prop="setting") as stream:
+    for reading, _ in stream.readings(timeout=10):
+        print(f"Setpoint: {reading.value}")
+
+# Stream a specific field
+with dev.subscribe(prop="status", field="on") as stream:
+    for reading, _ in stream.readings(timeout=10):
+        print(f"On: {reading.value}")
+```
+
+### Event Override
+
+```python
+dev = Device("M:OUTTMP")  # no event
+
+# Provide event at subscribe time
+with dev.subscribe(event="p,500") as stream:
+    for reading, _ in stream.readings(timeout=10):
+        print(reading.value)
+```
+
+`subscribe()` raises `ValueError` if no event is available (neither on the device nor via `event=`).
+
+---
+
 ## Attributes
 
 | Property | Type | Description |
@@ -325,5 +385,6 @@ devices = {Device("M:OUTTMP"), Device("G:AMANDA")}
 ## See Also
 
 - [Reading Devices](reading.md) - Reading patterns and value types
+- [Streaming Guide](streaming.md) - Backend-level streaming, CombinedStream, error handling
 - [Device Status](status.md) - DigitalStatus and control commands
 - [DRF Format](../drf.md) - DRF syntax reference

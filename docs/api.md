@@ -224,6 +224,7 @@ Object-oriented interface for device access.
         - reset
         - set_analog_alarm
         - set_digital_alarm
+        - subscribe
         - with_backend
         - with_event
         - with_range
