@@ -4,7 +4,7 @@ Demonstrates:
 - Async DPM/HTTP backend (direct-await, no executor threads)
 - Write-only access restricted to an explicit device list
 - Reads allowed for all devices
-- Protobuf binary audit log (AuditLogPolicy)
+- Structured audit log (JSON lines + binary protobuf)
 - Rotating file-based traffic log
 - Rate limiting per client
 - Value range enforcement
@@ -17,9 +17,9 @@ from logging.handlers import RotatingFileHandler
 import pacsys.aio as aio
 from pacsys import KerberosAuth
 from pacsys.supervised import (
+    AuditLog,
     Policy,
     PolicyDecision,
-    AuditLogPolicy,
     RateLimitPolicy,
     RequestContext,
     SupervisedServer,
@@ -95,22 +95,35 @@ def main():
     # Async DPM/HTTP backend with Kerberos auth for writes
     backend = aio.dpm(auth=KerberosAuth(), role="testing")
 
+    # Audit log: JSON lines + binary protobuf, log both requests and responses
+    audit = AuditLog(
+        "supervised_audit.jsonl",
+        proto_path="supervised_audit.binpb",
+        log_responses=True,
+        flush_interval=50,
+    )
+
     policies = [
-        # 1. Record all protobuf requests to binary audit log
-        AuditLogPolicy("supervised_audit.binlog", flush_interval=50),
-        # 2. Reads allowed for everything; writes only for listed devices
+        # 1. Reads allowed for everything; writes only for listed devices
         WriteDeviceAllowlistPolicy(WRITABLE_DEVICES),
-        # 3. Rate limit: 200 requests/min per client
+        # 2. Rate limit: 200 requests/min per client
         RateLimitPolicy(max_requests=200, window_seconds=60),
-        # 4. Value range enforcement for writable devices
+        # 3. Value range enforcement for writable devices
         ValueRangePolicy(limits={"Z:ACLTST": (0.0, 100.0)}),
     ]
 
-    srv = SupervisedServer(backend, port=args.port, host=args.host, policies=policies, token=args.token)
+    srv = SupervisedServer(
+        backend,
+        port=args.port,
+        host=args.host,
+        policies=policies,
+        token=args.token,
+        audit_log=audit,
+    )
     print(f"Starting supervised proxy on {args.host}:{srv._port}...")
     print(f"Writable devices: {', '.join(WRITABLE_DEVICES)}")
     print("Reads allowed for all devices")
-    print("Audit log: supervised_audit.binlog")
+    print("Audit log: supervised_audit.jsonl + supervised_audit.binpb")
     print("Ctrl+C to stop")
     srv.run()  # blocks until SIGINT/SIGTERM
 
