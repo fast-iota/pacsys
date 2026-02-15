@@ -19,6 +19,7 @@ Protocol Flow:
 """
 
 import logging
+import os
 import socket
 import struct
 from typing import Optional, Union
@@ -30,6 +31,7 @@ from pacsys.dpm_protocol import (
 )
 
 logger = logging.getLogger(__name__)
+_TRACE_DPM = os.environ.get("PACSYS_DPM_TRACE", "").strip().lower() in {"1", "true", "yes", "on"}
 
 # Default DPM proxy settings
 DEFAULT_HOST = "acsys-proxy.fnal.gov"
@@ -41,6 +43,79 @@ DPM_HANDSHAKE = b"GET /dpm HTTP/1.1\r\nContent-Type: application/pc\r\n\r\n"
 
 # Maximum message size to accept (1MB)
 MAX_MESSAGE_SIZE = 1024 * 1024
+
+
+def _safe_len(value: object) -> Optional[int]:
+    try:
+        return len(value)  # type: ignore[arg-type]
+    except Exception:
+        return None
+
+
+def _parse_status(code: int) -> tuple[int, int]:
+    facility = code & 0xFF
+    error = (code >> 8) & 0xFF
+    if error > 127:
+        error -= 256
+    return facility, error
+
+
+def _summarize_setting_statuses(value: object) -> Optional[str]:
+    if not isinstance(value, list):
+        return None
+    if not value:
+        return "statuses=0[]"
+
+    parts: list[str] = []
+    limit = 8
+    for i, item in enumerate(value):
+        if i >= limit:
+            break
+        if not hasattr(item, "ref_id") or not hasattr(item, "status"):
+            return None
+        code = int(getattr(item, "status"))
+        facility, error = _parse_status(code)
+        parts.append(f"{int(getattr(item, 'ref_id'))}:{code}({facility}/{error})")
+
+    suffix = ""
+    if len(value) > limit:
+        suffix = f", ... +{len(value) - limit}"
+    return f"statuses={len(value)}[{', '.join(parts)}{suffix}]"
+
+
+def _summarize_message(msg: object) -> str:
+    """Build a concise protocol summary for trace logging."""
+    name = type(msg).__name__
+    fields: list[str] = []
+    for attr in ("list_id", "ref_id", "status", "drf_request", "user_name"):
+        if hasattr(msg, attr):
+            val = getattr(msg, attr)
+            if attr == "status":
+                status_summary = _summarize_setting_statuses(val)
+                if status_summary is not None:
+                    fields.append(status_summary)
+                    continue
+            if attr == "drf_request" and isinstance(val, str) and len(val) > 80:
+                val = f"{val[:77]}..."
+            fields.append(f"{attr}={val!r}")
+
+    # ApplySettings payload counts
+    if hasattr(msg, "raw_array"):
+        n = _safe_len(getattr(msg, "raw_array"))
+        if n is not None:
+            fields.append(f"raw={n}")
+    if hasattr(msg, "scaled_array"):
+        n = _safe_len(getattr(msg, "scaled_array"))
+        if n is not None:
+            fields.append(f"scaled={n}")
+    if hasattr(msg, "text_array"):
+        n = _safe_len(getattr(msg, "text_array"))
+        if n is not None:
+            fields.append(f"text={n}")
+
+    if fields:
+        return f"{name}({', '.join(fields)})"
+    return name
 
 
 class DPMConnectionError(Exception):
@@ -256,7 +331,10 @@ class DPMConnection:
         length_prefix = struct.pack(">I", len(data))
         try:
             self._socket.sendall(length_prefix + data)
-            logger.debug(f"Sent message: {len(data)} bytes")
+            if _TRACE_DPM:
+                logger.debug(f"DPM TX: {_summarize_message(msg)} ({len(data)} bytes)")
+            else:
+                logger.debug(f"Sent message: {len(data)} bytes")
         except socket.error as e:
             self._connected = False
             raise DPMConnectionError(f"Send failed: {e}")
@@ -292,7 +370,12 @@ class DPMConnection:
 
         try:
             self._socket.sendall(buf)
-            logger.debug(f"Sent batch: {len(messages)} messages, {len(buf)} bytes")
+            if _TRACE_DPM:
+                logger.debug(f"DPM TX BATCH: {len(messages)} messages, {len(buf)} bytes")
+                for i, msg in enumerate(messages):
+                    logger.debug(f"DPM TX[{i}]: {_summarize_message(msg)}")
+            else:
+                logger.debug(f"Sent batch: {len(messages)} messages, {len(buf)} bytes")
         except socket.error as e:
             self._connected = False
             raise DPMConnectionError(f"Send failed: {e}")
@@ -333,7 +416,10 @@ class DPMConnection:
 
             # Unmarshal
             reply = self._unmarshal_reply(data)
-            logger.debug(f"Received message: {type(reply).__name__}")
+            if _TRACE_DPM:
+                logger.debug(f"DPM RX: {_summarize_message(reply)}")
+            else:
+                logger.debug(f"Received message: {type(reply).__name__}")
             return reply
 
         except socket.timeout:

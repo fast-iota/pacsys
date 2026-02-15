@@ -742,3 +742,196 @@ class TestVerifyReadbackError:
         dev = Device("Z:ACLTST", backend=mock_backend)
         result = dev.on(verify=Verify(initial_delay=0, retry_delay=0, max_attempts=1))
         assert result.verified is False
+
+
+# ─── Subscribe tests ─────────────────────────────────────────────────
+
+
+class TestDeviceSubscribe:
+    """Tests for Device.subscribe() streaming method."""
+
+    def test_subscribe_with_explicit_event(self, fake):
+        """subscribe(event=...) builds correct DRF and delegates to backend."""
+        dev = Device("M:OUTTMP", backend=fake)
+        handle = dev.subscribe(event="p,1000")
+        assert not handle.stopped
+        handle.stop()
+
+    def test_subscribe_drf_has_event(self, fake):
+        """subscribe() passes the event string (not 'I') in the DRF."""
+        dev = Device("M:OUTTMP", backend=fake)
+        handle = dev.subscribe(event="p,1000")
+        # FakeSubscriptionHandle stores the DRFs it was created with
+        assert len(handle._drfs) == 1
+        drf = next(iter(handle._drfs))
+        assert "@p,1000" in drf
+        assert ".READING" in drf
+        handle.stop()
+
+    def test_subscribe_with_device_event(self, fake):
+        """subscribe() uses device's event when no event kwarg given."""
+        dev = Device("M:OUTTMP@p,1000", backend=fake)
+        handle = dev.subscribe()
+        drf = next(iter(handle._drfs))
+        assert "@p,1000" in drf
+        handle.stop()
+
+    def test_subscribe_with_event_from_with_event(self, fake):
+        """subscribe() uses event from with_event()."""
+        dev = Device("M:OUTTMP", backend=fake).with_event("p,500").with_backend(fake)
+        handle = dev.subscribe()
+        drf = next(iter(handle._drfs))
+        assert "@p,500" in drf
+        handle.stop()
+
+    def test_subscribe_no_event_raises(self, fake):
+        """subscribe() raises ValueError when no event available."""
+        dev = Device("M:OUTTMP", backend=fake)
+        with pytest.raises(ValueError, match="subscribe requires an event"):
+            dev.subscribe()
+
+    def test_subscribe_field_without_prop_raises(self, fake):
+        """subscribe(field=...) without prop raises ValueError."""
+        dev = Device("M:OUTTMP", backend=fake)
+        with pytest.raises(ValueError, match="field requires prop"):
+            dev.subscribe(field="raw", event="p,1000")
+
+    def test_subscribe_with_prop(self, fake):
+        """subscribe(prop='setting') builds DRF with .SETTING."""
+        dev = Device("M:OUTTMP", backend=fake)
+        handle = dev.subscribe(prop="setting", event="p,1000")
+        drf = next(iter(handle._drfs))
+        assert ".SETTING" in drf
+        assert "@p,1000" in drf
+        handle.stop()
+
+    def test_subscribe_with_prop_and_field(self, fake):
+        """subscribe(prop='status', field='on') builds correct DRF."""
+        dev = Device("M:OUTTMP", backend=fake)
+        handle = dev.subscribe(prop="status", field="on", event="p,1000")
+        drf = next(iter(handle._drfs))
+        assert ".STATUS" in drf
+        assert ".ON" in drf
+        assert "@p,1000" in drf
+        handle.stop()
+
+    def test_subscribe_event_kwarg_overrides_device_event(self, fake):
+        """Explicit event= overrides the device's existing event."""
+        dev = Device("M:OUTTMP@p,1000", backend=fake)
+        handle = dev.subscribe(event="E,0F")
+        drf = next(iter(handle._drfs))
+        assert "@E,0F" in drf
+        assert "p,1000" not in drf
+        handle.stop()
+
+    def test_subscribe_preserves_range(self, fake):
+        """subscribe() preserves array range in DRF."""
+        dev = Device("B:HS23T[0:10]", backend=fake)
+        handle = dev.subscribe(event="p,1000")
+        drf = next(iter(handle._drfs))
+        assert "[0:10]" in drf
+        handle.stop()
+
+    def test_subscribe_preserves_extra(self, fake):
+        """subscribe() preserves <-FTP extra modifier."""
+        dev = Device("M:OUTTMP<-FTP", backend=fake)
+        handle = dev.subscribe(event="p,1000")
+        drf = next(iter(handle._drfs))
+        assert drf.endswith("<-FTP")
+        handle.stop()
+
+    def test_subscribe_delivers_readings(self, fake):
+        """subscribe() handle receives emitted readings."""
+        dev = Device("M:OUTTMP", backend=fake)
+        handle = dev.subscribe(event="p,1000")
+        # The DRF used for subscription
+        sub_drf = next(iter(handle._drfs))
+        fake.emit_reading(sub_drf, 72.5)
+        readings = list(handle.readings(timeout=1.0))
+        assert len(readings) == 1
+        assert readings[0][0].value == 72.5
+        handle.stop()
+
+    def test_subscribe_context_manager(self, fake):
+        """subscribe() handle works as context manager."""
+        dev = Device("M:OUTTMP", backend=fake)
+        with dev.subscribe(event="p,1000") as handle:
+            sub_drf = next(iter(handle._drfs))
+            fake.emit_reading(sub_drf, 42.0)
+            for reading, h in handle.readings(timeout=1.0):
+                assert reading.value == 42.0
+                break
+        assert handle.stopped
+
+    def test_subscribe_with_callback(self, fake):
+        """subscribe() with callback receives readings via callback."""
+        received = []
+        dev = Device("M:OUTTMP", backend=fake)
+        handle = dev.subscribe(event="p,1000", callback=lambda r, h: received.append(r))
+        sub_drf = next(iter(handle._drfs))
+        fake.emit_reading(sub_drf, 99.0)
+        assert len(received) == 1
+        assert received[0].value == 99.0
+        handle.stop()
+
+    def test_subscribe_invalid_event_raises(self, fake):
+        """subscribe(event=...) with invalid event string raises ValueError."""
+        dev = Device("M:OUTTMP", backend=fake)
+        with pytest.raises(ValueError):
+            dev.subscribe(event="Z")
+
+    def test_subscribe_never_event_kwarg_raises(self, fake):
+        """subscribe(event='N') raises ValueError — @N is write-only."""
+        dev = Device("M:OUTTMP", backend=fake)
+        with pytest.raises(ValueError, match="cannot use @N"):
+            dev.subscribe(event="N")
+
+    def test_subscribe_never_event_on_device_raises(self, fake):
+        """subscribe() on a device with @N raises ValueError."""
+        dev = Device("M:OUTTMP@N", backend=fake)
+        with pytest.raises(ValueError, match="cannot use @N"):
+            dev.subscribe()
+
+    def test_subscribe_validates_event_string(self, fake):
+        """subscribe() validates the event string via parse_event()."""
+        dev = Device("M:OUTTMP", backend=fake)
+        # Valid event should work
+        handle = dev.subscribe(event="E,0F")
+        handle.stop()
+        # Malformed event should fail at parse time
+        with pytest.raises(ValueError):
+            dev.subscribe(event="@p,1000")  # leading @ is invalid
+
+    def test_subscribe_non_callable_callback_raises(self, fake):
+        """subscribe('p,1000') raises TypeError — catches positional misuse."""
+        dev = Device("M:OUTTMP", backend=fake)
+        with pytest.raises(TypeError, match="callback must be callable"):
+            dev.subscribe("p,1000")
+
+    def test_subscribe_non_callable_on_error_raises(self, fake):
+        """subscribe(on_error=...) with non-callable raises TypeError."""
+        dev = Device("M:OUTTMP", backend=fake)
+        with pytest.raises(TypeError, match="on_error must be callable"):
+            dev.subscribe(on_error="not_a_function", event="p,1000")
+
+    def test_subscribe_callback_wrong_arity_raises(self, fake):
+        """subscribe(lambda r: ...) raises — callback needs 2 args."""
+        dev = Device("M:OUTTMP", backend=fake)
+        with pytest.raises(TypeError, match="must accept 2 arguments"):
+            dev.subscribe(lambda r: None, event="p,1000")
+
+    def test_subscribe_on_error_wrong_arity_raises(self, fake):
+        """on_error with 1 arg raises TypeError."""
+        dev = Device("M:OUTTMP", backend=fake)
+        with pytest.raises(TypeError, match="must accept 2 arguments"):
+            dev.subscribe(on_error=lambda e: None, event="p,1000")
+
+    def test_subscribe_callback_with_extra_args_ok(self, fake):
+        """Callback with *args or extra defaulted params is fine."""
+        dev = Device("M:OUTTMP", backend=fake)
+        # *args — uninspectable arity, should pass
+        handle = dev.subscribe(lambda *args: None, event="p,1000")
+        handle.stop()
+        # 3 params with default — has >= 2 positional, should pass
+        handle = dev.subscribe(lambda r, h, extra=None: None, event="p,1000")
+        handle.stop()

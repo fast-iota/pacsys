@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import inspect
+from typing import Any
+
 from pacsys.drf3 import DataRequest, parse_event
 from pacsys.drf3.field import (
     DRF_FIELD,
@@ -28,10 +31,45 @@ CONTROL_STATUS_MAP: dict[BasicControl, tuple[str, bool]] = {
 }
 
 
+def _min_positional_params(fn: Any) -> int | None:
+    """Count minimum positional args *fn* accepts, or None if uninspectable."""
+    try:
+        sig = inspect.signature(fn)
+    except (ValueError, TypeError):
+        return None
+    count = 0
+    for p in sig.parameters.values():
+        if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD):
+            return None  # *args/**kwargs — can't tell
+        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD):
+            count += 1
+    return count
+
+
+def _validate_callback(callback: object, on_error: object) -> None:
+    """Validate callback/on_error: must be callable with correct arity."""
+    if callback is not None:
+        if not callable(callback):
+            raise TypeError(
+                f"callback must be callable, got {type(callback).__name__} "
+                f"— did you mean subscribe(event={callback!r})?"
+            )
+        n = _min_positional_params(callback)
+        if n is not None and n < 2:
+            raise TypeError(f"callback must accept 2 arguments (reading, handle), but {callback!r} accepts {n}")
+    if on_error is not None:
+        if not callable(on_error):
+            raise TypeError(f"on_error must be callable, got {type(on_error).__name__}")
+        n = _min_positional_params(on_error)
+        if n is not None and n < 2:
+            raise TypeError(f"on_error must accept 2 arguments (exception, handle), but {on_error!r} accepts {n}")
+
+
 class _DeviceBase:
     """DRF building, field resolution, fluent modification. No I/O."""
 
     __slots__ = ("_request",)
+    _request: DataRequest
 
     _BOOL_STATUS_FIELDS = frozenset({"ON", "READY", "REMOTE", "POSITIVE", "RAMP"})
 

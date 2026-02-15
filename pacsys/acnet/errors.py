@@ -285,15 +285,56 @@ def ftp_status_message(composite_status: int) -> str:
     return f"unknown FTP status (error={error_num})"
 
 
-# DPM facility errors
-DPM_PEND = make_error(17, 1)  # Request pending
+# DPM facility errors (Data Pool Manager, facility 17)
+# Positive status codes (warnings)
+DPM_LARGE_LIST = make_error(17, 3)  # Suspiciously large device list
 DPM_STALE = make_error(17, 2)  # Stale data warning
+DPM_PEND = make_error(17, 1)  # Request pending
+# Negative error codes
+DPM_RESTART_TOO_FAST = make_error(17, -1)  # Restarting acquisition too fast
+DPM_INVFCN = make_error(17, -2)  # Invalid function code
+DPM_INVRINX = make_error(17, -3)  # Invalid IRINX
+DPM_IVRXNM = make_error(17, -4)  # IRINX belongs to another task
+DPM_NOTPROC = make_error(17, -5)  # IRINX not processed
+DPM_MARKDELET = make_error(17, -6)  # Entry marked for deletion
+DPM_MXLBIG = make_error(17, -7)  # DPGET maxlen too big
+DPM_OFFLEN = make_error(17, -8)  # Error in offset or length
+DPM_OUTOMEM = make_error(17, -9)  # Out of memory
+DPM_TMOSET = make_error(17, -10)  # Setting reply timeout from front end
+DPM_LENSML = make_error(17, -11)  # Requested length too small
+DPM_DPMSER = make_error(17, -12)  # System error (DBM or SMLDPM down)
+DPM_ILLFTD = make_error(17, -13)  # Illegal frequency (faster than 15 Hz)
+DPM_SETBIG = make_error(17, -14)  # Setting longer than one packet
+DPM_NOSET = make_error(17, -15)  # Setting not allowed from this console
+DPM_SETLOCK = make_error(17, -16)  # Console is locked for settings
+DPM_PRIV = make_error(17, -17)  # Insufficient privileges for setting
+DPM_DBPRIV = make_error(17, -18)  # Console class not allowed to set device
+DPM_REDIRECT = make_error(17, -19)  # Redirect not in 'Redirect Ok' state
+DPM_WHACKEDSETS = make_error(17, -20)  # Settings disabled (safety interlock)
+DPM_NODEFAULT = make_error(17, -21)  # No default value for device
+DPM_DUPLICATES = make_error(17, -22)  # Duplicate requests (resource leak)
+DPM_NO_TCLK = make_error(17, -23)  # Front end not receiving TCLK events
 DPM_BAD_REQUEST = make_error(17, -24)  # Malformed request
+DPM_LOOKUP_FAILED = make_error(17, -25)  # Device lookup failed
 DPM_NO_SUCH_DEVICE = make_error(17, -26)  # Device not found
 DPM_NO_SUCH_PROP = make_error(17, -27)  # Property not found
-DPM_BAD_RANGE = make_error(17, -28)  # Invalid range
+DPM_BAD_RANGE = make_error(17, -28)  # Invalid array range
+DPM_OUT_OF_BOUNDS = make_error(17, -29)  # Array range out of bounds
+DPM_BAD_FRAMING = make_error(17, -30)  # Range not multiple of atomic size
 DPM_NO_SCALE = make_error(17, -31)  # Scaling not available
-DPM_BAD_EVENT = make_error(17, -33)  # Invalid event
+DPM_NO_SUCH_FIELD = make_error(17, -32)  # Invalid DRF field
+DPM_BAD_EVENT = make_error(17, -33)  # Invalid event format
+DPM_BAD_DEF_EVENT = make_error(17, -34)  # No valid default event
+DPM_BAD_LENGTH = make_error(17, -35)  # Bad data length for device
+DPM_SCALING_FAILED = make_error(17, -36)  # Scaling failed
+DPM_NO_SUCH_LIST = make_error(17, -37)  # List ID not found
+DPM_SERVICE_NOT_FOUND = make_error(17, -38)  # DPM service not found
+DPM_CALLBACK_NOT_FOUND = make_error(17, -39)  # Callback not found
+DPM_DOC_DEVICE = make_error(17, -40)  # Documentation-only device
+DPM_GETS32_DISABLED = make_error(17, -41)  # 32-bit gets disabled
+DPM_INVALID_DATASOURCE = make_error(17, -42)  # Invalid datasource
+DPM_BAD_DATASOURCE_FORMAT = make_error(17, -43)  # Bad datasource format
+DPM_REPLY_OVERFLOW = make_error(17, -44)  # Reply too large
 DPM_INTERNAL_ERROR = make_error(17, -45)  # Internal error
 
 # DMQ facility errors (Data Multiplexer Queue, facility 72)
@@ -335,6 +376,86 @@ def normalize_error_code(code: int) -> int:
 # Built lazily on first use from the module-level constants.
 _STATUS_NAMES: dict[int, str] | None = None
 
+# Human-readable descriptions for common error codes (composite code -> description).
+_STATUS_DESCRIPTIONS: dict[int, str] = {
+    # ACNET
+    ACNET_RETRY: "retryable I/O error",
+    ACNET_NOLCLMEM: "no local memory",
+    ACNET_REQTMO: "request timeout",
+    ACNET_QUEFULL: "destination queue full",
+    ACNET_BUSY: "destination task busy",
+    ACNET_NOT_CONNECTED: "not connected to network",
+    ACNET_INVARG: "invalid argument",
+    ACNET_NO_SUCH: "no such request or reply",
+    ACNET_REQREJ: "request rejected",
+    ACNET_CANCELLED: "request cancelled",
+    ACNET_NO_NODE: "no such logical node",
+    ACNET_NO_TASK: "no such destination task",
+    ACNET_DISCONNECTED: "replier disconnected",
+    ACNET_NODE_DOWN: "node offline",
+    ACNET_UTIME: "user timeout",
+    # DIO
+    DIO_NOATT: "attribute doesn't exist for device",
+    DIO_NOSCALE: "no scaling information",
+    DIO_BADARG: "invalid argument",
+    DIO_NO_SUCH: "object does not exist",
+    DIO_UNAVAIL: "service unavailable",
+    DIO_INVDEV: "invalid device",
+    DIO_SCALEFAIL: "scaling failed",
+    DIO_SETDIS: "setting inhibited",
+    DIO_NOPRIV: "no privilege for action",
+    DIO_READONLY: "read-only access",
+    DIO_TIMEOUT: "request timed out",
+    DIO_RANGE: "value out of range",
+    DIO_NOT_SUPPORTED: "operation not supported",
+    DIO_OUT_OF_BOUNDS: "array index out of bounds",
+    DIO_CONTROLLED_SET: "attempt to set controlled property",
+    DIO_NO_DATA: "no data for this request",
+    # DBM
+    DBM_NOPROP: "property not found",
+    # DPM
+    DPM_LARGE_LIST: "suspiciously large device list (possible resource leak)",
+    DPM_STALE: "data returned more than one clock cycle late",
+    DPM_PEND: "request pending, no data yet",
+    DPM_RESTART_TOO_FAST: "restarting data acquisition too fast",
+    DPM_OUTOMEM: "DPM out of memory",
+    DPM_TMOSET: "setting reply timeout from front end",
+    DPM_DPMSER: "DPM system error (DBM or SMLDPM down)",
+    DPM_NOSET: "setting not allowed from this console",
+    DPM_SETLOCK: "console is locked for settings",
+    DPM_PRIV: "insufficient privileges for setting",
+    DPM_DBPRIV: "console class not allowed to set this device",
+    DPM_REDIRECT: "field not in 'Redirect Ok' state",
+    DPM_WHACKEDSETS: "settings disabled (safety interlock)",
+    DPM_NO_TCLK: "front end not receiving TCLK events",
+    DPM_BAD_REQUEST: "malformed request",
+    DPM_LOOKUP_FAILED: "device lookup service not found",
+    DPM_NO_SUCH_DEVICE: "device not found",
+    DPM_NO_SUCH_PROP: "property not found for device",
+    DPM_BAD_RANGE: "invalid array range",
+    DPM_OUT_OF_BOUNDS: "array range out of bounds",
+    DPM_NO_SCALE: "scaling not available for device",
+    DPM_NO_SUCH_FIELD: "invalid DRF field specifier",
+    DPM_BAD_EVENT: "invalid event format",
+    DPM_BAD_DEF_EVENT: "device has no valid default event",
+    DPM_BAD_LENGTH: "bad data length for device",
+    DPM_SCALING_FAILED: "scaling failed",
+    DPM_NO_SUCH_LIST: "list ID not found",
+    DPM_SERVICE_NOT_FOUND: "DPM service not found",
+    DPM_DOC_DEVICE: "documentation-only device (no live data)",
+    DPM_INVALID_DATASOURCE: "invalid datasource",
+    DPM_REPLY_OVERFLOW: "reply too large, split into smaller requests",
+    DPM_INTERNAL_ERROR: "internal DPM error",
+    # DMQ
+    DMQ_INVALID_DATA_TYPE: "invalid data type in setting",
+    DMQ_SETTING_DISABLED: "settings disabled",
+    DMQ_SYSTEM_ERROR: "unchecked exception on server",
+    DMQ_CHANNEL_NOT_READY: "communication channel not ready",
+    DMQ_LOGIN_REQUIRED: "login required",
+    DMQ_INVALID_REQUEST: "invalid data request",
+    DMQ_SECURITY_VIOLATION: "security violation (invalid credentials)",
+}
+
 
 def _build_status_names() -> dict[int, str]:
     """Build composite-code -> name map from module constants."""
@@ -351,6 +472,7 @@ def status_message(facility: int, error: int) -> str | None:
     """Build human-readable status message from decomposed error codes.
 
     Returns None for success (error == 0).
+    Format: "DPM_PRIV: insufficient privileges for setting (facility=17, error=-17)"
     """
     if error == 0:
         return None
@@ -361,9 +483,12 @@ def status_message(facility: int, error: int) -> str | None:
 
     composite = make_error(facility, error)
     name = _STATUS_NAMES.get(composite)
+    desc = _STATUS_DESCRIPTIONS.get(composite)
     if name:
+        if desc:
+            return f"{name}: {desc} (facility={facility}, error={error})"
         kind = "warning" if error > 0 else "error"
-        return f"{name} ({kind}, facility={facility}, error={error})"
+        return f"{name}: {kind} (facility={facility}, error={error})"
     if error < 0:
         return f"Device error (facility={facility}, error={error})"
     return f"Warning (facility={facility}, error={error})"

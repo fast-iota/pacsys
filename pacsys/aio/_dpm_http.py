@@ -292,9 +292,9 @@ class AsyncDPMHTTPBackend(AsyncBackend):
     async def stop_streaming(self) -> None:
         for h in list(self._handles):
             await h.stop()
-            if hasattr(h, "_core"):
+            if hasattr(h, "_core") and hasattr(h._core, "close"):
                 try:
-                    await h._core.close()
+                    await h._core.close()  # type: ignore[union-attr]
                 except Exception:
                     pass
         self._handles.clear()

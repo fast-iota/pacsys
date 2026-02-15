@@ -11,14 +11,14 @@
 
 ## About
 
-ACNET (Accelerator Control NETwork) is the control system used at Fermilab's particle accelerators. pacsys provides a simple Python interface to read, write, and stream data from ACNET devices without needing to understand the underlying protocols.
+ACNET (Accelerator Control NETwork) is the control system used at Fermilab's particle accelerators. PACSysprovides a simple Python interface to read, write, and stream ACNET data without needing to understand the underlying protocols.
 
 ## Features
 
-- **Read/Write** device values with synchronous or async APIs
-- **Stream** real-time updates EPICS-style
-- **Multiple backends** to connect to DPM (Data Pool Manager) and other services
-- **Full DRF3 parser** for data request strings
+- **Read/Write/Stream** any ACNET data types with synchronous or async APIs
+- **Multiple backends** to connect to DPM, DMQ, and other services
+- **Full DRF3 parser** for data requests with automatic conversion
+- **Utilities** for device database, SSH tunneling, CLI, and more
 
 ## Device API (recommended)
 
@@ -78,8 +78,7 @@ with pacsys.subscribe(["M:OUTTMP@p,1000"]) as stream:
 # Stream with callback dispatch mode
 # WORKER (default): callbacks on dedicated worker thread, protects reactor
 # DIRECT: callbacks inline on reactor thread (lower latency)
-from pacsys import DispatchMode
-with pacsys.dpm(dispatch_mode=DispatchMode.DIRECT) as backend:
+with pacsys.dpm(dispatch_mode=pacsys.DispatchMode.DIRECT) as backend:
     handle = backend.subscribe(
         ["M:OUTTMP@p,1000"],
         callback=lambda r, h: print(r.value),
@@ -88,8 +87,7 @@ with pacsys.dpm(dispatch_mode=DispatchMode.DIRECT) as backend:
     handle.stop()
 
 # Write (requires authentication)
-from pacsys import KerberosAuth
-with pacsys.dpm(auth=KerberosAuth(), role="testing") as backend:
+with pacsys.dpm(auth=pacsys.KerberosAuth(), role="testing") as backend:
     backend.write("Z:ACLTST", 72.5)
 ```
 
@@ -99,14 +97,13 @@ Native async support for asyncio applications. Same API surface, no background t
 
 ```python
 import pacsys.aio as aio
-from pacsys import KerberosAuth
 
 # Module-level API (mirrors pacsys.read, pacsys.get, etc.)
 value = await aio.read("M:OUTTMP")
 reading = await aio.get("M:OUTTMP")
 
 # Explicit async backend
-async with aio.dpm(auth=KerberosAuth()) as backend:
+async with aio.dpm(auth=pacsys.KerberosAuth()) as backend:
     await backend.write("Z:ACLTST", 72.5)
 
 # Async streaming
@@ -172,6 +169,7 @@ pip install pacsys
 
 - Python 3.10+
 - For writes: Kerberos credentials with appropriate role assigned
+- For some utilities: Must run on the controls network or have SSH access to it
 
 ## Documentation
 

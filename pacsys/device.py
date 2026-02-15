@@ -12,10 +12,11 @@ from __future__ import annotations
 import time
 from typing import Optional, TYPE_CHECKING
 
-from pacsys._device_base import _DeviceBase, CONTROL_STATUS_MAP
-from pacsys.drf3 import parse_request
+from pacsys._device_base import _DeviceBase, CONTROL_STATUS_MAP, _validate_callback
+from pacsys.drf3 import parse_request, parse_event
+from pacsys.drf3.event import NeverEvent
 from pacsys.drf3.property import DRF_PROPERTY
-from pacsys.types import Value, Reading, WriteResult, BasicControl
+from pacsys.types import Value, Reading, WriteResult, BasicControl, ReadingCallback, ErrorCallback, SubscriptionHandle
 
 if TYPE_CHECKING:
     import numpy as np
@@ -342,6 +343,58 @@ class Device(_DeviceBase):
         """Write DIGITAL alarm property."""
         write_drf = self._build_drf(DRF_PROPERTY.DIGITAL, None, "N")
         return self._get_backend().write(write_drf, settings, timeout=timeout)
+
+    # ─── Streaming Methods ────────────────────────────────────────────────
+
+    def subscribe(
+        self,
+        callback: ReadingCallback | None = None,
+        on_error: ErrorCallback | None = None,
+        *,
+        prop: str | None = None,
+        field: str | None = None,
+        event: str | None = None,
+    ) -> SubscriptionHandle:
+        """Subscribe to device for streaming data.
+
+        Args:
+            prop: Property to subscribe to (default: READING)
+            field: Sub-field (requires prop)
+            event: Event string (e.g. "p,1000"). Uses device's event if None.
+            callback: Optional callback for push-mode
+            on_error: Optional error handler
+
+        Returns:
+            SubscriptionHandle (usable as context manager)
+
+        Raises:
+            ValueError: If no event available, or field given without prop
+        """
+        _validate_callback(callback, on_error)
+
+        if prop is None:
+            if field is not None:
+                raise ValueError("field requires prop to be specified")
+            p = DRF_PROPERTY.READING
+        else:
+            p = DRF_PROPERTY[prop.upper()]
+        resolved_field = self._resolve_field(field, p)
+
+        # Resolve event
+        if event is not None:
+            parsed = parse_event(event)
+            if isinstance(parsed, NeverEvent):
+                raise ValueError("subscribe cannot use @N (never) event")
+            event_str = parsed.raw_string
+        elif self.has_event:
+            if isinstance(self._request.event, NeverEvent):
+                raise ValueError("subscribe cannot use @N (never) event")
+            event_str = self._request.event.raw_string
+        else:
+            raise ValueError("subscribe requires an event — use event= or dev.with_event()")
+
+        drf = self._build_drf(p, resolved_field, event_str)
+        return self._get_backend().subscribe([drf], callback, on_error)
 
     # ─── Verify Internals ─────────────────────────────────────────────────
 

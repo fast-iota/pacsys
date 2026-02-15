@@ -894,6 +894,7 @@ class DMQBackend(Backend):
 
         try:
             name = gssapi.Name(DMQ_SERVICE_PRINCIPAL, gssapi.NameType.kerberos_principal)
+            assert self._auth is not None
             creds = self._auth._get_credentials()
             ctx = gssapi.SecurityContext(
                 name=name,

@@ -10,6 +10,7 @@ import struct
 import pytest
 from unittest import mock
 
+import pacsys.dpm_connection as dpm_connection
 from pacsys.dpm_connection import (
     DPMConnection,
     DPMConnectionError,
@@ -18,8 +19,10 @@ from pacsys.dpm_connection import (
 )
 from pacsys.dpm_protocol import (
     AddToList_request,
+    ApplySettings_reply,
     OpenList_reply,
     Scalar_reply,
+    SettingStatus_struct,
 )
 
 
@@ -536,3 +539,103 @@ class TestSendMessagesBatch:
         conn = DPMConnection()
         with pytest.raises(DPMConnectionError, match="Not connected"):
             conn.send_messages_batch([b"test"])
+
+
+class TestTraceLogging:
+    """Tests for optional wire-trace logging."""
+
+    def _make_connected_conn(self):
+        open_list_reply = OpenList_reply()
+        open_list_reply.list_id = 1
+        reply_data = bytes(open_list_reply.marshal())
+        reply_frame = struct.pack(">I", len(reply_data)) + reply_data
+
+        mock_socket = mock.Mock(spec=socket.socket)
+        mock_socket.recv.return_value = reply_frame
+
+        with mock.patch("socket.socket", return_value=mock_socket):
+            conn = DPMConnection()
+            conn.connect()
+        return conn, mock_socket
+
+    def test_trace_batch_logs_each_message(self, monkeypatch, caplog):
+        monkeypatch.setattr(dpm_connection, "_TRACE_DPM", True)
+        caplog.set_level("DEBUG", logger="pacsys.dpm_connection")
+        conn, mock_socket = self._make_connected_conn()
+        mock_socket.sendall.reset_mock()
+
+        role_req = AddToList_request()
+        role_req.list_id = 1
+        role_req.ref_id = 0
+        role_req.drf_request = "#ROLE:Accel R&D"
+
+        dev_req = AddToList_request()
+        dev_req.list_id = 1
+        dev_req.ref_id = 1
+        dev_req.drf_request = "Z:ACLTST.SETTING@N"
+
+        conn.send_messages_batch([role_req, dev_req])
+
+        assert "DPM TX BATCH: 2 messages" in caplog.text
+        assert "drf_request='#ROLE:Accel R&D'" in caplog.text
+        assert "drf_request='Z:ACLTST.SETTING@N'" in caplog.text
+
+    def test_trace_recv_logs_reply_summary(self, monkeypatch, caplog):
+        monkeypatch.setattr(dpm_connection, "_TRACE_DPM", True)
+        caplog.set_level("DEBUG", logger="pacsys.dpm_connection")
+
+        open_list_reply = OpenList_reply()
+        open_list_reply.list_id = 1
+        open_list_data = bytes(open_list_reply.marshal())
+        open_list_frame = struct.pack(">I", len(open_list_data)) + open_list_data
+
+        scalar_reply = Scalar_reply()
+        scalar_reply.ref_id = 1
+        scalar_reply.timestamp = 12345
+        scalar_reply.cycle = 0
+        scalar_reply.status = 0
+        scalar_reply.data = 42.0
+        scalar_data = bytes(scalar_reply.marshal())
+        scalar_frame = struct.pack(">I", len(scalar_data)) + scalar_data
+
+        mock_socket = mock.Mock(spec=socket.socket)
+        mock_socket.recv.side_effect = [open_list_frame, scalar_frame]
+
+        with mock.patch("socket.socket", return_value=mock_socket):
+            conn = DPMConnection()
+            conn.connect()
+            conn.recv_message()
+
+        assert "DPM RX: Scalar_reply(ref_id=1, status=0)" in caplog.text
+
+    def test_trace_recv_logs_apply_settings_status_details(self, monkeypatch, caplog):
+        monkeypatch.setattr(dpm_connection, "_TRACE_DPM", True)
+        caplog.set_level("DEBUG", logger="pacsys.dpm_connection")
+
+        open_list_reply = OpenList_reply()
+        open_list_reply.list_id = 1
+        open_list_data = bytes(open_list_reply.marshal())
+        open_list_frame = struct.pack(">I", len(open_list_data)) + open_list_data
+
+        apply_reply = ApplySettings_reply()
+        ok = SettingStatus_struct()
+        ok.ref_id = 1
+        ok.status = 0
+        denied = SettingStatus_struct()
+        denied.ref_id = 2
+        denied.status = -4335  # DPM_PRIV composite: facility=17, error=-17
+        apply_reply.status = [ok, denied]
+        apply_data = bytes(apply_reply.marshal())
+        apply_frame = struct.pack(">I", len(apply_data)) + apply_data
+
+        mock_socket = mock.Mock(spec=socket.socket)
+        mock_socket.recv.side_effect = [open_list_frame, apply_frame]
+
+        with mock.patch("socket.socket", return_value=mock_socket):
+            conn = DPMConnection()
+            conn.connect()
+            conn.recv_message()
+
+        assert "DPM RX: ApplySettings_reply(statuses=2[" in caplog.text
+        assert "1:0(0/0)" in caplog.text
+        assert "2:-4335(17/-17)" in caplog.text

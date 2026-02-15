@@ -10,6 +10,8 @@ import queue
 import threading
 from typing import Any, Iterator, Callable
 
+from pacsys.drf3.event import ClockEvent, PeriodicEvent
+
 from pacsys.acnet.errors import ERR_NOPROP, ERR_OK, ERR_RETRY, FACILITY_ACNET, FACILITY_DBM
 from pacsys.backends import Backend
 from pacsys.backends._dispatch import CallbackDispatcher
@@ -144,9 +146,9 @@ def _event_offset(drf: str) -> float:
     evt = req.event
     if evt is None or evt.mode in ("U", "I", "N"):
         return 0.0
-    if evt.mode in ("P", "Q"):
+    if isinstance(evt, PeriodicEvent):
         return evt.freq / 1000.0
-    if evt.mode == "E":
+    if isinstance(evt, ClockEvent):
         return -(evt.evt + evt.delay / 1000.0) / 100.0
     if evt.mode == "S":
         # Use hash of raw_string to differentiate state events; +2.0 base

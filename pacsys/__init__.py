@@ -9,7 +9,7 @@ import logging
 import os
 import threading
 import weakref
-from typing import Optional, Union, TYPE_CHECKING
+from typing import Any, Optional, Union, TYPE_CHECKING
 
 from pacsys.auth import Auth, KerberosAuth, JWTAuth
 from pacsys.drf3 import DataRequest
@@ -140,7 +140,7 @@ def _atexit_close_backends() -> None:
 atexit.register(_atexit_close_backends)
 
 
-_UNSET = object()  # sentinel: distinguish "not passed" from "passed as None"
+_UNSET: Any = object()  # sentinel: distinguish "not passed" from "passed as None"
 
 
 def configure(

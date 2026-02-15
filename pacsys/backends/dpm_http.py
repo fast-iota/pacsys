@@ -878,6 +878,7 @@ class DPMHTTPBackend(Backend):
         # Phase 2: create GSSAPI context with server's actual service name
         service_name = gssapi.Name(gss_name, gssapi.NameType.kerberos_principal)
 
+        assert self._auth is not None
         creds = self._auth._get_credentials()
         ctx = gssapi.SecurityContext(
             name=service_name,
@@ -965,6 +966,10 @@ class DPMHTTPBackend(Backend):
             AuthenticationError: If authentication fails
             DPMConnectionError: If connection fails
         """
+        assert self._auth is not None, "Auth required for write connections"
+        current_principal = self._auth.principal
+        current_role = self._role
+
         with self._write_lock:
             # Close and remove stale connections
             fresh = []
@@ -982,6 +987,13 @@ class DPMHTTPBackend(Backend):
                     logger.debug(f"Discarding dead write connection (list_id={wc.conn.list_id})")
                     wc.close()
                     continue
+                if wc.principal != current_principal or wc.role != current_role:
+                    logger.debug(
+                        "Discarding write connection with stale auth context "
+                        f"(list_id={wc.conn.list_id}, principal={wc.principal}, role={wc.role})"
+                    )
+                    wc.close()
+                    continue
                 wc.last_used = time.monotonic()
                 self._write_in_flight += 1
                 logger.debug(f"Reusing authenticated write connection (list_id={wc.conn.list_id})")
@@ -993,11 +1005,10 @@ class DPMHTTPBackend(Backend):
             self._write_in_flight += 1
 
         # Create new connection outside the lock
-        assert self._auth is not None, "Auth required for write connections"
         conn = DPMConnection(host=self._host, port=self._port, timeout=self._timeout)
         try:
             conn.connect()
-            wc = _WriteConnection(conn, self._auth.principal, self._role)
+            wc = _WriteConnection(conn, current_principal, current_role)
             mic, message = self._authenticate_connection(conn)
             self._enable_settings(conn, mic, message)
             wc.authenticated = True
@@ -1431,7 +1442,7 @@ class DPMHTTPBackend(Backend):
                         drf=drf,
                         facility_code=facility,
                         error_code=error,
-                        message=f"Write error (facility={facility}, error={error})",
+                        message=status_message(facility, error) or f"Write error (facility={facility}, error={error})",
                     )
                 )
 

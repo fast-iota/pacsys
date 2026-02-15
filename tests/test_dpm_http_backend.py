@@ -40,6 +40,15 @@ from tests.devices import (
 )
 
 
+class _FakeKerberosAuth:
+    def __init__(self, principal: str):
+        self._principal = principal
+
+    @property
+    def principal(self) -> str:
+        return self._principal
+
+
 # =============================================================================
 # Backend Abstract Base Class Tests
 # =============================================================================
@@ -506,6 +515,42 @@ class TestWriteNotSupported:
             with pytest.raises(AuthenticationError, match="not configured for authenticated"):
                 backend.write_many([("M:OUTTMP", 72.5)])
         finally:
+            backend.close()
+
+
+class TestWriteConnectionAuthContext:
+    """Tests for write connection pooling across auth context changes."""
+
+    def test_reuse_discards_pooled_connection_if_principal_changed(self):
+        backend = DPMHTTPBackend()
+        acquired = None
+        try:
+            backend._auth = _FakeKerberosAuth("new-user@FNAL.GOV")
+
+            stale_wc = MagicMock()
+            stale_wc.is_stale.return_value = False
+            stale_wc.principal = "old-user@FNAL.GOV"
+            stale_wc.role = None
+            stale_wc.conn.connected = True
+            stale_wc.conn.list_id = 100
+            backend._write_connections = [stale_wc]
+
+            new_conn = MagicMock()
+            new_conn.connected = True
+            new_conn.list_id = 200
+
+            with mock.patch("pacsys.backends.dpm_http.DPMConnection", return_value=new_conn):
+                with mock.patch.object(backend, "_authenticate_connection", return_value=(b"mic", b"1234")):
+                    with mock.patch.object(backend, "_enable_settings"):
+                        acquired = backend._get_write_connection()
+
+            stale_wc.close.assert_called_once()
+            assert acquired.conn is new_conn
+            assert acquired.principal == "new-user@FNAL.GOV"
+            assert acquired.role is None
+        finally:
+            if acquired is not None:
+                backend._release_write_connection(acquired)
             backend.close()
 
 

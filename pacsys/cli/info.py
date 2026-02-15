@@ -3,6 +3,7 @@
 import json
 import sys
 from dataclasses import dataclass
+from typing import Any
 
 from pacsys.cli._common import (
     EXIT_DEVICE_ERROR,
@@ -29,7 +30,7 @@ class _DeviceProps:
     ext_status_bits: tuple | None = None  # ExtStatusBitDef tuples for bit names
 
 
-def _is_noprop(msg: str | None) -> bool:
+def _is_noprop(msg: str | Exception | None) -> bool:
     """True if the error indicates the property doesn't exist (expected, not a real failure)."""
     return msg is not None and "DBM_NOPROP" in str(msg)
 
@@ -48,7 +49,7 @@ def _noprop_str(err: Exception | str | None, result=None) -> str:
     return "DBM_NOPROP"
 
 
-def _section(label: str, fn) -> tuple[Exception | None, object]:
+def _section(label: str, fn) -> tuple[Exception | None, Any]:
     """Call fn(), return (exception, result). On exception, return (exc, None)."""
     try:
         result = fn()
@@ -425,6 +426,8 @@ def main() -> int:
 
     try:
         backend = make_backend(args)
+    except KeyboardInterrupt:
+        return 130
     except Exception as e:
         print(f"Connection error: {e}", file=sys.stderr)
         return EXIT_USAGE_ERROR
@@ -454,6 +457,8 @@ def main() -> int:
             if err:
                 has_error = True
             first = False
+    except KeyboardInterrupt:
+        return 130
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         return EXIT_USAGE_ERROR

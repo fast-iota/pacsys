@@ -1,43 +1,22 @@
 # PACSys - Pure-Python library for Fermilab's control system
 
-## What is PACSys?
-
-PACSys is a Python library that lets you interact with ACNET (aka ACSys) without needing to understand the underlying protocols. It provides a synchronous API with async internals to enable high-performance Python scripting.
+PACSys is a Python library that lets you interact with ACNET (aka ACSys).
 
 High-level features:
 
-- **Read/Stream** device values (regular and Fast Time Plot)
-- **Write** settings (with proper authorization)
-- **Full data type support** -- alarm, status, etc.
-- **Notebook-friendly sync API** (async internals, sync public interface)
+- **Read/Write/Stream** any ACNET data types with synchronous or async APIs
+- **Multiple backends** to connect to DPM, DMQ, and ACL
+- **Full DRF3 parser** for data requests with automatic conversion
+- **Utilities** for device database, SSH tunneling, and more
+- **Command-line tools** like in EPICS - `acget`, `acput`, `acmonitor`, `acinfo`
 
 Low-level features:
 
-- **Raw ACNET UDP/TCP** - talk to tasks like a civilized member of ACNET society (via acnetd TCP/UDP)
-- **FTPMAN implemented for snapshots** - yes, really
+- **Raw ACNET UDP/TCP** - talk like a civilized member of ACNET society
+- **FTPMAN for snapshots** - yes, really
 - **SSH utilities and ACL-over-SSH** - authenticated command runners, useful for ACL/DABBEL
+- **DevDB integration** - use database info for better interpretation of device properties
 
-```mermaid
-flowchart LR
-    subgraph Your Code
-        A[Python Script]
-    end
-    subgraph Central Services
-        B[DPM]
-        E[ACL]
-        F[DMQ]
-    end
-    subgraph Accelerator
-        C[Frontends]
-    end
-    A --> B
-    A --> E
-    A --> F
-    A -->|acnetd ACNET UDP/TCP| C
-    B --> C
-    E --> C
-    F --> C
-```
 
 ## Quick Example
 

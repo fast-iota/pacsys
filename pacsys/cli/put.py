@@ -41,6 +41,8 @@ def main() -> int:
 
     try:
         backend = make_backend(args)
+    except KeyboardInterrupt:
+        return 130
     except Exception as e:
         print(f"Connection error: {e}", file=sys.stderr)
         return EXIT_USAGE_ERROR
@@ -73,6 +75,8 @@ def main() -> int:
                 print(format_write_result(result, fmt=fmt))
                 if not result.ok:
                     has_error = True
+    except KeyboardInterrupt:
+        return 130
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         return EXIT_USAGE_ERROR
