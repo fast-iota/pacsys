@@ -7,12 +7,14 @@ import grpc
 import pytest
 
 from pacsys._proto.controls.service.DAQ.v1 import DAQ_pb2, DAQ_pb2_grpc
-from pacsys.supervised import ReadOnlyPolicy, SupervisedServer, ValueRangePolicy
+from pacsys.supervised import DeviceAccessPolicy, ReadOnlyPolicy, SupervisedServer, ValueRangePolicy
 from pacsys.supervised._conversions import reading_to_proto_reply, write_result_to_proto_status
 from pacsys.supervised._event_classify import all_oneshot, is_oneshot_event
 from pacsys.supervised._policies import Policy, PolicyDecision, RequestContext
 from pacsys.testing import AsyncFakeBackend, FakeBackend
 from pacsys.types import Reading, ValueType, WriteResult
+
+_ALLOW_ALL_WRITES = DeviceAccessPolicy(patterns=["*"], action="set", mode="allow")
 
 
 # ── Event Classification ──────────────────────────────────────────────────
@@ -97,7 +99,7 @@ def reset_policy_backend(request):
 @pytest.fixture(scope="module")
 def server(fake_backend):
     """Start a SupervisedServer on an OS-assigned port, yield it, then stop."""
-    srv = SupervisedServer(fake_backend, port=0)
+    srv = SupervisedServer(fake_backend, port=0, policies=[_ALLOW_ALL_WRITES])
     srv.start()
     yield srv
     srv.stop()
@@ -337,6 +339,130 @@ class TestPolicyEnforcement:
             assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED
 
 
+# ── Default-Deny Writes Tests ─────────────────────────────────────────────
+
+
+class TestDefaultDenyWrites:
+    """Sets are denied by default; reads are allowed by default."""
+
+    def test_read_allowed_no_policies(self):
+        fb = FakeBackend()
+        _seed_backend(fb)
+        with SupervisedServer(fb, port=0) as srv:
+            with _make_channel(srv) as ch:
+                stub = DAQ_pb2_grpc.DAQStub(ch)
+                request = DAQ_pb2.ReadingList()
+                request.drf.append("M:OUTTMP@I")
+                replies = list(stub.Read(request, timeout=5.0))
+                assert len(replies) == 1
+
+    def test_set_denied_no_policies(self):
+        fb = FakeBackend()
+        _seed_backend(fb)
+        with SupervisedServer(fb, port=0) as srv:
+            with _make_channel(srv) as ch:
+                stub = DAQ_pb2_grpc.DAQStub(ch)
+                request = DAQ_pb2.SettingList()
+                setting = DAQ_pb2.Setting()
+                setting.device = "M:OUTTMP"
+                setting.value.scalar = 80.0
+                request.setting.append(setting)
+                with pytest.raises(grpc.RpcError) as exc_info:
+                    stub.Set(request, timeout=5.0)
+                assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED
+
+    def test_set_denied_only_rate_limit_policy(self):
+        """RateLimitPolicy doesn't gate writes — sets still denied."""
+        fb = FakeBackend()
+        _seed_backend(fb)
+        from pacsys.supervised import RateLimitPolicy
+
+        with SupervisedServer(fb, port=0, policies=[RateLimitPolicy(max_requests=100)]) as srv:
+            with _make_channel(srv) as ch:
+                stub = DAQ_pb2_grpc.DAQStub(ch)
+                request = DAQ_pb2.SettingList()
+                setting = DAQ_pb2.Setting()
+                setting.device = "M:OUTTMP"
+                setting.value.scalar = 80.0
+                request.setting.append(setting)
+                with pytest.raises(grpc.RpcError) as exc_info:
+                    stub.Set(request, timeout=5.0)
+                assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED
+
+    def test_set_allowed_with_access_policy(self):
+        fb = FakeBackend()
+        _seed_backend(fb)
+        with SupervisedServer(
+            fb,
+            port=0,
+            policies=[
+                DeviceAccessPolicy(patterns=["M:*"], action="set", mode="allow"),
+            ],
+        ) as srv:
+            with _make_channel(srv) as ch:
+                stub = DAQ_pb2_grpc.DAQStub(ch)
+                request = DAQ_pb2.SettingList()
+                setting = DAQ_pb2.Setting()
+                setting.device = "M:OUTTMP"
+                setting.value.scalar = 80.0
+                request.setting.append(setting)
+                reply = stub.Set(request, timeout=5.0)
+                assert len(reply.status) == 1
+                assert reply.status[0].status_code == 0
+
+    def test_set_partial_approval_denied(self):
+        """Request with one approved and one unapproved device is denied."""
+        fb = FakeBackend()
+        _seed_backend(fb)
+        with SupervisedServer(
+            fb,
+            port=0,
+            policies=[
+                DeviceAccessPolicy(patterns=["M:*"], action="set", mode="allow"),
+            ],
+        ) as srv:
+            with _make_channel(srv) as ch:
+                stub = DAQ_pb2_grpc.DAQStub(ch)
+                request = DAQ_pb2.SettingList()
+                s1 = DAQ_pb2.Setting()
+                s1.device = "M:OUTTMP"
+                s1.value.scalar = 80.0
+                request.setting.append(s1)
+                s2 = DAQ_pb2.Setting()
+                s2.device = "G:AMANDA"
+                s2.value.scalar = 50.0
+                request.setting.append(s2)
+                with pytest.raises(grpc.RpcError) as exc_info:
+                    stub.Set(request, timeout=5.0)
+                assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED
+
+    def test_set_composable_access_policies(self):
+        """Two access policies covering different device groups compose correctly."""
+        fb = FakeBackend()
+        _seed_backend(fb)
+        with SupervisedServer(
+            fb,
+            port=0,
+            policies=[
+                DeviceAccessPolicy(patterns=["M:*"], action="set", mode="allow"),
+                DeviceAccessPolicy(patterns=["G:*"], action="set", mode="allow"),
+            ],
+        ) as srv:
+            with _make_channel(srv) as ch:
+                stub = DAQ_pb2_grpc.DAQStub(ch)
+                request = DAQ_pb2.SettingList()
+                s1 = DAQ_pb2.Setting()
+                s1.device = "M:OUTTMP"
+                s1.value.scalar = 80.0
+                request.setting.append(s1)
+                s2 = DAQ_pb2.Setting()
+                s2.device = "G:AMANDA"
+                s2.value.scalar = 50.0
+                request.setting.append(s2)
+                reply = stub.Set(request, timeout=5.0)
+                assert len(reply.status) == 2
+
+
 # ── ValueRangePolicy Integration Tests ───────────────────────────────────
 
 
@@ -358,7 +484,9 @@ def reset_range_backend(request):
 @pytest.fixture(scope="module")
 def server_with_range_policy(range_backend):
     """Server with ValueRangePolicy limiting M:* to [0, 100]."""
-    srv = SupervisedServer(range_backend, port=0, policies=[ValueRangePolicy(limits={"M:*": (0.0, 100.0)})])
+    srv = SupervisedServer(
+        range_backend, port=0, policies=[_ALLOW_ALL_WRITES, ValueRangePolicy(limits={"M:*": (0.0, 100.0)})]
+    )
     srv.start()
     yield srv
     srv.stop()
@@ -413,7 +541,7 @@ def reset_async_backend(request):
 @pytest.fixture(scope="module")
 def async_server(async_backend):
     """Start a SupervisedServer with AsyncFakeBackend on an OS-assigned port."""
-    srv = SupervisedServer(async_backend, port=0)
+    srv = SupervisedServer(async_backend, port=0, policies=[_ALLOW_ALL_WRITES])
     srv.start()
     yield srv
     srv.stop()
@@ -602,7 +730,7 @@ def token_backend():
 
 @pytest.fixture(scope="module")
 def token_server(token_backend):
-    srv = SupervisedServer(token_backend, port=0, token="test-secret")
+    srv = SupervisedServer(token_backend, port=0, token="test-secret", policies=[_ALLOW_ALL_WRITES])
     srv.start()
     yield srv
     srv.stop()
@@ -660,7 +788,7 @@ class TestTokenAuthentication:
         """Server without token= accepts any request including writes."""
         fb = FakeBackend()
         _seed_backend(fb)
-        with SupervisedServer(fb, port=0) as srv:
+        with SupervisedServer(fb, port=0, policies=[_ALLOW_ALL_WRITES]) as srv:
             with _make_channel(srv) as ch:
                 stub = DAQ_pb2_grpc.DAQStub(ch)
                 request = DAQ_pb2.SettingList()
@@ -732,7 +860,7 @@ class TestBackendExceptionMapping:
     def test_set_not_implemented(self):
         fb = _ErrorBackend(NotImplementedError("writes not supported"))
         _seed_backend(fb)
-        with SupervisedServer(fb, port=0) as srv:
+        with SupervisedServer(fb, port=0, policies=[_ALLOW_ALL_WRITES]) as srv:
             with _make_channel(srv) as ch:
                 stub = DAQ_pb2_grpc.DAQStub(ch)
                 request = DAQ_pb2.SettingList()
@@ -749,7 +877,7 @@ class TestBackendExceptionMapping:
 
         fb = _ErrorBackend(AuthenticationError("no credentials"))
         _seed_backend(fb)
-        with SupervisedServer(fb, port=0) as srv:
+        with SupervisedServer(fb, port=0, policies=[_ALLOW_ALL_WRITES]) as srv:
             with _make_channel(srv) as ch:
                 stub = DAQ_pb2_grpc.DAQStub(ch)
                 request = DAQ_pb2.SettingList()
@@ -764,7 +892,7 @@ class TestBackendExceptionMapping:
     def test_set_generic_exception(self):
         fb = _ErrorBackend(RuntimeError("backend crashed"))
         _seed_backend(fb)
-        with SupervisedServer(fb, port=0) as srv:
+        with SupervisedServer(fb, port=0, policies=[_ALLOW_ALL_WRITES]) as srv:
             with _make_channel(srv) as ch:
                 stub = DAQ_pb2_grpc.DAQStub(ch)
                 request = DAQ_pb2.SettingList()
@@ -884,13 +1012,12 @@ class _SwapPolicy(Policy):
     """Policy that reverses the DRF order to test index mapping."""
 
     def check(self, ctx: RequestContext) -> PolicyDecision:
-        new_ctx = RequestContext(
+        from dataclasses import replace
+
+        new_ctx = replace(
+            ctx,
             drfs=list(reversed(ctx.drfs)),
-            rpc_method=ctx.rpc_method,
-            peer=ctx.peer,
-            metadata=ctx.metadata,
             values=list(reversed(ctx.values)),
-            raw_request=ctx.raw_request,
         )
         return PolicyDecision(allowed=True, ctx=new_ctx)
 
@@ -922,7 +1049,7 @@ class TestPolicyReorderIndexMapping:
         fb.set_reading("G:AMANDA", 42.0)
         fb.set_write_result("M:OUTTMP", success=True)
         fb.set_write_result("G:AMANDA", success=False, error_code=-1, message="fail")
-        with SupervisedServer(fb, port=0, policies=[_SwapPolicy()]) as srv:
+        with SupervisedServer(fb, port=0, policies=[_ALLOW_ALL_WRITES, _SwapPolicy()]) as srv:
             with _make_channel(srv) as ch:
                 stub = DAQ_pb2_grpc.DAQStub(ch)
                 request = DAQ_pb2.SettingList()

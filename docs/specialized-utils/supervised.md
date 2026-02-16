@@ -1,6 +1,6 @@
 # Supervised Mode
 
-The `SupervisedServer` is a gRPC proxy that wraps any Backend, forwarding requests while enforcing access policies and logging all traffic.
+The `SupervisedServer` is a DPM/gRPC server that wraps any Backend, forwarding requests while enforcing policies and logging traffic.
 
 ## Overview
 
@@ -13,29 +13,42 @@ The `SupervisedServer` is a gRPC proxy that wraps any Backend, forwarding reques
 Use cases:
 
 - **Testing** -- expose a `FakeBackend` as a real gRPC server for integration tests
-- **Digital twins** -- connect to arbitrary data sources, EPICS soft IOC style
-- **Access control** -- restrict which devices or operations are allowed
-- **Rate limiting** -- throttle requests per client
-- **Value limiting** -- enforce safe ranges and slew rates on writes
-- **Audit logging** -- all requests are logged with peer info, timing, and policy decisions
+- **Digital twins** -- connect to arbitrary data sources, similarly to EPICS soft IOC
+- **Access control** -- restrict which operations are allowed, apply value/slew/rate limits, etc.
+- **Audit logging** -- log client info, timing, data, and policy decisions
 - **Custom logic** -- MCR killswitch, status GUI, etc.
 
 ---
+
+## Access Control Defaults
+
+Reads are **allowed by default** — any client can read any device without explicit policy approval.
+
+Writes (Set RPCs) are **denied by default** — every write must be explicitly approved by a `DeviceAccessPolicy` with `mode="allow"` covering the `"set"` (or `"all"`) action. Without such a policy, all writes return `PERMISSION_DENIED`.
+
+This means:
+- A server with no policies allows all reads and denies all writes
+- `ReadOnlyPolicy` is still useful for explicit intent but is now optional — writes are denied regardless
+- Policies like `RateLimitPolicy` or `ValueRangePolicy` do not unlock writes — they only constrain already-approved writes
 
 ## Quick Start
 
 ```python
 from pacsys.testing import FakeBackend
-from pacsys.supervised import SupervisedServer, ReadOnlyPolicy
+from pacsys.supervised import SupervisedServer, DeviceAccessPolicy
 import pacsys
 
 fb = FakeBackend()
 fb.set_reading("M:OUTTMP", 72.5)
 
-with SupervisedServer(fb, port=50099, policies=[ReadOnlyPolicy()]) as srv:
+# Reads work by default; writes require explicit approval
+with SupervisedServer(fb, port=50099, policies=[
+    DeviceAccessPolicy(patterns=["M:*"], action="set", mode="allow"),
+]) as srv:
     with pacsys.grpc(host="localhost", port=50099) as client:
-        print(client.read("M:OUTTMP"))  # 72.5
-        client.write("M:OUTTMP", 80.0)  # PERMISSION_DENIED
+        print(client.read("M:OUTTMP"))      # 72.5
+        client.write("M:OUTTMP", 80.0)      # OK (M:* approved)
+        client.write("Z:SECRET", 1.0)        # PERMISSION_DENIED
 ```
 
 ---
@@ -87,6 +100,8 @@ srv.run()  # blocks until signal received
 
 Policies are evaluated as a middleware chain. Each policy can inspect, deny, or modify the request. The first denial short-circuits -- remaining policies are skipped. On allow, each policy may return a modified `RequestContext` that subsequent policies (and the final backend call) will see.
 
+**Default behavior:** Reads are allowed; writes require explicit approval via `DeviceAccessPolicy` with `mode="allow"` covering the `"set"` action (see [Access Control Defaults](#access-control-defaults)).
+
 ### ReadOnlyPolicy
 
 Blocks all write (`Set`) operations, allows reads.
@@ -99,26 +114,35 @@ policies = [ReadOnlyPolicy()]
 
 ### DeviceAccessPolicy
 
-Allow or deny access based on device name glob patterns.
+Allow or deny access based on device name patterns. In `mode="allow"`, matching devices are **approved** for the operation (non-matching devices are left unapproved, not denied). In `mode="deny"`, matching devices are blocked outright. The `action` parameter controls which RPC types the policy applies to.
 
 ```python
 from pacsys.supervised import DeviceAccessPolicy
 
-# Only allow M: and G: devices (glob syntax, default)
-policies = [DeviceAccessPolicy(patterns=["M:*", "G:*"], mode="allow")]
+# Approve writes for M: and G: devices
+policies = [DeviceAccessPolicy(patterns=["M:*", "G:*"], action="set", mode="allow")]
 
-# Block specific devices
+# Block specific devices from all operations
 policies = [DeviceAccessPolicy(patterns=["Z:SECRET*"], mode="deny")]
 
+# Approve writes for M: devices, deny reads from Z: devices
+policies = [
+    DeviceAccessPolicy(patterns=["M:*"], action="set", mode="allow"),
+    DeviceAccessPolicy(patterns=["Z:*"], action="read", mode="deny"),
+]
+
 # Regex syntax for more complex matching
-policies = [DeviceAccessPolicy(patterns=[r"M:OUT.*", r"G:AMANDA"], syntax="regex")]
+policies = [DeviceAccessPolicy(patterns=[r"M:OUT.*", r"G:AMANDA"], action="set", syntax="regex")]
 ```
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `patterns` | `list[str]` | *(required)* | Patterns against device names |
-| `mode` | `str` | `"allow"` | `"allow"` = only matching allowed, `"deny"` = matching blocked |
+| `mode` | `str` | `"allow"` | `"allow"` = approve matching devices, `"deny"` = block matching devices |
+| `action` | `str` | `"all"` | `"all"` = both Read and Set, `"read"` = Read only, `"set"` = Set only |
 | `syntax` | `str` | `"glob"` | `"glob"` (fnmatch) or `"regex"` (full-match, case-insensitive) |
+
+**Per-slot approval:** In `mode="allow"`, the policy tracks which request slots (device indices) it approves. Multiple `DeviceAccessPolicy` instances compose — each adds its approved slots. After the full policy chain, any unapproved slots cause `PERMISSION_DENIED`.
 
 ### RateLimitPolicy
 
@@ -160,7 +184,7 @@ Each device pattern maps to a `SlewLimit(max_step=..., max_rate=...)`. At least 
 ```python
 from pacsys.supervised import SlewRatePolicy, SlewLimit
 
-# Max 10 units per write (absolute step)
+# Max 10 units per write from last one (absolute step)
 policies = [SlewRatePolicy(limits={"M:*": SlewLimit(max_step=10.0)})]
 
 # Max 5 units/second (rate)
@@ -211,7 +235,7 @@ with SupervisedServer(backend, port=50051, audit_log=audit) as srv:
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `path` | `str` | *(required)* | JSON lines file path |
-| `proto_path` | `str \| None` | `None` | Binary protobuf file path (optional) |
+| `proto_path` | `str \| None` | `None` | Binary protobuf file path to store complete raw packets (optional) |
 | `log_responses` | `bool` | `False` | Log outgoing responses too |
 | `flush_interval` | `int` | `1` | Flush files every N writes |
 
@@ -244,7 +268,7 @@ Policies compose naturally -- stack them in order of priority:
 
 ```python
 from pacsys.supervised import (
-    SupervisedServer, ReadOnlyPolicy, DeviceAccessPolicy,
+    SupervisedServer, DeviceAccessPolicy,
     RateLimitPolicy, ValueRangePolicy, SlewRatePolicy, SlewLimit,
     AuditLog,
 )
@@ -252,9 +276,10 @@ from pacsys.supervised import (
 audit = AuditLog("audit.jsonl", proto_path="audit.binpb", log_responses=True)
 
 policies = [
-    DeviceAccessPolicy(patterns=["M:*", "G:*"]),             # only M: and G: devices
-    RateLimitPolicy(max_requests=200, window_seconds=60),    # throttle per client
-    ValueRangePolicy(limits={"M:*": (0.0, 100.0)}),          # safe range for M:
+    DeviceAccessPolicy(patterns=["M:*", "G:*"], action="set", mode="allow"),  # approve writes for M: and G:
+    DeviceAccessPolicy(patterns=["Z:*"], mode="deny"),                         # block Z: from all operations
+    RateLimitPolicy(max_requests=200, window_seconds=60),                      # throttle per client
+    ValueRangePolicy(limits={"M:*": (0.0, 100.0)}),                           # safe range for M:
     SlewRatePolicy(limits={"M:*": SlewLimit(max_step=10.0, max_rate=5.0)}),
 ]
 
@@ -290,6 +315,7 @@ class BusinessHoursPolicy(Policy):
 | `metadata` | `dict[str, str]` | gRPC metadata from the call |
 | `values` | `list[tuple[str, object]]` | `[(DRF, value), ...]` — preserves order and duplicates (empty for reads) |
 | `raw_request` | `object` | Raw protobuf request message |
+| `allowed` | `frozenset[int]` | Slot indices approved for this operation (all for reads, empty for sets initially) |
 
 `PolicyDecision` fields:
 
@@ -299,11 +325,25 @@ class BusinessHoursPolicy(Policy):
 | `reason` | `str \| None` | Required when denied |
 | `ctx` | `RequestContext \| None` | Modified context (None = no change) |
 
-### Request Modification
-
-Policies can modify the request by returning a new `RequestContext` in the `ctx` field of `PolicyDecision`. The server uses the final (potentially modified) context for the backend call.
+**`allows_writes` property:** Override this property to return `True` if your custom policy explicitly gates write access. The server uses this to generate clearer error messages when writes are denied.
 
 ```python
+class MyWriteGatePolicy(Policy):
+    @property
+    def allows_writes(self) -> bool:
+        return True  # tells the server this policy gates writes
+
+    def check(self, ctx: RequestContext) -> PolicyDecision:
+        ...
+```
+
+### Request Modification
+
+Policies can modify the request by returning a new `RequestContext` in the `ctx` field of `PolicyDecision`. Use `dataclasses.replace()` to create modified copies — this preserves all fields including `allowed`.
+
+```python
+from dataclasses import replace
+
 class ClampPolicy(Policy):
     """Clamp write values to [0, 100]."""
 
@@ -314,14 +354,12 @@ class ClampPolicy(Policy):
             (drf, max(0.0, min(100.0, val)) if isinstance(val, (int, float)) else val)
             for drf, val in ctx.values
         ]
-        new_ctx = RequestContext(
-            drfs=ctx.drfs, rpc_method=ctx.rpc_method, peer=ctx.peer,
-            metadata=ctx.metadata, values=new_values, raw_request=ctx.raw_request,
-        )
-        return PolicyDecision(allowed=True, ctx=new_ctx)
+        return PolicyDecision(allowed=True, ctx=replace(ctx, values=new_values))
 ```
 
 ```python
+from dataclasses import replace
+
 class RedirectPolicy(Policy):
     """Redirect devices matching a prefix to a different prefix.
 
@@ -344,11 +382,7 @@ class RedirectPolicy(Policy):
         new_drfs = [self._rewrite(d) for d in ctx.drfs]
         if new_drfs == ctx.drfs:
             return PolicyDecision(allowed=True)
-        new_ctx = RequestContext(
-            drfs=new_drfs, rpc_method=ctx.rpc_method, peer=ctx.peer,
-            metadata=ctx.metadata, values=ctx.values, raw_request=ctx.raw_request,
-        )
-        return PolicyDecision(allowed=True, ctx=new_ctx)
+        return PolicyDecision(allowed=True, ctx=replace(ctx, drfs=new_drfs))
 
 # Route T: (test) devices to M: (production)
 policies = [RedirectPolicy("T:", "M:")]

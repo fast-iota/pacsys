@@ -24,6 +24,7 @@ def _ctx(
     peer="ipv4:127.0.0.1:9999",
     values=None,
     raw_request=None,
+    allowed=None,
 ):
     return RequestContext(
         drfs=drfs or ["M:OUTTMP"],
@@ -32,7 +33,21 @@ def _ctx(
         metadata={},
         values=values or [],
         raw_request=raw_request,
+        allowed=allowed if allowed is not None else frozenset(),
     )
+
+
+# ── RequestContext.allowed ────────────────────────────────────────────────
+
+
+class TestRequestContextAllowed:
+    def test_default_allowed_is_empty(self):
+        ctx = _ctx()
+        assert ctx.allowed == frozenset()
+
+    def test_allowed_preserved(self):
+        ctx = _ctx(allowed=frozenset({0, 2}))
+        assert ctx.allowed == frozenset({0, 2})
 
 
 # ── PolicyDecision ────────────────────────────────────────────────────────
@@ -61,6 +76,18 @@ class TestPolicyDecision:
         assert d.ctx is ctx
 
 
+# ── Policy.allows_writes ──────────────────────────────────────────────────
+
+
+class TestPolicyAllowsWrites:
+    def test_base_default_false(self):
+        """All built-in policies that don't gate writes return False."""
+        assert ReadOnlyPolicy().allows_writes is False
+        assert RateLimitPolicy(max_requests=10).allows_writes is False
+        assert ValueRangePolicy(limits={"M:*": (0, 100)}).allows_writes is False
+        assert SlewRatePolicy(limits={"M:*": SlewLimit(max_step=10)}).allows_writes is False
+
+
 # ── ReadOnlyPolicy ────────────────────────────────────────────────────────
 
 
@@ -82,13 +109,16 @@ class TestReadOnlyPolicy:
 class TestDeviceAccessPolicy:
     def test_allow_mode_permits_matching(self):
         p = DeviceAccessPolicy(patterns=["M:*"], mode="allow")
-        assert p.check(_ctx(drfs=["M:OUTTMP"])).allowed
+        d = p.check(_ctx(drfs=["M:OUTTMP"]))
+        assert d.allowed
+        assert d.ctx.allowed == frozenset({0})
 
-    def test_allow_mode_blocks_non_matching(self):
+    def test_allow_mode_passes_through_non_matching(self):
+        """Allow mode no longer denies non-matching — just doesn't approve them."""
         p = DeviceAccessPolicy(patterns=["M:*"], mode="allow")
         d = p.check(_ctx(drfs=["G:AMANDA"]))
-        assert not d.allowed
-        assert "G:AMANDA" in d.reason
+        assert d.allowed
+        assert d.ctx is None or 0 not in d.ctx.allowed
 
     def test_deny_mode_blocks_matching(self):
         p = DeviceAccessPolicy(patterns=["Z:*"], mode="deny")
@@ -108,12 +138,17 @@ class TestDeviceAccessPolicy:
         p = DeviceAccessPolicy(patterns=["M:*", "G:*"], mode="allow")
         assert p.check(_ctx(drfs=["M:OUTTMP"])).allowed
         assert p.check(_ctx(drfs=["G:AMANDA"])).allowed
-        assert not p.check(_ctx(drfs=["Z:ACLTST"])).allowed
+        # Z: not matched — passes through but not approved
+        d = p.check(_ctx(drfs=["Z:ACLTST"]))
+        assert d.allowed
+        assert d.ctx is None or 0 not in d.ctx.allowed
 
-    def test_mixed_drfs_blocks_on_first_failure(self):
+    def test_mixed_drfs_approves_matching_only(self):
+        """Allow mode approves matching slots, leaves non-matching unapproved."""
         p = DeviceAccessPolicy(patterns=["M:*"], mode="allow")
         d = p.check(_ctx(drfs=["M:OUTTMP", "G:AMANDA"]))
-        assert not d.allowed
+        assert d.allowed
+        assert d.ctx.allowed == frozenset({0})
 
     def test_empty_patterns_raises(self):
         with pytest.raises(ValueError, match="empty"):
@@ -129,8 +164,12 @@ class TestDeviceAccessPolicy:
 
     def test_regex_allow(self):
         p = DeviceAccessPolicy(patterns=[r"M:OUT.*"], mode="allow", syntax="regex")
-        assert p.check(_ctx(drfs=["M:OUTTMP"])).allowed
-        assert not p.check(_ctx(drfs=["G:AMANDA"])).allowed
+        d = p.check(_ctx(drfs=["M:OUTTMP"]))
+        assert d.allowed
+        assert d.ctx.allowed == frozenset({0})
+        # Non-matching passes through unapproved
+        d2 = p.check(_ctx(drfs=["G:AMANDA"]))
+        assert d2.allowed
 
     def test_regex_deny(self):
         p = DeviceAccessPolicy(patterns=[r"Z:ACL.+"], mode="deny", syntax="regex")
@@ -143,11 +182,97 @@ class TestDeviceAccessPolicy:
 
     def test_regex_fullmatch(self):
         p = DeviceAccessPolicy(patterns=[r"M:OUT"], mode="allow", syntax="regex")
-        assert not p.check(_ctx(drfs=["M:OUTTMP"])).allowed
+        d = p.check(_ctx(drfs=["M:OUTTMP"]))
+        assert d.allowed  # passes through unapproved
+        assert d.ctx is None or 0 not in d.ctx.allowed
 
     def test_invalid_syntax_raises(self):
         with pytest.raises(ValueError, match="syntax"):
             DeviceAccessPolicy(patterns=["M:*"], syntax="wildcard")
+
+    # ── action parameter ──
+
+    def test_invalid_action_raises(self):
+        with pytest.raises(ValueError, match="action"):
+            DeviceAccessPolicy(patterns=["M:*"], action="write")
+
+    def test_action_set_skips_reads(self):
+        p = DeviceAccessPolicy(patterns=["M:*"], action="set", mode="allow")
+        d = p.check(_ctx(rpc_method="Read", drfs=["Z:NOPE"]))
+        assert d.allowed  # not filtered — action doesn't match
+
+    def test_action_read_skips_sets(self):
+        p = DeviceAccessPolicy(patterns=["M:*"], action="read", mode="deny")
+        d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"]))
+        assert d.allowed  # not filtered — action doesn't match
+
+    def test_action_all_applies_to_reads(self):
+        p = DeviceAccessPolicy(patterns=["M:*"], action="all", mode="deny")
+        d = p.check(_ctx(rpc_method="Read", drfs=["M:OUTTMP"]))
+        assert not d.allowed
+
+    def test_action_all_applies_to_sets(self):
+        p = DeviceAccessPolicy(patterns=["M:*"], action="all", mode="deny")
+        d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"]))
+        assert not d.allowed
+
+    # ── per-slot write approval ──
+
+    def test_allow_set_approves_matching_slots(self):
+        p = DeviceAccessPolicy(patterns=["M:*"], action="set", mode="allow")
+        ctx = _ctx(rpc_method="Set", drfs=["M:OUTTMP", "G:AMANDA"])
+        d = p.check(ctx)
+        assert d.allowed
+        assert d.ctx is not None
+        assert d.ctx.allowed == frozenset({0})
+
+    def test_allow_set_approves_all_matching(self):
+        p = DeviceAccessPolicy(patterns=["M:*"], action="set", mode="allow")
+        ctx = _ctx(rpc_method="Set", drfs=["M:OUTTMP", "M:OTHER"])
+        d = p.check(ctx)
+        assert d.ctx.allowed == frozenset({0, 1})
+
+    def test_allow_set_accumulates_across_policies(self):
+        """Two composable allow-mode policies for different device groups."""
+        p1 = DeviceAccessPolicy(patterns=["M:*"], action="set", mode="allow")
+        p2 = DeviceAccessPolicy(patterns=["G:*"], action="set", mode="allow")
+        ctx = _ctx(rpc_method="Set", drfs=["M:OUTTMP", "G:AMANDA"])
+        d1 = p1.check(ctx)
+        assert d1.ctx.allowed == frozenset({0})
+        d2 = p2.check(d1.ctx)
+        assert d2.ctx.allowed == frozenset({0, 1})
+
+    def test_allow_set_no_matches_leaves_allowed_empty(self):
+        p = DeviceAccessPolicy(patterns=["Z:*"], action="set", mode="allow")
+        ctx = _ctx(rpc_method="Set", drfs=["M:OUTTMP"])
+        d = p.check(ctx)
+        assert d.allowed
+        assert d.ctx is None or d.ctx.allowed == frozenset()
+
+    def test_deny_set_still_short_circuits(self):
+        p = DeviceAccessPolicy(patterns=["Z:*"], action="set", mode="deny")
+        ctx = _ctx(rpc_method="Set", drfs=["Z:SECRET"])
+        d = p.check(ctx)
+        assert not d.allowed
+        assert "denied" in d.reason.lower()
+
+    # ── allows_writes property ──
+
+    def test_allows_writes_allow_set(self):
+        p = DeviceAccessPolicy(patterns=["M:*"], action="set", mode="allow")
+        assert p.allows_writes is True
+
+    def test_allows_writes_allow_all(self):
+        p = DeviceAccessPolicy(patterns=["M:*"], action="all", mode="allow")
+        assert p.allows_writes is True
+
+    def test_allows_writes_deny_mode(self):
+        p = DeviceAccessPolicy(patterns=["M:*"], action="set", mode="deny")
+        assert p.allows_writes is False
+
+    def test_allows_writes_allow_read(self):
+        p = DeviceAccessPolicy(patterns=["M:*"], action="read", mode="allow")
+        assert p.allows_writes is False
 
 
 # ── RateLimitPolicy ───────────────────────────────────────────────────────
@@ -374,15 +499,9 @@ class TestEvaluatePolicies:
                 new_values = [
                     (drf, min(val, 100.0) if isinstance(val, (int, float)) else val) for drf, val in ctx.values
                 ]
-                new_ctx = RequestContext(
-                    drfs=ctx.drfs,
-                    rpc_method=ctx.rpc_method,
-                    peer=ctx.peer,
-                    metadata=ctx.metadata,
-                    values=new_values,
-                    raw_request=ctx.raw_request,
-                )
-                return PolicyDecision(allowed=True, ctx=new_ctx)
+                from dataclasses import replace
+
+                return PolicyDecision(allowed=True, ctx=replace(ctx, values=new_values))
 
         class AssertMaxPolicy(Policy):
             """Denies if any value > 100 (should never fire after ClampPolicy)."""

@@ -108,6 +108,8 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
         invocation_metadata = context.invocation_metadata()
         if invocation_metadata:
             metadata = {k: v for k, v in invocation_metadata}
+        n = len(drfs)
+        initial_allowed = frozenset(range(n)) if rpc_method == "Read" else frozenset()
         ctx = RequestContext(
             drfs=drfs,
             rpc_method=rpc_method,
@@ -115,10 +117,27 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
             metadata=metadata,
             values=values or [],
             raw_request=raw_request,
+            allowed=initial_allowed,
         )
         if not self._policies:
             return ctx, PolicyDecision(allowed=True, ctx=ctx)
         return ctx, evaluate_policies(self._policies, ctx)
+
+    def _check_unapproved(self, drfs, decision, peer, rpc_method, context) -> bool:
+        """Check for unapproved slots after policy chain. Returns True if denied."""
+        assert decision.ctx is not None
+        unapproved = set(range(len(drfs))) - set(decision.ctx.allowed)
+        if not unapproved:
+            return False
+        names = ", ".join(get_device_name(drfs[i]) for i in sorted(unapproved))
+        if not any(p.allows_writes for p in self._policies):
+            reason = "No policy explicitly allows write operations"
+        else:
+            reason = f"No write policy approves: {names}"
+        logger.warning("rpc=%s peer=%s devices=%s decision=denied reason=%s", rpc_method, peer, names, reason)
+        context.set_code(grpc.StatusCode.PERMISSION_DENIED)
+        context.set_details(reason)
+        return True
 
     async def Read(self, request, context):
         drfs = list(request.drf)
@@ -146,6 +165,9 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
             logger.warning("rpc=Read peer=%s devices=%s decision=denied reason=%s", peer, devices, decision.reason)
             context.set_code(grpc.StatusCode.PERMISSION_DENIED)
             context.set_details(decision.reason)
+            return
+
+        if self._check_unapproved(drfs, decision, peer, "Read", context):
             return
 
         logger.info("rpc=Read peer=%s devices=%s decision=allowed", peer, devices)
@@ -291,6 +313,9 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
             logger.warning("rpc=Set peer=%s devices=%s decision=denied reason=%s", peer, devices, decision.reason)
             context.set_code(grpc.StatusCode.PERMISSION_DENIED)
             context.set_details(decision.reason)
+            return DAQ_pb2.SettingReply()  # type: ignore[unresolved-attribute]
+
+        if self._check_unapproved(drfs, decision, peer, "Set", context):
             return DAQ_pb2.SettingReply()  # type: ignore[unresolved-attribute]
 
         logger.info("rpc=Set peer=%s devices=%s decision=allowed", peer, devices)

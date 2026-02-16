@@ -21,6 +21,7 @@ class RequestContext:
     metadata: dict[str, str]
     values: list[tuple[str, object]]  # [(DRF, value), ...] — empty for reads
     raw_request: object  # raw protobuf message
+    allowed: frozenset[int] = frozenset()  # slot indices approved for this operation
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,11 @@ _ALLOW = PolicyDecision(allowed=True)
 class Policy(ABC):
     """Abstract base for policy checks. Implement check() to allow or deny requests."""
 
+    @property
+    def allows_writes(self) -> bool:
+        """Whether this policy explicitly gates write access."""
+        return False
+
     @abstractmethod
     def check(self, ctx: RequestContext) -> PolicyDecision: ...
 
@@ -65,37 +71,69 @@ class DeviceAccessPolicy(Policy):
 
     Args:
         patterns: List of patterns (e.g. ["M:*", "G:AMANDA"])
-        mode: "allow" = only matching devices allowed, "deny" = matching devices blocked
+        mode: "allow" = approve matching devices, "deny" = block matching devices
+        action: "all" (both RPCs), "read" (Read only), "set" (Set only)
         syntax: "glob" (fnmatch, default) or "regex" (full-match, case-insensitive)
     """
 
-    def __init__(self, patterns: list[str], mode: str = "allow", syntax: str = "glob"):
+    def __init__(
+        self,
+        patterns: list[str],
+        mode: str = "allow",
+        action: str = "all",
+        syntax: str = "glob",
+    ):
         if not patterns:
             raise ValueError("patterns must not be empty")
         if mode not in ("allow", "deny"):
             raise ValueError(f"mode must be 'allow' or 'deny', got {mode!r}")
+        if action not in ("all", "read", "set"):
+            raise ValueError(f"action must be 'all', 'read', or 'set', got {action!r}")
         if syntax not in ("glob", "regex"):
             raise ValueError(f"syntax must be 'glob' or 'regex', got {syntax!r}")
         self._patterns = patterns
         self._mode = mode
+        self._action = action
         self._syntax = syntax
         if syntax == "regex":
             self._compiled = [re.compile(p, re.IGNORECASE) for p in patterns]
+
+    @property
+    def allows_writes(self) -> bool:
+        return self._mode == "allow" and self._action in ("set", "all")
 
     def _matches(self, device_name: str) -> bool:
         if self._syntax == "regex":
             return any(r.fullmatch(device_name) for r in self._compiled)
         return any(fnmatch.fnmatchcase(device_name.upper(), p.upper()) for p in self._patterns)
 
+    def _applies(self, rpc_method: str) -> bool:
+        if self._action == "all":
+            return True
+        return self._action == rpc_method.lower()
+
     def check(self, ctx: RequestContext) -> PolicyDecision:
-        for drf in ctx.drfs:
-            name = get_device_name(drf)
-            matched = self._matches(name)
-            if self._mode == "allow" and not matched:
-                return PolicyDecision(allowed=False, reason=f"Device {name} not in allow list")
-            if self._mode == "deny" and matched:
-                return PolicyDecision(allowed=False, reason=f"Device {name} is denied")
-        return _ALLOW
+        if not self._applies(ctx.rpc_method):
+            return _ALLOW
+
+        if self._mode == "deny":
+            for drf in ctx.drfs:
+                name = get_device_name(drf)
+                if self._matches(name):
+                    return PolicyDecision(allowed=False, reason=f"Device {name} is denied")
+            return _ALLOW
+
+        # mode="allow": approve matching slots, pass through non-matching
+        approved = set(ctx.allowed)
+        for i, drf in enumerate(ctx.drfs):
+            if self._matches(get_device_name(drf)):
+                approved.add(i)
+        new_allowed = frozenset(approved)
+        if new_allowed == ctx.allowed:
+            return _ALLOW
+        from dataclasses import replace
+
+        return PolicyDecision(allowed=True, ctx=replace(ctx, allowed=new_allowed))
 
 
 class RateLimitPolicy(Policy):
