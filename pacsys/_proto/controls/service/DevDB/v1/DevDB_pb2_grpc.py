@@ -5,7 +5,7 @@ import warnings
 
 from pacsys._proto.controls.service.DevDB.v1 import DevDB_pb2 as proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2
 
-GRPC_GENERATED_VERSION = '1.76.0'
+GRPC_GENERATED_VERSION = '1.66.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 

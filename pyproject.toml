@@ -25,14 +25,14 @@ classifiers = [
 dependencies = [
     "numpy >= 1.23.0",
     "tqdm",
-    "httpx",
+    "httpx >= 0.23.0",
     "websockets",
     "aiohttp",
-    "grpcio",
-    "protobuf",
-    "pika",
-    "gssapi",
-    "paramiko[gssapi]",
+    "grpcio >= 1.66.0",
+    "protobuf >= 6.30.0",
+    "pika >= 1.2.0",
+    "gssapi >= 1.8.0",
+    "paramiko[gssapi] >= 3.0",
 ]
 requires-python = ">=3.10"
 
