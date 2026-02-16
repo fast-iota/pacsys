@@ -23,6 +23,7 @@ class DataRequest:
         field: DRF_FIELD | None,
         event: DRF_EVENT,
         extra: DRF_EXTRA | None = None,
+        extra_raw: str | None = None,
     ):
         if not isinstance(raw_string, str):
             raise TypeError(f"raw_string must be str, got {type(raw_string).__name__}")
@@ -45,6 +46,8 @@ class DataRequest:
         if extra is not None and not isinstance(extra, DRF_EXTRA):
             raise TypeError(f"extra must be DRF_EXTRA or None, got {type(extra).__name__}")
         self.extra = extra
+        # Raw extra string preserving parameters (e.g., "LOGGER:123:456")
+        self.extra_raw = extra_raw or (extra.name if extra is not None else None)
         self.property_explicit = False
 
     def __eq__(self, other):
@@ -55,6 +58,7 @@ class DataRequest:
             and self.field == other.field
             and self.event == other.event
             and self.extra == other.extra
+            and self.extra_raw == other.extra_raw
         )
 
     def __str__(self):
@@ -122,9 +126,10 @@ class DataRequest:
         if e is not None:
             if e.mode != "U":
                 out += f"@{e.raw_string}"
-        ex = extra or self.extra
-        if ex is not None:
-            out += f"<-{ex.name}"
+        if extra is not None:
+            out += f"<-{extra.name}"
+        elif self.extra is not None:
+            out += f"<-{self.extra_raw}"
         return out
 
     def to_qualified(
@@ -159,9 +164,10 @@ class DataRequest:
         if e is not None:
             if e.mode != "U":
                 out += f"@{e.raw_string}"
-        ex = extra or self.extra
-        if ex is not None:
-            out += f"<-{ex.name}"
+        if extra is not None:
+            out += f"<-{extra.name}"
+        elif self.extra is not None:
+            out += f"<-{self.extra_raw}"
         return out
 
     def name_as(self, property: DRF_PROPERTY):
@@ -184,10 +190,11 @@ def parse_request(device_str: str) -> DataRequest:
         splits = device_str.split("<-")
         if len(splits) != 2:
             raise ValueError(f"Invalid drf {device_str}")
-        device_str, extra = splits
-        extra_obj = parse_extra(extra)
+        device_str, extra_str = splits
+        extra_obj = parse_extra(extra_str)
     else:
         extra_obj = None
+        extra_str = None
     match = PATTERN_FULL.match(device_str)
     if match is None:
         raise ValueError(f"{device_str} is not a valid DRF2 device")
@@ -219,6 +226,6 @@ def parse_request(device_str: str) -> DataRequest:
     else:
         event_obj = parse_event(event)
 
-    req = DataRequest(device_str, dev_name, prop_obj, rng, field_obj, event_obj, extra_obj)
+    req = DataRequest(device_str, dev_name, prop_obj, rng, field_obj, event_obj, extra_obj, extra_str)
     req.property_explicit = prop_explicit
     return req

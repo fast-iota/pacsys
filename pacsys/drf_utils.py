@@ -7,10 +7,14 @@ instead of fragile string splitting.
 
 from pacsys.drf3 import parse_request
 from pacsys.drf3.event import NeverEvent, parse_event
+from pacsys.drf3.extra import HISTORICAL_EXTRAS
 
 
 def ensure_immediate_event(drf: str) -> str:
     """Ensure DRF has immediate event (@I) if no event specified.
+
+    Historical data sources (LOGGER, LOGGERDURATION, LOGGERSINGLE) are
+    returned as-is -- DPM rejects @I combined with logger routing.
 
     Args:
         drf: DRF string (e.g., "M:OUTTMP" or "M:OUTTMP@p,1000")
@@ -20,14 +24,22 @@ def ensure_immediate_event(drf: str) -> str:
         Preserves the original form (doesn't canonicalize).
     """
     request = parse_request(drf)
+    # Logger extras provide their own data -- never inject @I
+    if request.extra in HISTORICAL_EXTRAS:
+        return drf
     if request.event is None or request.event.mode == "U":
+        # Strip explicit @U before inserting @I (avoid producing "@U@I")
+        base = drf
+        if request.event is not None and request.event.mode == "U":
+            u_idx = drf.upper().rfind("@U")
+            if u_idx >= 0:
+                base = drf[:u_idx] + drf[u_idx + 2 :]
         # Insert @I before <-extra if present, otherwise append
-        if request.extra is not None:
-            # Case-insensitive search for the extra marker in original string
-            idx = drf.upper().rfind(f"<-{request.extra.name}")
+        if request.extra is not None and request.extra_raw is not None:
+            idx = base.upper().rfind(f"<-{request.extra_raw.upper()}")
             if idx >= 0:
-                return f"{drf[:idx]}@I{drf[idx:]}"
-        return f"{drf}@I"
+                return f"{base[:idx]}@I{base[idx:]}"
+        return f"{base}@I"
     return drf
 
 
@@ -81,7 +93,7 @@ def strip_event(drf: str) -> str:
         if DEFAULT_FIELD_FOR_PROPERTY.get(request.property) != request.field:
             out += f".{request.field.name}"
     if request.extra is not None:
-        out += f"<-{request.extra.name}"
+        out += f"<-{request.extra_raw}"
     return out
 
 

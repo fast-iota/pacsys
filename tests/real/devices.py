@@ -288,6 +288,11 @@ SLOW_PERIODIC = "M:OUTTMP@p,1000"
 # FTP (Fast Time Plot) - routed via DPM's <-FTP extra qualifier
 FTP_DEVICE = "M:OUTTMP@p,100H<-FTP"
 
+# Logger - historical data via DPM's <-LOGGER extra qualifier
+# 1 hour window: 2025-01-15 12:00–13:00 UTC (epoch ms)
+LOGGER_DEVICE = "M:OUTTMP<-LOGGER:1736942400000:1736946000000"
+LOGGER_DEVICE_WITH_EVENT = "M:OUTTMP@P,1000,true<-LOGGER:1736942400000:1736946000000"
+
 # =============================================================================
 # Alarm Value Transformations
 # =============================================================================

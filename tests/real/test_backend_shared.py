@@ -26,6 +26,8 @@ from .devices import (
     CONTROL_RESET,
     DEVICE_TYPES,
     FTP_DEVICE,
+    LOGGER_DEVICE,
+    LOGGER_DEVICE_WITH_EVENT,
     NONEXISTENT_DEVICE,
     NOPROP_DEVICE,
     PERIODIC_DEVICE,
@@ -563,6 +565,63 @@ class TestBackendFTP:
         deltas_us = [micros[i + 1] - micros[i] for i in range(len(micros) - 1)]
         avg_delta_ms = sum(deltas_us) / len(deltas_us) / 1000.0
         assert 9.0 < avg_delta_ms < 11.0, f"Expected ~10ms spacing, got {avg_delta_ms:.2f}ms"
+
+
+# =============================================================================
+# Logger (Historical Data) Tests - DPM backends only
+# =============================================================================
+
+
+class TestBackendLogger:
+    """Logger read tests via DPM's <-LOGGER extra qualifier.
+
+    Window: 2025-01-15 12:00–13:00 UTC (epoch ms 1736942400000–1736946000000).
+    """
+
+    # start/end in microseconds for timestamp validation
+    _START_US = 1736942400000 * 1000
+    _END_US = 1736946000000 * 1000
+    _MARGIN_US = 60_000_000  # 60 s
+
+    def _assert_logger_reading(self, reading: Reading, drf: str):
+        assert reading.ok, f"Failed to read {drf}: {reading.message}"
+        assert reading.value_type == ValueType.TIMED_SCALAR_ARRAY
+        assert "data" in reading.value and "micros" in reading.value
+        assert len(reading.value["data"]) > 0
+        assert len(reading.value["data"]) == len(reading.value["micros"])
+        assert reading.timestamp is not None
+
+        micros = reading.value["micros"]
+        assert micros[0] >= self._START_US - self._MARGIN_US, "First sample before window"
+        assert micros[-1] <= self._END_US + self._MARGIN_US, "Last sample after window"
+        for i in range(1, len(micros)):
+            assert micros[i] >= micros[i - 1], f"Timestamps not monotonic at index {i}"
+
+    def test_get_logger(self, read_backend: Backend):
+        """get() with <-LOGGER (no event) returns historical timed scalar array."""
+        _skip_if_not_dpm(read_backend)
+        reading = read_backend.get(LOGGER_DEVICE, timeout=30.0)
+        self._assert_logger_reading(reading, LOGGER_DEVICE)
+
+        # M:OUTTMP is logged at ~1 Hz; 1 hour ≈ 3600 points (allow ±10%)
+        n = len(reading.value["data"])
+        assert 3200 < n < 4000, f"Expected ~3600 samples for 1h at ~1Hz, got {n}"
+
+    def test_get_logger_with_event(self, read_backend: Backend):
+        """get() with @P,1000,true<-LOGGER returns historical timed scalar array."""
+        _skip_if_not_dpm(read_backend)
+        reading = read_backend.get(LOGGER_DEVICE_WITH_EVENT, timeout=30.0)
+        self._assert_logger_reading(reading, LOGGER_DEVICE_WITH_EVENT)
+
+        # @P,1000 = 1 Hz delivery; 1 hour ≈ 3600 points (allow ±10%)
+        n = len(reading.value["data"])
+        assert 3200 < n < 4000, f"Expected ~3600 samples for 1h at 1Hz, got {n}"
+
+        # Verify sample spacing is ~1 s (within tolerance for logger jitter)
+        micros = reading.value["micros"]
+        span_s = (micros[-1] - micros[0]) / 1_000_000
+        avg_spacing_s = span_s / (len(micros) - 1)
+        assert 0.5 < avg_spacing_s < 2.0, f"Expected ~1s spacing, got {avg_spacing_s:.1f}s"
 
 
 # =============================================================================

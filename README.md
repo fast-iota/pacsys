@@ -63,7 +63,7 @@ print(info.reading.min_val)            # 0.0
 
 # Stream data
 with dev.with_event("p,1000").subscribe() as stream:
-    for reading, _ in stream.readings(timeout=10):
+    for reading, handle in stream.readings(timeout=10):
         print(reading.value)
 
 # Immutable -- modifications return new instances
@@ -74,36 +74,37 @@ sliced_dev = dev.with_range(0, 10)
 ## Backend API
 
 ```python
+import time
 import pacsys
 
-# Read a device value
+# Read a device value through global backend
 temperature = pacsys.read("M:OUTTMP")
 print(f"Temperature: {temperature}")
 
-# Stream real-time data
+# Stream real-time data through global backend
 with pacsys.subscribe(["M:OUTTMP@p,1000"]) as stream:
-    for reading, _ in stream.readings(timeout=30):
+    for reading, handle in stream.readings(timeout=30):
         print(f"{reading.name}: {reading.value}")
 
-# Stream with callback dispatch mode
-# WORKER (default): callbacks on dedicated worker thread, protects reactor
+# Stream with callback dispatch mode through dedicated DPM instance
+# WORKER (default): callbacks on dedicated worker thread, protects event loop
 # DIRECT: callbacks inline on reactor thread (lower latency)
 with pacsys.dpm(dispatch_mode=pacsys.DispatchMode.DIRECT) as backend:
     handle = backend.subscribe(
         ["M:OUTTMP@p,1000"],
         callback=lambda r, h: print(r.value),
     )
-    import time; time.sleep(10)
+    time.sleep(10)
     handle.stop()
 
-# Write (requires authentication)
+# Write through authenticated DPM instance (requires kerberos ticket)
 with pacsys.dpm(auth=pacsys.KerberosAuth(), role="testing") as backend:
     backend.write("Z:ACLTST", 72.5)
 ```
 
-## Async API
+## Async capabilities
 
-Native async support for asyncio applications. Same API surface, no background threads.
+Native async versions with same API surface.
 
 ```python
 import pacsys.aio as aio
@@ -148,7 +149,7 @@ with pacsys.ssh("clx01.fnal.gov") as ssh:
 
 ## CLI Tools
 
-pacsys includes EPICS-style command-line tools:
+EPICS-style command-line tools:
 
 ```bash
 # Read devices
@@ -156,14 +157,14 @@ acget M:OUTTMP Z:ACLTST
 acget --format json M:OUTTMP
 
 # Write devices (requires authentication)
-acput M:OUTTMP 72.5
-acput -a kerberos --verify --tolerance 0.5 M:OUTTMP 72.5
+acput Z:ACLTST 72.5
+acput -a kerberos --verify --tolerance 0.5 Z:ACLTST 72.5
 
 # Monitor (streaming)
 acmonitor M:OUTTMP
 acmonitor -n 10 M:OUTTMP@p,500
 
-# Device info
+# Device info (DB + property reads)
 acinfo -v M:OUTTMP
 ```
 
@@ -172,8 +173,8 @@ Tools are aliased under `pacsys-get`, `pacsys-put`, `pacsys-monitor`, `pacsys-in
 ## Requirements
 
 - Python 3.10+
-- For writes: Kerberos credentials with appropriate role assigned
-- For some utilities: Must run on the controls network or have SSH access to it
+- For writes: Kerberos credentials with appropriate role or console class assigned
+- For some utilities: must run on the controls network or have SSH access to it
 
 ## Documentation
 

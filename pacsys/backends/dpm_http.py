@@ -76,6 +76,7 @@ from pacsys.dpm_protocol import (
     TimedScalarArray_reply,
     unmarshal_reply,
 )
+from pacsys.drf3.extra import HISTORICAL_EXTRAS
 from pacsys.drf_utils import ensure_immediate_event, prepare_for_write
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,66 @@ DEFAULT_TIMEOUT = 5.0
 _MAX_WRITE_CONNECTIONS = 4  # max concurrent write connections (pooled + in-flight)
 
 # Kerberos service principal for DPM
+
+
+def _is_logger_drf(drf: str) -> bool:
+    """Check if DRF routes to a historical/logger data source."""
+    from pacsys.drf3 import parse_request
+
+    try:
+        req = parse_request(drf)
+        return req.extra in HISTORICAL_EXTRAS
+    except ValueError:
+        return False
+
+
+def _aggregate_logger_chunks(chunks: list, drf: str, meta) -> Reading:
+    """Merge multiple logger reply chunks into a single TIMED_SCALAR_ARRAY Reading."""
+    all_data: list[np.ndarray] = []
+    all_micros: list[np.ndarray] = []
+    first_ts = None
+
+    for chunk in chunks:
+        # Propagate first error chunk as the result
+        if hasattr(chunk, "status") and chunk.status != 0:
+            facility, error = parse_error(chunk.status)
+            return Reading(
+                drf=drf,
+                value_type=ValueType.SCALAR,
+                facility_code=facility,
+                error_code=error,
+                value=None,
+                message=status_message(facility, error),
+                timestamp=timestamp_from_millis(chunk.timestamp) if chunk.timestamp else None,
+                meta=meta,
+            )
+        if isinstance(chunk, TimedScalarArray_reply):
+            all_data.append(np.array(chunk.data))
+            if hasattr(chunk, "micros") and chunk.micros:
+                all_micros.append(np.array(chunk.micros, dtype=np.int64))
+            if first_ts is None and chunk.timestamp:
+                first_ts = timestamp_from_millis(chunk.timestamp)
+        elif isinstance(chunk, ScalarArray_reply):
+            all_data.append(np.array(chunk.data))
+            if first_ts is None and chunk.timestamp:
+                first_ts = timestamp_from_millis(chunk.timestamp)
+
+    data = np.concatenate(all_data) if all_data else np.array([], dtype=float)
+    if all_micros:
+        micros = np.concatenate(all_micros)
+        value = {"data": data, "micros": micros}
+        vtype = ValueType.TIMED_SCALAR_ARRAY
+    else:
+        value = data
+        vtype = ValueType.SCALAR_ARRAY
+
+    return Reading(
+        drf=drf,
+        value_type=vtype,
+        value=value,
+        timestamp=first_ts,
+        meta=meta,
+    )
 
 
 def _reply_to_value_and_type(reply) -> tuple[Optional[Value], Optional[ValueType]]:
@@ -711,8 +772,17 @@ class DPMHTTPBackend(Backend):
 
         prepared_drfs = [ensure_immediate_event(drf) for drf in drfs]
 
+        # Logger DRFs arrive in 487-point chunks with a final empty chunk.
+        # Pre-detect so we accumulate chunks instead of stopping at the first.
+        logger_refs: set[int] = set()
+        for i, drf in enumerate(prepared_drfs):
+            if _is_logger_drf(drf):
+                logger_refs.add(i + 1)
+
         device_infos: dict[int, DeviceInfo_reply] = {}
         data_replies: dict[int, object] = {}
+        logger_chunks: dict[int, list] = {}  # ref_id -> accumulated chunks
+        logger_complete: set[int] = set()  # ref_ids that received the empty terminator
         add_errors: dict[int, AddToList_reply] = {}  # ref_id -> failed AddToList
         received_count = 0
         expected_count = len(drfs)
@@ -769,8 +839,20 @@ class DPMHTTPBackend(Backend):
                                 data_replies[reply.ref_id] = reply
                                 received_count += 1
                         elif hasattr(reply, "ref_id"):
-                            if reply.ref_id not in data_replies:
-                                data_replies[reply.ref_id] = reply
+                            ref_id = reply.ref_id
+                            if ref_id in logger_refs:
+                                # Logger: accumulate chunks; empty chunk = done
+                                is_empty = (
+                                    isinstance(reply, (TimedScalarArray_reply, ScalarArray_reply))
+                                    and len(reply.data) == 0
+                                )
+                                if is_empty:
+                                    logger_complete.add(ref_id)
+                                    received_count += 1
+                                else:
+                                    logger_chunks.setdefault(ref_id, []).append(reply)
+                            elif ref_id not in data_replies:
+                                data_replies[ref_id] = reply
                                 received_count += 1
                 except (BrokenPipeError, ConnectionResetError, OSError) as e:
                     conn_broken = True
@@ -796,9 +878,48 @@ class DPMHTTPBackend(Backend):
             ref_id = i + 1
             info = device_infos.get(ref_id)
             reply = data_replies.get(ref_id)
+            chunks = logger_chunks.get(ref_id)
             add_err = add_errors.get(ref_id)
 
             meta = _device_info_to_meta(info) if info else None
+
+            if ref_id in logger_refs:
+                if ref_id in logger_complete and chunks:
+                    # Complete logger response with data
+                    readings.append(_aggregate_logger_chunks(chunks, original_drf, meta))
+                elif ref_id in logger_complete:
+                    # Empty window (terminator received, no data chunks) — valid empty result
+                    readings.append(
+                        Reading(
+                            drf=original_drf,
+                            value_type=ValueType.TIMED_SCALAR_ARRAY,
+                            value={"data": np.array([], dtype=float), "micros": np.array([], dtype=np.int64)},
+                            timestamp=None,
+                            meta=meta,
+                        )
+                    )
+                else:
+                    # No terminator — partial data or timeout
+                    has_timeout = True
+                    ec = ERR_RETRY if transport_error is not None else ERR_TIMEOUT
+                    msg = (
+                        f"Connection error: {transport_error}"
+                        if transport_error is not None
+                        else "Logger response incomplete"
+                    )
+                    readings.append(
+                        Reading(
+                            drf=original_drf,
+                            value_type=ValueType.SCALAR,
+                            facility_code=FACILITY_ACNET,
+                            error_code=ec,
+                            value=None,
+                            message=msg,
+                            timestamp=None,
+                            meta=meta,
+                        )
+                    )
+                continue
 
             if add_err is not None:
                 # AddToList failed for this device (server-side error, not transport)

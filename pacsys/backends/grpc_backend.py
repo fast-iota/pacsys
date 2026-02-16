@@ -20,6 +20,7 @@ import numpy as np
 from pacsys.acnet.errors import ERR_RETRY, ERR_TIMEOUT, FACILITY_ACNET, normalize_error_code
 from pacsys.auth import Auth, JWTAuth
 from pacsys.backends import Backend, validate_alarm_dict
+from pacsys.drf3.extra import HISTORICAL_EXTRAS
 from pacsys.drf_utils import prepare_for_write
 from pacsys.errors import AuthenticationError, DeviceError, ReadError
 from pacsys.backends._dispatch import CallbackDispatcher
@@ -306,7 +307,25 @@ def _aggregate_proto_readings(reading_list, drf: str, now: datetime) -> Reading:
     Skips intermediate Reading objects - extracts values and timestamps
     straight from the proto messages to avoid N datetime round-trips
     and N throwaway allocations.
+
+    If any reading carries a nonzero error status, the first error is
+    propagated immediately instead of silently mixing errors into data.
     """
+    # Check for error status in samples before aggregating
+    for rd in reading_list:
+        if rd.status is not None:
+            facility, error, message = _proto_status_to_codes(rd.status)
+            if error != 0:
+                ts = _proto_timestamp_to_datetime(rd.timestamp) or now
+                return Reading(
+                    drf=drf,
+                    value_type=ValueType.SCALAR,
+                    facility_code=facility,
+                    error_code=error,
+                    message=message,
+                    timestamp=ts,
+                )
+
     data = np.array([_proto_value_to_python(rd.data)[0] for rd in reading_list], dtype=float)
     micros = np.array(
         [
@@ -324,6 +343,39 @@ def _aggregate_proto_readings(reading_list, drf: str, now: datetime) -> Reading:
         value={"data": data, "micros": micros},
         timestamp=ts,
     )
+
+
+def _is_logger_drf(drf: str) -> bool:
+    """Check if DRF routes to a historical/logger data source."""
+    from pacsys.drf3 import parse_request
+
+    try:
+        req = parse_request(drf)
+        return req.extra in HISTORICAL_EXTRAS
+    except ValueError:
+        return False
+
+
+def _merge_logger_readings(chunks: list[Reading], drf: str) -> Reading:
+    """Merge multiple logger chunk Readings into a single TIMED_SCALAR_ARRAY."""
+    all_data: list[np.ndarray] = []
+    all_micros: list[np.ndarray] = []
+    first_ts = chunks[0].timestamp if chunks else None
+
+    for r in chunks:
+        if isinstance(r.value, dict):
+            all_data.append(r.value["data"])
+            all_micros.append(r.value["micros"])
+        elif isinstance(r.value, np.ndarray):
+            all_data.append(r.value)
+
+    data = np.concatenate(all_data) if all_data else np.array([], dtype=float)
+    if all_micros:
+        micros = np.concatenate(all_micros)
+        return Reading(
+            drf=drf, value_type=ValueType.TIMED_SCALAR_ARRAY, value={"data": data, "micros": micros}, timestamp=first_ts
+        )
+    return Reading(drf=drf, value_type=ValueType.SCALAR_ARRAY, value=data, timestamp=first_ts)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -374,6 +426,11 @@ class _DaqCore:
 
         logger.debug(f"gRPC async Read request: {len(drfs)} devices")
 
+        # Logger DRFs arrive in 487-point chunks with a final empty chunk.
+        logger_indices = {i for i, drf in enumerate(drfs) if _is_logger_drf(drf)}
+        logger_chunks: dict[int, list[Reading]] = {}  # index -> accumulated chunks
+        logger_complete: set[int] = set()  # indices that received the terminator
+
         results: list[Optional[Reading]] = [None] * len(drfs)
         received_count = 0
         expected_count = len(drfs)
@@ -397,18 +454,40 @@ class _DaqCore:
                     continue
 
                 index = reply.index
-                if index < 0 or index >= len(drfs) or results[index] is not None:
+                if index < 0 or index >= len(drfs):
                     continue
 
                 value_field = reply.WhichOneof("value")
-                if value_field == "readings" and len(reply.readings.reading) > 1:
-                    results[index] = _aggregate_proto_readings(reply.readings.reading, drfs[index], now)
-                    received_count += 1
-                else:
-                    readings = _reply_to_readings(reply, drfs)
-                    if readings:
-                        results[index] = readings[0]
+
+                if index in logger_indices:
+                    # Logger: accumulate chunks; empty readings = done
+                    if value_field == "readings" and len(reply.readings.reading) > 0:
+                        chunk = _aggregate_proto_readings(reply.readings.reading, drfs[index], now)
+                        logger_chunks.setdefault(index, []).append(chunk)
+                    elif index not in logger_complete:
+                        # Empty or non-readings reply = completion signal (guard against double-count)
+                        logger_complete.add(index)
+                        chunks = logger_chunks.get(index, [])
+                        if chunks:
+                            results[index] = _merge_logger_readings(chunks, drfs[index])
+                        else:
+                            # Empty window — valid empty result
+                            results[index] = Reading(
+                                drf=drfs[index],
+                                value_type=ValueType.TIMED_SCALAR_ARRAY,
+                                value={"data": np.array([], dtype=float), "micros": np.array([], dtype=np.int64)},
+                                timestamp=now,
+                            )
                         received_count += 1
+                elif results[index] is None:
+                    if value_field == "readings" and len(reply.readings.reading) > 1:
+                        results[index] = _aggregate_proto_readings(reply.readings.reading, drfs[index], now)
+                        received_count += 1
+                    else:
+                        readings = _reply_to_readings(reply, drfs)
+                        if readings:
+                            results[index] = readings[0]
+                            received_count += 1
 
                 if received_count >= expected_count:
                     call.cancel()

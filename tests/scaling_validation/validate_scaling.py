@@ -7,7 +7,7 @@ and compares outputs to detect port divergences.
 Usage:
     cd tests/scaling_validation
     javac ScalingHarness.java
-    PYTHONPATH=/mnt/pacsys python validate_scaling.py
+    python validate_scaling.py
 """
 
 from __future__ import annotations
