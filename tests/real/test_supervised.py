@@ -123,8 +123,8 @@ def readonly_server(real_backend):
 
 @pytest.fixture
 def device_limited_server(real_backend):
-    """SupervisedServer allowing only M:* devices."""
-    policy = DeviceAccessPolicy(patterns=["M:*"], mode="allow")
+    """SupervisedServer denying G:* devices (allows M:* by default for reads)."""
+    policy = DeviceAccessPolicy(patterns=["G:*"], mode="deny")
     srv = SupervisedServer(real_backend, port=0, policies=[policy])
     srv.start()
     yield srv
@@ -372,13 +372,16 @@ def _stub_write(stub, drf, value, *, timeout=TIMEOUT_READ):
     return reply.status[0].status_code
 
 
+_ALLOW_ALL_WRITES = DeviceAccessPolicy(patterns=["*"], action="set", mode="allow")
+
+
 @pytest.fixture
 def write_proxy(real_write_backend):
     """SupervisedServer wrapping authenticated backend + raw gRPC stub.
 
     Yields (stub, server) - stub is a DAQStub connected to the proxy.
     """
-    srv = SupervisedServer(real_write_backend, port=0)
+    srv = SupervisedServer(real_write_backend, port=0, policies=[_ALLOW_ALL_WRITES])
     srv.start()
     ch = grpc.insecure_channel(f"localhost:{srv.port}")
     stub = DAQ_pb2_grpc.DAQStub(ch)
@@ -528,7 +531,7 @@ class TestSupervisedDeviceAccessPolicy:
     """DeviceAccessPolicy restricts which devices are accessible."""
 
     def test_device_allow_list(self, device_limited_server):
-        """Only M:* devices allowed; G:AMANDA blocked."""
+        """M:* devices pass through; G:AMANDA blocked by deny policy."""
         client = GRPCBackend(host="localhost", port=device_limited_server.port, timeout=TIMEOUT_READ)
         try:
             # M:OUTTMP should work
