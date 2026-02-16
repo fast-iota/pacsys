@@ -483,8 +483,10 @@ class SSHClient:
             # Validate GSSAPI is available (fail fast)
             try:
                 import gssapi  # noqa: F401
-            except ImportError:
-                raise ImportError("gssapi library required for GSSAPI SSH auth. Install with: pip install gssapi")
+            except (ImportError, OSError) as exc:
+                raise ImportError(
+                    "gssapi library required for GSSAPI SSH auth. Install with: pip install gssapi"
+                ) from exc
 
         # Lazy connection state (protected by lock)
         self._lock = threading.Lock()

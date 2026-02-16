@@ -51,9 +51,15 @@ jobs:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
 
-      - name: Install system dependencies
+      - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get install -y libkrb5-dev
+
+      - name: Install system dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          winget install --id MIT.Kerberos --accept-source-agreements --accept-package-agreements
+          echo "C:\Program Files\MIT\Kerberos\bin" >> $env:GITHUB_PATH
 
       - name: Install package
         run: pip install -e ".[dev]"
