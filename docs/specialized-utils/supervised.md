@@ -28,7 +28,6 @@ Writes (Set RPCs) are **denied by default** — every write must be explicitly a
 
 This means:
 - A server with no policies allows all reads and denies all writes
-- `ReadOnlyPolicy` is still useful for explicit intent but is now optional — writes are denied regardless
 - Policies like `RateLimitPolicy` or `ValueRangePolicy` do not unlock writes — they only constrain already-approved writes
 
 ## Quick Start
@@ -104,7 +103,7 @@ Policies are evaluated as a middleware chain. Each policy can inspect, deny, or 
 
 ### ReadOnlyPolicy
 
-Blocks all write (`Set`) operations, allows reads.
+Blocks all write (`Set`) operations, allows reads. Can be used to make read-only intent explicit, in case future default behavior changes.
 
 ```python
 from pacsys.supervised import ReadOnlyPolicy
