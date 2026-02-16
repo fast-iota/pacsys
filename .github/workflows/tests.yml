@@ -34,13 +34,14 @@ jobs:
           ty check --extra-search-path "$SITE" pacsys/
 
   test:
-    runs-on: ubuntu-latest
     needs: lint
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.10", "3.11", "3.14"]
 
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -51,6 +52,7 @@ jobs:
           allow-prereleases: true
 
       - name: Install system dependencies
+        if: runner.os == 'Linux'
         run: sudo apt-get install -y libkrb5-dev
 
       - name: Install package
