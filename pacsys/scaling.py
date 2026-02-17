@@ -875,6 +875,8 @@ def _common_scale(data: float, c_index: int, constants: tuple[float, ...]) -> fl
         # C1*exp(-X/C2) + C3*exp(-X/C4) + C5*exp(-X/C6) + 4
         if len(c) < 6:
             raise ScalingError("Insufficient constants")
+        if c[1] == 0.0 or c[3] == 0.0 or c[5] == 0.0:
+            raise ScalingError("Zero divisor constant")
         return c[0] * math.exp(-x / c[1]) + c[2] * math.exp(-x / c[3]) + c[4] * math.exp(-x / c[5]) + 4
 
     if c_index == 72:
@@ -888,7 +890,10 @@ def _common_scale(data: float, c_index: int, constants: tuple[float, ...]) -> fl
         # (C1+C2*X+C3*X^2)/(C4+C5*X+C6*X^2)
         if len(c) < 6:
             raise ScalingError("Insufficient constants")
-        return (c[0] + c[1] * x + c[2] * x * x) / (c[3] + c[4] * x + c[5] * x * x)
+        denom = c[3] + c[4] * x + c[5] * x * x
+        if denom == 0.0:
+            raise ScalingError("Division by zero")
+        return (c[0] + c[1] * x + c[2] * x * x) / denom
 
     if c_index == 76:
         # X<C1 -> C2*X^C3, else C4*exp(C5*X+C6)
@@ -1089,16 +1094,15 @@ def _common_unscale(
     c = constants
     lim_idx = p_index // 2
 
+    if c_index == 0 or c_index == 80:
+        return xx
+
     # Default primary-unit limits for binary search
     if lim_idx < len(_LOWLIM):
         pulow = _LOWLIM[lim_idx]
         puupr = _UPRLIM[lim_idx]
     else:
-        pulow = 0.0
-        puupr = 0.0
-
-    if c_index == 0 or c_index == 80:
-        return xx
+        raise ScalingError(f"Unsupported p_index {p_index} for inverse transform")
 
     if c_index in (2, 40):
         return (xx - c[2]) * c[1] / c[0]

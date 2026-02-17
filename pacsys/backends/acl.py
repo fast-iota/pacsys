@@ -263,9 +263,11 @@ def _is_error_response(text: str) -> tuple[bool, Optional[str]]:
     if text.startswith("!"):
         return True, text[1:].strip()
 
-    # ACL errors end with " - ERROR_CODE" (e.g. DIO_NO_SUCH, CLIB_SYNTAX)
+    # ACL errors end with " - ERROR_CODE" or " - DEVICE ERROR_CODE"
     if " - " in text:
-        error_code = text.rsplit(" - ", 1)[-1].strip()
+        tail = text.rsplit(" - ", 1)[-1].strip()
+        # Bare error code (e.g. "DIO_NO_SUCH") or device-prefixed (e.g. "Z:ACLTST DIO_NOATT")
+        error_code = tail.rsplit(None, 1)[-1] if " " in tail else tail
         if _ACL_ERROR_CODE_RE.match(error_code):
             return True, text
 

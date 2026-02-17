@@ -525,6 +525,7 @@ class AsyncAcnetConnectionBase:
                 self._dead_requests.add(reply.request_id)
 
     def _handle_request(self, request: AcnetRequest):
+        asyncio.ensure_future(self._request_ack(request.reply_id))
         self._requests_in[request.reply_id] = request
 
         if self._request_handler:
@@ -613,6 +614,7 @@ class AsyncAcnetConnectionBase:
         )
 
         self._reply_handlers[context.request_id] = context
+        self._dead_requests.discard(context.request_id)
 
         # Drain buffered replies (ACK+reply arrived in same batch).
         buffered = self._reply_buffer.pop(context.request_id, [])

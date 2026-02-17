@@ -824,8 +824,8 @@ class DMQBackend(Backend):
 
     def _on_read_message(self, job: _ReadJob, channel: Channel, method, body: bytes) -> None:
         """Handle a message for an async read (IO thread)."""
-        channel.basic_ack(method.delivery_tag)
         result = _resolve_reply(method.routing_key, body, job.prepared_drfs, job.drf_to_idx)
+        channel.basic_ack(method.delivery_tag)
         if result is None:
             return
         reply, idx, ref_id = result
@@ -2046,8 +2046,8 @@ class DMQBackend(Backend):
         body: bytes,
     ) -> None:
         """Handle incoming message for subscription (runs in IO thread)."""
-        channel.basic_ack(method.delivery_tag)
         result = _resolve_reply(method.routing_key, body, sub.drfs, sub.drf_to_idx)
+        channel.basic_ack(method.delivery_tag)
         if result is None:
             return
         reply, idx, ref_id = result

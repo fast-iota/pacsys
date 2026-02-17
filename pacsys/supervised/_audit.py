@@ -154,8 +154,14 @@ class AuditLog:
         with self._lock:
             for f in (self._json_file, self._proto_file):
                 if f is not None:
-                    f.flush()
-                    f.close()
+                    try:
+                        f.flush()
+                    except Exception:
+                        pass
+                    try:
+                        f.close()
+                    except Exception:
+                        pass
             self._json_file = None
             self._proto_file = None
             self._writes_since_flush = 0

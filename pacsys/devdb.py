@@ -416,14 +416,21 @@ class DevDBClient:
         request = DevDB_pb2.DeviceList(device=uncached)  # type: ignore[unresolved-attribute]
         reply = self._stub.getDeviceInfo(request, timeout=timeout or self._timeout)
 
+        pending: dict[str, DeviceInfoResult] = {}
+        error: tuple[str, str] | None = None
         for entry in reply.set:
             which = entry.WhichOneof("result")
             if which == "device":
-                info = _convert_device_info(entry.device)
-                result[entry.name] = info
-                self._cache.put(f"info:{entry.name.upper()}", info)
-            elif which == "errMsg":
-                raise DeviceError(entry.name, 0, -1, entry.errMsg)
+                pending[entry.name] = _convert_device_info(entry.device)
+            elif which == "errMsg" and error is None:
+                error = (entry.name, entry.errMsg)
+
+        if error is not None:
+            raise DeviceError(error[0], 0, -1, error[1])
+
+        for name, info in pending.items():
+            result[name] = info
+            self._cache.put(f"info:{name.upper()}", info)
 
         return result
 

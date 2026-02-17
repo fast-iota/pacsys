@@ -61,6 +61,8 @@ class DRF_EVENT:
         self.mode = mode
 
     def __eq__(self, other):
+        if not isinstance(other, DRF_EVENT):
+            return NotImplemented
         return self.raw_string == other.raw_string
 
     def __repr__(self):

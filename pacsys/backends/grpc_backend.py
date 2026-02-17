@@ -12,7 +12,7 @@ import asyncio
 import logging
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import numpy as np
@@ -233,7 +233,7 @@ def _proto_timestamp_to_datetime(ts: "timestamp_pb2.Timestamp") -> Optional[date
         nanos = ts.nanos
         if seconds == 0 and nanos == 0:
             return None
-        return datetime.fromtimestamp(seconds + nanos / 1e9)
+        return datetime.fromtimestamp(seconds + nanos / 1e9, tz=timezone.utc)
     except (ValueError, OSError, AttributeError):
         return None
 
@@ -906,8 +906,11 @@ class GRPCBackend(Backend):
                 self._loop.call_soon_threadsafe(self._loop.stop)
                 if self._reactor_thread is not None:
                     self._reactor_thread.join(timeout=2.0)
+                    if not self._reactor_thread.is_alive():
+                        self._reactor_thread = None
+                    else:
+                        logger.warning("Reactor thread did not stop within 2s")
                 self._loop = None
-                self._reactor_thread = None
                 raise
             self._core = core
 
@@ -1148,8 +1151,13 @@ class GRPCBackend(Backend):
             loop.call_soon_threadsafe(loop.stop)
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=2.0)
+            if thread.is_alive():
+                logger.warning("Reactor thread did not stop within 2s")
+            else:
+                self._reactor_thread = None
+        else:
+            self._reactor_thread = None
         self._loop = None
-        self._reactor_thread = None
 
         logger.debug("GRPCBackend closed")
 

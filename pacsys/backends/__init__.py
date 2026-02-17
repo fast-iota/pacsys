@@ -3,7 +3,7 @@ Backend abstract base class. See SPECIFICATION.md for backend comparison.
 """
 
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from pacsys.types import (
@@ -19,8 +19,8 @@ from pacsys.types import (
 
 
 def timestamp_from_millis(millis: int) -> datetime:
-    """Convert timestamp (milliseconds since Unix epoch) to datetime."""
-    return datetime.fromtimestamp(millis / 1_000)
+    """Convert timestamp (milliseconds since Unix epoch) to UTC datetime."""
+    return datetime.fromtimestamp(millis / 1_000, tz=timezone.utc)
 
 
 # Alarm dict key sets shared by DMQ and gRPC backends

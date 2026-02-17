@@ -427,6 +427,42 @@ class TestPoolClose:
             pool.release(conn)
             assert pool.available_count == 0
 
+    def test_close_drains_in_use_connections(self):
+        """Test that close() waits for in-use connections to be returned."""
+        pool = ConnectionPool(pool_size=2)
+        released = threading.Event()
+
+        with mock.patch("socket.socket", return_value=create_mock_socket()):
+            conn = pool.borrow()
+
+            def delayed_release():
+                time.sleep(0.1)
+                pool.release(conn)
+                released.set()
+
+            thread = threading.Thread(target=delayed_release)
+            thread.start()
+
+            pool.close(drain_timeout=2.0)
+            thread.join(timeout=1.0)
+
+            # Connection was returned gracefully during drain
+            assert released.is_set()
+            assert pool.in_use_count == 0
+
+    def test_close_force_closes_after_drain_timeout(self):
+        """Test that close() forcibly closes connections after drain timeout."""
+        pool = ConnectionPool(pool_size=2)
+
+        with mock.patch("socket.socket", return_value=create_mock_socket()):
+            conn = pool.borrow()  # noqa: F841 -- intentionally not released
+
+            # Short drain timeout, connection never returned
+            pool.close(drain_timeout=0.1)
+
+            # Connection was forcibly closed
+            assert pool.in_use_count == 0
+
 
 class TestContextManager:
     """Tests for context manager usage."""

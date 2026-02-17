@@ -1,6 +1,7 @@
 """gRPC proxy server that forwards requests to any Backend with policy enforcement."""
 
 import asyncio
+import hmac
 import logging
 import signal
 import threading
@@ -73,7 +74,7 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
         md = context.invocation_metadata() or []
         for key, value in md:
             if key == "authorization":
-                if value == f"Bearer {self._token}":
+                if hmac.compare_digest(value, f"Bearer {self._token}"):
                     return True
         peer = context.peer() or "unknown"
         logger.warning("auth peer=%s decision=denied reason=invalid or missing token", peer)

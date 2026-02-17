@@ -11,6 +11,8 @@ from pacsys.types import ValueType
 
 from pacsys.dpm_protocol import (
     AddToList_reply,
+    Authenticate_reply,
+    Authenticate_request,
     DeviceInfo_reply,
     ListStatus_reply,
     Scalar_reply,
@@ -21,6 +23,7 @@ from pacsys.dpm_protocol import (
     ApplySettings_reply,
 )
 from pacsys.backends._dpm_core import _AsyncDpmCore
+from tests.devices import MockGSSAPIModule, make_auth_reply
 
 
 def _scalar_reply(ref_id, value):
@@ -431,3 +434,166 @@ class TestLoggerRead:
 
         assert len(readings) == 1
         assert readings[0].is_error
+
+
+def _make_auth_reply_with_token():
+    """Auth reply with token for mutual auth phase."""
+    reply = Authenticate_reply()
+    reply.serviceName = ""
+    reply.token = b"server_token"
+    return reply
+
+
+@pytest.fixture
+def mock_kerberos_auth():
+    """Context manager that patches KerberosAuth._get_credentials."""
+    from pacsys.auth import KerberosAuth
+
+    def _make(mock_gssapi):
+        auth = KerberosAuth(_lazy=True)
+        patcher = mock.patch.object(KerberosAuth, "_get_credentials", return_value=mock_gssapi.Credentials())
+        patcher.start()
+        return auth, patcher
+
+    patchers = []
+
+    def factory(mock_gssapi):
+        auth, patcher = _make(mock_gssapi)
+        patchers.append(patcher)
+        return auth
+
+    yield factory
+    for p in patchers:
+        p.stop()
+
+
+class TestAuthenticate:
+    """Tests for _AsyncDpmCore.authenticate() Kerberos handshake."""
+
+    @pytest.mark.asyncio
+    async def test_happy_path(self, make_core, mock_kerberos_auth):
+        """Two-phase handshake completes, MIC is stored."""
+        mock_gssapi = MockGSSAPIModule()
+        mock_gssapi.SecurityContext = MockGSSAPIContextForAuth
+        with mock.patch.dict("sys.modules", {"gssapi": mock_gssapi}):
+            auth = mock_kerberos_auth(mock_gssapi)
+            replies = [make_auth_reply("dpm\\@host"), make_auth_reply()]
+            core, conn = make_core(replies, auth=auth)
+            await core.authenticate()
+            assert core._mic == b"mock_mic_signature"
+            assert core._mic_message == b"1234"
+            auth_reqs = [m for m in conn.sent if isinstance(m, Authenticate_request)]
+            assert len(auth_reqs) == 2
+            assert auth_reqs[0].token == b""
+
+    @pytest.mark.asyncio
+    async def test_no_auth_raises(self, make_core):
+        """authenticate() without KerberosAuth raises AuthenticationError."""
+        core, conn = make_core([])
+        with pytest.raises(AuthenticationError, match="KerberosAuth required"):
+            await core.authenticate()
+
+    @pytest.mark.asyncio
+    async def test_empty_service_name_raises(self, make_core, mock_kerberos_auth):
+        """Empty service name from server raises AuthenticationError."""
+        mock_gssapi = MockGSSAPIModule()
+        with mock.patch.dict("sys.modules", {"gssapi": mock_gssapi}):
+            auth = mock_kerberos_auth(mock_gssapi)
+            reply = Authenticate_reply()
+            reply.serviceName = ""
+            core, conn = make_core([reply], auth=auth)
+            with pytest.raises(AuthenticationError, match="service name"):
+                await core.authenticate()
+
+    @pytest.mark.asyncio
+    async def test_wrong_reply_type_phase1(self, make_core, mock_kerberos_auth):
+        """Non-Authenticate_reply in phase 1 raises AuthenticationError."""
+        mock_gssapi = MockGSSAPIModule()
+        with mock.patch.dict("sys.modules", {"gssapi": mock_gssapi}):
+            auth = mock_kerberos_auth(mock_gssapi)
+            core, conn = make_core([_status_ok()], auth=auth)
+            with pytest.raises(AuthenticationError, match="Expected Authenticate_reply"):
+                await core.authenticate()
+
+    @pytest.mark.asyncio
+    async def test_wrong_reply_type_phase2(self, make_core, mock_kerberos_auth):
+        """Non-Authenticate_reply in phase 2 raises AuthenticationError."""
+        mock_gssapi = MockGSSAPIModule()
+        mock_gssapi.SecurityContext = MockGSSAPIContextForAuth
+        with mock.patch.dict("sys.modules", {"gssapi": mock_gssapi}):
+            auth = mock_kerberos_auth(mock_gssapi)
+            core, conn = make_core([make_auth_reply("dpm"), _status_ok()], auth=auth)
+            with pytest.raises(AuthenticationError, match="Expected Authenticate_reply"):
+                await core.authenticate()
+
+    @pytest.mark.asyncio
+    async def test_context_incomplete_raises(self, make_core, mock_kerberos_auth):
+        """Context never completes -> AuthenticationError."""
+        mock_gssapi = MockGSSAPIModule()
+        mock_gssapi.SecurityContext = MockGSSAPIContextNeverComplete
+        with mock.patch.dict("sys.modules", {"gssapi": mock_gssapi}):
+            auth = mock_kerberos_auth(mock_gssapi)
+            replies = [make_auth_reply("dpm"), make_auth_reply()]
+            core, conn = make_core(replies, auth=auth)
+            with pytest.raises(AuthenticationError, match="incomplete"):
+                await core.authenticate()
+
+    @pytest.mark.asyncio
+    async def test_service_name_transformation(self, make_core, mock_kerberos_auth):
+        """Verifies Java-escaped service name is correctly transformed."""
+        mock_gssapi = MockGSSAPIModule()
+        captured_names = []
+        original_name = mock_gssapi.Name
+
+        def capture_name(name, name_type=None):
+            captured_names.append(name)
+            return original_name(name, name_type)
+
+        mock_gssapi.Name = staticmethod(capture_name)
+        mock_gssapi.SecurityContext = MockGSSAPIContextForAuth
+        with mock.patch.dict("sys.modules", {"gssapi": mock_gssapi}):
+            auth = mock_kerberos_auth(mock_gssapi)
+            replies = [make_auth_reply("daeset\\@somehost"), make_auth_reply()]
+            core, conn = make_core(replies, auth=auth)
+            await core.authenticate()
+            assert "daeset/somehost@FNAL.GOV" in captured_names
+
+    @pytest.mark.asyncio
+    async def test_timeout_on_recv(self, make_core, mock_kerberos_auth):
+        """Timeout waiting for server reply raises TimeoutError."""
+        mock_gssapi = MockGSSAPIModule()
+        with mock.patch.dict("sys.modules", {"gssapi": mock_gssapi}):
+            auth = mock_kerberos_auth(mock_gssapi)
+            core, conn = make_core([], auth=auth)
+            core._timeout = 0.1
+            with pytest.raises(asyncio.TimeoutError):
+                await core.authenticate()
+
+
+class MockGSSAPIContextForAuth:
+    """Mock GSSAPI context that completes after first step."""
+
+    def __init__(self, name=None, usage=None, flags=None, creds=None, mech=None):
+        self.complete = False
+        self._step_count = 0
+
+    def step(self, token=None):
+        self._step_count += 1
+        self.complete = True
+        return b"mock_kerberos_token"
+
+    def get_signature(self, message):
+        return b"mock_mic_signature"
+
+
+class MockGSSAPIContextNeverComplete:
+    """Mock GSSAPI context that never completes."""
+
+    def __init__(self, name=None, usage=None, flags=None, creds=None, mech=None):
+        self.complete = False
+
+    def step(self, token=None):
+        return b"mock_kerberos_token"
+
+    def get_signature(self, message):
+        return b"mock_mic_signature"

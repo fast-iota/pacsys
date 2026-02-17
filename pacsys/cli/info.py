@@ -163,7 +163,7 @@ def _format_digital_alarm_verbose(alarm, ext_status_bits=None) -> tuple[str, str
     for k, v in alarm.items():
         if k not in _DIGITAL_ALARM_BITMASK_KEYS:
             summary_parts.append(f"{k}={v}")
-    summary = ", ".join(summary_parts) if summary_parts else "nominal={nominal:08b}, mask={mask:08b}"
+    summary = ", ".join(summary_parts) if summary_parts else f"nominal={nominal:08b}, mask={mask:08b}"
     # Build bit_no -> name lookup from DevDB ext_status_bits
     bit_names: dict[int, str] = {}
     if ext_status_bits:

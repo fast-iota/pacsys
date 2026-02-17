@@ -383,12 +383,15 @@ class ConnectionPool:
             else:
                 self.release(conn)
 
-    def close(self) -> None:
+    def close(self, drain_timeout: float = 2.0) -> None:
         """
         Close the pool and all connections.
 
         After close(), the pool cannot be reused. Any threads waiting
         on borrow() will receive PoolClosedError.
+
+        Waits up to *drain_timeout* seconds for in-use connections to be
+        returned before forcibly closing them.
 
         Safe to call multiple times.
         """
@@ -403,13 +406,27 @@ class ConnectionPool:
                 self._close_connection(conn)
             self._available.clear()
 
-            # Close all in-use connections
-            for conn in list(self._in_use):
-                self._close_connection(conn)
-            self._in_use.clear()
-
             # Wake up all waiters so they get PoolClosedError
             self._condition.notify_all()
+
+            # Wait for borrowers to return their connections
+            if self._in_use:
+                deadline = time.monotonic() + drain_timeout
+                while self._in_use:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    self._condition.wait(timeout=remaining)
+
+            # Forcibly close any connections still outstanding
+            if self._in_use:
+                logger.warning(
+                    "Pool closing with %d connection(s) still in use",
+                    len(self._in_use),
+                )
+                for conn in list(self._in_use):
+                    self._close_connection(conn)
+                self._in_use.clear()
 
             logger.info("ConnectionPool closed")
 

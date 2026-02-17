@@ -51,6 +51,8 @@ class DataRequest:
         self.property_explicit = False
 
     def __eq__(self, other):
+        if not isinstance(other, DataRequest):
+            return NotImplemented
         return (
             self.device == other.device
             and self.property == other.property

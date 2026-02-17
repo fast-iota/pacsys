@@ -369,6 +369,14 @@ class AcnetConnection:
             self._data_socket.setblocking(False)
 
         except OSError as e:
+            for s in (self._cmd_socket, self._data_socket):
+                if s:
+                    try:
+                        s.close()
+                    except Exception:
+                        pass
+            self._cmd_socket = None
+            self._data_socket = None
             logger.error(f"Failed to open ACNET sockets: {e}")
             raise AcnetUnavailableError()
 

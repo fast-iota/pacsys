@@ -309,6 +309,8 @@ class RemoteProcess:
         timeout: Default timeout for read operations in seconds
     """
 
+    _MAX_BUF = 16 * 1024 * 1024  # 16 MB
+
     def __init__(self, ssh: SSHClient, command: str, *, timeout: float = 30.0):
         self._channel = ssh.open_channel(command, timeout=timeout)
         self._timeout = timeout
@@ -355,6 +357,8 @@ class RemoteProcess:
                 if not data:
                     raise SSHError(f"Channel closed while waiting for marker {marker!r}")
                 self._buf += data
+                if len(self._buf) > self._MAX_BUF:
+                    raise SSHError(f"Buffer exceeded {self._MAX_BUF} bytes waiting for marker {marker!r}")
             elif self._channel.closed or self._channel.exit_status_ready():
                 raise SSHError(
                     f"Process exited while waiting for marker {marker!r} (buffer tail: {self._buf[-200:]!r})"
@@ -378,6 +382,8 @@ class RemoteProcess:
                 if not data:
                     break
                 self._buf += data
+                if len(self._buf) > self._MAX_BUF:
+                    raise SSHError(f"Buffer exceeded {self._MAX_BUF} bytes in read_for")
             elif self._channel.closed or self._channel.exit_status_ready():
                 break
             else:

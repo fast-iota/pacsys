@@ -1391,6 +1391,14 @@ class DPMHTTPBackend(Backend):
             elif isinstance(reply, Status_reply):
                 received_infos += 1
 
+        if received_infos < expected_count:
+            logger.warning(
+                "Write setup timed out: received %d/%d device infos",
+                received_infos,
+                expected_count,
+            )
+            return None, add_errors
+
         # Build and send ApplySettings
         apply_req = ApplySettings_request()
         apply_req.user_name = self._auth.principal if self._auth else ""
@@ -1757,8 +1765,13 @@ class DPMHTTPBackend(Backend):
             loop.call_soon_threadsafe(loop.stop)
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=2.0)
+            if thread.is_alive():
+                logger.warning("Reactor thread did not stop within 2s")
+            else:
+                self._reactor_thread = None
+        else:
+            self._reactor_thread = None
         self._loop = None
-        self._reactor_thread = None
 
         # Close write connections
         self._close_write_connections()

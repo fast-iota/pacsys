@@ -3,7 +3,7 @@ Core data types - Reading, WriteResult, SubscriptionHandle, CombinedStream.
 """
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Union, Optional, Callable, Iterator, TYPE_CHECKING
 from enum import Enum, Flag, IntEnum, auto
 
@@ -320,7 +320,7 @@ class CombinedStream:
                 if sub.stopped:
                     continue
                 for reading, handle in sub.readings(timeout=0):
-                    ts = reading.timestamp or datetime.min
+                    ts = reading.timestamp or datetime.min.replace(tzinfo=timezone.utc)
                     heapq.heappush(heap, (ts, counter, reading, handle))
                     counter += 1
             while heap:
@@ -392,7 +392,7 @@ class CombinedStream:
                 # Got first reading -- drain all currently available into a heap
                 heap = []
                 reading, handle = item
-                ts = reading.timestamp or datetime.min
+                ts = reading.timestamp or datetime.min.replace(tzinfo=timezone.utc)
                 heapq.heappush(heap, (ts, counter, reading, handle))
                 counter += 1
 
@@ -407,7 +407,7 @@ class CombinedStream:
                     if isinstance(item, Exception):
                         raise item
                     reading, handle = item
-                    ts = reading.timestamp or datetime.min
+                    ts = reading.timestamp or datetime.min.replace(tzinfo=timezone.utc)
                     heapq.heappush(heap, (ts, counter, reading, handle))
                     counter += 1
 

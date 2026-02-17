@@ -58,6 +58,8 @@ class ARRAY_RANGE:
         self.mode: Literal["full", "std", "single"] = mode or ("full" if (low is None and high is None) else "std")
 
     def __eq__(self, other):
+        if not isinstance(other, ARRAY_RANGE):
+            return NotImplemented
         return self.low == other.low and self.high == other.high and self.mode == other.mode
 
     def __str__(self):
@@ -102,6 +104,8 @@ class BYTE_RANGE:
         self.mode = mode  # or ('full' if (low is None and high is None) else 'std')
 
     def __eq__(self, other):
+        if not isinstance(other, BYTE_RANGE):
+            return NotImplemented
         return self.offset == other.offset and self.length == other.length and self.mode == other.mode
 
     def __str__(self):
