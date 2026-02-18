@@ -187,6 +187,48 @@ class TestConnectionError:
                 assert code == 2
 
 
+class TestRejectControlRead:
+    """Reading CONTROL property is rejected — it is write-only."""
+
+    def test_explicit_control_property(self):
+        from pacsys.cli.get import main
+
+        err = io.StringIO()
+        with mock.patch("sys.argv", ["acget", "Z:ACLTST.CONTROL"]):
+            with contextlib.redirect_stderr(err):
+                rc = main()
+
+        assert rc == 2
+        assert "CONTROL" in err.getvalue()
+
+    def test_ampersand_qualifier(self):
+        from pacsys.cli.get import main
+
+        err = io.StringIO()
+        with mock.patch("sys.argv", ["acget", "Z&ACLTST"]):
+            with contextlib.redirect_stderr(err):
+                rc = main()
+
+        assert rc == 2
+        assert "CONTROL" in err.getvalue()
+
+    @mock.patch("pacsys.cli.get.make_backend")
+    def test_status_qualifier_allowed(self, mock_mb):
+        """STATUS (|) is readable — only CONTROL is rejected."""
+        from pacsys.cli.get import main
+
+        backend = mock.MagicMock()
+        backend.get.return_value = _make_reading()
+        mock_mb.return_value = backend
+
+        buf = io.StringIO()
+        with mock.patch("sys.argv", ["acget", "Z|ACLTST"]):
+            with contextlib.redirect_stdout(buf):
+                rc = main()
+
+        assert rc == 0
+
+
 class TestArrayWithRange:
     """Array range (-r) slices numpy array values."""
 

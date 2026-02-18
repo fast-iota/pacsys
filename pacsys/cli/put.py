@@ -11,6 +11,9 @@ from pacsys.cli._common import (
     make_backend,
     parse_value,
 )
+from pacsys.drf3 import parse_request
+from pacsys.drf3.property import DRF_PROPERTY
+from pacsys.types import BasicControl
 
 
 def main() -> int:
@@ -34,6 +37,11 @@ def main() -> int:
     for i in range(0, len(args.pairs), 2):
         drf = args.pairs[i]
         value = parse_value(args.pairs[i + 1])
+        # BasicControl values target CONTROL property regardless of DRF form
+        if isinstance(value, BasicControl):
+            req = parse_request(drf)
+            if req.property not in (DRF_PROPERTY.CONTROL, DRF_PROPERTY.STATUS):
+                drf = req.to_canonical(property=DRF_PROPERTY.CONTROL)
         settings.append((drf, value))
 
     fmt = "terse" if args.terse else args.output_format

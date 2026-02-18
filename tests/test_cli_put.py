@@ -5,7 +5,7 @@ import io
 import json
 from unittest import mock
 
-from pacsys.types import WriteResult
+from pacsys.types import BasicControl, WriteResult
 
 
 def _ok_result(drf="M:OUTTMP"):
@@ -155,6 +155,45 @@ class TestConnectionError:
                 except SystemExit as e:
                     rc = e.code
                 assert rc == 2
+
+
+class TestControlWrite:
+    """Control shorthand names are passed as BasicControl enum to backend."""
+
+    @mock.patch("pacsys.cli.put.make_backend")
+    def test_control_with_status_qualifier(self, mock_mb):
+        from pacsys.cli.put import main
+
+        backend = mock.MagicMock()
+        backend.write.return_value = _ok_result("Z:ACLTST")
+        mock_mb.return_value = backend
+
+        buf = io.StringIO()
+        with mock.patch("sys.argv", ["acput", "Z|ACLTST", "on"]):
+            with contextlib.redirect_stdout(buf):
+                rc = main()
+
+        assert rc == 0
+        # STATUS qualifier preserved — prepare_for_write maps it to CONTROL
+        backend.write.assert_called_once_with("Z|ACLTST", BasicControl.ON, timeout=5.0)
+
+    @mock.patch("pacsys.cli.put.make_backend")
+    def test_bare_drf_auto_targets_control(self, mock_mb):
+        """acput Z:ACLTST on → DRF rewritten to Z:ACLTST.CONTROL."""
+        from pacsys.cli.put import main
+
+        backend = mock.MagicMock()
+        backend.write.return_value = _ok_result("Z:ACLTST")
+        mock_mb.return_value = backend
+
+        buf = io.StringIO()
+        with mock.patch("sys.argv", ["acput", "Z:ACLTST", "on"]):
+            with contextlib.redirect_stdout(buf):
+                rc = main()
+
+        assert rc == 0
+        drf_arg = backend.write.call_args[0][0]
+        assert "CONTROL" in drf_arg
 
 
 class TestVerifyPath:

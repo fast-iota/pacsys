@@ -8,7 +8,7 @@ from typing import Any, Callable, Optional, Union
 
 import pacsys
 from pacsys.drf_utils import get_device_name
-from pacsys.types import Reading, WriteResult
+from pacsys.types import BasicControl, Reading, WriteResult
 
 # Exit codes
 EXIT_OK = 0
@@ -55,6 +55,8 @@ def make_backend(args):
         return pacsys.grpc(**kwargs)
     elif backend_type == "dmq":
         kwargs.pop("role", None)
+        if "auth" not in kwargs:
+            kwargs["auth"] = pacsys.KerberosAuth()
         return pacsys.dmq(**kwargs)
     elif backend_type == "acl":
         # ACL only accepts timeout (and optionally base_url)
@@ -112,9 +114,13 @@ def parse_slice(s: str) -> slice:
     return slice(parsed[0], parsed[1], parsed[2])
 
 
-def parse_value(s: str) -> Union[float, str, list]:
+_BASIC_CONTROL_NAMES = {m.name.lower(): m for m in BasicControl}
+
+
+def parse_value(s: str) -> Union[float, str, list, BasicControl]:
     """Parse CLI value string.
 
+    Control names (on/off/reset/...) -> BasicControl enum (case-insensitive).
     Comma-separated all-numeric -> list of floats (array write).
     Otherwise try float, fallback to string (preserves commas in text).
     """
@@ -123,8 +129,10 @@ def parse_value(s: str) -> Union[float, str, list]:
         try:
             return [float(p) for p in parts]
         except ValueError:
-            # Not all-numeric: treat entire string as text, not an array
             return s
+    ctrl = _BASIC_CONTROL_NAMES.get(s.lower())
+    if ctrl is not None:
+        return ctrl
     try:
         return float(s)
     except ValueError:

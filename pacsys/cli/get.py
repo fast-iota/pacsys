@@ -11,6 +11,8 @@ from pacsys.cli._common import (
     make_backend,
     parse_slice,
 )
+from pacsys.drf3 import parse_request
+from pacsys.drf3.property import DRF_PROPERTY
 
 
 def main() -> int:
@@ -27,6 +29,12 @@ def main() -> int:
             array_slice = parse_slice(args.array_range)
         except ValueError as e:
             print(f"Invalid range: {e}", file=sys.stderr)
+            return EXIT_USAGE_ERROR
+
+    # Reject CONTROL property — it is write-only
+    for dev in args.devices:
+        if parse_request(dev).property == DRF_PROPERTY.CONTROL:
+            print(f"Error: cannot read CONTROL property ({dev}). Use acput to write control commands.", file=sys.stderr)
             return EXIT_USAGE_ERROR
 
     fmt = "terse" if args.terse else args.output_format

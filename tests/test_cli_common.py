@@ -7,7 +7,7 @@ from unittest import mock
 import numpy as np
 import pytest
 
-from pacsys.types import Reading, WriteResult, ValueType, DeviceMeta
+from pacsys.types import BasicControl, Reading, WriteResult, ValueType, DeviceMeta
 
 
 class TestParseSlice:
@@ -102,6 +102,30 @@ class TestParseValue:
         from pacsys.cli._common import parse_value
 
         assert parse_value("-3.14") == -3.14
+
+    @pytest.mark.parametrize(
+        "name,expected",
+        [(m.name.lower(), m) for m in BasicControl],
+    )
+    def test_control_names(self, name, expected):
+        from pacsys.cli._common import parse_value
+
+        assert parse_value(name) is expected
+
+    def test_control_name_case_insensitive(self):
+        from pacsys.cli._common import parse_value
+
+        assert parse_value("ON") is BasicControl.ON
+        assert parse_value("Off") is BasicControl.OFF
+        assert parse_value("rEsEt") is BasicControl.RESET
+
+    def test_numeric_string_stays_float(self):
+        """Numeric '1' should remain float, not become BasicControl.ON."""
+        from pacsys.cli._common import parse_value
+
+        result = parse_value("1")
+        assert isinstance(result, float)
+        assert result == 1.0
 
 
 class TestFormatValue:
@@ -424,13 +448,17 @@ class TestMakeBackend:
         make_backend(args)
         mock_grpc.assert_called_once()
 
+    @mock.patch("pacsys.KerberosAuth")
     @mock.patch("pacsys.dmq")
-    def test_dmq_backend(self, mock_dmq):
+    def test_dmq_backend(self, mock_dmq, mock_kerb):
         from pacsys.cli._common import make_backend
 
         args = self._make_args(backend="dmq")
         make_backend(args)
         mock_dmq.assert_called_once()
+        # DMQ defaults to Kerberos auth when no auth specified
+        _, kwargs = mock_dmq.call_args
+        assert kwargs["auth"] is mock_kerb.return_value
 
     @mock.patch("pacsys.acl")
     def test_acl_backend(self, mock_acl):
