@@ -1,6 +1,6 @@
 # ACNET protocol
 
-This page documents the low-level ACNET protocol for advanced users who need to communicate directly with frontends or implement custom protocols.
+This page documents the low-level ACNET protocol for advanced users who need to communicate directly with frontends or implement custom logic.
 
 !!! danger "Low-level protocol -- prefer higher-level APIs"
     This module provides direct access to ACNET protocol primitives. It is strongly recommeded to use the higher-level `pacsys` APIs instead. Only use `AcnetConnection` directly when you need custom ACNET interactions.
@@ -11,9 +11,8 @@ This page documents the low-level ACNET protocol for advanced users who need to 
     use `AcnetConnectionUDP` while running on one of the nodes directly. At that point, you should REALLY know what
     you are doing and why.
 
-## ACNET implementation in PACSys
-
 ### TCP example
+
 Ping an ACNET node (CLX74) to verify connectivity:
 
 ```python
@@ -40,12 +39,35 @@ with AcnetConnectionTCP("acsys-proxy.fnal.gov") as conn:
     print(f"Reply: status={reply.status}, data={reply.data!r}, last={reply.last}")
 ```
 
-### Implementation
+## API details
 
-- **`AsyncAcnetConnectionBase`** (`pacsys/acnet/async_connection.py`) - Protocol core (commands, dispatch, tracking). Transport-agnostic - subclasses provide framing via abstract methods (`_open_transport`, `_close_transport`, `_send_frame`, `_start_read_loop`).
+### Parsing data structures
+
+```python
+from pacsys.acnet import AcnetPacket
+
+packet = AcnetPacket.parse(raw_bytes)
+
+if packet.is_reply():
+    print(f"Reply from {packet.server_task_name}")
+    print(f"Status: {packet.status}")
+    print(f"Data: {packet.data.hex()}")
+```
+
+| Class | Description |
+|-------|-------------|
+| `AcnetPacket` | Base class - parse with `AcnetPacket.parse(data)` |
+| `AcnetRequest` | Incoming request from another task |
+| `AcnetReply` | Reply to a request we sent |
+| `AcnetMessage` | Unsolicited message (no reply expected) |
+| `AcnetCancel` | Cancel notification for an outstanding request |
+
+### TCP vs UDP connections
+
+- **`AsyncAcnetConnectionBase`** - Protocol core (commands, dispatch, tracking). Transport-agnostic - subclasses provide framing via abstract methods (`_open_transport`, `_close_transport`, `_send_frame`, `_start_read_loop`).
   - **`AsyncAcnetConnectionTCP`** - TCP stream with 4-byte length-prefix framing and handshake, typically used via `acsys-proxy.fnal.gov:6802`.
   - **`AsyncAcnetConnectionUDP`** - UDP datagrams (no length prefix); uses `asyncio.DatagramProtocol` for receive callbacks.
-- **`AcnetConnectionTCP`** / **`AcnetConnectionUDP`** (`pacsys/acnet/connection_sync.py`) - Synchronous wrappers. Run the async core on a dedicated reactor thread and expose a blocking API via `run_coroutine_threadsafe`.
+- **`AcnetConnectionTCP`** / **`AcnetConnectionUDP`** - Synchronous wrappers. Run the async core on a dedicated reactor thread and expose a blocking API via `run_coroutine_threadsafe`.
 
 The TCP protocol uses length-prefixed framing with 4 message types. UDP protocol is same messages without length prefix:
 
@@ -57,6 +79,23 @@ The TCP protocol uses length-prefixed framing with 4 message types. UDP protocol
 | DATA | 3 | acnetd → Client | ACNET packets (replies, requests, messages, cancels) |
 
 Every command follows a request/response pattern: the client sends a COMMAND and waits for a single ACK. ACNET data packets (replies from remote nodes) arrive separately as DATA messages. Reply handlers are registered per request ID and called on the reactor thread - consumers must use thread-safe primitives (e.g. `queue.Queue`, `threading.Event`) to receive data.
+
+### Constants
+
+```python
+from pacsys.acnet.constants import (
+    ACNET_PORT,           # 6801 - UDP port
+    ACNET_TCP_PORT,       # 6802 - TCP port (for acnetd)
+    ACNET_HEADER_SIZE,    # 18 bytes
+
+    # Message flags
+    ACNET_FLG_USM,        # 0x0000 - Unsolicited message
+    ACNET_FLG_REQ,        # 0x0002 - Request
+    ACNET_FLG_RPY,        # 0x0004 - Reply
+    ACNET_FLG_MLT,        # 0x0001 - Multiple reply
+    ACNET_FLG_CAN,        # 0x0200 - Cancel
+)
+```
 
 ## ACNET protocol details
 
@@ -164,50 +203,10 @@ The `status` field uses facility-error encoding:
 - High byte: error code (signed)
 - Negative = failure, zero = success, positive = status or warning (e.g., pending)
 
-## Using pacsys.acnet
-
-```python
-from pacsys.acnet import AcnetPacket
-
-packet = AcnetPacket.parse(raw_bytes)
-
-if packet.is_reply():
-    print(f"Reply from {packet.server_task_name}")
-    print(f"Status: {packet.status}")
-    print(f"Data: {packet.data.hex()}")
-```
-
-### Packet Classes
-
-| Class | Description |
-|-------|-------------|
-| `AcnetPacket` | Base class - parse with `AcnetPacket.parse(data)` |
-| `AcnetRequest` | Incoming request from another task |
-| `AcnetReply` | Reply to a request we sent |
-| `AcnetMessage` | Unsolicited message (no reply expected) |
-| `AcnetCancel` | Cancel notification for an outstanding request |
-
-### Constants
-
-```python
-from pacsys.acnet.constants import (
-    ACNET_PORT,           # 6801 - UDP port
-    ACNET_TCP_PORT,       # 6802 - TCP port (for acnetd)
-    ACNET_HEADER_SIZE,    # 18 bytes
-
-    # Message flags
-    ACNET_FLG_USM,        # 0x0000 - Unsolicited message
-    ACNET_FLG_REQ,        # 0x0002 - Request
-    ACNET_FLG_RPY,        # 0x0004 - Reply
-    ACNET_FLG_MLT,        # 0x0001 - Multiple reply
-    ACNET_FLG_CAN,        # 0x0200 - Cancel
-)
-```
-
 ## Wire Format Notes
 
 1. **No odd-length packets** - ACNET does not support odd-length payloads
-2. **Byte swapping** - Data is little-endian with even/odd bytes swapped per word
+2. **Byte swapping** - Data is little-endian with even/odd bytes swapped per word.
 3. **Multiple packets per datagram** - A single UDP datagram may contain multiple ACNET packets
 
 The byte-swap rule means:
@@ -229,4 +228,3 @@ The byte-swap rule means:
 
 - ACNET Design Note 22 (internal Fermilab documentation)
 - [FTP Technical Reference](https://www-bd.fnal.gov/controls/micro_p/mooc_project/ftp.html) - Original FTP protocol documentation
-- `pacsys/acnet/` source code for implementation details

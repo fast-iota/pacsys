@@ -6,35 +6,38 @@
     **Prefer higher-level alternatives whenever possible:**
 
     - **Continuous streaming up to 1440 Hz**: Use `pacsys.subscribe()` with a DPM backend -- DPM proxies FTP requests to front-ends on your behalf with proper resource management.
-    - **Snapshot plots**: Currently only available through this direct protocol. Use the `FTPClient` API rather than building raw packets.
-
-    Only use the direct FTPMAN protocol when you need snapshot capability or when DPM/DMQ cannot meet your requirements. Always use the lowest reasonable priority (0) and clean up resources promptly.
+    - **Snapshot plots**: Consider ACL script if non-interactive collection is acceptable.
 
 FTPMAN (Fast Time Plot Manager) is the ACNET protocol for high-frequency data acquisition from front-end controllers. It supports two modes:
 
 - **Continuous plots (FTP)**: real-time streaming at rates up to 1440 Hz
 - **Snapshot plots (SNP)**: triggered capture of up to 2048+ points at rates up to 20 MHz
 
-All FTPMAN packets are ACNET request/reply payloads sent to the **FTPMAN** task on front-end nodes. All fields use **little-endian** byte order.
+All FTPMAN packets are ACNET request/reply payloads sent to the **FTPMAN** task on front-end nodes. All fields use little-endian byte order.
 
-## Using pacsys
+## Using FTPClient
 
 ### Query Capabilities
+
+Every FTPMAN-capable channel has FTP and SNP classes which describe frontend capabilities.
 
 ```python
 from pacsys.acnet import AcnetConnectionTCP, FTPClient, FTPDevice
 
+# You will need a special acnetd instance which allows FTPMAN over TCP (or use UDP)
+# Clean up resources promptly/use context manager
 with AcnetConnectionTCP() as conn:
+    # Always use the lowest priority (0, default)
     ftp = FTPClient(conn)
 
     node = conn.get_node("MUONFE")
-    dev = FTPDevice(di=27235, pi=12, ssdn=b"\x00\x00B\x00?!\x00\x00")
+    dev = FTPDevice(di=27235, pi=12, ssdn=b"\x00\x00B\x00?!\x00\x00")  # M:OUTTMP
 
     codes = ftp.get_class_codes(node, dev)
     print(f"FTP class: {codes.ftp}, Snapshot class: {codes.snap}")
 ```
 
-### Continuous Streaming
+### Continuous FTP Streaming
 
 ```python
 from pacsys.acnet import AcnetConnectionTCP, FTPClient, FTPDevice
@@ -42,7 +45,7 @@ from pacsys.acnet import AcnetConnectionTCP, FTPClient, FTPDevice
 with AcnetConnectionTCP() as conn:
     ftp = FTPClient(conn)
     node = conn.get_node("MUONFE")
-    dev = FTPDevice(di=27235, pi=12, ssdn=b"\x00\x00B\x00?!\x00\x00")
+    dev = FTPDevice(di=27235, pi=12, ssdn=b"\x00\x00B\x00?!\x00\x00")  # M:OUTTMP
 
     with ftp.start_continuous(node, [dev], rate_hz=1440) as stream:
         for batch in stream.readings(timeout=1.0):
@@ -51,7 +54,7 @@ with AcnetConnectionTCP() as conn:
                     print(f"Device {di}: ts={pt.timestamp_us} us, val={pt.raw_value}")
 ```
 
-### Snapshot Capture
+### Immediate Snapshot
 
 ```python
 from pacsys.acnet import AcnetConnectionTCP, FTPClient, FTPDevice
@@ -59,13 +62,13 @@ from pacsys.acnet import AcnetConnectionTCP, FTPClient, FTPDevice
 with AcnetConnectionTCP() as conn:
     ftp = FTPClient(conn)
     node = conn.get_node("MUONFE")
-    dev = FTPDevice(di=27235, pi=12, ssdn=b"\x00\x00B\x00?!\x00\x00")
+    dev = FTPDevice(di=27235, pi=12, ssdn=b"\x00\x00B\x00?!\x00\x00")  # M:OUTTMP
 
     # Default arm_source=2 (clock) with all-0xFF events = immediate arm
     with ftp.start_snapshot(
         node=node,
         devices=[dev],
-        rate_hz=1440,
+        rate_hz=5000,
         num_points=100,
         snap_class_code=13,  # enables auto skip_first_point
     ) as snap:
@@ -86,7 +89,7 @@ from pacsys.acnet import AcnetConnectionTCP, FTPClient, FTPDevice
 with AcnetConnectionTCP() as conn:
     ftp = FTPClient(conn)
     node = conn.get_node("MUONFE")
-    dev = FTPDevice(di=27235, pi=12, ssdn=b"\x00\x00B\x00?!\x00\x00")
+    dev = FTPDevice(di=27235, pi=12, ssdn=b"\x00\x00B\x00?!\x00\x00")  # M:OUTTMP
 
     # Arm on TCLK event 0x02 -- each byte is a literal event number
     arm_events = b"\x02" + b"\xff" * 7
@@ -94,7 +97,7 @@ with AcnetConnectionTCP() as conn:
     with ftp.start_snapshot(
         node=node,
         devices=[dev],
-        rate_hz=50,
+        rate_hz=5000,
         num_points=100,
         arm_events=arm_events,
         snap_class_code=13,
@@ -112,12 +115,12 @@ from pacsys.acnet import AcnetConnectionTCP, FTPClient, FTPDevice
 with AcnetConnectionTCP() as conn:
     ftp = FTPClient(conn)
     node = conn.get_node("MUONFE")
-    dev = FTPDevice(di=27235, pi=12, ssdn=b"\x00\x00B\x00?!\x00\x00")
+    dev = FTPDevice(di=27235, pi=12, ssdn=b"\x00\x00B\x00?!\x00\x00")  # M:OUTTMP
 
     with ftp.start_snapshot(
         node=node,
         devices=[dev],
-        rate_hz=1440,
+        rate_hz=5000,
         num_points=100,
         snap_class_code=13,
     ) as snap:
@@ -125,7 +128,7 @@ with AcnetConnectionTCP() as conn:
             snap.wait(timeout=10.0)
             points = snap.retrieve(device_index=0)
             print(f"Cycle {cycle}: {len(points)} points")
-            snap.restart()  # re-arm for next capture
+            snap.restart()  # re-arm for next capture - avoids repeated setup
 ```
 
 ### Sequential Multi-Chunk Retrieval
@@ -138,12 +141,12 @@ from pacsys.acnet import AcnetConnectionTCP, FTPClient, FTPDevice
 with AcnetConnectionTCP() as conn:
     ftp = FTPClient(conn)
     node = conn.get_node("MUONFE")
-    dev = FTPDevice(di=27235, pi=12, ssdn=b"\x00\x00B\x00?!\x00\x00")
+    dev = FTPDevice(di=27235, pi=12, ssdn=b"\x00\x00B\x00?!\x00\x00")  # M:OUTTMP
 
     with ftp.start_snapshot(
         node=node,
         devices=[dev],
-        rate_hz=1440,
+        rate_hz=5000,
         num_points=2048,
         snap_class_code=13,
     ) as snap:
@@ -176,9 +179,9 @@ from pacsys.acnet.ftp import get_ftp_class_info, get_snap_class_info
 ftp_info = get_ftp_class_info(16)   # C290 MADC
 snap_info = get_snap_class_info(13) # C290 MADC snapshot
 print(f"FTP max rate: {ftp_info.max_rate} Hz")
-print(f"Snap max rate: {snap_info.max_rate} Hz, "
-      f"max points: {snap_info.max_points}, "
-      f"has_timestamps: {snap_info.has_timestamps}")
+print(f"Snap max rate: {snap_info.max_rate} Hz, "      # 90 KHz
+      f"max points: {snap_info.max_points}, "          # 2048
+      f"has_timestamps: {snap_info.has_timestamps}")   # True
 ```
 
 ## Continuous Plot Flow

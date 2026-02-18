@@ -1,6 +1,6 @@
 # Reading Devices
 
-This guide covers all the ways to read data from ACNET devices.
+One-shot reads are the most basic operation supported by all backends. PACSys tries to optimize latency of this use case where possible, but some setup/teardown is still needed for every call. Consider streaming if you expect to read same data multiple times.
 
 ---
 
@@ -62,7 +62,7 @@ The `Reading` object fields:
 
 ### Batch Reads
 
-Read multiple devices in a single network round-trip:
+Read multiple devices in fewer network round-trips:
 
 ```python
 readings = pacsys.get_many([
