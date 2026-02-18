@@ -35,6 +35,7 @@ with AcnetConnectionTCP() as conn:
 
     codes = ftp.get_class_codes(node, dev)
     print(f"FTP class: {codes.ftp}, Snapshot class: {codes.snap}")
+    # => FTP class: 16, Snapshot class: 13
 ```
 
 ### Continuous FTP Streaming
@@ -52,6 +53,9 @@ with AcnetConnectionTCP() as conn:
             for di, points in batch.items():
                 for pt in points:
                     print(f"Device {di}: ts={pt.timestamp_us} us, val={pt.raw_value}")
+                    # => Device 27235: ts=10000 us, val=42
+                    # => Device 27235: ts=10700 us, val=45
+                    # => ...
 ```
 
 ### Immediate Snapshot
@@ -79,6 +83,9 @@ with AcnetConnectionTCP() as conn:
         points = snap.retrieve(device_index=0)
         for pt in points[:5]:
             print(f"ts={pt.timestamp_us} us, raw={pt.raw_value}")
+            # => ts=1000 us, raw=100
+            # => ts=1200 us, raw=105
+            # => ...
 ```
 
 ### Clock-Event Armed Snapshot
@@ -105,6 +112,7 @@ with AcnetConnectionTCP() as conn:
         snap.wait(timeout=15.0)  # may wait up to one supercycle (~5s)
         points = snap.retrieve(device_index=0)
         print(f"Got {len(points)} points")
+        # => Got 99 points
 ```
 
 ### Restart (Re-arm) Cycle
@@ -128,6 +136,9 @@ with AcnetConnectionTCP() as conn:
             snap.wait(timeout=10.0)
             points = snap.retrieve(device_index=0)
             print(f"Cycle {cycle}: {len(points)} points")
+            # => Cycle 0: 99 points
+            # => Cycle 1: 99 points
+            # => Cycle 2: 99 points
             snap.restart()  # re-arm for next capture - avoids repeated setup
 ```
 
@@ -168,7 +179,8 @@ with AcnetConnectionTCP() as conn:
                 break
             all_points.extend(points)
 
-        print(f"Total: {len(all_points)} points")  # expect 2047
+        print(f"Total: {len(all_points)} points")
+        # => Total: 2047 points  (2048 minus 1 skipped metadata point)
 ```
 
 ### Class Code Lookup
@@ -179,9 +191,11 @@ from pacsys.acnet.ftp import get_ftp_class_info, get_snap_class_info
 ftp_info = get_ftp_class_info(16)   # C290 MADC
 snap_info = get_snap_class_info(13) # C290 MADC snapshot
 print(f"FTP max rate: {ftp_info.max_rate} Hz")
-print(f"Snap max rate: {snap_info.max_rate} Hz, "      # 90 KHz
-      f"max points: {snap_info.max_points}, "          # 2048
-      f"has_timestamps: {snap_info.has_timestamps}")   # True
+# => FTP max rate: 1440 Hz
+print(f"Snap max rate: {snap_info.max_rate} Hz, "
+      f"max points: {snap_info.max_points}, "
+      f"has_timestamps: {snap_info.has_timestamps}")
+# => Snap max rate: 90000 Hz, max points: 2048, has_timestamps: True
 ```
 
 ## Continuous Plot Flow
