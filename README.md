@@ -11,7 +11,7 @@
 
 ## About
 
-ACNET (Accelerator Control NETwork) is the control system used at Fermilab's particle accelerators. PACSys provides a simple Python interface to read, write, and stream ACNET data without needing to understand the underlying protocols.
+ACNET (Accelerator Control NETwork) is the control system used at Fermilab's particle accelerators. PACSys provides a simple Python interface to interact with ACNET data without needing to understand the underlying protocols.
 
 ## Features
 
@@ -156,11 +156,11 @@ EPICS-style command-line tools:
 acget M:OUTTMP Z:ACLTST
 acget --format json M:OUTTMP
 
-# Write devices (requires authentication)
+# Write devices (requires authentication, kerberos attempted by default)
 acput Z:ACLTST 72.5
-acput -a kerberos --verify --tolerance 0.5 Z:ACLTST 72.5
+acput -a kerberos -b dmq --verify --tolerance 0.5 Z:ACLTST 72.5
 
-# Monitor (streaming)
+# Monitor (streaming on default event or custom one)
 acmonitor M:OUTTMP
 acmonitor -n 10 M:OUTTMP@p,500
 
@@ -168,7 +168,7 @@ acmonitor -n 10 M:OUTTMP@p,500
 acinfo -v M:OUTTMP
 ```
 
-Tools are aliased under `pacsys-get`, `pacsys-put`, `pacsys-monitor`, `pacsys-info`.
+Also aliased under `pacsys-get`, `pacsys-put`, `pacsys-monitor`, `pacsys-info`.
 
 ## Requirements
 
