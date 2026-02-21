@@ -849,3 +849,67 @@ class TestPoolTimeoutDiscard:
         # Connection should be returned to available pool
         assert mock_conn in pool._available
         mock_conn.close.assert_not_called()
+
+
+# =============================================================================
+# Get Many Timeout Connection Cleanup Tests
+# =============================================================================
+
+
+class TestGetManyTimeoutConnectionCleanup:
+    """Connection must be discarded (not reused) when get_many times out."""
+
+    def test_timeout_closes_connection(self):
+        """When recv loop gets fewer replies than expected, connection must be closed."""
+        import threading
+        from contextlib import contextmanager
+
+        backend = DPMHTTPBackend.__new__(DPMHTTPBackend)
+        backend._timeout = 0.5
+        backend._pools = {}
+        backend._pool_lock = threading.Lock()
+        backend._pool_size = 2
+        backend._closed = False
+        backend._default_node = "test-node"
+
+        mock_conn = MagicMock()
+        mock_conn.list_id = 1
+        mock_conn.connected = True
+
+        # Simulate: 2 devices requested, only 1 replies, then timeout
+        call_count = [0]
+
+        def mock_recv(timeout=None):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return make_add_to_list_reply(ref_id=1, status=0)
+            if call_count[0] == 2:
+                return make_add_to_list_reply(ref_id=2, status=0)
+            if call_count[0] == 3:
+                return make_start_list(status=0)
+            if call_count[0] == 4:
+                return make_device_info(ref_id=1)
+            if call_count[0] == 5:
+                return make_scalar_reply(ref_id=1)
+            # Device 2 never replies — always timeout
+            raise TimeoutError()
+
+        mock_conn.recv_message = mock_recv
+        mock_conn.send_messages_batch = MagicMock()
+        mock_conn.send_message = MagicMock()
+        mock_conn.close = MagicMock()
+
+        @contextmanager
+        def mock_connection(wait_timeout=None):
+            yield mock_conn
+
+        mock_pool = MagicMock()
+        mock_pool.connection = mock_connection
+        backend._get_pool = MagicMock(return_value=mock_pool)
+
+        # Request 2 devices but only 1 will reply — should raise ReadError
+        with pytest.raises(ReadError):
+            backend.get_many(["Z:ACLTST", "Z:MISSING"], timeout=0.5)
+
+        # The connection MUST be closed so the pool discards it
+        mock_conn.close.assert_called()

@@ -4,7 +4,7 @@ import asyncio
 import inspect
 import logging
 import time
-from typing import AsyncIterator, Optional
+from typing import Any, AsyncIterator, Optional
 
 from pacsys.types import Reading
 
@@ -30,6 +30,7 @@ class AsyncSubscriptionHandle:
         self._callback_task: Optional[asyncio.Task] = None
         self._drop_count = 0
         self._last_drop_log = 0.0
+        self._core: Any = None
 
     @property
     def stopped(self) -> bool:

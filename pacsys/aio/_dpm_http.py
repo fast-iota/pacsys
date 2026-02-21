@@ -274,14 +274,14 @@ class AsyncDPMHTTPBackend(AsyncBackend):
         )
         if callback:
             handle._callback_task = asyncio.ensure_future(_callback_feeder(handle, callback, on_error))
-        handle._core = core  # type: ignore[attr-defined]
+        handle._core = core
         self._handles.append(handle)
         return handle
 
     async def remove(self, handle) -> None:
         if isinstance(handle, AsyncSubscriptionHandle):
             await handle.stop()
-            if hasattr(handle, "_core"):
+            if handle._core is not None:
                 try:
                     await handle._core.close()
                 except Exception:

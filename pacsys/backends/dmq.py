@@ -1631,7 +1631,13 @@ class DMQBackend(Backend):
         if isinstance(value, dict):
             return _dict_to_alarm_sample(value, ref_id, timestamp_ms)
 
-        if isinstance(value, int) and not isinstance(value, bool):
+        if isinstance(value, bool):
+            sample = IntegerSample_reply()
+            sample.value = int(value)
+            sample.time = timestamp_ms
+            sample.ref_id = ref_id  # type: ignore[attr-defined]
+            return sample
+        if isinstance(value, int):
             sample = IntegerSample_reply()
             sample.value = value
             sample.time = timestamp_ms
@@ -1644,8 +1650,12 @@ class DMQBackend(Backend):
             sample.ref_id = ref_id  # type: ignore[attr-defined]
             return sample
         elif isinstance(value, (list, np.ndarray)):
-            sample = DoubleArraySample_reply()
-            sample.value = [float(v) for v in value]
+            if len(value) > 0 and isinstance(value[0], str):
+                sample = StringArraySample_reply()
+                sample.value = list(value)
+            else:
+                sample = DoubleArraySample_reply()
+                sample.value = [float(v) for v in value]
             sample.time = timestamp_ms
             sample.ref_id = ref_id  # type: ignore[attr-defined]
             return sample

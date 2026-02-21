@@ -38,6 +38,8 @@ from pacsys.backends.dmq_protocol import (
     DoubleSample_reply,
     DoubleArraySample_reply,
     ErrorSample_reply,
+    IntegerSample_reply,
+    StringArraySample_reply,
     StringSample_reply,
 )
 from pacsys.acnet.errors import FACILITY_DMQ
@@ -1006,6 +1008,33 @@ class TestValueToSample:
             sample = backend._value_to_sample(cmd)
             assert isinstance(sample, DoubleSample_reply), f"{cmd.name} should use DoubleSample"
             assert sample.value == float(cmd), f"{cmd.name} ordinal mismatch"
+
+    def test_bool_true_converts_to_integer_sample(self):
+        """bool True should convert to IntegerSample with value 1."""
+        from pacsys.backends.dmq import DMQBackend
+
+        backend = object.__new__(DMQBackend)
+        sample = backend._value_to_sample(True)
+        assert isinstance(sample, IntegerSample_reply)
+        assert sample.value == 1
+
+    def test_bool_false_converts_to_integer_sample(self):
+        """bool False should convert to IntegerSample with value 0."""
+        from pacsys.backends.dmq import DMQBackend
+
+        backend = object.__new__(DMQBackend)
+        sample = backend._value_to_sample(False)
+        assert isinstance(sample, IntegerSample_reply)
+        assert sample.value == 0
+
+    def test_string_list_converts_to_string_array_sample(self):
+        """List of strings should use StringArraySample_reply, not DoubleArraySample."""
+        from pacsys.backends.dmq import DMQBackend
+
+        backend = object.__new__(DMQBackend)
+        sample = backend._value_to_sample(["hello", "world"])
+        assert isinstance(sample, StringArraySample_reply)
+        assert list(sample.value) == ["hello", "world"]
 
 
 # =============================================================================

@@ -867,14 +867,17 @@ class DPMHTTPBackend(Backend):
                     transport_error = e
                 finally:
                     if not conn_broken:
-                        try:
-                            stop_req = StopList_request()
-                            stop_req.list_id = list_id
-                            clear_req = ClearList_request()
-                            clear_req.list_id = list_id
-                            conn.send_messages_batch([stop_req, clear_req])
-                        except Exception:
-                            conn.close()  # Force-close; pool.release() detects dead conn
+                        if received_count < expected_count:
+                            conn.close()
+                        else:
+                            try:
+                                stop_req = StopList_request()
+                                stop_req.list_id = list_id
+                                clear_req = ClearList_request()
+                                clear_req.list_id = list_id
+                                conn.send_messages_batch([stop_req, clear_req])
+                            except Exception:
+                                conn.close()
         except Exception as e:
             # Pool borrow failure, connection error, or re-raised inner exception
             transport_error = e
