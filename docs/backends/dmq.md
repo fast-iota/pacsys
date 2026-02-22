@@ -63,7 +63,7 @@ with pacsys.dmq(auth=auth) as backend:
 | `host` | appsrv2.fnal.gov | `PACSYS_DMQ_HOST` |
 | `port` | 5672 | `PACSYS_DMQ_PORT` |
 | `vhost` | / | - |
-| `timeout` | 5.0 | - |
+| `timeout` | 10.0 | - |
 
 ## For the Curious: How DMQ Writes Work
 

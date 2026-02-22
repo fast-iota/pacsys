@@ -222,6 +222,7 @@ automatically when reconfiguring.
 | `PACSYS_POOL_SIZE` | DPM connection pool size | 4 |
 | `PACSYS_DEVDB_HOST` | DevDB gRPC hostname | ad-services.fnal.gov/services.devdb |
 | `PACSYS_DEVDB_PORT` | DevDB gRPC port | 6802 |
+| `PACSYS_ACL_URL` | ACL CGI base URL | https://www-bd.fnal.gov/cgi-bin/acl.pl |
 
 ---
 

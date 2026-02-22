@@ -766,7 +766,7 @@ def dmq(
     Args:
         host: RabbitMQ broker hostname (default: from PACSYS_DMQ_HOST or appsrv2.fnal.gov)
         port: RabbitMQ broker port (default: from PACSYS_DMQ_PORT or 5672)
-        timeout: Default operation timeout in seconds (default: 5.0)
+        timeout: Default operation timeout in seconds (default: 10.0)
         auth: KerberosAuth required for all DMQ operations
         write_session_ttl: Idle timeout for write sessions in seconds (default: 600)
 
