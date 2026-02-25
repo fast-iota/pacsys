@@ -137,7 +137,7 @@ with AnalogAlarm.modify("Z:ACLTST") as alarm:
 
 Just use `minimum`/`maximum` in engineering units -- DPM handles the NOM_TOL/MIN_MAX conversion server-side. To set a nom/tol-style alarm, convert to min/max yourself: `minimum = nom - tol`, `maximum = nom + tol`.
 
-<details>
+<details markdown>
 <summary>Raw alarm block internals</summary>
 
 The raw 20-byte alarm block has a `limit_type` flag (K bits 8-9) that controls how

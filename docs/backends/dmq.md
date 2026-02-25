@@ -69,7 +69,7 @@ with pacsys.dmq(auth=auth) as backend:
 
 A DMQ write involves a 4-step AMQP dance: channel setup (private exchange + queue), INIT handshake (GSS-signed `SettingRequest` to `amq.topic`), value send (routing key must exactly match INIT DRF string), and response consumption. Sessions are cached per device; subsequent writes skip steps 1-2.
 
-<details>
+<details markdown>
 <summary>Full protocol details</summary>
 
 ### 1. Channel Setup
@@ -163,7 +163,7 @@ inactivity.
 - As an alternative to DPM/HTTP when talking to ACNET via RabbitMQ infrastructure
 - When the DMQ server is the preferred access point for your environment
 
-<details>
+<details markdown>
 <summary>References</summary>
 
 - [DMQ Protocol Documentation (PDF)](https://beamdocs.fnal.gov/AD/DocDB/0038/003860/001/dmq.pdf)
