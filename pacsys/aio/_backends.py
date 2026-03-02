@@ -16,6 +16,8 @@ from pacsys.types import (
 class AsyncBackend(ABC):
     """Async counterpart of Backend. Same capabilities, all methods async."""
 
+    _closed: bool = False
+
     @property
     @abstractmethod
     def capabilities(self) -> BackendCapability: ...

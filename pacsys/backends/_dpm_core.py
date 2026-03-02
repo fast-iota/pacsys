@@ -150,7 +150,7 @@ class _AsyncDpmCore:
         auth_req.token = b""
         await self._conn.send_message(auth_req)
 
-        reply = await asyncio.wait_for(self._conn.recv_message(), timeout=self._timeout)
+        reply = await self._conn.recv_message(timeout=self._timeout)
         if not isinstance(reply, Authenticate_reply):
             raise AuthenticationError(f"Expected Authenticate_reply, got {type(reply).__name__}")
 
@@ -183,7 +183,7 @@ class _AsyncDpmCore:
         auth_req.token = bytes(token) if token else b""
         await self._conn.send_message(auth_req)
 
-        reply = await asyncio.wait_for(self._conn.recv_message(), timeout=self._timeout)
+        reply = await self._conn.recv_message(timeout=self._timeout)
         if not isinstance(reply, Authenticate_reply):
             raise AuthenticationError(f"Expected Authenticate_reply, got {type(reply).__name__}")
 
@@ -195,7 +195,7 @@ class _AsyncDpmCore:
                 auth_req.token = bytes(token)
                 await self._conn.send_message(auth_req)
 
-                reply = await asyncio.wait_for(self._conn.recv_message(), timeout=self._timeout)
+                reply = await self._conn.recv_message(timeout=self._timeout)
                 if not isinstance(reply, Authenticate_reply):
                     raise AuthenticationError(f"Expected Authenticate_reply, got {type(reply).__name__}")
 
@@ -222,7 +222,7 @@ class _AsyncDpmCore:
         await self._conn.send_message(enable_req)
 
         while True:
-            reply = await asyncio.wait_for(self._conn.recv_message(), timeout=self._timeout)
+            reply = await self._conn.recv_message(timeout=self._timeout)
             if isinstance(reply, ListStatus_reply):
                 continue
             if isinstance(reply, Status_reply):
@@ -281,7 +281,7 @@ class _AsyncDpmCore:
                 if remaining <= 0:
                     break
                 try:
-                    reply = await asyncio.wait_for(self._conn.recv_message(), timeout=min(remaining, 2.0))
+                    reply = await self._conn.recv_message(timeout=min(remaining, 2.0))
                 except asyncio.TimeoutError:
                     if time.monotonic() >= deadline:
                         break
@@ -331,14 +331,17 @@ class _AsyncDpmCore:
             transport_error = e
         finally:
             if not conn_broken:
-                try:
-                    stop_req = StopList_request()
-                    stop_req.list_id = list_id
-                    clear_req = ClearList_request()
-                    clear_req.list_id = list_id
-                    await self._conn.send_messages_batch([stop_req, clear_req])
-                except Exception:
-                    pass  # connection may be dead
+                if received_count < expected_count:
+                    await self._conn.close()
+                else:
+                    try:
+                        stop_req = StopList_request()
+                        stop_req.list_id = list_id
+                        clear_req = ClearList_request()
+                        clear_req.list_id = list_id
+                        await self._conn.send_messages_batch([stop_req, clear_req])
+                    except Exception:
+                        pass  # connection may be dead
 
         # Assemble readings
         readings: list[Reading] = []
@@ -357,7 +360,6 @@ class _AsyncDpmCore:
                 readings.append(
                     Reading(
                         drf=original_drf,
-                        value_type=ValueType.SCALAR,
                         facility_code=facility,
                         error_code=error,
                         value=None,
@@ -391,7 +393,6 @@ class _AsyncDpmCore:
                     readings.append(
                         Reading(
                             drf=original_drf,
-                            value_type=ValueType.SCALAR,
                             facility_code=FACILITY_ACNET,
                             error_code=ec,
                             value=None,
@@ -408,7 +409,6 @@ class _AsyncDpmCore:
                 readings.append(
                     Reading(
                         drf=original_drf,
-                        value_type=ValueType.SCALAR,
                         facility_code=FACILITY_ACNET,
                         error_code=ec,
                         value=None,
@@ -487,7 +487,7 @@ class _AsyncDpmCore:
             if remaining <= 0:
                 break
             try:
-                reply = await asyncio.wait_for(self._conn.recv_message(), timeout=min(remaining, 2.0))
+                reply = await self._conn.recv_message(timeout=min(remaining, 2.0))
             except asyncio.TimeoutError:
                 if time.monotonic() >= deadline:
                     break
@@ -506,6 +506,8 @@ class _AsyncDpmCore:
                     logger.warning(f"StartList returned status {reply.status}")
                     return self._build_write_results(settings, None, add_errors)
             elif isinstance(reply, Status_reply):
+                if reply.status != 0 and reply.ref_id > 0:
+                    add_errors[reply.ref_id] = reply.status
                 received_infos += 1
 
         # Phase 2: Build and send ApplySettings
@@ -543,7 +545,7 @@ class _AsyncDpmCore:
             if remaining <= 0:
                 break
             try:
-                reply = await asyncio.wait_for(self._conn.recv_message(), timeout=min(remaining, 2.0))
+                reply = await self._conn.recv_message(timeout=min(remaining, 2.0))
             except asyncio.TimeoutError:
                 if time.monotonic() >= deadline:
                     break
@@ -640,7 +642,6 @@ class _AsyncDpmCore:
                             facility, error = parse_error(reply.status)
                             reading = Reading(
                                 drf=drf,
-                                value_type=ValueType.SCALAR,
                                 facility_code=facility,
                                 error_code=error,
                                 value=None,

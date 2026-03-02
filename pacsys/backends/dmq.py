@@ -342,7 +342,6 @@ def _reply_to_reading(reply, drf: str) -> Reading:
     if isinstance(reply, ErrorSample_reply):
         return Reading(
             drf=drf,
-            value_type=ValueType.SCALAR,
             facility_code=reply.facilityCode,
             error_code=reply.errorNumber,
             value=None,
@@ -366,7 +365,6 @@ def _reply_to_reading(reply, drf: str) -> Reading:
     logger.warning(f"Unknown reply type: {type(reply).__name__}")
     return Reading(
         drf=drf,
-        value_type=ValueType.SCALAR,
         facility_code=FACILITY_ACNET,
         error_code=ERR_RETRY,
         value=None,
@@ -708,7 +706,6 @@ class DMQBackend(Backend):
             readings = [
                 Reading(
                     drf=drf,
-                    value_type=ValueType.SCALAR,
                     facility_code=FACILITY_ACNET,
                     error_code=ERR_RETRY,
                     value=None,
@@ -747,7 +744,6 @@ class DMQBackend(Backend):
                 result.append(
                     Reading(
                         drf=drf,
-                        value_type=ValueType.SCALAR,
                         facility_code=FACILITY_ACNET,
                         error_code=backfill_code,
                         value=None,
@@ -760,7 +756,7 @@ class DMQBackend(Backend):
         # Connection-level errors or total timeout → raise
         if job.error is not None:
             raise ReadError(result, backfill_msg) from job.error
-        if has_backfill and not job.readings:
+        if has_backfill:
             raise ReadError(result, backfill_msg)
 
         return result

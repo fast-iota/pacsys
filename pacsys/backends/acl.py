@@ -487,7 +487,6 @@ class ACLBackend(Backend):
                 readings = [
                     Reading(
                         drf=drf,
-                        value_type=ValueType.SCALAR,
                         facility_code=e.facility_code,
                         error_code=e.error_code,
                         message=e.message,
@@ -523,9 +522,7 @@ class ACLBackend(Backend):
             try:
                 value, value_type = _parse_response_line(drf, line)
             except ValueError as exc:
-                readings.append(
-                    Reading(drf=drf, value_type=ValueType.RAW, error_code=ERR_RETRY, message=str(exc), timestamp=now)
-                )
+                readings.append(Reading(drf=drf, error_code=ERR_RETRY, message=str(exc), timestamp=now))
                 continue
             readings.append(Reading(drf=drf, value_type=value_type, value=value, error_code=ERR_OK, timestamp=now))
         return readings
@@ -543,7 +540,6 @@ class ACLBackend(Backend):
                     readings.append(
                         Reading(
                             drf=drf,
-                            value_type=ValueType.SCALAR,
                             error_code=ERR_RETRY,
                             message="Empty response from ACL",
                             timestamp=now,
@@ -556,7 +552,6 @@ class ACLBackend(Backend):
                     readings.append(
                         Reading(
                             drf=drf,
-                            value_type=ValueType.SCALAR,
                             facility_code=0,
                             error_code=ERR_RETRY,
                             message=error_msg,
@@ -570,7 +565,6 @@ class ACLBackend(Backend):
                         readings.append(
                             Reading(
                                 drf=drf,
-                                value_type=ValueType.RAW,
                                 error_code=ERR_RETRY,
                                 message=str(exc),
                                 timestamp=now,
@@ -584,7 +578,6 @@ class ACLBackend(Backend):
                 readings.append(
                     Reading(
                         drf=drf,
-                        value_type=ValueType.SCALAR,
                         facility_code=e.facility_code,
                         error_code=e.error_code,
                         message=e.message,
@@ -612,7 +605,6 @@ class ACLBackend(Backend):
             except DeviceError as e:
                 return Reading(
                     drf=drf,
-                    value_type=ValueType.BASIC_STATUS,
                     facility_code=e.facility_code,
                     error_code=e.error_code,
                     message=e.message,
@@ -621,7 +613,6 @@ class ACLBackend(Backend):
             if not lines:
                 return Reading(
                     drf=drf,
-                    value_type=ValueType.BASIC_STATUS,
                     error_code=ERR_RETRY,
                     message=f"Empty response from ACL for {field}",
                     timestamp=now,
@@ -638,9 +629,7 @@ class ACLBackend(Backend):
 
             is_err, msg = _is_error_response(line)
             if is_err:
-                return Reading(
-                    drf=drf, value_type=ValueType.BASIC_STATUS, error_code=ERR_RETRY, message=msg, timestamp=now
-                )
+                return Reading(drf=drf, error_code=ERR_RETRY, message=msg, timestamp=now)
 
             if "= True" in line:
                 status[key] = True

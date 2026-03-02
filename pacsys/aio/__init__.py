@@ -24,6 +24,7 @@ __all__ = [
     "configure",
     "shutdown",
     "read",
+    "read_many",
     "get",
     "get_many",
     "write",
@@ -100,7 +101,8 @@ def configure(
         port: Server port
         pool_size: Connection pool size (DPM only, default: 4)
         timeout: Default timeout in seconds (default: 5.0)
-        auth: Authentication object (KerberosAuth for DPM, JWTAuth for gRPC)
+        auth: Authentication object (KerberosAuth for DPM, JWTAuth for gRPC),
+              or "krb" as shortcut for KerberosAuth()
         role: Role for authenticated operations (DPM only)
 
     Raises:
@@ -129,6 +131,10 @@ def configure(
             raise ValueError(f"Invalid backend {backend!r}, must be one of {sorted(_VALID_ASYNC_BACKENDS)}")
         _config_backend = backend
     if auth is not _UNSET:
+        if auth == "krb":
+            from pacsys.auth import KerberosAuth
+
+            auth = KerberosAuth()
         _config_auth = auth
     if role is not _UNSET:
         _config_role = role
@@ -229,6 +235,23 @@ async def get_many(devices: list, timeout: Optional[float] = None):
     drfs = [_resolve_drf(d) for d in devices]
     backend = _get_global_async_backend()
     return await backend.get_many(drfs, timeout=timeout)
+
+
+async def read_many(devices: list, timeout: Optional[float] = None):
+    """Read multiple device values in a single batch.
+
+    Returns bare values. Raises ReadError if any device fails.
+    """
+    from pacsys.errors import ReadError
+
+    drfs = [_resolve_drf(d) for d in devices]
+    backend = _get_global_async_backend()
+    readings = await backend.get_many(drfs, timeout=timeout)
+    errors = [r for r in readings if not r.ok]
+    if errors:
+        failed = ", ".join(r.drf for r in errors)
+        raise ReadError(readings, f"Device errors: {failed}")
+    return [r.value for r in readings]
 
 
 async def write(device, value, timeout: Optional[float] = None):

@@ -118,7 +118,7 @@ class Reading:
     """
 
     drf: str
-    value_type: ValueType
+    value_type: Optional[ValueType] = None
     facility_code: int = 0
     error_code: int = 0
     value: Optional[Value] = None
@@ -126,6 +126,10 @@ class Reading:
     timestamp: Optional[datetime] = None
     cycle: Optional[int] = None
     meta: Optional[DeviceMeta] = None
+
+    def __post_init__(self) -> None:
+        if self.value is not None and self.value_type is None:
+            raise ValueError("value_type is required when value is set")
 
     @property
     def is_success(self) -> bool:

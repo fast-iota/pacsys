@@ -1,6 +1,9 @@
 """Tests for the pacsys.acnet module (no network, pure unit tests)."""
 
+import asyncio
 import struct
+import threading
+from collections import defaultdict
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -8,6 +11,7 @@ import pytest
 from pacsys.acnet import (
     ACNET_HEADER_SIZE,
     ACNET_PEND,
+    AcnetConnection,
     AcnetConnectionTCP,
     AcnetError,
     AcnetPacket,
@@ -15,6 +19,7 @@ from pacsys.acnet import (
     AcnetRequest,
     NodeStats,
     ReplyId,
+    RequestId,
     decode,
     decode_stripped,
     encode,
@@ -539,3 +544,84 @@ class TestTCPKeepalive:
         buf = mock.call_args[0][0]
         cmd = struct.unpack(">H", buf[2:4])[0]
         assert cmd == CMD_KEEPALIVE
+
+
+class TestXactCancelledError:
+    """_xact must close transport on CancelledError, same as TimeoutError."""
+
+    @pytest.mark.asyncio
+    async def test_xact_cleans_up_on_cancelled_error(self):
+        """CancelledError during ACK wait must close transport to prevent desync."""
+        conn = AsyncAcnetConnectionTCP("localhost", 6802)
+        conn._connected = True
+        conn._disposed = False
+        conn._cmd_lock = asyncio.Lock()
+        conn._pending_ack = None
+        conn._trace = False
+
+        # Mock transport methods
+        conn._send_frame = AsyncMock()
+        conn._close_transport = AsyncMock()
+
+        async def cancel_during_wait():
+            """Simulate external cancellation while awaiting ACK."""
+            await conn._xact(b"\x00\x00\x00\x01", timeout=5.0)
+
+        task = asyncio.create_task(cancel_during_wait())
+        await asyncio.sleep(0.01)  # let task start and block on _pending_ack
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        # Transport must be closed (same as timeout path)
+        conn._close_transport.assert_awaited_once()
+        assert conn._connected is False
+        assert conn._pending_ack is None
+
+
+class TestReplyBuffering:
+    """Sync connection must buffer replies that arrive before handler registration."""
+
+    @staticmethod
+    def _make_reply(msg_id: int, *, last: bool = True, status: int = 0, data: bytes = b"\x01\x02"):
+        """Build an AcnetReply with given msg_id (becomes request_id)."""
+        flags = ACNET_FLG_RPY if last else (ACNET_FLG_RPY | ACNET_FLG_MLT)
+        return AcnetReply(flags, status, 0, 0, 0, 0, msg_id, ACNET_HEADER_SIZE + len(data), data)
+
+    def test_early_reply_is_buffered_not_cancelled(self):
+        """Reply arriving before send_request registers handler must be buffered."""
+        conn = AcnetConnection.__new__(AcnetConnection)
+        conn._requests_out = {}
+        conn._requests_out_lock = threading.Lock()
+        conn._reply_buffer = defaultdict(list)
+        conn._dead_requests = set()
+
+        reply = self._make_reply(42)
+
+        cancel_sent = []
+        conn._send_command = lambda *a, **kw: cancel_sent.append(a)
+
+        conn._handle_reply(reply)
+
+        assert len(cancel_sent) == 0
+        assert RequestId(42) in conn._reply_buffer
+        assert len(conn._reply_buffer[RequestId(42)]) == 1
+
+    def test_dead_request_reply_is_silently_dropped(self):
+        """Replies for dead (completed) requests must be silently ignored."""
+        conn = AcnetConnection.__new__(AcnetConnection)
+        conn._requests_out = {}
+        conn._requests_out_lock = threading.Lock()
+        conn._reply_buffer = defaultdict(list)
+        conn._dead_requests = {RequestId(42)}
+
+        reply = self._make_reply(42)
+
+        cancel_sent = []
+        conn._send_command = lambda *a, **kw: cancel_sent.append(a)
+
+        conn._handle_reply(reply)
+
+        assert len(cancel_sent) == 0
+        assert RequestId(42) not in conn._reply_buffer

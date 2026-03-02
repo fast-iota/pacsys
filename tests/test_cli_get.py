@@ -23,7 +23,7 @@ def _make_reading(
     meta = DeviceMeta(device_index=0, name=name, description="Outside temp", units=units)
     return Reading(
         drf=drf,
-        value_type=ValueType.SCALAR,
+        value_type=ValueType.SCALAR if value is not None and error_code >= 0 else None,
         value=value,
         error_code=error_code,
         message=msg,

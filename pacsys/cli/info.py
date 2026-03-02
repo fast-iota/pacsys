@@ -66,7 +66,7 @@ def _format_reading_compact(reading, number_format: str | None = None) -> str:
     parts = [val_str]
     if reading.units:
         parts.append(reading.units)
-    parts.append(f"({reading.value_type.name})")
+    parts.append(f"({reading.value_type.name if reading.value_type is not None else 'none'})")
     return " ".join(parts)
 
 
@@ -306,7 +306,7 @@ def _reading_to_json(reading) -> dict:
     return {
         "value": val,
         "units": reading.units or None,
-        "type": reading.value_type.name,
+        "type": reading.value_type.name if reading.value_type is not None else None,
     }
 
 

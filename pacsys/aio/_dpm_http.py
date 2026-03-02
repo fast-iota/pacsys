@@ -294,7 +294,7 @@ class AsyncDPMHTTPBackend(AsyncBackend):
             await h.stop()
             if hasattr(h, "_core") and hasattr(h._core, "close"):
                 try:
-                    await h._core.close()  # type: ignore[union-attr]
+                    await h._core.close()
                 except Exception:
                     pass
         self._handles.clear()

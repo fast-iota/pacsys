@@ -22,6 +22,7 @@ from pacsys import (
     DeviceError,
     KerberosAuth,
     Reading,
+    ReadError,
 )
 from pacsys.backends.dpm_http import DPMHTTPBackend
 from pacsys.testing import FakeBackend
@@ -181,6 +182,77 @@ class TestGetMany:
         results = pacsys.get_many(["M:OUTTMP"], timeout=5.0)
         assert len(results) == 1
         assert results[0].value == 72.5
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# read_many() Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestReadMany:
+    """Tests for pacsys.read_many()."""
+
+    def test_read_many_returns_values(self, fake):
+        """read_many() returns list of bare values."""
+        fake.set_reading("M:OUTTMP", 72.5)
+        fake.set_reading("G:AMANDA", 1.234)
+        results = pacsys.read_many(["M:OUTTMP", "G:AMANDA"])
+        assert results == [72.5, 1.234]
+
+    def test_read_many_with_device_objects(self, fake):
+        """read_many() accepts Device objects."""
+        fake.set_reading("M:OUTTMP.READING", 72.5)
+        fake.set_reading("G:AMANDA.READING", 1.234)
+        results = pacsys.read_many([Device("M:OUTTMP"), Device("G:AMANDA")])
+        assert results == [72.5, 1.234]
+
+    def test_read_many_raises_on_device_error(self, fake):
+        """read_many() raises ReadError when any device fails."""
+        fake.set_reading("M:OUTTMP", 72.5)
+        fake.set_error("M:BADDEV", -42, "Device not found")
+        with pytest.raises(ReadError) as exc_info:
+            pacsys.read_many(["M:OUTTMP", "M:BADDEV"])
+        # Partial results available in exception
+        assert len(exc_info.value.readings) == 2
+        assert exc_info.value.readings[0].ok
+        assert exc_info.value.readings[1].is_error
+
+    def test_read_many_single_device(self, fake):
+        """read_many() works with single device."""
+        fake.set_reading("M:OUTTMP", 72.5)
+        results = pacsys.read_many(["M:OUTTMP"])
+        assert results == [72.5]
+
+    def test_read_many_preserves_order(self, fake):
+        """read_many() returns values in same order as input."""
+        fake.set_reading("A:DEV1", 1.0)
+        fake.set_reading("A:DEV2", 2.0)
+        fake.set_reading("A:DEV3", 3.0)
+        results = pacsys.read_many(["A:DEV3", "A:DEV1", "A:DEV2"])
+        assert results == [3.0, 1.0, 2.0]
+
+    def test_read_many_all_errors(self, fake):
+        """read_many() raises ReadError when all devices fail."""
+        fake.set_error("M:BAD1", -1, "Error 1")
+        fake.set_error("M:BAD2", -2, "Error 2")
+        with pytest.raises(ReadError) as exc_info:
+            pacsys.read_many(["M:BAD1", "M:BAD2"])
+        assert all(r.is_error for r in exc_info.value.readings)
+
+    def test_read_many_with_timeout(self, fake):
+        """read_many() passes timeout parameter."""
+        fake.set_reading("M:OUTTMP", 72.5)
+        results = pacsys.read_many(["M:OUTTMP"], timeout=5.0)
+        assert results == [72.5]
+
+    def test_read_many_transport_error_passthrough(self, fake):
+        """read_many() propagates transport ReadError from get_many()."""
+        partial = [Reading(drf="M:OUTTMP", value_type=pacsys.ValueType.SCALAR, value=72.5)]
+        transport_err = ReadError(partial, "connection lost")
+        with mock.patch.object(fake, "get_many", side_effect=transport_err):
+            with pytest.raises(ReadError) as exc_info:
+                pacsys.read_many(["M:OUTTMP"])
+            assert exc_info.value is transport_err
 
 
 # ─────────────────────────────────────────────────────────────────────────────

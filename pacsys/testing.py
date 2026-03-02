@@ -411,12 +411,14 @@ class FakeBackend(Backend):
     # ─────────────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _validate_value_type(value: Any, value_type: ValueType) -> None:
+    def _validate_value_type(value: Any, value_type: ValueType | None) -> None:
         """Validate that value matches the declared ValueType.
 
         Raises TypeError on mismatch so tests fail loudly at setup time
         rather than silently accepting nonsense.
         """
+        if value_type is None:
+            return
         import numpy as np
 
         checks: dict[ValueType, tuple[type | tuple[type, ...], str]] = {
@@ -714,7 +716,6 @@ class FakeBackend(Backend):
             if isinstance(req.event, NeverEvent):
                 return Reading(
                     drf=drf,
-                    value_type=ValueType.SCALAR,
                     error_code=ERR_RETRY,
                     message="Cannot read with @N (never) event",
                 )
@@ -729,7 +730,6 @@ class FakeBackend(Backend):
             error_code, message = error
             return Reading(
                 drf=drf,
-                value_type=ValueType.SCALAR,
                 error_code=error_code,
                 message=message,
             )
@@ -750,14 +750,12 @@ class FakeBackend(Backend):
         if self._device_known(drf):
             return Reading(
                 drf=drf,
-                value_type=ValueType.SCALAR,
                 facility_code=FACILITY_DBM,
                 error_code=ERR_NOPROP,
                 message=f"No such property for {get_device_name(drf)}",
             )
         return Reading(
             drf=drf,
-            value_type=ValueType.SCALAR,
             facility_code=FACILITY_ACNET,
             error_code=ERR_RETRY,
             message=f"No reading configured for {drf}",

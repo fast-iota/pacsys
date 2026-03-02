@@ -58,7 +58,6 @@ def error_reading():
     """Create an error Reading for tests."""
     return Reading(
         drf="M:BADDEV",
-        value_type=ValueType.SCALAR,
         facility_code=0,
         error_code=-42,
         value=None,

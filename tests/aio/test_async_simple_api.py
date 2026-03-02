@@ -4,6 +4,7 @@ import pytest
 from unittest import mock
 
 import pacsys.aio as aio
+from pacsys.errors import ReadError
 from pacsys.types import Reading, ValueType, WriteResult
 
 
@@ -131,6 +132,40 @@ class TestModuleAPI:
     async def test_read_invalid_type(self, fake_backend):
         with pytest.raises(TypeError, match="Expected str"):
             await aio.read(12345)
+
+    @pytest.mark.asyncio
+    async def test_read_many(self, fake_backend):
+        fake_backend.get_many = mock.AsyncMock(
+            return_value=[
+                Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR, value=72.5, error_code=0),
+                Reading(drf="G:AMANDA", value_type=ValueType.SCALAR, value=1.0, error_code=0),
+            ]
+        )
+        values = await aio.read_many(["M:OUTTMP", "G:AMANDA"])
+        assert values == [72.5, 1.0]
+
+    @pytest.mark.asyncio
+    async def test_read_many_raises_on_device_error(self, fake_backend):
+        fake_backend.get_many = mock.AsyncMock(
+            return_value=[
+                Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR, value=72.5, error_code=0),
+                Reading(drf="M:BADDEV", error_code=-42, message="not found"),
+            ]
+        )
+        with pytest.raises(ReadError) as exc_info:
+            await aio.read_many(["M:OUTTMP", "M:BADDEV"])
+        assert len(exc_info.value.readings) == 2
+        assert exc_info.value.readings[0].ok
+        assert exc_info.value.readings[1].is_error
+
+    @pytest.mark.asyncio
+    async def test_read_many_transport_error_passthrough(self, fake_backend):
+        partial = [Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR, value=72.5)]
+        transport_err = ReadError(partial, "connection lost")
+        fake_backend.get_many = mock.AsyncMock(side_effect=transport_err)
+        with pytest.raises(ReadError) as exc_info:
+            await aio.read_many(["M:OUTTMP"])
+        assert exc_info.value is transport_err
 
 
 class TestLazyInit:

@@ -15,6 +15,8 @@ import select
 import socket
 import struct
 import threading
+import time
+from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Optional
@@ -56,6 +58,8 @@ ReplyHandler = Callable[[AcnetReply], None]
 RequestHandler = Callable[[AcnetRequest], None]
 MessageHandler = Callable[[AcnetMessage], None]
 CancelHandler = Callable[[AcnetCancel], None]
+
+_MAX_BUFFERED_REPLIES = 64
 
 
 @dataclass
@@ -132,6 +136,10 @@ class AcnetConnection:
         self._requests_out_lock = threading.Lock()
         self._requests_in: dict[ReplyId, AcnetRequest] = {}
         self._requests_in_lock = threading.Lock()
+
+        # Reply buffering (mirrors async_connection pattern)
+        self._reply_buffer: dict[RequestId, list[tuple]] = defaultdict(list)
+        self._dead_requests: set[RequestId] = set()
 
         # Handlers
         self._message_handler: Optional[MessageHandler] = None
@@ -257,6 +265,7 @@ class AcnetConnection:
         mult_flag = 1 if multiple_reply else 0
         tmo = timeout if timeout > 0 else 0x7FFFFFFF
 
+        request_time = time.monotonic()
         cmd_data = struct.pack("<IHhI", task_rad50, node, mult_flag, tmo)
         ack = self._send_command(CMD_SEND_REQUEST_TIMEOUT, 2, cmd_data, data)
 
@@ -273,6 +282,23 @@ class AcnetConnection:
 
         with self._requests_out_lock:
             self._requests_out[context.request_id] = context
+            self._dead_requests.discard(context.request_id)
+
+        # Drain buffered replies (reply arrived before handler registration)
+        buffered = self._reply_buffer.pop(context.request_id, [])
+        for reply, arrival_time in buffered:
+            if arrival_time < request_time:
+                continue  # stale reply from previous use of this req_id
+            try:
+                context.reply_handler(reply)
+            except Exception as e:
+                logger.warning(f"Reply handler exception (buffered): {e}")
+            if reply.last:
+                with self._requests_out_lock:
+                    self._requests_out.pop(context.request_id, None)
+                self._dead_requests.add(context.request_id)
+                context._cancelled = True
+                break
 
         return context
 
@@ -445,6 +471,7 @@ class AcnetConnection:
         """Send a cancel for an outgoing request (cmdCancel)."""
         with self._requests_out_lock:
             self._requests_out.pop(context.request_id, None)
+        self._dead_requests.add(context.request_id)
 
         cmd_data = struct.pack("<H", context.request_id.id)
         self._send_command(CMD_CANCEL, 0, cmd_data)
@@ -570,24 +597,28 @@ class AcnetConnection:
         """Handle an incoming reply."""
         with self._requests_out_lock:
             context = self._requests_out.get(reply.request_id)
+            if not context:
+                # No handler registered yet — buffer or drop under the same lock
+                # to prevent race with send_request's drain.
+                if reply.request_id not in self._dead_requests:
+                    buf = self._reply_buffer[reply.request_id]
+                    if len(buf) < _MAX_BUFFERED_REPLIES:
+                        buf.append((reply, time.monotonic()))
+                    else:
+                        del self._reply_buffer[reply.request_id]
+                        self._dead_requests.add(reply.request_id)
+                return
 
-        if context:
-            try:
-                context.reply_handler(reply)
-            except Exception as e:
-                logger.warning(f"Reply handler exception: {e}")
+        try:
+            context.reply_handler(reply)
+        except Exception as e:
+            logger.warning(f"Reply handler exception: {e}")
 
-            if reply.last:
-                with self._requests_out_lock:
-                    self._requests_out.pop(reply.request_id, None)
-                context._cancelled = True
-        else:
-            # No handler - send cancel
-            try:
-                cmd_data = struct.pack("<H", reply.request_id.id)
-                self._send_command(CMD_CANCEL, 0, cmd_data)
-            except Exception:
-                pass
+        if reply.last:
+            with self._requests_out_lock:
+                self._requests_out.pop(reply.request_id, None)
+            self._dead_requests.add(reply.request_id)
+            context._cancelled = True
 
     def _handle_request(self, request: AcnetRequest):
         """Handle an incoming request."""

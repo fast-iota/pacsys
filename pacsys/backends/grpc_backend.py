@@ -272,7 +272,6 @@ def _reply_to_readings(reply, drfs: list[str]) -> list[Reading]:
         return [
             Reading(
                 drf=drf,
-                value_type=ValueType.SCALAR,
                 facility_code=facility,
                 error_code=error if error != 0 else ERR_RETRY,
                 message=message or "gRPC error",
@@ -319,7 +318,6 @@ def _aggregate_proto_readings(reading_list, drf: str, now: datetime) -> Reading:
                 ts = _proto_timestamp_to_datetime(rd.timestamp) or now
                 return Reading(
                     drf=drf,
-                    value_type=ValueType.SCALAR,
                     facility_code=facility,
                     error_code=error,
                     message=message,
@@ -510,7 +508,6 @@ class _DaqCore:
                 if results[i] is None:
                     results[i] = Reading(
                         drf=drfs[i],
-                        value_type=ValueType.SCALAR,
                         facility_code=fc,
                         error_code=ec,
                         message=error_message,
@@ -526,7 +523,6 @@ class _DaqCore:
                 if results[i] is None:
                     results[i] = Reading(
                         drf=drfs[i],
-                        value_type=ValueType.SCALAR,
                         error_code=ERR_RETRY,
                         message=error_message,
                         timestamp=now,
@@ -539,7 +535,6 @@ class _DaqCore:
                 has_missing = True
                 results[i] = Reading(
                     drf=drfs[i],
-                    value_type=ValueType.SCALAR,
                     error_code=ERR_RETRY,
                     message="No response received",
                     timestamp=now,

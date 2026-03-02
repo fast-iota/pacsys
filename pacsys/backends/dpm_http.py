@@ -114,7 +114,6 @@ def _aggregate_logger_chunks(chunks: list, drf: str, meta) -> Reading:
             facility, error = parse_error(chunk.status)
             return Reading(
                 drf=drf,
-                value_type=ValueType.SCALAR,
                 facility_code=facility,
                 error_code=error,
                 value=None,
@@ -217,7 +216,6 @@ def _reply_to_reading(reply, drf: str, meta: Optional[DeviceMeta]) -> Reading:
         facility, error = parse_error(reply.status)
         return Reading(
             drf=drf,
-            value_type=ValueType.SCALAR,
             facility_code=facility,
             error_code=error,
             value=None,
@@ -233,7 +231,6 @@ def _reply_to_reading(reply, drf: str, meta: Optional[DeviceMeta]) -> Reading:
     if value_type is None:
         return Reading(
             drf=drf,
-            value_type=ValueType.SCALAR,
             facility_code=FACILITY_ACNET,
             error_code=ERR_RETRY,
             value=None,
@@ -377,7 +374,7 @@ class _AsyncDPMConnection:
         self._writer.write(buf)
         await self._writer.drain()
 
-    async def recv_message(self):
+    async def recv_message(self, timeout: Optional[float] = None):
         """Receive and unmarshal one reply. Handles partial packets natively.
 
         Uses a read timeout to detect silent connection drops. The DPM server
@@ -385,9 +382,12 @@ class _AsyncDPMConnection:
         within _RECV_TIMEOUT seconds, the connection is presumed dead.
         """
         assert self._reader is not None
+        effective_timeout = timeout if timeout is not None else self._RECV_TIMEOUT
         try:
-            len_bytes = await asyncio.wait_for(self._reader.readexactly(4), timeout=self._RECV_TIMEOUT)
+            len_bytes = await asyncio.wait_for(self._reader.readexactly(4), timeout=effective_timeout)
         except asyncio.TimeoutError:
+            if timeout is not None:
+                raise asyncio.TimeoutError("Receive timeout")
             raise DPMConnectionError(
                 f"No data received for {self._RECV_TIMEOUT}s (missed heartbeats), connection presumed dead"
             )
@@ -538,7 +538,6 @@ class _DpmStreamCore:
                             facility, error = parse_error(reply.status)
                             reading = Reading(
                                 drf=drf,
-                                value_type=ValueType.SCALAR,
                                 facility_code=facility,
                                 error_code=error,
                                 value=None,
@@ -921,7 +920,6 @@ class DPMHTTPBackend(Backend):
                     readings.append(
                         Reading(
                             drf=original_drf,
-                            value_type=ValueType.SCALAR,
                             facility_code=FACILITY_ACNET,
                             error_code=ec,
                             value=None,
@@ -938,7 +936,6 @@ class DPMHTTPBackend(Backend):
                 readings.append(
                     Reading(
                         drf=original_drf,
-                        value_type=ValueType.SCALAR,
                         facility_code=facility,
                         error_code=error,
                         value=None,
@@ -955,7 +952,6 @@ class DPMHTTPBackend(Backend):
                 readings.append(
                     Reading(
                         drf=original_drf,
-                        value_type=ValueType.SCALAR,
                         facility_code=FACILITY_ACNET,
                         error_code=ec,
                         value=None,
@@ -1117,7 +1113,7 @@ class DPMHTTPBackend(Backend):
 
             # Try to get an existing live connection
             while self._write_connections:
-                wc = self._write_connections.pop(0)
+                wc = self._write_connections.pop()
                 if not wc.conn.connected:
                     logger.debug(f"Discarding dead write connection (list_id={wc.conn.list_id})")
                     wc.close()
@@ -1392,6 +1388,8 @@ class DPMHTTPBackend(Backend):
                     logger.warning(f"StartList returned status {reply.status}")
                     return None, add_errors
             elif isinstance(reply, Status_reply):
+                if reply.status != 0 and reply.ref_id > 0:
+                    add_errors[reply.ref_id] = reply.status
                 received_infos += 1
 
         if received_infos < expected_count:

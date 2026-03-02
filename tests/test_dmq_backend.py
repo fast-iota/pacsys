@@ -1202,3 +1202,49 @@ class TestDMQBackendLifecycle:
             backend.stop_streaming()
             assert handle1.stopped
             assert handle2.stopped
+
+
+# =============================================================================
+# Test Partial Timeout
+# =============================================================================
+
+
+class TestDMQPartialTimeout:
+    def test_partial_timeout_raises_read_error(self):
+        """If any device times out in get_many, ReadError must be raised."""
+        from unittest.mock import MagicMock
+
+        backend = DMQBackend.__new__(DMQBackend)
+        backend._host = "localhost"
+        backend._port = 5672
+        backend._timeout = 1.0
+        backend._closed = False
+        backend._auth = MagicMock()
+        backend._auth.principal = "test@FNAL.GOV"
+        backend._io_thread = None
+        backend._channel = None
+
+        # Mock connection with ioloop that calls callbacks synchronously
+        mock_conn = MagicMock()
+        mock_conn.is_open = True
+        mock_conn.ioloop.add_callback_threadsafe = lambda cb: cb()
+        backend._select_connection = mock_conn
+
+        def fake_start_read(job):
+            r = Reading(
+                drf="M:OUTTMP",
+                value_type=ValueType.SCALAR,
+                value=72.5,
+                timestamp=None,
+                cycle=0,
+            )
+            job.readings[0] = r
+            job.done_event.set()
+
+        backend._start_read_async = fake_start_read
+        backend._ensure_io_thread = lambda: None
+
+        with pytest.raises(ReadError) as exc_info:
+            backend.get_many(["M:OUTTMP", "G:AMANDA"], timeout=1.0)
+
+        assert len(exc_info.value.readings) == 2

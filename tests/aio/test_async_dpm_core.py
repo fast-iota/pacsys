@@ -105,10 +105,14 @@ class FakeAsyncConn:
     async def send_messages_batch(self, msgs):
         self.sent.extend(msgs)
 
-    async def recv_message(self):
+    async def recv_message(self, timeout=None):
         if self._idx >= len(self._replies):
-            # Block forever (simulate no more data)
-            await asyncio.sleep(100)
+            # Block and timeout
+            if timeout is not None:
+                await asyncio.sleep(timeout)
+            else:
+                await asyncio.sleep(100)
+            raise asyncio.TimeoutError()
         reply = self._replies[self._idx]
         self._idx += 1
         return reply
@@ -191,6 +195,25 @@ class TestReadMany:
         readings = await core.read_many(["M:OUTTMP"], timeout=2.0)
         assert readings[0].value == 5.0
 
+    @pytest.mark.asyncio
+    async def test_read_timeout_closes_connection(self, make_core):
+        """On timeout, connection must be closed (not reused with dirty stream)."""
+        replies = [
+            _add_ok(1),
+            _add_ok(2),
+            _device_info(1),
+            _device_info(2),
+            _start_ok(),
+            _scalar_reply(1, 10.0),
+            # device 2 never arrives → timeout
+        ]
+        core, conn = make_core(replies)
+
+        with pytest.raises(ReadError):
+            await core.read_many(["M:OUTTMP", "G:AMANDA"], timeout=0.5)
+
+        assert conn._closed is True
+
 
 class TestWriteMany:
     @pytest.mark.asyncio
@@ -249,6 +272,29 @@ class TestWriteMany:
         role_msgs = [m for m in conn.sent if isinstance(m, AddToList_request) and m.ref_id == 0]
         assert len(role_msgs) == 1
         assert "ROLE:testing" in role_msgs[0].drf_request
+
+    @pytest.mark.asyncio
+    async def test_write_status_reply_error_captured(self, make_core):
+        """Status_reply errors during write setup must appear in results, not as generic timeout."""
+        status_err = Status_reply()
+        status_err.ref_id = 1
+        status_err.status = 0xBB06  # DIO_NO_SUCH
+
+        replies = [
+            status_err,  # device fails during setup
+            _start_ok(),
+            _apply_settings_reply([]),  # no settings applied for failed device
+        ]
+        core, conn = make_core(replies)
+        core._settings_enabled = True
+        core._auth = mock.MagicMock()
+        core._auth.principal = "test@fnal.gov"
+
+        results = await core.write_many([("M:NOSUCH.SETTING@N", 72.5)], timeout=2.0)
+        assert len(results) == 1
+        assert not results[0].success
+        # Must reflect actual Status_reply error, not generic timeout
+        assert results[0].message != "No reply from server"
 
 
 class TestStream:

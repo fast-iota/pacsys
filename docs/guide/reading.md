@@ -50,7 +50,7 @@ The `Reading` object fields:
 | Field | Description |
 |-------|-------------|
 | `value` | Device value (type depends on property) |
-| `value_type` | `ValueType` enum (SCALAR, SCALAR_ARRAY, RAW, TEXT, etc.) |
+| `value_type` | `ValueType` enum (SCALAR, SCALAR_ARRAY, RAW, TEXT, etc.) or `None` for error readings |
 | `units` | Engineering units string, or None |
 | `timestamp` | `datetime` when reading was taken |
 | `cycle` | Machine cycle number |

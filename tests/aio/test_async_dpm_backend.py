@@ -17,7 +17,7 @@ def _make_reading(drf="M:OUTTMP", val=72.5, error_code=0):
 
 
 def _make_error_reading(drf="M:OUTTMP"):
-    return Reading(drf=drf, value_type=ValueType.SCALAR, value=None, error_code=-10, message="Bad")
+    return Reading(drf=drf, value=None, error_code=-10, message="Bad")
 
 
 def _make_write_result(drf="M:OUTTMP.SETTING@N", error_code=0):

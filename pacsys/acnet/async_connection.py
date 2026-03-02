@@ -427,6 +427,12 @@ class AsyncAcnetConnectionBase:
                 self._connected = False
                 await self._close_transport()
                 raise AcnetUnavailableError()
+            except asyncio.CancelledError:
+                self._pending_ack = None
+                logger.error("Task cancelled during ack wait - closing transport to prevent desync")
+                self._connected = False
+                await asyncio.shield(self._close_transport())
+                raise
 
             if self._trace:
                 logger.info(f"TRACE< ACK len={len(ack_data)} {ack_data.hex()}")

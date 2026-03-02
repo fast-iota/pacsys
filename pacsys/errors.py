@@ -12,19 +12,18 @@ if TYPE_CHECKING:
 
 
 class ReadError(Exception):
-    """Transport failure during a batch read.
+    """Batch read failure.
 
-    Raised when get_many() encounters a client-side transport error
-    (timeout, connection drop, auth failure) - NOT for server-side ACNET
-    errors like DIO_NOATT which are returned as error Readings.
+    Raised in two scenarios:
+    - **get_many()**: transport error (timeout, connection drop, auth failure).
+      The underlying network exception is chained via ``__cause__``.
+    - **read_many()**: any device in the batch returned an unusable reading
+      (ACNET error or missing value).
 
     Attributes:
         readings: Complete results list (same length as input drfs).
             Includes both successful readings and error-backfilled entries.
-        message: Human-readable description of the transport failure.
-
-    The underlying network exception is chained via ``__cause__``
-    (standard ``raise ReadError(...) from cause`` pattern).
+        message: Human-readable description of the failure.
     """
 
     def __init__(self, readings: "list[Reading]", message: str):

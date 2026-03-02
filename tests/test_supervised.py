@@ -926,7 +926,7 @@ class TestBackendExceptionMapping:
 
 class TestReadingToProtoReply:
     def test_error_reading(self):
-        reading = Reading(drf="M:BAD", value_type=ValueType.SCALAR, facility_code=1, error_code=-42, message="broken")
+        reading = Reading(drf="M:BAD", facility_code=1, error_code=-42, message="broken")
         reply = reading_to_proto_reply(reading, 3)
         assert reply.index == 3
         assert reply.WhichOneof("value") == "status"
@@ -935,7 +935,7 @@ class TestReadingToProtoReply:
         assert reply.status.message == "broken"
 
     def test_error_reading_no_message(self):
-        reading = Reading(drf="M:BAD", value_type=ValueType.SCALAR, error_code=-1)
+        reading = Reading(drf="M:BAD", error_code=-1)
         reply = reading_to_proto_reply(reading, 0)
         assert reply.WhichOneof("value") == "status"
         assert reply.status.message == ""

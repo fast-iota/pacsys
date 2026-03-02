@@ -7,7 +7,9 @@ import atexit
 import importlib
 import logging
 import os
+import sys
 import threading
+import types as _stdlib_types
 import weakref
 from typing import Optional, Union, TYPE_CHECKING
 
@@ -157,7 +159,7 @@ def configure(
     devdb_host: Optional[str] | _Unset = _UNSET,
     devdb_port: Optional[int] | _Unset = _UNSET,
     backend: Optional[str] | _Unset = _UNSET,
-    auth: Optional[Auth] | _Unset = _UNSET,
+    auth: Optional[Auth] | str | _Unset = _UNSET,
     role: Optional[str] | _Unset = _UNSET,
 ) -> None:
     """Configure pacsys global settings.
@@ -175,7 +177,8 @@ def configure(
         devdb_host: DevDB gRPC hostname (default: from PACSYS_DEVDB_HOST or ad-services.fnal.gov/services.devdb)
         devdb_port: DevDB gRPC port (default: from PACSYS_DEVDB_PORT or 6802)
         backend: Backend type - one of "dpm", "grpc", "dmq", "acl" (default: "dpm")
-        auth: Authentication object (KerberosAuth or JWTAuth) for writes
+        auth: Authentication object (KerberosAuth or JWTAuth) for writes,
+              or "krb" as shortcut for KerberosAuth()
         role: Role for authenticated operations (e.g., "testing")
 
     Raises:
@@ -195,7 +198,9 @@ def configure(
                 raise ValueError(f"Invalid backend {backend!r}, must be one of {sorted(_VALID_BACKENDS)}")
             _config_backend = backend
         if not isinstance(auth, _Unset):
-            _config_auth = auth
+            if auth == "krb":
+                auth = KerberosAuth()
+            _config_auth = auth  # type: ignore[assignment]
         if not isinstance(role, _Unset):
             _config_role = role
         if not isinstance(dpm_host, _Unset):
@@ -466,6 +471,37 @@ def get_many(
     drfs = [_resolve_drf(d) for d in devices]
     backend = _get_global_backend()
     return backend.get_many(drfs, timeout=timeout)
+
+
+def read_many(
+    devices: list[DeviceSpec],
+    timeout: Optional[float] = None,
+) -> list[Value]:
+    """Read multiple device values in a single batch using the global backend.
+
+    Args:
+        devices: List of DRF strings or Device objects (can mix)
+        timeout: Total timeout for entire batch in seconds (not per-device)
+
+    Returns:
+        List of values in same order as input (float, numpy array, string, etc.)
+
+    Raises:
+        ReadError: If any reading is unusable (ACNET error or missing value),
+            or on transport failure. Partial results via ``exc.readings``.
+        ValueError: If any DRF syntax is invalid (before network I/O)
+
+    Thread Safety:
+        Safe to call from multiple threads.
+    """
+    drfs = [_resolve_drf(d) for d in devices]
+    backend = _get_global_backend()
+    readings = backend.get_many(drfs, timeout=timeout)  # may raise ReadError
+    errors = [r for r in readings if not r.ok]
+    if errors:
+        failed = ", ".join(r.drf for r in errors)
+        raise ReadError(readings, f"Device errors: {failed}")
+    return [r.value for r in readings]  # type: ignore[return-value]  # ok check above ensures non-None
 
 
 def write(device: DeviceSpec, value: Value, timeout: Optional[float] = None) -> WriteResult:
@@ -909,6 +945,27 @@ def supervised(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Submodule Shadowing Protection
+# ─────────────────────────────────────────────────────────────────────────────
+# Factory functions ssh(), devdb(), supervised() share names with submodule
+# files. When Python imports a submodule, it does setattr(parent, child_name,
+# module), overwriting the factory function. A custom module class with
+# __setattr__ blocks this for protected names.
+
+
+class _PacsysModule(_stdlib_types.ModuleType):
+    _PROTECTED = {"ssh", "devdb", "supervised"}
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if name in self._PROTECTED and isinstance(value, _stdlib_types.ModuleType):
+            return
+        super().__setattr__(name, value)
+
+
+sys.modules[__name__].__class__ = _PacsysModule
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Lazy Imports
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -925,13 +982,6 @@ _LAZY_IMPORTS: dict[str, str] = {
     # scaling
     "Scaler": "pacsys.scaling",
     "ScalingError": "pacsys.scaling",
-    # ramp
-    "Ramp": "pacsys.ramp",
-    "RampGroup": "pacsys.ramp",
-    "BoosterHVRamp": "pacsys.ramp",
-    "BoosterHVRampGroup": "pacsys.ramp",
-    "read_ramps": "pacsys.ramp",
-    "write_ramps": "pacsys.ramp",
     # digital_status
     "StatusBit": "pacsys.digital_status",
     "DigitalStatus": "pacsys.digital_status",
@@ -1028,13 +1078,6 @@ __all__ = [
     # Scaling
     "Scaler",
     "ScalingError",
-    # Ramp
-    "Ramp",
-    "RampGroup",
-    "BoosterHVRamp",
-    "BoosterHVRampGroup",
-    "read_ramps",
-    "write_ramps",
     # SSH
     "SSHClient",
     "SSHHop",
@@ -1056,6 +1099,7 @@ __all__ = [
     "ControlCommandDef",
     # Simple API functions
     "read",
+    "read_many",
     "get",
     "get_many",
     "write",
