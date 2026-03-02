@@ -29,6 +29,8 @@ from pacsys.types import BackendCapability, BasicControl
 
 from .devices import (
     ANALOG_ALARM_SETPOINT,
+    DPM_TEST_HOST,
+    DPM_TEST_PORT,
     SCALAR_SETPOINT_RAW,
     STATUS_CONTROL_DEVICE,
     requires_dpm_http,
@@ -43,6 +45,8 @@ def _create_dpm_write_backend(**kwargs) -> DPMHTTPBackend:
     """Create a DPMHTTPBackend with Kerberos auth and role for write testing."""
     from pacsys.auth import KerberosAuth
 
+    kwargs.setdefault("host", DPM_TEST_HOST)
+    kwargs.setdefault("port", DPM_TEST_PORT)
     kwargs.setdefault("auth", KerberosAuth())
     kwargs.setdefault("role", "testing")
     return DPMHTTPBackend(**kwargs)
@@ -59,7 +63,7 @@ class TestDPMHTTPBackendPool:
 
     def test_sequential_reads_reuse_connections(self):
         """Multiple sequential reads work correctly."""
-        with DPMHTTPBackend(pool_size=2) as backend:
+        with DPMHTTPBackend(host=DPM_TEST_HOST, port=DPM_TEST_PORT, pool_size=2) as backend:
             for i in range(5):
                 value = backend.read("M:OUTTMP", timeout=TIMEOUT_READ)
                 assert isinstance(value, (int, float))
@@ -75,7 +79,7 @@ class TestDPMHTTPBackendPool:
             except Exception as e:
                 errors.append(e)
 
-        with DPMHTTPBackend(pool_size=4) as backend:
+        with DPMHTTPBackend(host=DPM_TEST_HOST, port=DPM_TEST_PORT, pool_size=4) as backend:
             threads = [threading.Thread(target=do_read, args=(backend, "M:OUTTMP")) for _ in range(4)]
             for t in threads:
                 t.start()
@@ -274,7 +278,7 @@ class TestRamp:
 
         qualifier = device.replace(":", "_")
 
-        with DPMHTTPBackend() as backend:
+        with DPMHTTPBackend(host=DPM_TEST_HOST, port=DPM_TEST_PORT) as backend:
             for slot in [0, 1]:
                 idx = 64 * slot + 1
                 ramp = ramp_cls.read(device, slot=slot, backend=backend)
@@ -296,7 +300,7 @@ class TestRamp:
 
     def test_round_trip_bytes(self, ramp_cls, device):
         """from_bytes(to_bytes(read)) preserves the wire representation."""
-        with DPMHTTPBackend() as backend:
+        with DPMHTTPBackend(host=DPM_TEST_HOST, port=DPM_TEST_PORT) as backend:
             ramp = ramp_cls.read(device, slot=0, backend=backend)
             ramp2 = ramp_cls.from_bytes(ramp.to_bytes())
 
@@ -305,7 +309,7 @@ class TestRamp:
 
     def test_read_multiple_slots(self, ramp_cls, device):
         """Slots 0 and 1 can both be read (may or may not differ)."""
-        with DPMHTTPBackend() as backend:
+        with DPMHTTPBackend(host=DPM_TEST_HOST, port=DPM_TEST_PORT) as backend:
             ramp0 = ramp_cls.read(device, slot=0, backend=backend)
             ramp1 = ramp_cls.read(device, slot=1, backend=backend)
 

@@ -39,6 +39,7 @@ from pacsys.dpm_protocol import (
 )
 
 from .connection_sync import ACSYS_PROXY_HOST, AcnetConnectionTCP  # noqa: E402
+from .constants import ACNET_TCP_PORT
 
 logger = logging.getLogger(__name__)
 
@@ -85,16 +86,25 @@ class DPMAcnet:
                 print(f"Tag {reading.ref_id}: {reading.data}")
     """
 
-    def __init__(self, host: str = ACSYS_PROXY_HOST, dpm_node: Optional[str] = None, *, trace: bool = False):
+    def __init__(
+        self,
+        host: str = ACSYS_PROXY_HOST,
+        port: int = ACNET_TCP_PORT,
+        dpm_node: Optional[str] = None,
+        *,
+        trace: bool = False,
+    ):
         """
         Initialize DPM ACNET connection.
 
         Args:
             host: ACNET proxy hostname (default: acsys-proxy.fnal.gov)
+            port: ACNET TCP port (default: 6802)
             dpm_node: Specific DPM node to use (if None, uses service discovery)
             trace: Enable packet-level tracing on the ACNET connection
         """
         self._host = host
+        self._port = port
         self._desired_node = dpm_node
         self._trace = trace
 
@@ -131,7 +141,7 @@ class DPMAcnet:
     def connect(self):
         """Connect to ACNET and DPM."""
         # Create ACNET connection
-        self._con = AcnetConnectionTCP(host=self._host, trace=self._trace)
+        self._con = AcnetConnectionTCP(host=self._host, port=self._port, trace=self._trace)
         self._con.connect()
 
         # Find DPM and open list

@@ -20,6 +20,8 @@ from pacsys.verify import Verify
 from .devices import (
     ANALOG_ALARM_SETPOINT,
     ARRAY_DEVICE,
+    DPM_TEST_HOST,
+    DPM_TEST_PORT,
     NONEXISTENT_DEVICE,
     SCALAR_DEVICE,
     SCALAR_DEVICE_2,
@@ -37,7 +39,7 @@ async def _create_async_dpm_write_backend():
     from pacsys.auth import KerberosAuth
     from pacsys.aio._dpm_http import AsyncDPMHTTPBackend
 
-    return AsyncDPMHTTPBackend(auth=KerberosAuth(), role="testing")
+    return AsyncDPMHTTPBackend(host=DPM_TEST_HOST, port=DPM_TEST_PORT, auth=KerberosAuth(), role="testing")
 
 
 # =============================================================================

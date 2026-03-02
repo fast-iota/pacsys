@@ -21,6 +21,8 @@ from .devices import (
     ANALOG_ALARM_SETPOINT,
     ARRAY_DEVICE,
     CONTROL_PAIRS,
+    DPM_TEST_HOST,
+    DPM_TEST_PORT,
     NONEXISTENT_DEVICE,
     SCALAR_DEVICE,
     SCALAR_DEVICE_2,
@@ -39,7 +41,7 @@ def dpm_write_backend():
     from pacsys.auth import KerberosAuth
     from pacsys.backends.dpm_http import DPMHTTPBackend
 
-    backend = DPMHTTPBackend(auth=KerberosAuth(), role="testing")
+    backend = DPMHTTPBackend(host=DPM_TEST_HOST, port=DPM_TEST_PORT, auth=KerberosAuth(), role="testing")
     yield backend
     backend.close()
 

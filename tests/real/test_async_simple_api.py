@@ -18,6 +18,8 @@ from pacsys.types import Reading
 
 from .devices import (
     ARRAY_DEVICE,
+    DPM_TEST_HOST,
+    DPM_TEST_PORT,
     NONEXISTENT_DEVICE,
     PERIODIC_DEVICE,
     SCALAR_DEVICE,
@@ -34,12 +36,15 @@ from .devices import (
 
 @pytest_asyncio.fixture(autouse=True)
 async def _reset_aio():
-    """Reset async global backend before and after each test."""
+    """Reset async global backend before and after each test.
+
+    Configures host/port to use the test tunnel.
+    """
     aio._global_async_backend = None
     aio._async_backend_initialized = False
     aio._config_backend = None
-    aio._config_host = None
-    aio._config_port = None
+    aio._config_host = DPM_TEST_HOST
+    aio._config_port = DPM_TEST_PORT
     aio._config_pool_size = None
     aio._config_timeout = None
     aio._config_auth = None
@@ -174,7 +179,7 @@ class TestAsyncBackendFactories:
     """Tests for async backend factory functions."""
 
     async def test_dpm_factory(self):
-        async with aio.dpm() as backend:
+        async with aio.dpm(host=DPM_TEST_HOST, port=DPM_TEST_PORT) as backend:
             value = await backend.read(SCALAR_DEVICE, timeout=TIMEOUT_READ)
             assert isinstance(value, (int, float))
 

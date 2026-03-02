@@ -2,8 +2,8 @@
 Configuration for real/integration tests.
 
 These tests require network access to actual servers:
-- DPM: acsys-proxy.fnal.gov:6802
-- gRPC: localhost:23456 (tunnel to dce08.fnal.gov:50051)
+- DPM: localhost:33232
+- gRPC: localhost:23456
 
 Gated by environment variables:
     PACSYS_TEST_REAL=1   - enable real tests (required)
@@ -24,7 +24,11 @@ from pacsys.drf_utils import get_device_name
 # Import server availability checks and markers from shared module
 from .devices import (
     ACL_TEST_URL,
+    ACNET_TCP_TEST_HOST,
+    ACNET_TCP_TEST_PORT,
     ALLOWED_WRITE_DEVICES,
+    DPM_TEST_HOST,
+    DPM_TEST_PORT,
     acnet_tcp_server_available,
     dpm_server_available,
     grpc_server_available,
@@ -85,7 +89,7 @@ def dpm_http_backend():
     """Create a DPMHTTPBackend for testing (per-test)."""
     from pacsys.backends.dpm_http import DPMHTTPBackend
 
-    backend = DPMHTTPBackend()
+    backend = DPMHTTPBackend(host=DPM_TEST_HOST, port=DPM_TEST_PORT)
     yield backend
     backend.close()
 
@@ -95,7 +99,7 @@ def dpm_http_backend_cls():
     """Class-scoped DPMHTTPBackend shared across tests in a class."""
     from pacsys.backends.dpm_http import DPMHTTPBackend
 
-    backend = DPMHTTPBackend()
+    backend = DPMHTTPBackend(host=DPM_TEST_HOST, port=DPM_TEST_PORT)
     yield backend
     backend.close()
 
@@ -137,7 +141,7 @@ async def async_dpm_http_backend():
     """Create an AsyncDPMHTTPBackend for testing."""
     from pacsys.aio._dpm_http import AsyncDPMHTTPBackend
 
-    backend = AsyncDPMHTTPBackend()
+    backend = AsyncDPMHTTPBackend(host=DPM_TEST_HOST, port=DPM_TEST_PORT)
     yield backend
     await backend.close()
 
@@ -147,7 +151,7 @@ async def async_dpm_http_backend_cls():
     """Class-scoped AsyncDPMHTTPBackend shared across tests in a class."""
     from pacsys.aio._dpm_http import AsyncDPMHTTPBackend
 
-    backend = AsyncDPMHTTPBackend()
+    backend = AsyncDPMHTTPBackend(host=DPM_TEST_HOST, port=DPM_TEST_PORT)
     yield backend
     await backend.close()
 
@@ -172,7 +176,7 @@ async def async_read_backend(request):
             pytest.skip("DPM server not available")
         from pacsys.aio._dpm_http import AsyncDPMHTTPBackend
 
-        backend = AsyncDPMHTTPBackend()
+        backend = AsyncDPMHTTPBackend(host=DPM_TEST_HOST, port=DPM_TEST_PORT)
     elif backend_type == "grpc":
         if not grpc_server_available():
             pytest.skip("gRPC server not available")
@@ -196,7 +200,7 @@ async def async_read_backend_cls(request):
             pytest.skip("DPM server not available")
         from pacsys.aio._dpm_http import AsyncDPMHTTPBackend
 
-        backend = AsyncDPMHTTPBackend()
+        backend = AsyncDPMHTTPBackend(host=DPM_TEST_HOST, port=DPM_TEST_PORT)
     elif backend_type == "grpc":
         if not grpc_server_available():
             pytest.skip("gRPC server not available")
@@ -221,7 +225,7 @@ async def async_write_backend_cls(request):
         from pacsys.auth import KerberosAuth
         from pacsys.aio._dpm_http import AsyncDPMHTTPBackend
 
-        backend = AsyncDPMHTTPBackend(auth=KerberosAuth(), role="testing")
+        backend = AsyncDPMHTTPBackend(host=DPM_TEST_HOST, port=DPM_TEST_PORT, auth=KerberosAuth(), role="testing")
     else:
         raise ValueError(f"Unknown backend type: {request.param}")
 
@@ -240,7 +244,7 @@ async def async_write_backend(request):
         from pacsys.auth import KerberosAuth
         from pacsys.aio._dpm_http import AsyncDPMHTTPBackend
 
-        backend = AsyncDPMHTTPBackend(auth=KerberosAuth(), role="testing")
+        backend = AsyncDPMHTTPBackend(host=DPM_TEST_HOST, port=DPM_TEST_PORT, auth=KerberosAuth(), role="testing")
     else:
         raise ValueError(f"Unknown backend type: {request.param}")
 
@@ -269,7 +273,7 @@ def read_backend(request):
             pytest.skip("DPM server not available")
         from pacsys.backends.dpm_http import DPMHTTPBackend
 
-        backend = DPMHTTPBackend()
+        backend = DPMHTTPBackend(host=DPM_TEST_HOST, port=DPM_TEST_PORT)
     elif backend_type == "grpc":
         if not grpc_server_available():
             pytest.skip("gRPC server not available")
@@ -306,7 +310,7 @@ def read_backend_cls(request):
             pytest.skip("DPM server not available")
         from pacsys.backends.dpm_http import DPMHTTPBackend
 
-        backend = DPMHTTPBackend()
+        backend = DPMHTTPBackend(host=DPM_TEST_HOST, port=DPM_TEST_PORT)
     elif backend_type == "grpc":
         if not grpc_server_available():
             pytest.skip("gRPC server not available")
@@ -344,7 +348,7 @@ def write_backend(request):
         from pacsys.auth import KerberosAuth
         from pacsys.backends.dpm_http import DPMHTTPBackend
 
-        backend = DPMHTTPBackend(auth=KerberosAuth(), role="testing")
+        backend = DPMHTTPBackend(host=DPM_TEST_HOST, port=DPM_TEST_PORT, auth=KerberosAuth(), role="testing")
     elif backend_type == "dmq":
         if not dmq_server_available():
             pytest.skip("DMQ server not available")
@@ -373,7 +377,7 @@ def write_backend_cls(request):
         from pacsys.auth import KerberosAuth
         from pacsys.backends.dpm_http import DPMHTTPBackend
 
-        backend = DPMHTTPBackend(auth=KerberosAuth(), role="testing")
+        backend = DPMHTTPBackend(host=DPM_TEST_HOST, port=DPM_TEST_PORT, auth=KerberosAuth(), role="testing")
     elif backend_type == "dmq":
         if not dmq_server_available():
             pytest.skip("DMQ server not available")
@@ -395,14 +399,10 @@ def write_backend_cls(request):
 
 @pytest.fixture
 def acnet_tcp_connection():
-    """Create an AcnetConnectionTCP for low-level testing."""
-    import os
-
+    """Create an AcnetConnectionTCP via the localhost tunnel."""
     from pacsys.acnet import AcnetConnectionTCP
 
-    host = os.environ.get("PACSYS_DPM_HOST", "localhost")
-    port = int(os.environ.get("PACSYS_DPM_PORT", "34567"))
-    conn = AcnetConnectionTCP(host, port)
+    conn = AcnetConnectionTCP(ACNET_TCP_TEST_HOST, ACNET_TCP_TEST_PORT)
     conn.connect()
     yield conn
     conn.close()
@@ -410,10 +410,10 @@ def acnet_tcp_connection():
 
 @pytest.fixture
 def dpm_acnet():
-    """Create a DPMAcnet for low-level testing."""
+    """Create a DPMAcnet for low-level testing via localhost tunnel."""
     from pacsys.acnet import DPMAcnet
 
-    conn = DPMAcnet()
+    conn = DPMAcnet(host=ACNET_TCP_TEST_HOST, port=ACNET_TCP_TEST_PORT)
     conn.connect()
     yield conn
     conn.close()
@@ -426,20 +426,31 @@ def dpm_acnet():
 
 @pytest.fixture(autouse=True)
 def reset_global_backend():
-    """Reset global backend before and after each test."""
+    """Reset global backend before and after each test.
+
+    Configures the global backend to use the test tunnel so that
+    pacsys.read() / pacsys.get() etc. connect to localhost, not
+    acsys-proxy.fnal.gov.
+    """
     import pacsys
 
     pacsys.shutdown()
+    pacsys.configure(dpm_host=DPM_TEST_HOST, dpm_port=DPM_TEST_PORT)
     yield
     pacsys.shutdown()
 
 
 @pytest.fixture(autouse=True)
 def reset_async_global_backend():
-    """Reset async global backend and config before and after each test."""
+    """Reset async global backend and config before and after each test.
+
+    Configures the async global backend to use the test tunnel.
+    """
     import pacsys.aio as aio
 
     _reset_aio_state(aio)
+    aio._config_host = DPM_TEST_HOST
+    aio._config_port = DPM_TEST_PORT
     yield
     _reset_aio_state(aio)
 

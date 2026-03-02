@@ -9,6 +9,8 @@ import time
 
 from pacsys.acnet import DPMAcnet
 from tests.real.devices import (
+    ACNET_TCP_TEST_HOST,
+    ACNET_TCP_TEST_PORT,
     requires_dpm_acnet,
     TIMEOUT_BATCH,
 )
@@ -16,8 +18,8 @@ from tests.real.devices import (
 
 @pytest.fixture(scope="class")
 def dpm_acnet():
-    """Class-scoped DPMAcnet connection."""
-    conn = DPMAcnet()
+    """Class-scoped DPMAcnet connection via localhost tunnel."""
+    conn = DPMAcnet(host=ACNET_TCP_TEST_HOST, port=ACNET_TCP_TEST_PORT)
     conn.connect()
     yield conn
     conn.close()
@@ -40,7 +42,7 @@ class TestDPMAcnetConnection:
     def test_repeated_array_read(self):
         """read() B:IRMS06[0:10] with 0.5s pause, fresh connection each time."""
         for i in range(10):
-            dpm = DPMAcnet()
+            dpm = DPMAcnet(host=ACNET_TCP_TEST_HOST, port=ACNET_TCP_TEST_PORT)
             dpm.connect()
             try:
                 reading = dpm.read("B:IRMS06[0:10]@I", timeout=TIMEOUT_BATCH)

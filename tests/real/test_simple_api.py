@@ -20,6 +20,8 @@ from pacsys import Device, ScalarDevice, ArrayDevice
 from pacsys import Reading, DeviceError, SubscriptionHandle
 
 from .devices import (
+    DPM_TEST_HOST,
+    DPM_TEST_PORT,
     SCALAR_DEVICE,
     SCALAR_DEVICE_2,
     SCALAR_ELEMENT,
@@ -255,20 +257,20 @@ class TestBackendFactories:
 
     def test_dpm_factory_creates_backend(self):
         """pacsys.dpm() creates working DPMHTTPBackend."""
-        with pacsys.dpm() as backend:
+        with pacsys.dpm(host=DPM_TEST_HOST, port=DPM_TEST_PORT) as backend:
             value = backend.read(SCALAR_DEVICE, timeout=TIMEOUT_READ)
             assert isinstance(value, (int, float))
             print(f"\n  pacsys.dpm().read() = {value}")
 
     def test_dpm_http_factory_is_alias(self):
         """pacsys.dpm_http() is alias for pacsys.dpm()."""
-        with pacsys.dpm_http() as backend:
+        with pacsys.dpm_http(host=DPM_TEST_HOST, port=DPM_TEST_PORT) as backend:
             value = backend.read(SCALAR_DEVICE, timeout=TIMEOUT_READ)
             assert isinstance(value, (int, float))
 
     def test_dpm_factory_with_custom_settings(self):
         """pacsys.dpm() accepts custom parameters."""
-        with pacsys.dpm(pool_size=2, timeout=TIMEOUT_BATCH) as backend:
+        with pacsys.dpm(host=DPM_TEST_HOST, port=DPM_TEST_PORT, pool_size=2, timeout=TIMEOUT_BATCH) as backend:
             value = backend.read(SCALAR_DEVICE)
             assert value is not None
 

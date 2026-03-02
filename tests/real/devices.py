@@ -20,14 +20,29 @@ from pacsys.types import BasicControl, Reading, ValueType
 
 
 # =============================================================================
+# DPM Test Server
+# =============================================================================
+
+DPM_TEST_HOST = "localhost"
+DPM_TEST_PORT = 33232
+
+# =============================================================================
+# ACNET TCP Test Server (raw acnetd protocol, tunneled)
+# =============================================================================
+
+ACNET_TCP_TEST_HOST = "localhost"
+ACNET_TCP_TEST_PORT = 34567
+
+
+# =============================================================================
 # Server Availability Checks
 # =============================================================================
 
 
 def dpm_server_available() -> bool:
-    """Check if DPM server (acsys-proxy) is reachable."""
+    """Check if DPM server is reachable."""
     try:
-        sock = socket.create_connection(("acsys-proxy.fnal.gov", 6802), timeout=2.0)
+        sock = socket.create_connection((DPM_TEST_HOST, DPM_TEST_PORT), timeout=2.0)
         sock.close()
         return True
     except (socket.timeout, ConnectionRefusedError, OSError, socket.gaierror):
@@ -77,11 +92,9 @@ def dmq_server_available() -> bool:
 
 
 def acnet_tcp_server_available() -> bool:
-    """Check if acnetd is reachable via TCP (localhost:6802 or PACSYS_DPM_HOST)."""
-    host = os.environ.get("PACSYS_DPM_HOST", "localhost")
-    port = int(os.environ.get("PACSYS_DPM_PORT", "34567"))
+    """Check if acnetd is reachable via TCP tunnel."""
     try:
-        sock = socket.create_connection((host, port), timeout=2.0)
+        sock = socket.create_connection((ACNET_TCP_TEST_HOST, ACNET_TCP_TEST_PORT), timeout=2.0)
         sock.sendall(b"RAW\r\n\r\n")
         sock.close()
         return True
@@ -95,12 +108,12 @@ def acnet_tcp_server_available() -> bool:
 
 requires_dpm_http = pytest.mark.skipif(
     not dpm_server_available(),
-    reason="DPM/HTTP server not available at acsys-proxy.fnal.gov:6802",
+    reason=f"DPM/HTTP server not available at {DPM_TEST_HOST}:{DPM_TEST_PORT}",
 )
 
 requires_dpm_acnet = pytest.mark.skipif(
     not dpm_server_available(),
-    reason="DPM/ACNET server not available at acsys-proxy.fnal.gov:6802",
+    reason=f"DPM/ACNET server not available at {DPM_TEST_HOST}:{DPM_TEST_PORT}",
 )
 
 requires_grpc = pytest.mark.skipif(

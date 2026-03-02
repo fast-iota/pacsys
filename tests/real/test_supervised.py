@@ -35,6 +35,8 @@ from .devices import (
     CONTROL_RESET,
     DESCRIPTION_DEVICE,
     DIGITAL_ALARM_DEVICE,
+    DPM_TEST_HOST,
+    DPM_TEST_PORT,
     NONEXISTENT_DEVICE,
     PERIODIC_DEVICE,
     RAW_DEVICE,
@@ -76,7 +78,7 @@ def real_backend():
     """DPMHTTPBackend for proxying through supervised server."""
     if not dpm_server_available():
         pytest.skip("DPM server not available")
-    backend = DPMHTTPBackend()
+    backend = DPMHTTPBackend(host=DPM_TEST_HOST, port=DPM_TEST_PORT)
     yield backend
     backend.close()
 
@@ -90,7 +92,7 @@ def real_write_backend():
         pytest.skip("Kerberos credentials not available")
     from pacsys.auth import KerberosAuth
 
-    backend = DPMHTTPBackend(auth=KerberosAuth(), role="testing")
+    backend = DPMHTTPBackend(host=DPM_TEST_HOST, port=DPM_TEST_PORT, auth=KerberosAuth(), role="testing")
     yield backend
     backend.close()
 
@@ -209,9 +211,18 @@ def _assert_values_equivalent(direct_val, proxied_val, tol):
     elif isinstance(direct_val, str) and isinstance(proxied_val, str):
         assert direct_val == proxied_val, f"string mismatch: direct={direct_val!r}, proxied={proxied_val!r}"
     elif isinstance(direct_val, bytes) and isinstance(proxied_val, bytes):
-        # Both paths go through the same gRPC proto so raw bytes must match
-        assert len(direct_val) == len(proxied_val), (
-            f"raw bytes length mismatch: direct={len(direct_val)}, proxied={len(proxied_val)}"
+        # Known DPM server discrepancy (reported upstream):
+        # - DPM gRPC replier (DPMListGRPC.sendReply) copies the entire ACNET
+        #   data buffer (e.g. 220 bytes for M:OUTTMP)
+        # - DPM HTTP replier (DPMProtocolReplierPC.sendReply) copies only
+        #   whatDaq.length() bytes (e.g. 2 bytes for M:OUTTMP's int16 reading)
+        # The supervised proxy correctly forwards whatever the HTTP backend
+        # returns, so the proxied value will be shorter. Only check that the
+        # proxied bytes are a prefix of the direct bytes.
+        assert len(proxied_val) > 0, "proxied raw bytes should not be empty"
+        assert direct_val[: len(proxied_val)] == proxied_val, (
+            f"proxied raw bytes not a prefix of direct: "
+            f"direct[:{len(proxied_val)}]={direct_val[: len(proxied_val)]!r}, proxied={proxied_val!r}"
         )
     elif isinstance(direct_val, dict) and isinstance(proxied_val, dict):
         # Both paths return dicts but status dicts may differ structurally:

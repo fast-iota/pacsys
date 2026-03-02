@@ -4,22 +4,19 @@ Low-level tests for AcnetConnectionTCP (direct acnetd commands over TCP).
 Tests the TCP protocol path: AcnetConnectionTCP -> acnetd
 """
 
-import os
 import queue
 import time
 
 import pytest
 
 from pacsys.acnet import AcnetConnectionTCP, NodeStats, node_parts
-from tests.real.devices import requires_acnet_tcp
+from tests.real.devices import ACNET_TCP_TEST_HOST, ACNET_TCP_TEST_PORT, requires_acnet_tcp
 
 
 @pytest.fixture(scope="class")
 def acnet_tcp_connection():
-    """Create an AcnetConnectionTCP to acsys-proxy.fnal.gov:6802."""
-    host = os.environ.get("PACSYS_ACNET_HOST", "acsys-proxy.fnal.gov")
-    port = int(os.environ.get("PACSYS_ACNET_PORT", "6802"))
-    conn = AcnetConnectionTCP(host, port)
+    """Create an AcnetConnectionTCP via the localhost tunnel."""
+    conn = AcnetConnectionTCP(ACNET_TCP_TEST_HOST, ACNET_TCP_TEST_PORT)
     conn.connect()
     yield conn
     conn.close()
@@ -128,9 +125,7 @@ class TestAcnetTCPTaskOperations:
 
     def test_rename_task(self):
         """Rename uses its own connection to avoid corrupting shared fixture."""
-        host = os.environ.get("PACSYS_ACNET_HOST", "acsys-proxy.fnal.gov")
-        port = int(os.environ.get("PACSYS_ACNET_PORT", "6802"))
-        conn = AcnetConnectionTCP(host, port)
+        conn = AcnetConnectionTCP(ACNET_TCP_TEST_HOST, ACNET_TCP_TEST_PORT)
         conn.connect()
         try:
             old_name = conn.name
