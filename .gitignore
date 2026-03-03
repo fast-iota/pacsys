@@ -182,5 +182,5 @@ known_limitations.md
 #mkdocs
 site/
 
-plans/docs
+docs/plans
 examples/debug
