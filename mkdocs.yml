@@ -25,6 +25,7 @@ nav:
     - Ramps: specialized-utils/ramps.md
     - Scaling: specialized-utils/scaling.md
     - Supervised Mode: specialized-utils/supervised.md
+    - MCP Server: specialized-utils/mcp-server.md
   - Low-Level ACNET:
     - ACNET Protocol: acnet-protocol.md
     - FTPMAN Protocol: ftpman-protocol.md

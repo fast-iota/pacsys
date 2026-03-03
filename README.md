@@ -20,6 +20,7 @@ ACNET (Accelerator Control NETwork) is the control system used at Fermilab's par
 - **Full DRF3 parser** for data requests with automatic conversion
 - **Utilities** for device database, SSH tunneling, and more
 - **Command-line tools** like in EPICS - `acget`, `acput`, `acmonitor`, `acinfo`
+- **MCP server** for AI agent integration (Claude Code, etc.) with supervised writes
 
 ## Installation
 
@@ -146,6 +147,36 @@ with pacsys.ssh(["jump.fnal.gov", "target.fnal.gov"]) as ssh:
 with pacsys.ssh("clx01.fnal.gov") as ssh:
     result = ssh.acl("read M:OUTTMP") # "M:OUTTMP       =  72.500 DegF"
 ```
+
+## MCP Server (AI Agent Integration)
+
+Expose pacsys as an MCP server for AI agents like Claude Code:
+
+```json
+{
+  "mcpServers": {
+    "pacsys": {
+      "command": "python",
+      "args": ["-m", "pacsys.mcp"]
+    }
+  }
+}
+```
+
+With write access (requires config file + Kerberos):
+
+```json
+{
+  "mcpServers": {
+    "pacsys": {
+      "command": "python",
+      "args": ["-m", "pacsys.mcp", "--config", "pacsys-mcp.toml"]
+    }
+  }
+}
+```
+
+Tools: `read_device`, `write_device`, `device_info`. Writes are denied by default unless explicitly allowed via policy config.
 
 ## CLI Tools
 

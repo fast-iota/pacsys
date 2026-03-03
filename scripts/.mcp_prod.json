@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "pacsys": {
+      "type": "stdio",
+      "command": "python",
+      "args": [
+        "-m",
+        "pacsys.mcp",
+        "--config",
+        "scripts/pacsys-mcp.toml"
+      ],
+      "env": {}
+    }
+  }
+}

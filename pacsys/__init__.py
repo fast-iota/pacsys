@@ -1006,6 +1006,8 @@ _LAZY_IMPORTS: dict[str, str] = {
     "StatusBitDef": "pacsys.devdb",
     "ExtStatusBitDef": "pacsys.devdb",
     "ControlCommandDef": "pacsys.devdb",
+    # mcp
+    "create_server": "pacsys.mcp",
 }
 
 
@@ -1097,6 +1099,8 @@ __all__ = [
     "StatusBitDef",
     "ExtStatusBitDef",
     "ControlCommandDef",
+    # MCP server
+    "create_server",
     # Simple API functions
     "read",
     "read_many",

@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "pacsys": {
+      "type": "stdio",
+      "command": "python",
+      "args": [
+        "-m",
+        "pacsys.mcp"
+      ],
+      "env": {
+        "PACSYS_DPM_HOST":"localhost",
+        "PACSYS_DPM_PORT":"33232"
+      }
+    }
+  }
+}
