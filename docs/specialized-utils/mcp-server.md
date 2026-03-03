@@ -23,7 +23,9 @@ Write safety comes from two layers:
 1. **Claude Code's tool permission prompt** — human-in-the-loop approval for each write call
 2. **Server-side policy chain** — `DeviceAccessPolicy` → `ValueRangePolicy` → `SlewRatePolicy`
 
-Without a policy config, all writes are denied. Reads are always allowed.
+Without a policy config, all writes are denied. Reads are always allowed. This is the same policy system used by [Supervised Mode](supervised.md).
+
+Writes require Kerberos credentials. The server refuses to start if write devices are configured but no Kerberos ticket is available.
 
 ---
 
@@ -75,8 +77,6 @@ Where `scripts/.mcp_prod.json` points to a TOML config:
   }
 }
 ```
-
-Writes require Kerberos credentials. The server refuses to start if write devices are configured but no Kerberos ticket is available.
 
 ---
 
@@ -238,36 +238,6 @@ Look up device metadata from the device database.
 ```
 
 DevDB must be available (requires `grpcio`). If unavailable, returns `{"ok": false, "error": "DevDB client unavailable"}`.
-
----
-
-## Write Safety
-
-Writes pass through multiple gates:
-
-1. **Policy chain** — server-side, evaluated before any write reaches the backend:
-    - `DeviceAccessPolicy` — allowlist of writable device patterns (required for any write)
-    - `ValueRangePolicy` — min/max bounds per device
-    - `SlewRatePolicy` — max step size / rate of change between consecutive writes
-2. **Claude Code HITL** — the AI agent must get human approval for each `write_device` tool call
-
-Without `write_devices` in the config, all writes are denied regardless of other policies. This is the same policy system used by [Supervised Mode](supervised.md).
-
----
-
-## Architecture
-
-```
-pacsys/mcp/
-├── __init__.py          # Public API: create_server()
-├── __main__.py          # CLI: python -m pacsys.mcp
-├── _config.py           # TOML parsing → MCPConfig → policy chain
-├── _serialization.py    # Reading/WriteResult → JSON-safe dicts
-├── _server.py           # FastMCP wiring, lifespan (backend + auth + devdb)
-└── _tools.py            # Pure business logic (no MCP dependency)
-```
-
-The tool implementations in `_tools.py` are independent of the MCP SDK — they take a `Backend` and return plain dicts. This makes them easy to test with `FakeBackend`.
 
 ---
 
