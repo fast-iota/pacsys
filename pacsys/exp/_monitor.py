@@ -204,16 +204,20 @@ class MonitorResult:
         values = np.array([float(r.value) for r in ok], dtype=np.float64)  # type: ignore[arg-type]
         return timestamps, values
 
-    def to_dataframe(self, drf: DeviceSpec | None = None):
+    def to_dataframe(self, drf: DeviceSpec | None = None, *, relative: bool = False):
         """Convert to pandas DataFrame (requires pandas).
 
         If drf is given, returns a single-device DataFrame indexed by timestamp.
         If drf is None, returns a DataFrame with all channels.
+        If relative is True, timestamps become seconds since self.started.
         """
         try:
             import pandas as pd
         except ImportError:
             raise ImportError("pandas is required for to_dataframe(). Install with: pip install pandas")
+
+        if relative and self.started is None:
+            raise ValueError("Cannot use relative=True: started timestamp is None")
 
         if drf is not None:
             ch = self._get_channel(drf)
@@ -221,22 +225,29 @@ class MonitorResult:
             for r in ch.readings:
                 if r.ok:
                     rows.append({"value": r.value, "units": r.units})
-            df = pd.DataFrame(rows, index=[r.timestamp for r in ch.readings if r.ok])  # type: ignore[arg-type]
-            df.index.name = "timestamp"
+            if relative:
+                index = [(r.timestamp - self.started).total_seconds() for r in ch.readings if r.ok]  # type: ignore[operator]
+                df = pd.DataFrame(rows, index=index)  # type: ignore[arg-type]
+                df.index.name = "elapsed_s"
+            else:
+                df = pd.DataFrame(rows, index=[r.timestamp for r in ch.readings if r.ok])  # type: ignore[arg-type]
+                df.index.name = "timestamp"
             return df
 
         rows = []
-        for drf, ch in self.channels.items():
+        for ch_drf, ch in self.channels.items():
             for r in ch.readings:
                 if r.ok:
-                    rows.append(
-                        {
-                            "timestamp": r.timestamp,
-                            "drf": drf,
-                            "value": r.value,
-                            "units": r.units,
-                        }
-                    )
+                    row: dict = {
+                        "drf": ch_drf,
+                        "value": r.value,
+                        "units": r.units,
+                    }
+                    if relative:
+                        row["elapsed_s"] = (r.timestamp - self.started).total_seconds()  # type: ignore[operator]
+                    else:
+                        row["timestamp"] = r.timestamp
+                    rows.append(row)
         return pd.DataFrame(rows)
 
 

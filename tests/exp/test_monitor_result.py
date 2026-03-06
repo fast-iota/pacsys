@@ -218,3 +218,39 @@ class TestMonitorResultToNumpy:
         timestamps, values = r.to_numpy("A:DEV")
         assert len(timestamps) == 0
         assert len(values) == 0
+
+
+class TestMonitorResultDataframeRelative:
+    def test_relative_single_channel(self):
+        pytest.importorskip("pandas")
+        t_start = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        t1 = datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 1, 0, 0, 2, tzinfo=timezone.utc)
+        ch = ChannelData(
+            "A:DEV",
+            (
+                _reading("A:DEV", 1.0, t1),
+                _reading("A:DEV", 2.0, t2),
+            ),
+        )
+        r = MonitorResult(channels={"A:DEV": ch}, started=t_start)
+        df = r.to_dataframe("A:DEV", relative=True)
+        assert df.index.name == "elapsed_s"
+        assert list(df.index) == pytest.approx([1.0, 2.0])
+
+    def test_relative_all_channels(self):
+        pytest.importorskip("pandas")
+        t_start = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        t1 = datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc)
+        ch = ChannelData("A:DEV", (_reading("A:DEV", 1.0, t1),))
+        r = MonitorResult(channels={"A:DEV": ch}, started=t_start)
+        df = r.to_dataframe(relative=True)
+        assert "elapsed_s" in df.columns
+        assert df["elapsed_s"].iloc[0] == pytest.approx(1.0)
+
+    def test_relative_no_start_raises(self):
+        pytest.importorskip("pandas")
+        ch = ChannelData("A:DEV", (_reading("A:DEV", 1.0),))
+        r = MonitorResult(channels={"A:DEV": ch}, started=None)
+        with pytest.raises(ValueError, match="started"):
+            r.to_dataframe("A:DEV", relative=True)
