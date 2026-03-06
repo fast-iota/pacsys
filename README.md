@@ -178,6 +178,31 @@ With write access (requires config file + Kerberos):
 
 Tools: `read_device`, `write_device`, `device_info`. Writes are denied by default unless explicitly allowed via policy config.
 
+## Experimental Utilities
+
+`pacsys.exp` provides high-level utilities for experiment workflows:
+
+```python
+from pacsys.exp import Monitor, read_fresh, watch, scan, DataLogger, CsvWriter
+
+# Collect readings for 10 seconds
+result = Monitor(["M:OUTTMP@p,1000", "G:AMANDA@e,8f"]).collect(duration=10)
+print(result.mean("M:OUTTMP@p,1000"))
+
+# Wait for a fresh reading
+readings = read_fresh(["M:OUTTMP@p,1000"], timeout=5.0)
+
+# Watch for a condition
+reading = watch("M:OUTTMP@p,1000", lambda r: r.value > 75, timeout=30)
+
+# Parameter scan with restore
+result = scan("Z:ACLTST", ["M:OUTTMP"], values=[0.0, 1.0, 2.0], settle=0.5)
+
+# Log to CSV
+with DataLogger(["M:OUTTMP@p,1000"], writer=CsvWriter("log.csv")):
+    time.sleep(60)
+```
+
 ## CLI Tools
 
 EPICS-style command-line tools:

@@ -1,0 +1,280 @@
+"""Monitor: subscribe to channels and collect readings with aggregation."""
+
+from __future__ import annotations
+
+import threading
+import time
+from collections import deque
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Optional
+
+from pacsys.types import DeviceSpec, Reading, SubscriptionHandle, Value
+from pacsys.exp._resolve import resolve_drf, resolve_backend
+
+if TYPE_CHECKING:
+    from pacsys.backends import Backend
+
+# Alias builtins to avoid shadowing by methods
+builtins_min = min
+builtins_max = max
+
+
+@dataclass(frozen=True)
+class ChannelData:
+    """Collected readings for a single channel."""
+
+    drf: str
+    readings: tuple[Reading, ...] = ()
+
+    def values(self) -> list[Value]:
+        """Extract values from all ok readings."""
+        return [r.value for r in self.readings if r.ok and r.value is not None]
+
+    def timestamps(self) -> list[datetime]:
+        """Extract timestamps from all readings with timestamps."""
+        return [r.timestamp for r in self.readings if r.timestamp is not None]
+
+
+@dataclass(frozen=True)
+class MonitorResult:
+    """Snapshot of collected monitoring data across channels."""
+
+    channels: dict[str, ChannelData]
+    started: Optional[datetime] = None
+    stopped: Optional[datetime] = None
+
+    def _get_channel(self, drf: str) -> ChannelData:
+        if drf not in self.channels:
+            raise KeyError(f"No channel {drf!r}. Available: {list(self.channels)}")
+        return self.channels[drf]
+
+    def _numeric_values(self, drf: str) -> list[float]:
+        vals = self._get_channel(drf).values()
+        nums = []
+        for v in vals:
+            if isinstance(v, bool) or type(v).__name__ == "bool_":
+                raise TypeError(f"Cannot compute stats on non-numeric value {type(v).__name__} in {drf}")
+            try:
+                nums.append(float(v))  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                raise TypeError(f"Cannot compute stats on non-numeric value {type(v).__name__} in {drf}")
+        return nums
+
+    def _mean_one(self, drf: str) -> float:
+        vals = self._numeric_values(drf)
+        if not vals:
+            raise ValueError(f"No readings for {drf}")
+        return sum(vals) / len(vals)
+
+    def mean(self, drf: str | None = None) -> float | dict[str, float]:
+        """Mean of values. Single channel if drf given, else dict of all."""
+        if drf is not None:
+            return self._mean_one(drf)
+        return {d: self._mean_one(d) for d in self.channels}
+
+    def _std_one(self, drf: str) -> float:
+        vals = self._numeric_values(drf)
+        if not vals:
+            raise ValueError(f"No readings for {drf}")
+        m = sum(vals) / len(vals)
+        variance = sum((v - m) ** 2 for v in vals) / len(vals)
+        return variance**0.5
+
+    def std(self, drf: str | None = None) -> float | dict[str, float]:
+        """Standard deviation. Single channel if drf given, else dict."""
+        if drf is not None:
+            return self._std_one(drf)
+        return {d: self._std_one(d) for d in self.channels}
+
+    def _min_one(self, drf: str) -> float:
+        vals = self._numeric_values(drf)
+        if not vals:
+            raise ValueError(f"No readings for {drf}")
+        return builtins_min(vals)
+
+    def min(self, drf: str | None = None) -> float | dict[str, float]:
+        """Minimum value. Single channel if drf given, else dict."""
+        if drf is not None:
+            return self._min_one(drf)
+        return {d: self._min_one(d) for d in self.channels}
+
+    def _max_one(self, drf: str) -> float:
+        vals = self._numeric_values(drf)
+        if not vals:
+            raise ValueError(f"No readings for {drf}")
+        return builtins_max(vals)
+
+    def max(self, drf: str | None = None) -> float | dict[str, float]:
+        """Maximum value. Single channel if drf given, else dict."""
+        if drf is not None:
+            return self._max_one(drf)
+        return {d: self._max_one(d) for d in self.channels}
+
+    def _last_one(self, n: int, drf: str) -> list[Value]:
+        if n < 1:
+            raise ValueError("n must be >= 1")
+        return self._get_channel(drf).values()[-n:]
+
+    def last(self, n: int, drf: str | None = None) -> list[Value] | dict[str, list[Value]]:
+        """Last n values. Single channel if drf given, else dict."""
+        if drf is not None:
+            return self._last_one(n, drf)
+        return {d: self._last_one(n, d) for d in self.channels}
+
+    def values(self, drf: str) -> list[Value]:
+        """All values for a channel."""
+        return self._get_channel(drf).values()
+
+    def timestamps(self, drf: str) -> list[datetime]:
+        """All timestamps for a channel."""
+        return self._get_channel(drf).timestamps()
+
+    def to_dataframe(self):
+        """Convert to pandas DataFrame (requires pandas)."""
+        try:
+            import pandas as pd
+        except ImportError:
+            raise ImportError("pandas is required for to_dataframe(). Install with: pip install pandas")
+
+        rows = []
+        for drf, ch in self.channels.items():
+            for r in ch.readings:
+                if r.ok:
+                    rows.append(
+                        {
+                            "timestamp": r.timestamp,
+                            "drf": drf,
+                            "value": r.value,
+                            "units": r.units,
+                        }
+                    )
+        return pd.DataFrame(rows)
+
+
+class Monitor:
+    """Subscribe to channels and collect readings into ring buffers.
+
+    Usage:
+        mon = Monitor(["M:OUTTMP@p,1000", "G:AMANDA@e,8f"])
+        mon.start()
+        snap = mon.snapshot()   # non-destructive peek
+        result = mon.flush()    # swap out buffers, return old data
+        mon.stop()
+
+        # Or blocking:
+        result = mon.collect(duration=10.0)
+        result = mon.collect(count=100)
+    """
+
+    def __init__(
+        self,
+        devices: list[DeviceSpec],
+        buffer_size: int = 10_000,
+        backend: Backend | None = None,
+    ):
+        if not devices:
+            raise ValueError("devices cannot be empty")
+        self._drfs = [resolve_drf(d) for d in devices]
+        self._buffer_size = buffer_size
+        self._backend = backend
+        self._lock = threading.Lock()
+        self._buffers: dict[str, deque[Reading]] = {drf: deque(maxlen=buffer_size) for drf in self._drfs}
+        self._started: datetime | None = None
+        self._handle: SubscriptionHandle | None = None
+
+    @property
+    def running(self) -> bool:
+        return self._handle is not None and not self._handle.stopped
+
+    def start(self) -> None:
+        """Start collecting readings in the background."""
+        if self.running:
+            raise RuntimeError("Monitor is already running")
+        self._started = datetime.now(timezone.utc)
+        backend = resolve_backend(self._backend)
+        self._handle = backend.subscribe(self._drfs, callback=self._on_reading)
+
+    def stop(self) -> None:
+        """Stop collecting."""
+        if self._handle is not None:
+            self._handle.stop()
+
+    def _on_reading(self, reading: Reading, handle: SubscriptionHandle) -> None:
+        with self._lock:
+            drf = reading.drf
+            if drf in self._buffers:
+                self._buffers[drf].append(reading)
+
+    def snapshot(self) -> MonitorResult:
+        """Non-destructive peek at current data."""
+        with self._lock:
+            channels = {drf: ChannelData(drf=drf, readings=tuple(buf)) for drf, buf in self._buffers.items()}
+            started = self._started
+        return MonitorResult(channels=channels, started=started, stopped=datetime.now(timezone.utc))
+
+    def flush(self) -> MonitorResult:
+        """Atomically swap out buffers and return old data."""
+        with self._lock:
+            old_buffers = self._buffers
+            self._buffers = {drf: deque(maxlen=self._buffer_size) for drf in self._drfs}
+            old_started = self._started
+            self._started = datetime.now(timezone.utc)
+        channels = {drf: ChannelData(drf=drf, readings=tuple(buf)) for drf, buf in old_buffers.items()}
+        return MonitorResult(channels=channels, started=old_started, stopped=datetime.now(timezone.utc))
+
+    def collect(
+        self,
+        *,
+        duration: float | None = None,
+        count: int | None = None,
+        timeout: float | None = None,
+    ) -> MonitorResult:
+        """Blocking convenience: start, wait, stop, return result.
+
+        Args:
+            duration: Collect for this many seconds.
+            count: Collect until each channel has at least this many readings.
+            timeout: Max seconds to wait in count mode (default: no limit).
+            Exactly one of duration/count must be given.
+        """
+        if (duration is None) == (count is None):
+            raise ValueError("Exactly one of duration or count must be specified")
+
+        # Clear stale data from previous runs
+        with self._lock:
+            for buf in self._buffers.values():
+                buf.clear()
+        self.start()
+        try:
+            if duration is not None:
+                deadline = time.monotonic() + duration
+                while time.monotonic() < deadline:
+                    if self._handle is not None and self._handle.exc is not None:
+                        raise self._handle.exc
+                    remaining = deadline - time.monotonic()
+                    time.sleep(min(0.1, max(0, remaining)))
+            else:
+                assert count is not None
+                deadline = time.monotonic() + timeout if timeout is not None else None
+                while True:
+                    with self._lock:
+                        if all(len(buf) >= count for buf in self._buffers.values()):
+                            break
+                    if self._handle is not None and self._handle.exc is not None:
+                        raise self._handle.exc
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise TimeoutError(f"Timed out after {timeout}s waiting for {count} readings per channel")
+                    time.sleep(0.01)
+        finally:
+            self.stop()
+
+        return self.snapshot()
+
+    def __enter__(self) -> Monitor:
+        self.start()
+        return self
+
+    def __exit__(self, *args) -> bool:
+        self.stop()
+        return False

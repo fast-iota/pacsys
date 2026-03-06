@@ -152,6 +152,11 @@ include = ["pacsys/cli/"]
 invalid-argument-type = "warn"
 
 [[tool.ty.overrides]]
+include = ["pacsys/exp/_writers.py"]
+[tool.ty.overrides.rules]
+unresolved-import = "ignore"
+
+[[tool.ty.overrides]]
 include = ["tests/"]
 [tool.ty.overrides.rules]
 invalid-argument-type = "warn"
