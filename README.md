@@ -191,8 +191,9 @@ sliced = result.slice("M:OUTTMP@p,1000", start=t0, end=t1)
 timestamps, values = result.to_numpy("M:OUTTMP@p,1000")
 df = result.to_dataframe(relative=True)  # elapsed seconds index
 
-# Wait for a fresh reading
-readings = read_fresh(["M:OUTTMP@p,1000"], timeout=5.0)
+# Wait for fresh readings (with multi-count and stats)
+results = read_fresh(["M:OUTTMP@p,1000"], count=10, timeout=5.0)
+print(results[0].mean())  # windowed stats: mean, std, median, min, max
 
 # Watch for a condition
 reading = watch("M:OUTTMP@p,1000", lambda r: r.value > 75, timeout=30)
