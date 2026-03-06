@@ -104,6 +104,33 @@ class TestMonitorCollect:
             mon.collect(duration=1.0, count=10)
 
 
+class TestMonitorTags:
+    def test_tags_start_at_zero(self, fake):
+        mon = Monitor(["M:OUTTMP@p,1000"], backend=fake)
+        mon.start()
+        assert mon.tags == {"M:OUTTMP@p,1000": 0}
+        mon.stop()
+
+    def test_tags_increment_on_readings(self, fake):
+        mon = Monitor(["M:OUTTMP@p,1000"], backend=fake)
+        mon.start()
+        fake.emit_reading("M:OUTTMP@p,1000", 72.0)
+        fake.emit_reading("M:OUTTMP@p,1000", 73.0)
+        time.sleep(0.05)
+        assert mon.tags == {"M:OUTTMP@p,1000": 2}
+        mon.stop()
+
+    def test_has_new_detects_change(self, fake):
+        mon = Monitor(["M:OUTTMP@p,1000"], backend=fake)
+        mon.start()
+        old = mon.tags
+        assert not mon.has_new(old)
+        fake.emit_reading("M:OUTTMP@p,1000", 72.0)
+        time.sleep(0.05)
+        assert mon.has_new(old)
+        mon.stop()
+
+
 class TestMonitorBufferSize:
     def test_ring_buffer_evicts_oldest(self, fake):
         mon = Monitor(["M:OUTTMP@p,1000"], buffer_size=3, backend=fake)
