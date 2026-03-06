@@ -148,3 +148,31 @@ class TestMonitorResultSlice:
         r = MonitorResult(channels={"A:DEV": ch})
         sliced = r.slice("A:DEV", start=t_far)
         assert sliced.values() == []
+
+
+class TestMonitorResultMedian:
+    def _result(self, values=(1.0, 3.0, 2.0)):
+        ch = ChannelData("A:DEV", tuple(_reading("A:DEV", v) for v in values))
+        return MonitorResult(channels={"A:DEV": ch})
+
+    def test_median_odd(self):
+        r = self._result((1.0, 3.0, 2.0))
+        assert r.median("A:DEV") == 2.0
+
+    def test_median_even(self):
+        r = self._result((1.0, 2.0, 3.0, 4.0))
+        assert r.median("A:DEV") == pytest.approx(2.5)
+
+    def test_median_all_channels(self):
+        ch_a = ChannelData("A:DEV", tuple(_reading("A:DEV", v) for v in (1.0, 3.0, 2.0)))
+        ch_b = ChannelData("B:DEV", tuple(_reading("B:DEV", v) for v in (10.0, 20.0)))
+        r = MonitorResult(channels={"A:DEV": ch_a, "B:DEV": ch_b})
+        medians = r.median()
+        assert medians["A:DEV"] == 2.0
+        assert medians["B:DEV"] == pytest.approx(15.0)
+
+    def test_median_empty_raises(self):
+        ch = ChannelData("A:DEV", ())
+        r = MonitorResult(channels={"A:DEV": ch})
+        with pytest.raises(ValueError, match="No readings"):
+            r.median("A:DEV")

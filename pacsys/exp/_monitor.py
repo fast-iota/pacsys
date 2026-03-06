@@ -113,6 +113,22 @@ class MonitorResult:
             return self._std_one(drf)
         return {d: self._std_one(d) for d in self.channels}
 
+    def _median_one(self, drf: DeviceSpec) -> float:
+        vals = self._numeric_values(drf)
+        if not vals:
+            raise ValueError(f"No readings for {drf}")
+        s = sorted(vals)
+        n = len(s)
+        if n % 2 == 1:
+            return s[n // 2]
+        return (s[n // 2 - 1] + s[n // 2]) / 2
+
+    def median(self, drf: DeviceSpec | None = None) -> float | dict[str, float]:
+        """Median of values. Single channel if drf given, else dict."""
+        if drf is not None:
+            return self._median_one(drf)
+        return {d: self._median_one(d) for d in self.channels}
+
     def _min_one(self, drf: DeviceSpec) -> float:
         vals = self._numeric_values(drf)
         if not vals:
