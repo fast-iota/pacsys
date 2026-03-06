@@ -88,3 +88,63 @@ class TestMonitorResult:
         r = MonitorResult(channels={"A:DEV": ch})
         with pytest.raises(ValueError, match="No readings"):
             r.mean("A:DEV")
+
+
+class TestMonitorResultSlice:
+    def test_slice_by_time_range(self):
+        t1 = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc)
+        t3 = datetime(2026, 1, 1, 0, 0, 2, tzinfo=timezone.utc)
+        t4 = datetime(2026, 1, 1, 0, 0, 3, tzinfo=timezone.utc)
+        ch = ChannelData(
+            "A:DEV",
+            (
+                _reading("A:DEV", 1.0, t1),
+                _reading("A:DEV", 2.0, t2),
+                _reading("A:DEV", 3.0, t3),
+                _reading("A:DEV", 4.0, t4),
+            ),
+        )
+        r = MonitorResult(channels={"A:DEV": ch})
+        sliced = r.slice("A:DEV", start=t2, end=t3)
+        assert sliced.values() == [2.0, 3.0]
+
+    def test_slice_open_start(self):
+        t1 = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc)
+        t3 = datetime(2026, 1, 1, 0, 0, 2, tzinfo=timezone.utc)
+        ch = ChannelData(
+            "A:DEV",
+            (
+                _reading("A:DEV", 1.0, t1),
+                _reading("A:DEV", 2.0, t2),
+                _reading("A:DEV", 3.0, t3),
+            ),
+        )
+        r = MonitorResult(channels={"A:DEV": ch})
+        sliced = r.slice("A:DEV", end=t2)
+        assert sliced.values() == [1.0, 2.0]
+
+    def test_slice_open_end(self):
+        t1 = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc)
+        t3 = datetime(2026, 1, 1, 0, 0, 2, tzinfo=timezone.utc)
+        ch = ChannelData(
+            "A:DEV",
+            (
+                _reading("A:DEV", 1.0, t1),
+                _reading("A:DEV", 2.0, t2),
+                _reading("A:DEV", 3.0, t3),
+            ),
+        )
+        r = MonitorResult(channels={"A:DEV": ch})
+        sliced = r.slice("A:DEV", start=t2)
+        assert sliced.values() == [2.0, 3.0]
+
+    def test_slice_empty_result(self):
+        t1 = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        t_far = datetime(2099, 1, 1, tzinfo=timezone.utc)
+        ch = ChannelData("A:DEV", (_reading("A:DEV", 1.0, t1),))
+        r = MonitorResult(channels={"A:DEV": ch})
+        sliced = r.slice("A:DEV", start=t_far)
+        assert sliced.values() == []

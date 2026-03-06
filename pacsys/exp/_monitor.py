@@ -156,6 +156,20 @@ class MonitorResult:
         """All timestamps for a channel."""
         return self._get_channel(drf).timestamps()
 
+    def slice(self, drf: DeviceSpec, start: datetime | None = None, end: datetime | None = None) -> ChannelData:
+        """Filter a channel's readings by timestamp range (inclusive)."""
+        ch = self._get_channel(drf)
+        filtered = []
+        for r in ch.readings:
+            if r.timestamp is None:
+                continue
+            if start is not None and r.timestamp < start:
+                continue
+            if end is not None and r.timestamp > end:
+                continue
+            filtered.append(r)
+        return ChannelData(drf=ch.drf, readings=tuple(filtered))
+
     def to_dataframe(self, drf: DeviceSpec | None = None):
         """Convert to pandas DataFrame (requires pandas).
 
