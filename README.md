@@ -62,6 +62,10 @@ print(info.description)                # "Outside temperature"
 print(info.reading.common_units)       # "DegF"
 print(info.reading.min_val)            # 0.0
 
+# Block until next reading arrives
+reading = dev.with_event("p,1000").await_next(timeout=5)
+print(reading.value)
+
 # Stream data
 with dev.with_event("p,1000").subscribe() as stream:
     for reading, handle in stream.readings(timeout=10):
@@ -150,7 +154,7 @@ with pacsys.ssh("clx01.fnal.gov") as ssh:
 
 ## MCP Server (AI Agent Integration)
 
-Expose pacsys as an MCP server for AI agents like Claude Code:
+Expose pacsys as an MCP server for AI agents like Claude Code. Read-only by default, granular write policy engine available.
 
 ```json
 {
@@ -163,21 +167,6 @@ Expose pacsys as an MCP server for AI agents like Claude Code:
 }
 ```
 
-With write access (requires config file + Kerberos):
-
-```json
-{
-  "mcpServers": {
-    "pacsys": {
-      "command": "python",
-      "args": ["-m", "pacsys.mcp", "--config", "pacsys-mcp.toml"]
-    }
-  }
-}
-```
-
-Tools: `read_device`, `write_device`, `device_info`. Writes are denied by default unless explicitly allowed via policy config.
-
 ## Experimental Utilities
 
 `pacsys.exp` provides high-level utilities for experiment workflows:
@@ -188,6 +177,19 @@ from pacsys.exp import Monitor, read_fresh, watch, scan, DataLogger, CsvWriter
 # Collect readings for 10 seconds
 result = Monitor(["M:OUTTMP@p,1000", "G:AMANDA@e,8f"]).collect(duration=10)
 print(result.mean("M:OUTTMP@p,1000"))
+print(result.median("M:OUTTMP@p,1000"))
+
+# Continuous monitoring with blocking wait
+mon = Monitor(["M:OUTTMP@p,1000"])
+mon.start()
+reading = mon.await_next("M:OUTTMP@p,1000")  # block until next reading
+snap = mon.snapshot()                          # all buffered data still available
+mon.stop()
+
+# Time-slice and export
+sliced = result.slice("M:OUTTMP@p,1000", start=t0, end=t1)
+timestamps, values = result.to_numpy("M:OUTTMP@p,1000")
+df = result.to_dataframe(relative=True)  # elapsed seconds index
 
 # Wait for a fresh reading
 readings = read_fresh(["M:OUTTMP@p,1000"], timeout=5.0)
