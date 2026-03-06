@@ -131,6 +131,50 @@ class TestMonitorTags:
         mon.stop()
 
 
+class TestMonitorAwaitNext:
+    def test_await_next_returns_reading(self, fake):
+        mon = Monitor(["M:OUTTMP@p,1000"], backend=fake)
+        mon.start()
+
+        def emit_later():
+            time.sleep(0.05)
+            fake.emit_reading("M:OUTTMP@p,1000", 99.0)
+
+        t = threading.Thread(target=emit_later, daemon=True)
+        t.start()
+        reading = mon.await_next("M:OUTTMP@p,1000", timeout=2.0)
+        assert reading.value == 99.0
+        mon.stop()
+
+    def test_await_next_timeout_raises(self, fake):
+        mon = Monitor(["M:OUTTMP@p,1000"], backend=fake)
+        mon.start()
+        with pytest.raises(TimeoutError):
+            mon.await_next("M:OUTTMP@p,1000", timeout=0.05)
+        mon.stop()
+
+    def test_await_next_skips_already_buffered(self, fake):
+        mon = Monitor(["M:OUTTMP@p,1000"], backend=fake)
+        mon.start()
+        fake.emit_reading("M:OUTTMP@p,1000", 1.0)
+        time.sleep(0.05)
+
+        def emit_later():
+            time.sleep(0.05)
+            fake.emit_reading("M:OUTTMP@p,1000", 2.0)
+
+        t = threading.Thread(target=emit_later, daemon=True)
+        t.start()
+        reading = mon.await_next("M:OUTTMP@p,1000", timeout=2.0)
+        assert reading.value == 2.0
+        mon.stop()
+
+    def test_await_next_not_running_raises(self, fake):
+        mon = Monitor(["M:OUTTMP@p,1000"], backend=fake)
+        with pytest.raises(RuntimeError, match="not running"):
+            mon.await_next("M:OUTTMP@p,1000", timeout=1.0)
+
+
 class TestMonitorBufferSize:
     def test_ring_buffer_evicts_oldest(self, fake):
         mon = Monitor(["M:OUTTMP@p,1000"], buffer_size=3, backend=fake)

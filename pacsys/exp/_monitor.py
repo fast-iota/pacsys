@@ -239,6 +239,29 @@ class Monitor:
         with self._lock:
             return any(self._counters.get(drf, 0) > old_tags.get(drf, 0) for drf in self._counters)
 
+    def await_next(self, drf: DeviceSpec, timeout: float = 5.0) -> Reading:
+        """Block until the next new reading arrives on a channel.
+
+        Returns the Reading that arrived. Only considers readings
+        arriving after this call (ignores already-buffered data).
+        """
+        if not self.running:
+            raise RuntimeError("Monitor is not running")
+        key = resolve_drf(drf)
+        if key not in self._counters:
+            raise KeyError(f"No channel {key!r}. Available: {list(self._counters)}")
+        with self._lock:
+            baseline = self._counters[key]
+            deadline = time.monotonic() + timeout
+            while self._counters[key] == baseline:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(f"No new reading on {key!r} within {timeout}s")
+                if self._handle is not None and self._handle.exc is not None:
+                    raise self._handle.exc
+                self._lock.wait(timeout=builtins_min(remaining, 0.5))
+            return self._buffers[key][-1]
+
     def start(self) -> None:
         """Start collecting readings in the background."""
         if self.running:
