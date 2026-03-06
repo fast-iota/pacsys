@@ -396,6 +396,44 @@ class Device(_DeviceBase):
         drf = self._build_drf(p, resolved_field, event_str)
         return self._get_backend().subscribe([drf], callback, on_error)
 
+    def await_next(
+        self,
+        *,
+        prop: str | None = None,
+        field: str | None = None,
+        event: str | None = None,
+        timeout: float = 5.0,
+    ) -> Reading:
+        """Block until the next reading arrives and return it.
+
+        Subscribes, waits for one reading, unsubscribes. Requires an event
+        (either on the device or via event= kwarg).
+        """
+        from pacsys.exp._watch import watch
+
+        if prop is None:
+            if field is not None:
+                raise ValueError("field requires prop to be specified")
+            p = DRF_PROPERTY.READING
+        else:
+            p = DRF_PROPERTY[prop.upper()]
+        resolved_field = self._resolve_field(field, p)
+
+        if event is not None:
+            parsed = parse_event(event)
+            if isinstance(parsed, NeverEvent):
+                raise ValueError("await_next cannot use @N (never) event")
+            event_str = parsed.raw_string
+        elif self.has_event:
+            if isinstance(self._request.event, NeverEvent):
+                raise ValueError("await_next cannot use @N (never) event")
+            event_str = self._request.event.raw_string
+        else:
+            raise ValueError("await_next requires an event — use event= or dev.with_event()")
+
+        drf = self._build_drf(p, resolved_field, event_str)
+        return watch(drf, lambda r: True, timeout=timeout, backend=self._get_backend())
+
     # ─── Verify Internals ─────────────────────────────────────────────────
 
     def _verify_readback(

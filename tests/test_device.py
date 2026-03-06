@@ -935,3 +935,45 @@ class TestDeviceSubscribe:
         # 3 params with default — has >= 2 positional, should pass
         handle = dev.subscribe(lambda r, h, extra=None: None, event="p,1000")
         handle.stop()
+
+
+class TestDeviceAwaitNext:
+    def test_await_next_returns_reading(self, fake):
+        import threading
+        import time
+
+        dev = Device("M:OUTTMP@p,1000", backend=fake)
+
+        def emit_later():
+            time.sleep(0.05)
+            fake.emit_reading("M:OUTTMP.READING@p,1000", 99.0)
+
+        t = threading.Thread(target=emit_later, daemon=True)
+        t.start()
+        reading = dev.await_next(timeout=2.0)
+        assert reading.value == 99.0
+
+    def test_await_next_with_event_kwarg(self, fake):
+        import threading
+        import time
+
+        dev = Device("M:OUTTMP", backend=fake)
+
+        def emit_later():
+            time.sleep(0.05)
+            fake.emit_reading("M:OUTTMP.READING@p,1000", 77.0)
+
+        t = threading.Thread(target=emit_later, daemon=True)
+        t.start()
+        reading = dev.await_next(event="p,1000", timeout=2.0)
+        assert reading.value == 77.0
+
+    def test_await_next_no_event_raises(self, fake):
+        dev = Device("M:OUTTMP", backend=fake)
+        with pytest.raises(ValueError, match="requires an event"):
+            dev.await_next(timeout=0.1)
+
+    def test_await_next_timeout_raises(self, fake):
+        dev = Device("M:OUTTMP@p,1000", backend=fake)
+        with pytest.raises(TimeoutError):
+            dev.await_next(timeout=0.05)
