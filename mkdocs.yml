@@ -21,6 +21,7 @@ nav:
     - DMQ: backends/dmq.md
     - ACL: backends/acl.md
   - Utilities:
+    - Data Helpers: specialized-utils/data-helpers.md
     - Alarms: specialized-utils/alarms.md
     - Ramps: specialized-utils/ramps.md
     - Scaling: specialized-utils/scaling.md
