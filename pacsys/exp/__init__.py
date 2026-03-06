@@ -6,7 +6,7 @@ Usage:
 """
 
 from pacsys.exp._monitor import Monitor, MonitorResult, ChannelData
-from pacsys.exp._read_fresh import read_fresh
+from pacsys.exp._read_fresh import read_fresh, FreshResult
 from pacsys.exp._watch import watch
 from pacsys.exp._scan import scan, ScanResult
 from pacsys.exp._logger import DataLogger
@@ -17,6 +17,7 @@ __all__ = [
     "MonitorResult",
     "ChannelData",
     "read_fresh",
+    "FreshResult",
     "watch",
     "scan",
     "ScanResult",
