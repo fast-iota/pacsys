@@ -176,3 +176,45 @@ class TestMonitorResultMedian:
         r = MonitorResult(channels={"A:DEV": ch})
         with pytest.raises(ValueError, match="No readings"):
             r.median("A:DEV")
+
+
+class TestMonitorResultToNumpy:
+    def test_to_numpy_returns_arrays(self):
+        np = pytest.importorskip("numpy")
+        t1 = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc)
+        ch = ChannelData(
+            "A:DEV",
+            (
+                _reading("A:DEV", 1.0, t1),
+                _reading("A:DEV", 2.0, t2),
+            ),
+        )
+        r = MonitorResult(channels={"A:DEV": ch})
+        timestamps, values = r.to_numpy("A:DEV")
+        np.testing.assert_array_equal(values, [1.0, 2.0])
+        assert timestamps.dtype == np.float64
+        assert len(timestamps) == 2
+
+    def test_to_numpy_skips_error_readings(self):
+        np = pytest.importorskip("numpy")
+        err = Reading(drf="A:DEV", error_code=-1, message="fail")
+        ch = ChannelData(
+            "A:DEV",
+            (
+                _reading("A:DEV", 1.0),
+                err,
+                _reading("A:DEV", 3.0),
+            ),
+        )
+        r = MonitorResult(channels={"A:DEV": ch})
+        timestamps, values = r.to_numpy("A:DEV")
+        np.testing.assert_array_equal(values, [1.0, 3.0])
+
+    def test_to_numpy_empty(self):
+        pytest.importorskip("numpy")
+        ch = ChannelData("A:DEV", ())
+        r = MonitorResult(channels={"A:DEV": ch})
+        timestamps, values = r.to_numpy("A:DEV")
+        assert len(timestamps) == 0
+        assert len(values) == 0

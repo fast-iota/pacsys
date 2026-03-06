@@ -186,6 +186,24 @@ class MonitorResult:
             filtered.append(r)
         return ChannelData(drf=ch.drf, readings=tuple(filtered))
 
+    def to_numpy(self, drf: DeviceSpec) -> tuple:
+        """Return (timestamps, values) as numpy arrays.
+
+        Timestamps are float64 epoch seconds (UTC). Error readings are skipped.
+        Requires numpy.
+        """
+        try:
+            import numpy as np
+        except ImportError:
+            raise ImportError("numpy is required for to_numpy(). Install with: pip install numpy")
+        ch = self._get_channel(drf)
+        ok = [r for r in ch.readings if r.ok and r.value is not None]
+        if not ok:
+            return np.array([], dtype=np.float64), np.array([], dtype=np.float64)
+        timestamps = np.array([r.timestamp.timestamp() if r.timestamp else 0.0 for r in ok], dtype=np.float64)
+        values = np.array([float(r.value) for r in ok], dtype=np.float64)  # type: ignore[arg-type]
+        return timestamps, values
+
     def to_dataframe(self, drf: DeviceSpec | None = None):
         """Convert to pandas DataFrame (requires pandas).
 
