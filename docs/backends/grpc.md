@@ -27,6 +27,7 @@ sequenceDiagram
 - **Strongly typed**: Protobuf schema with clear message types
 - **JWT authentication**: Token-based auth for writes
 - **Reachability**: Only accessible on controls network
+- **Timestamps**: Proto timestamps carry nanosecond precision but are currently truncated to microseconds by Python `datetime`. All timestamps are UTC-aware. The timestamp type may change in the future to preserve full nanosecond fidelity.
 
 ## Usage
 

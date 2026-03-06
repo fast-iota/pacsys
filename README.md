@@ -172,7 +172,7 @@ Expose pacsys as an MCP server for AI agents like Claude Code. Read-only by defa
 `pacsys.exp` provides high-level utilities for experiment workflows:
 
 ```python
-from pacsys.exp import Monitor, read_fresh, watch, scan, DataLogger, CsvWriter
+from pacsys.exp import Monitor, read_fresh, watch, scan, DataLogger, CsvWriter, ParquetWriter
 
 # Collect readings for 10 seconds
 result = Monitor(["M:OUTTMP@p,1000", "G:AMANDA@e,8f"]).collect(duration=10)
@@ -202,6 +202,10 @@ result = scan("Z:ACLTST", ["M:OUTTMP"], values=[0.0, 1.0, 2.0], settle=0.5)
 
 # Log to CSV
 with DataLogger(["M:OUTTMP@p,1000"], writer=CsvWriter("log.csv")):
+    time.sleep(60)
+
+# Log to Parquet (typed columns, ZSTD compression)
+with DataLogger(["M:OUTTMP@p,1000"], writer=ParquetWriter("log.parquet")):
     time.sleep(60)
 ```
 

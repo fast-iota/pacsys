@@ -5,7 +5,7 @@ See SPECIFICATION.md for available methods and pytest fixtures.
 """
 
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import queue
 import threading
 from typing import Any, Iterator, Callable
@@ -482,7 +482,7 @@ class FakeBackend(Backend):
             value_type=value_type,
             value=value,
             error_code=ERR_OK,
-            timestamp=timestamp or datetime.now(),
+            timestamp=timestamp or datetime.now(timezone.utc),
             cycle=cycle,
             meta=meta,
         )
@@ -833,7 +833,7 @@ class FakeBackend(Backend):
 
         if key in self._readings:
             old = self._readings[key]
-            updated = replace(old, value=merged, error_code=ERR_OK, timestamp=datetime.now())
+            updated = replace(old, value=merged, error_code=ERR_OK, timestamp=datetime.now(timezone.utc))
         else:
             device_name = get_device_name(drf)
             updated = Reading(
@@ -841,7 +841,7 @@ class FakeBackend(Backend):
                 value_type=ValueType.SCALAR,
                 value=value,
                 error_code=ERR_OK,
-                timestamp=datetime.now(),
+                timestamp=datetime.now(timezone.utc),
                 meta=DeviceMeta(
                     device_index=0,
                     name=device_name,
@@ -930,7 +930,7 @@ class FakeBackend(Backend):
             value_type=value_type,
             value=value,
             error_code=ERR_OK,
-            timestamp=timestamp or datetime.now(),
+            timestamp=timestamp or datetime.now(timezone.utc),
             cycle=cycle,
             meta=meta,
         )

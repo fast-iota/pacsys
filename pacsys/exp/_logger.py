@@ -48,6 +48,8 @@ class DataLogger:
         self._stopped = False
         self._closed = False
         self._last_error: Exception | None = None
+        self._retry_count: int = 0
+        self._max_retries: int = 3
 
     @property
     def running(self) -> bool:
@@ -101,12 +103,22 @@ class DataLogger:
         if batch:
             try:
                 self._writer.write_readings(batch)
+                self._retry_count = 0
             except Exception as exc:
-                # Re-buffer failed batch so data is not lost
-                with self._lock:
-                    self._buffer = batch + self._buffer
+                self._retry_count += 1
                 self._last_error = exc
-                logger.exception("Error writing readings")
+                if self._retry_count < self._max_retries:
+                    with self._lock:
+                        self._buffer = batch + self._buffer
+                    logger.exception("Error writing readings (attempt %d/%d)", self._retry_count, self._max_retries)
+                else:
+                    logger.error(
+                        "Dropping %d readings after %d failed attempts: %s",
+                        len(batch),
+                        self._max_retries,
+                        exc,
+                    )
+                    self._retry_count = 0
 
     def __enter__(self) -> DataLogger:
         self.start()

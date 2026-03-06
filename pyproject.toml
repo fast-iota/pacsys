@@ -52,6 +52,9 @@ pacsys-monitor = "pacsys.cli.monitor:main"
 pacsys-info = "pacsys.cli.info:main"
 
 [project.optional-dependencies]
+parquet = [
+  "pyarrow >= 14.0",
+]
 dev = [
   "pytest",
   "pytest-asyncio",
@@ -64,6 +67,7 @@ dev = [
   "types-grpcio",
   "types-pika-ts",
   "types-protobuf",
+  "pyarrow >= 14.0",
 ]
 mcp = [
   "fastmcp",

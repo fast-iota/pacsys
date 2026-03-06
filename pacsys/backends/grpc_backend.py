@@ -225,7 +225,12 @@ def _proto_value_to_python(proto_value: "device_pb2.Value") -> tuple[Value, Valu
 
 
 def _proto_timestamp_to_datetime(ts: "timestamp_pb2.Timestamp") -> Optional[datetime]:
-    """Convert proto Timestamp to Python datetime."""
+    """Convert proto Timestamp to Python datetime.
+
+    NOTE: Python datetime only supports microsecond precision, so nanoseconds
+    from the proto are truncated.  The return type may change in the future to
+    preserve full nanosecond fidelity.
+    """
     if ts is None:
         return None
     try:
@@ -262,7 +267,7 @@ def _reply_to_readings(reply, drfs: list[str]) -> list[Reading]:
         return []
 
     drf = drfs[index]
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     value_field = reply.WhichOneof("value")
 
     if value_field == "status":
@@ -437,7 +442,7 @@ class _DaqCore:
         results: list[Optional[Reading]] = [None] * len(drfs)
         received_count = 0
         expected_count = len(drfs)
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         transport_error: Optional[BaseException] = None
 
         call = None

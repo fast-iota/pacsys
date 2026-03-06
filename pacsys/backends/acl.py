@@ -17,7 +17,7 @@ import logging
 import os
 import re
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
@@ -490,7 +490,7 @@ class ACLBackend(Backend):
                         facility_code=e.facility_code,
                         error_code=e.error_code,
                         message=e.message,
-                        timestamp=datetime.now(),
+                        timestamp=datetime.now(timezone.utc),
                     )
                     for drf in drfs
                 ]
@@ -517,7 +517,7 @@ class ACLBackend(Backend):
 
         # Happy path: one line per device, in order
         readings: list[Reading] = []
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         for drf, line in zip(drfs, lines):
             try:
                 value, value_type = _parse_response_line(drf, line)
@@ -530,7 +530,7 @@ class ACLBackend(Backend):
     def _get_many_individual(self, drfs: list[str], timeout: float) -> list[Reading]:
         """Fallback: read each device individually to isolate errors."""
         readings: list[Reading] = []
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         for drf in drfs:
             url = self._build_url([drf])
             try:
@@ -595,7 +595,7 @@ class ACLBackend(Backend):
         nonexistent device → DBM_NOREC) immediately fails the whole read.
         """
         device = parse_request(drf).device
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         status: dict[str, bool] = {}
 
         for key, field in zip(_BASIC_STATUS_KEYS, _BASIC_STATUS_FIELDS):
