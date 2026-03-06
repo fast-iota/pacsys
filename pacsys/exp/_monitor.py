@@ -280,6 +280,7 @@ class Monitor:
         self._lock = threading.Condition(threading.Lock())
         self._buffers: dict[str, deque[Reading]] = {drf: deque(maxlen=buffer_size) for drf in self._drfs}
         self._counters: dict[str, int] = {drf: 0 for drf in self._drfs}
+        self._latest: dict[str, Reading | None] = {drf: None for drf in self._drfs}
         self._started: datetime | None = None
         self._handle: SubscriptionHandle | None = None
 
@@ -318,8 +319,10 @@ class Monitor:
                     raise TimeoutError(f"No new reading on {key!r} within {timeout}s")
                 if self._handle is not None and self._handle.exc is not None:
                     raise self._handle.exc
+                if not self.running:
+                    raise RuntimeError("Monitor is not running")
                 self._lock.wait(timeout=builtins_min(remaining, 0.5))
-            return self._buffers[key][-1]
+            return self._latest[key]  # type: ignore[return-value]
 
     def start(self) -> None:
         """Start collecting readings in the background."""
@@ -333,6 +336,8 @@ class Monitor:
         """Stop collecting."""
         if self._handle is not None:
             self._handle.stop()
+            with self._lock:
+                self._lock.notify_all()
 
     def __len__(self) -> int:
         """Total readings across all buffers."""
@@ -345,6 +350,7 @@ class Monitor:
             if drf in self._buffers:
                 self._buffers[drf].append(reading)
                 self._counters[drf] += 1
+                self._latest[drf] = reading
                 self._lock.notify_all()
 
     def snapshot(self) -> MonitorResult:
