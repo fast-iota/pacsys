@@ -11,6 +11,7 @@ import socket
 import pytest
 
 from pacsys.devdb import DevDBClient, DeviceInfoResult, DEVDB_AVAILABLE
+from pacsys.errors import DeviceError
 
 DEVDB_HOST = os.environ.get("PACSYS_DEVDB_HOST", "localhost")
 DEVDB_PORT = int(os.environ.get("PACSYS_DEVDB_PORT", "45678"))
@@ -84,11 +85,8 @@ class TestGetDeviceInfo:
         assert result["Z:ACLTST"].device_index != result["M:OUTTMP"].device_index
 
     def test_nonexistent_device(self, devdb):
-        result = devdb.get_device_info(["X:NOTREAL"])
-        info = result["X:NOTREAL"]
-        assert info.device_index == 0
-        assert info.description == ""
-        assert info.reading is None
+        with pytest.raises(DeviceError, match="not found"):
+            devdb.get_device_info(["X:NOTREAL"])
 
     def test_caching(self, devdb):
         """Second query for same device should use cache."""

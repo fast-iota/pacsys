@@ -421,7 +421,13 @@ class DevDBClient:
         for entry in reply.set:
             which = entry.WhichOneof("result")
             if which == "device":
-                pending[entry.name] = _convert_device_info(entry.device)
+                info = _convert_device_info(entry.device)
+                # Server returns zeroed DeviceInfo instead of errMsg for unknown devices
+                if info.device_index == 0 and not info.description:
+                    if error is None:
+                        error = (entry.name, f"Device '{entry.name}' not found")
+                else:
+                    pending[entry.name] = info
             elif which == "errMsg" and error is None:
                 error = (entry.name, entry.errMsg)
 
