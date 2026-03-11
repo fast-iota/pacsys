@@ -413,7 +413,7 @@ def _query_device_props(devdb, name: str) -> _DeviceProps:
         has_reading=info.reading is not None,
         has_setting=info.setting is not None,
         has_status=info.status_bits is not None,
-        device_index=info.device_index,
+        device_index=info.device_index or None,
         ext_status_bits=info.ext_status_bits,
     )
 

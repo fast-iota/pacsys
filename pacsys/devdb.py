@@ -422,8 +422,18 @@ class DevDBClient:
             which = entry.WhichOneof("result")
             if which == "device":
                 info = _convert_device_info(entry.device)
-                # Server returns zeroed DeviceInfo instead of errMsg for unknown devices
-                if info.device_index == 0 and not info.description:
+                # Server returns zeroed DeviceInfo instead of errMsg for unknown devices.
+                # device_index=0 is the proto default (no real device has index 0),
+                # but some real devices DO have index 0 in the response (e.g. L:B0MODR).
+                # A truly empty response has ALL fields at defaults: no description,
+                # no reading, no setting, no control, no status.
+                if (
+                    not info.description
+                    and info.reading is None
+                    and info.setting is None
+                    and info.control is None
+                    and info.status_bits is None
+                ):
                     if error is None:
                         error = (entry.name, f"Device '{entry.name}' not found")
                 else:

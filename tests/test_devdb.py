@@ -546,6 +546,45 @@ class TestDevDBClientGetDeviceInfo:
             client.get_device_info(["X:BOGUS"])
         client.close()
 
+    def test_zeroed_response_detected_as_nonexistent(self):
+        """Server returns zeroed DeviceInfo (all defaults) for unknown devices."""
+        client = self._make_client_with_mock_stub()
+
+        entry = mock.MagicMock()
+        entry.name = "X:NOTREAL"
+        entry.WhichOneof.return_value = "device"
+        entry.device.device_index = 0
+        entry.device.description = ""
+        entry.device.HasField.return_value = False  # no reading/setting/control/status
+
+        reply = mock.MagicMock()
+        reply.set = [entry]
+        client._stub.getDeviceInfo.return_value = reply
+
+        with pytest.raises(DeviceError, match="not found"):
+            client.get_device_info(["X:NOTREAL"])
+        client.close()
+
+    def test_device_index_zero_with_description_is_valid(self):
+        """Real device with device_index=0 but valid description is not rejected."""
+        client = self._make_client_with_mock_stub()
+
+        entry = mock.MagicMock()
+        entry.name = "L:B0MODR"
+        entry.WhichOneof.return_value = "device"
+        entry.device.device_index = 0
+        entry.device.description = "Modulator/PFN Status"
+        entry.device.HasField.return_value = False
+
+        reply = mock.MagicMock()
+        reply.set = [entry]
+        client._stub.getDeviceInfo.return_value = reply
+
+        result = client.get_device_info(["L:B0MODR"])
+        assert "L:B0MODR" in result
+        assert result["L:B0MODR"].description == "Modulator/PFN Status"
+        client.close()
+
     def test_cache_hit_avoids_rpc(self):
         client = self._make_client_with_mock_stub()
 
