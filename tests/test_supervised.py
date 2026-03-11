@@ -116,7 +116,7 @@ def server_with_policy(policy_backend):
 
 def _make_channel(server):
     """Create a gRPC channel to the server."""
-    return grpc.insecure_channel(f"localhost:{server.port}")
+    return grpc.insecure_channel(f"127.0.0.1:{server.port}")
 
 
 def _wait_subscribed(backend, timeout=2.0):

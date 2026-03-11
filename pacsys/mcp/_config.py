@@ -1,7 +1,12 @@
 """TOML config parsing and policy chain construction for MCP server."""
 
 import logging
-import tomllib  # ty: ignore[unresolved-import]  # stdlib 3.11+
+import sys
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib  # type: ignore[import-not-found,no-redef]
 from dataclasses import dataclass, field
 
 from pacsys.supervised._policies import (
