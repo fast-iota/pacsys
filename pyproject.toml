@@ -61,7 +61,7 @@ dev = [
   "pytest-cov",
   "ruff",
   "ty",
-  "pre-commit",
+  "prek",
   "build",
   "twine",
   "types-grpcio",
@@ -156,7 +156,7 @@ include = ["pacsys/cli/"]
 invalid-argument-type = "warn"
 
 [[tool.ty.overrides]]
-include = ["pacsys/exp/_writers.py"]
+include = ["pacsys/exp/_writers.py", "pacsys/exp/_monitor.py", "pacsys/exp/_scan.py"]
 [tool.ty.overrides.rules]
 unresolved-import = "ignore"
 

@@ -13,7 +13,7 @@ import time
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 import numpy as np
 import pika
@@ -1729,7 +1729,7 @@ class DMQBackend(Backend):
         self._ensure_io_thread()
 
         # Prepare results container (shared with IO thread)
-        results: list[WriteResult | None] = [None] * len(settings)
+        results = cast(list[WriteResult | None], [None] * len(settings))
         tracker = _WriteCompletionTracker(total_devices=0)
 
         # Schedule async execution on IO thread

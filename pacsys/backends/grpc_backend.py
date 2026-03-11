@@ -13,7 +13,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, cast
 
 import numpy as np
 
@@ -439,7 +439,7 @@ class _DaqCore:
         logger_chunks: dict[int, list[Reading]] = {}  # index -> accumulated chunks
         logger_complete: set[int] = set()  # indices that received the terminator
 
-        results: list[Optional[Reading]] = [None] * len(drfs)
+        results = cast(list[Optional[Reading]], [None] * len(drfs))
         received_count = 0
         expected_count = len(drfs)
         now = datetime.now(timezone.utc)
