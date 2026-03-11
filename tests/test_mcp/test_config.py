@@ -1,4 +1,7 @@
-import tomllib
+import sys
+
+import pytest
+
 from pacsys.mcp._config import load_config, build_policies, MCPConfig
 from pacsys.supervised._policies import DeviceAccessPolicy, ValueRangePolicy, SlewRatePolicy
 
@@ -11,7 +14,10 @@ def test_default_config():
     assert cfg.audit_log is None
 
 
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="tomllib requires 3.11+")
 def test_load_from_toml_string():
+    import tomllib
+
     raw = """
 [server]
 transport = "sse"
