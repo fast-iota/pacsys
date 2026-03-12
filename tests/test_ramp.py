@@ -196,6 +196,52 @@ class TestValidation:
         with pytest.raises(ValueError, match="Expected 64 times"):
             BoosterHVRamp(values=np.zeros(64), times=np.zeros(10))
 
+    def test_reassign_wrong_values_length(self):
+        ramp = _TestRamp(values=np.zeros(64), times=np.zeros(64))
+        with pytest.raises(ValueError, match="Expected 64 values"):
+            ramp.values = np.zeros(65)
+
+    def test_reassign_wrong_times_length(self):
+        ramp = _TestRamp(values=np.zeros(64), times=np.zeros(64))
+        with pytest.raises(ValueError, match="Expected 64 times"):
+            ramp.times = np.zeros(63)
+
+    def test_reassign_2d_values_rejected(self):
+        ramp = _TestRamp(values=np.zeros(64), times=np.zeros(64))
+        with pytest.raises(ValueError, match="1-D"):
+            ramp.values = np.zeros((64, 2))
+
+    def test_reassign_2d_times_rejected(self):
+        ramp = _TestRamp(values=np.zeros(64), times=np.zeros(64))
+        with pytest.raises(ValueError, match="1-D"):
+            ramp.times = np.zeros((64, 3))
+
+    def test_to_bytes_rejects_corrupted_length(self):
+        """to_bytes() catches length corruption even if __setattr__ was bypassed."""
+        ramp = _TestRamp(values=np.zeros(64), times=np.zeros(64))
+        object.__setattr__(ramp, "values", np.zeros(65))
+        with pytest.raises(ValueError, match="exactly 64 points"):
+            ramp.to_bytes()
+
+    def test_to_bytes_rejects_corrupted_ndim(self):
+        """to_bytes() catches 2-D corruption even if __setattr__ was bypassed."""
+        ramp = _TestRamp(values=np.zeros(64), times=np.zeros(64))
+        object.__setattr__(ramp, "values", np.zeros((64, 2)))
+        with pytest.raises(ValueError, match="1-D"):
+            ramp.to_bytes()
+
+    def test_negative_slot_rejected(self):
+        with pytest.raises(ValueError, match="slot must be 0"):
+            _TestRamp.read("B:HS23T", slot=-1)
+
+    def test_slot_too_large_rejected(self):
+        with pytest.raises(ValueError, match="slot must be 0"):
+            _TestRamp.read("B:HS23T", slot=16)
+
+    def test_bool_slot_rejected(self):
+        with pytest.raises(TypeError, match="slot must be an int"):
+            _TestRamp.read("B:HS23T", slot=True)
+
     def test_max_value_exceeded(self):
         ramp = BoosterHVRamp(
             values=np.array([1500.0] + [0.0] * 63),
@@ -225,12 +271,12 @@ class TestValidation:
             ramp.to_bytes()
 
     def test_max_time_exceeded(self):
-        # 66_660 us is max for BoosterHVRamp; 70_000 us exceeds it
+        # 66_660 us is max cumulative for BoosterHVRamp; spread across points to exceed
         ramp = BoosterHVRamp(
             values=np.zeros(64),
-            times=np.array([70_000.0] + [0.0] * 63),
+            times=np.array([35_000.0, 35_000.0] + [0.0] * 62),
         )
-        with pytest.raises(ValueError, match="Ramp times exceed max"):
+        with pytest.raises(ValueError, match="Ramp cumulative times exceed max"):
             ramp.to_bytes()
 
     def test_value_at_max_allowed(self):
@@ -242,10 +288,10 @@ class TestValidation:
         ramp._validate()  # should not raise
 
     def test_time_at_max_allowed(self):
-        """Exactly max_time (66660 us) is accepted."""
+        """Exactly max_time (66660 us) cumulative is accepted."""
         ramp = BoosterHVRamp(
             values=np.zeros(64),
-            times=np.array([66_660.0] + [0.0] * 63),
+            times=np.array([33_330.0, 33_330.0] + [0.0] * 62),
         )
         ramp.to_bytes()  # should not raise
 
@@ -310,6 +356,65 @@ class TestValidation:
             times=np.zeros((64, 1)),
         )
         assert group.values.dtype == np.float64
+
+    def test_group_reassign_1d_values_rejected(self):
+        group = _TestRampGroup(
+            devices=["A"],
+            values=np.zeros((64, 1)),
+            times=np.zeros((64, 1)),
+        )
+        with pytest.raises(ValueError, match="2-D"):
+            group.values = np.zeros(64)
+
+    def test_group_reassign_wrong_rows_rejected(self):
+        group = _TestRampGroup(
+            devices=["A"],
+            values=np.zeros((64, 1)),
+            times=np.zeros((64, 1)),
+        )
+        with pytest.raises(ValueError, match="64 rows"):
+            group.values = np.zeros((32, 1))
+
+    def test_group_reassign_3d_rejected(self):
+        group = _TestRampGroup(
+            devices=["A"],
+            values=np.zeros((64, 1)),
+            times=np.zeros((64, 1)),
+        )
+        with pytest.raises(ValueError, match="2-D"):
+            group.times = np.zeros((64, 1, 1))
+
+    def test_group_reassign_wrong_columns_rejected(self):
+        group = _TestRampGroup(
+            devices=["A", "B"],
+            values=np.zeros((64, 2)),
+            times=np.zeros((64, 2)),
+        )
+        with pytest.raises(ValueError, match="3 columns but group has 2 devices"):
+            group.values = np.zeros((64, 3))
+
+    def test_group_cumtimes_1d_rejected(self):
+        group = _TestRampGroup(
+            devices=["A"],
+            values=np.zeros((64, 1)),
+            times=np.zeros((64, 1)),
+        )
+        with pytest.raises(ValueError, match="2-D"):
+            group.cumtimes = np.zeros(64)
+
+    def test_group_cumtimes_wrong_rows_rejected(self):
+        group = _TestRampGroup(
+            devices=["A"],
+            values=np.zeros((64, 1)),
+            times=np.zeros((64, 1)),
+        )
+        with pytest.raises(ValueError, match="64 rows"):
+            group.cumtimes = np.zeros((32, 1))
+
+    def test_numpy_int_slot_accepted(self, fake_backend):
+        _setup_devices(fake_backend, ["B:HS23T"])
+        ramp = _TestRamp.read("B:HS23T", slot=np.int64(0), backend=fake_backend)
+        assert ramp.device == "B:HS23T"
 
 
 class TestReadWrite:

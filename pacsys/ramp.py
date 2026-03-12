@@ -180,6 +180,7 @@ class Ramp:
 
     POINTS_PER_SLOT: ClassVar[int] = 64
     BYTES_PER_POINT: ClassVar[int] = 4  # int16 value + int16 time
+    MAX_SLOTS: ClassVar[int] = 16  # sanity bound for slot index
 
     # Card update rate in Hz. Determines tick period for time conversion.
     # Card types: 453=720Hz, 465/466=1/5/10KHz, 473=100KHz.
@@ -234,7 +235,7 @@ class Ramp:
             raise ValueError(f"Expected {self.POINTS_PER_SLOT} values, got {len(values)}")
         if len(times) != self.POINTS_PER_SLOT:
             raise ValueError(f"Expected {self.POINTS_PER_SLOT} times, got {len(times)}")
-        self.values = values  # __setattr__ validates dtype and converts to float64
+        self.values = values  # __setattr__ validates dtype, length, and converts to float64
         self.times = times
         self.device = device
         self.slot = slot
@@ -242,6 +243,10 @@ class Ramp:
     def __setattr__(self, name: str, value: object) -> None:
         if name in ("values", "times"):
             value = _validate_numeric_array(name, value)
+            if value.ndim != 1:
+                raise ValueError(f"{name} must be 1-D, got {value.ndim}-D array")
+            if len(value) != self.POINTS_PER_SLOT:
+                raise ValueError(f"Expected {self.POINTS_PER_SLOT} {name}, got {len(value)}")
         super().__setattr__(name, value)
 
     @property
@@ -261,8 +266,16 @@ class Ramp:
         return cls.POINTS_PER_SLOT * cls.BYTES_PER_POINT
 
     @classmethod
+    def _validate_slot(cls, slot: int) -> None:
+        if isinstance(slot, bool) or not isinstance(slot, (int, np.integer)):
+            raise TypeError(f"slot must be an int, got {type(slot).__name__}")
+        if slot < 0 or slot >= cls.MAX_SLOTS:
+            raise ValueError(f"slot must be 0..{cls.MAX_SLOTS - 1}, got {slot}")
+
+    @classmethod
     def _make_drf(cls, device: str, slot: int) -> str:
         """Build DRF for a ramp slot using byte range (like alarm_block.py)."""
+        cls._validate_slot(slot)
         offset = slot * cls._slot_bytes()
         length = cls._slot_bytes()
         return f"{device}.SETTING{{{offset}:{length}}}.RAW@I"
@@ -278,10 +291,13 @@ class Ramp:
             raise ValueError(
                 f"Ramp values exceed max {self.max_value}: max(|values|) = {np.max(np.abs(self.values)):.4f}"
             )
-        if self.max_time is not None and np.any(np.abs(self.times) > self.max_time):
-            raise ValueError(
-                f"Ramp times exceed max {self.max_time} us: max(|times|) = {np.max(np.abs(self.times)):.1f} us"
-            )
+        if self.max_time is not None:
+            cum = self.cumtimes
+            if np.any(np.abs(cum) > self.max_time):
+                raise ValueError(
+                    f"Ramp cumulative times exceed max {self.max_time} us: "
+                    f"max(|cumtimes|) = {np.max(np.abs(cum)):.1f} us"
+                )
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "Ramp":
@@ -314,6 +330,11 @@ class Ramp:
         """Serialize ramp table to raw bytes (value-first wire order)."""
         from pacsys.scaling import ScalingError
 
+        for name, arr in [("values", self.values), ("times", self.times)]:
+            if arr.ndim != 1:
+                raise ValueError(f"{name} must be 1-D, got {arr.ndim}-D array")
+            if len(arr) != self.POINTS_PER_SLOT:
+                raise ValueError(f"Ramp {name} must be exactly {self.POINTS_PER_SLOT} points, got {len(arr)}")
         self._validate()
         scaler = type(self).scaler
         if scaler is not None:
@@ -742,6 +763,15 @@ class RampGroup:
     def __setattr__(self, name: str, value: object) -> None:
         if name in ("values", "times"):
             value = _validate_numeric_array(name, value)
+            if value.ndim != 2:
+                raise ValueError(f"{name} must be 2-D, got {value.ndim}-D array")
+            pts = type(self).base.POINTS_PER_SLOT
+            if value.shape[0] != pts:
+                raise ValueError(f"{name} must have {pts} rows (points), got {value.shape[0]}")
+            # Check column count matches device count (devices is set before values/times in __init__)
+            devices = self.__dict__.get("devices")
+            if devices is not None and value.shape[1] != len(devices):
+                raise ValueError(f"{name} has {value.shape[1]} columns but group has {len(devices)} devices")
         super().__setattr__(name, value)
 
     @property
@@ -752,6 +782,11 @@ class RampGroup:
     @cumtimes.setter
     def cumtimes(self, value: np.ndarray) -> None:
         arr = _validate_numeric_array("cumtimes", value)
+        if arr.ndim != 2:
+            raise ValueError(f"cumtimes must be 2-D, got {arr.ndim}-D array")
+        pts = type(self).base.POINTS_PER_SLOT
+        if arr.shape[0] != pts:
+            raise ValueError(f"cumtimes must have {pts} rows (points), got {arr.shape[0]}")
         self.times = np.diff(arr, axis=0, prepend=np.zeros((1, arr.shape[1])))
 
     def __getitem__(self, device: str) -> Ramp:

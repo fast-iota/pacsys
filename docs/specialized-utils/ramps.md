@@ -267,7 +267,7 @@ from pacsys import Ramp
 class MainInjectorRamp(Ramp):
     update_rate_hz = 5000  # 5 KHz card (200 us/tick)
     max_value = 500.0      # optional validation bound (engineering units)
-    max_time = 1_000_000   # optional validation bound (microseconds)
+    max_time = 1_000_000   # optional validation bound on cumulative time (microseconds)
 
     @classmethod
     def primary_transform(cls, raw):
@@ -338,6 +338,20 @@ Type errors are raised immediately on assignment if a non-numeric dtype is used:
 ```python
 ramp.values = np.array(["a"] * 64)  # TypeError: must be numeric
 ramp.times = np.zeros(64, dtype=bool)  # TypeError: must be numeric
+```
+
+Array shape is enforced on every assignment — arrays must be exactly 64 elements, 1-D:
+
+```python
+ramp.values = np.zeros(65)       # ValueError: Expected 64 values, got 65
+ramp.values = np.zeros((64, 2))  # ValueError: values must be 1-D
+```
+
+Slot index is validated on all read/write/modify operations (must be `int`, `0..15`):
+
+```python
+BoosterHVRamp.read("B:HS23T", slot=-1)   # ValueError: slot must be 0..15
+BoosterHVRamp.read("B:HS23T", slot=True)  # TypeError: slot must be an int
 ```
 
 Validation errors (values exceeding `max_value` or `max_time`) are raised during `to_bytes()` / `write()`:
