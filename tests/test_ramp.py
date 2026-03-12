@@ -256,6 +256,61 @@ class TestValidation:
         with pytest.raises(ValueError, match="overflow int16"):
             ramp.to_bytes()
 
+    def test_string_values_rejected(self):
+        with pytest.raises(TypeError, match="numeric"):
+            _TestRamp(values=np.array(["a"] * 64), times=np.zeros(64))
+
+    def test_string_times_rejected(self):
+        with pytest.raises(TypeError, match="numeric"):
+            _TestRamp(values=np.zeros(64), times=np.array(["x"] * 64))
+
+    def test_bool_values_rejected(self):
+        with pytest.raises(TypeError, match="numeric"):
+            _TestRamp(values=np.zeros(64, dtype=bool), times=np.zeros(64))
+
+    def test_complex_values_rejected(self):
+        with pytest.raises(TypeError, match="numeric"):
+            _TestRamp(values=np.zeros(64, dtype=complex), times=np.zeros(64))
+
+    def test_object_values_rejected(self):
+        with pytest.raises(TypeError, match="numeric"):
+            _TestRamp(values=np.array([None] * 64), times=np.zeros(64))
+
+    def test_reassign_string_values_rejected(self):
+        ramp = _TestRamp(values=np.zeros(64), times=np.zeros(64))
+        with pytest.raises(TypeError, match="numeric"):
+            ramp.values = np.array(["a"] * 64)
+
+    def test_int_values_accepted(self):
+        ramp = _TestRamp(values=np.arange(64, dtype=np.int32), times=np.zeros(64))
+        assert ramp.values.dtype == np.float64
+
+    def test_list_values_accepted(self):
+        ramp = _TestRamp(values=list(range(64)), times=np.zeros(64))
+        assert ramp.values.dtype == np.float64
+
+    def test_group_string_values_rejected(self):
+        with pytest.raises(TypeError, match="numeric"):
+            _TestRampGroup(
+                devices=["A"],
+                values=np.array([["a"]] * 64),
+                times=np.zeros((64, 1)),
+            )
+
+    def test_group_reassign_string_values_rejected(self, fake_backend):
+        _setup_devices(fake_backend)
+        group = _TestRampGroup.read(list(_DEV_DATA), backend=fake_backend)
+        with pytest.raises(TypeError, match="numeric"):
+            group.values = np.array([["x"] * 3] * 64)
+
+    def test_group_int_values_accepted(self):
+        group = _TestRampGroup(
+            devices=["A"],
+            values=np.zeros((64, 1), dtype=np.int16),
+            times=np.zeros((64, 1)),
+        )
+        assert group.values.dtype == np.float64
+
 
 class TestReadWrite:
     def test_read_success(self, fake_backend):
@@ -403,6 +458,61 @@ class TestModifyContext:
         drf, _ = fake_backend.writes[0]
         assert "B:HS23T" in drf
         assert "{512:256}" in drf  # slot 2
+
+
+class TestCumtimes:
+    def test_ramp_cumtimes_getter(self):
+        deltas = np.array([0.0, 10.0, 20.0, 30.0] + [0.0] * 60)
+        ramp = _TestRamp(values=np.zeros(64), times=deltas)
+        expected = np.array([0.0, 10.0, 30.0, 60.0] + [60.0] * 60)
+        np.testing.assert_array_equal(ramp.cumtimes, expected)
+
+    def test_ramp_cumtimes_setter(self):
+        ramp = _TestRamp(values=np.zeros(64), times=np.zeros(64))
+        absolute = np.array([0.0, 100.0, 300.0, 600.0] + [600.0] * 60)
+        ramp.cumtimes = absolute
+        expected_deltas = np.array([0.0, 100.0, 200.0, 300.0] + [0.0] * 60)
+        np.testing.assert_array_equal(ramp.times, expected_deltas)
+
+    def test_ramp_cumtimes_round_trip(self):
+        deltas = np.array([0.0, 10.0, 20.0, 30.0] + [0.0] * 60)
+        ramp = _TestRamp(values=np.zeros(64), times=deltas)
+        ramp.cumtimes = ramp.cumtimes
+        np.testing.assert_allclose(ramp.times, deltas)
+
+    def test_ramp_cumtimes_wrong_length(self):
+        ramp = _TestRamp(values=np.zeros(64), times=np.zeros(64))
+        with pytest.raises(ValueError, match="Expected 64 cumtimes"):
+            ramp.cumtimes = np.zeros(10)
+
+    def test_ramp_cumtimes_non_numeric_rejected(self):
+        ramp = _TestRamp(values=np.zeros(64), times=np.zeros(64))
+        with pytest.raises(TypeError, match="numeric"):
+            ramp.cumtimes = np.array(["a"] * 64)
+
+    def test_group_cumtimes_getter(self, fake_backend):
+        _setup_devices(fake_backend)
+        group = _TestRampGroup.read(list(_DEV_DATA), backend=fake_backend)
+        # All test data has only point 0 non-zero, so cumsum == times
+        np.testing.assert_array_equal(group.cumtimes, np.cumsum(group.times, axis=0))
+
+    def test_group_cumtimes_setter(self):
+        deltas = np.zeros((64, 2))
+        deltas[0, :] = [0.0, 0.0]
+        deltas[1, :] = [10.0, 20.0]
+        deltas[2, :] = [30.0, 40.0]
+        group = _TestRampGroup(devices=["A", "B"], values=np.zeros((64, 2)), times=deltas)
+        # Absolute: [0,0], [10,20], [40,60], ...
+        absolute = np.cumsum(deltas, axis=0)
+        group.cumtimes = absolute
+        np.testing.assert_allclose(group.times, deltas)
+
+    def test_group_cumtimes_round_trip(self, fake_backend):
+        _setup_devices(fake_backend)
+        group = _TestRampGroup.read(list(_DEV_DATA), backend=fake_backend)
+        original_times = group.times.copy()
+        group.cumtimes = group.cumtimes
+        np.testing.assert_allclose(group.times, original_times)
 
 
 class TestTimeScaling:

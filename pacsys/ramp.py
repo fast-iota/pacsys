@@ -27,13 +27,26 @@ getScaledUpdateFrequency(). Card types and their rates:
     465/466 (CAMAC): 1 / 5 / 10 KHz (configurable)
     473 (CAMAC):  100 KHz fixed (Booster correctors)
 
+Arrays and types:
+    ``.values`` and ``.times`` must be numeric (int or float) numpy arrays or
+    sequences convertible to one. Non-numeric types (strings, booleans, complex,
+    objects) are rejected with TypeError. All arrays are stored as float64.
+
+    ``.times`` stores *delta* times between consecutive points (microseconds).
+    ``.cumtimes`` is a convenience property giving *absolute* (cumulative) times
+    since ramp start. Setting ``.cumtimes`` automatically converts to deltas.
+
 Example usage:
     ramp = BoosterHVRamp.read("B:HS23T", slot=0)
-    print(ramp.values)  # engineering units (Amps)
-    print(ramp.times)   # microseconds (float64)
+    print(ramp.values)    # engineering units (Amps), float64
+    print(ramp.times)     # delta times in microseconds, float64
+    print(ramp.cumtimes)  # absolute times in microseconds (cumulative sum)
 
     with BoosterHVRamp.modify("B:HS23T", slot=0) as ramp:
         ramp.values[10] = 2.5  # set point 10 to 2.5 Amps
+
+    # Set absolute times (automatically converted to deltas):
+    ramp.cumtimes = np.array([0, 100, 300, 600, ...])
 
     # Custom machine type using Scaler (recommended for standard ACNET transforms):
     from pacsys import Scaler
@@ -110,6 +123,17 @@ def _validate_device_name(drf: str) -> None:
         )
 
 
+_NUMERIC_KINDS = frozenset("iuf")  # signed int, unsigned int, float
+
+
+def _validate_numeric_array(name: str, value: object) -> np.ndarray:
+    """Ensure value is a numeric numpy array, return as float64."""
+    arr = np.asarray(value)
+    if arr.dtype.kind not in _NUMERIC_KINDS:
+        raise TypeError(f"{name} must be a numeric array (int or float), got dtype '{arr.dtype}'")
+    return arr.astype(np.float64, copy=False)
+
+
 __all__ = [
     "Ramp",
     "RecyclerQRamp",
@@ -132,6 +156,15 @@ __all__ = [
 
 class Ramp:
     """Ramp table (64 points of time/value pairs).
+
+    Attributes:
+        values: Engineering-unit amplitudes (64 points, float64). Must be
+            numeric (int or float); non-numeric types raise TypeError.
+        times: Delta times between consecutive points in microseconds
+            (64 points, float64). Same type requirements as values.
+        cumtimes: Property giving absolute (cumulative) times in microseconds
+            since ramp start. Settable — assignment automatically converts
+            to deltas stored in ``.times``.
 
     Value scaling is handled in one of two ways:
 
@@ -190,8 +223,10 @@ class Ramp:
         slot: int | None = None,
     ):
         """Args:
-        values: Engineering-unit amplitudes (64 points, float64).
-        times: Delta times in microseconds (64 points, float64).
+        values: Engineering-unit amplitudes (64 points). Must be numeric
+            (int or float array/sequence); stored as float64.
+        times: Delta times between consecutive points in microseconds
+            (64 points). Same type requirements; stored as float64.
         device: Canonical device name (set by read(), None from from_bytes()).
         slot: Ramp slot index (set by read(), None from from_bytes()).
         """
@@ -199,10 +234,27 @@ class Ramp:
             raise ValueError(f"Expected {self.POINTS_PER_SLOT} values, got {len(values)}")
         if len(times) != self.POINTS_PER_SLOT:
             raise ValueError(f"Expected {self.POINTS_PER_SLOT} times, got {len(times)}")
-        self.values = np.asarray(values, dtype=np.float64)
-        self.times = np.asarray(times, dtype=np.float64)
+        self.values = values  # __setattr__ validates dtype and converts to float64
+        self.times = times
         self.device = device
         self.slot = slot
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if name in ("values", "times"):
+            value = _validate_numeric_array(name, value)
+        super().__setattr__(name, value)
+
+    @property
+    def cumtimes(self) -> np.ndarray:
+        """Absolute (cumulative) times in microseconds since ramp start."""
+        return np.cumsum(self.times)
+
+    @cumtimes.setter
+    def cumtimes(self, value: np.ndarray) -> None:
+        arr = _validate_numeric_array("cumtimes", value)
+        if len(arr) != self.POINTS_PER_SLOT:
+            raise ValueError(f"Expected {self.POINTS_PER_SLOT} cumtimes, got {len(arr)}")
+        self.times = np.diff(arr, prepend=0.0)
 
     @classmethod
     def _slot_bytes(cls) -> int:
@@ -654,6 +706,14 @@ class RampGroup:
 
     Subclasses must set the `base` class variable to a Ramp subclass.
     Use __getitem__ to get a view-backed Ramp for a single device.
+
+    Attributes:
+        values: 2D array (64 x N, float64) of engineering-unit amplitudes.
+            Must be numeric (int or float); non-numeric types raise TypeError.
+        times: 2D array (64 x N, float64) of delta times in microseconds.
+            Same type requirements as values.
+        cumtimes: Property giving absolute (cumulative) times per device
+            (column-wise cumsum). Settable — assignment converts to deltas.
     """
 
     base: ClassVar[type[Ramp]]
@@ -674,10 +734,25 @@ class RampGroup:
         if times.shape != (pts, n):
             raise ValueError(f"Expected times shape ({pts}, {n}), got {times.shape}")
         self.devices = list(devices)
-        self.values = np.asarray(values, dtype=np.float64)
-        self.times = np.asarray(times, dtype=np.float64)
+        self.values = values  # __setattr__ validates dtype and converts to float64
+        self.times = times
         self.slot = slot
         self._device_map: dict[str, int] = {d: i for i, d in enumerate(devices)}
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if name in ("values", "times"):
+            value = _validate_numeric_array(name, value)
+        super().__setattr__(name, value)
+
+    @property
+    def cumtimes(self) -> np.ndarray:
+        """Absolute (cumulative) times in microseconds since ramp start (64 x N)."""
+        return np.cumsum(self.times, axis=0)
+
+    @cumtimes.setter
+    def cumtimes(self, value: np.ndarray) -> None:
+        arr = _validate_numeric_array("cumtimes", value)
+        self.times = np.diff(arr, axis=0, prepend=np.zeros((1, arr.shape[1])))
 
     def __getitem__(self, device: str) -> Ramp:
         idx = self._device_map[device]

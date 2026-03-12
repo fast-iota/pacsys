@@ -13,6 +13,10 @@ byte[2:3] = time  (int16 LE)  -- delta time (clock ticks)
 
 The total slot size is 256 bytes. Ramp slots are indexed starting at 0, and can be manipulated using SETTING property `SETTING{N*256:256}.RAW` for ramp `N`.
 
+### Array Types
+
+`.values` and `.times` must be numeric numpy arrays (int or float dtypes). Non-numeric types (strings, booleans, complex, objects) are rejected with `TypeError` on assignment. All arrays are stored internally as `float64`.
+
 ### Value Scaling
 
 Values are converted between raw int16 and engineering units. The standard two-stage ACNET transform chain is:
@@ -40,7 +44,7 @@ Pre-defined subclasses for common elements:
 
 ### Time Scaling
 
-Raw times on the wire are clock ticks. The card's `update_rate_hz` determines the tick period. Times in PACSys are always presented in **microseconds**:
+Raw times on the wire are clock ticks. The card's `update_rate_hz` determines the tick period. `.times` stores **delta times** between consecutive points in **microseconds**:
 
 ```
 Forward:  time_us = raw_ticks * (1e6 / update_rate_hz)
@@ -68,6 +72,25 @@ Pre-defined subclasses time scaling:
 | `RecyclerHVSQRamp` | 720 Hz | 1,389 µs | (none) |
 
 
+### Cumulative Times
+
+The `.cumtimes` property provides a convenience view of times as **absolute** (cumulative) microseconds since ramp start, rather than deltas between points:
+
+```python
+ramp = BoosterHVRamp.read("B:HS23T")
+ramp.times      # [0, 100, 200, 300, ...]  deltas between points
+ramp.cumtimes   # [0, 100, 300, 600, ...]  absolute times since start
+```
+
+Setting `.cumtimes` automatically converts to deltas and stores in `.times`:
+
+```python
+ramp.cumtimes = np.array([0, 100, 300, 600, ...])
+ramp.times  # [0, 100, 200, 300, ...]  (computed via np.diff)
+```
+
+For `RampGroup`, `.cumtimes` operates column-wise (per device).
+
 ---
 
 ## Read/Write
@@ -77,14 +100,18 @@ from pacsys import BoosterHVRamp
 
 # Read - stores device and slot on the ramp
 ramp = BoosterHVRamp.read("B:HS23T", slot=0)
-print(ramp.values)  # float64 array, Amps
-print(ramp.times)   # float64 array, microseconds
+print(ramp.values)    # float64 array, Amps
+print(ramp.times)     # float64 array, delta microseconds
+print(ramp.cumtimes)  # float64 array, absolute microseconds
 ramp.device  # "B:HS23T"
 ramp.slot    # 0
 
 # Modify
 ramp.values[:8] = [1.0, 2.0, 3.0, 4.0, 4.0, 3.0, 2.0, 1.0]  # Amps
-ramp.times[:8] = [0, 10000, 20000, 30000, 40000, 50000, 60000, 70000]  # microseconds
+ramp.times[:8] = [0, 10000, 20000, 30000, 40000, 50000, 60000, 70000]  # delta microseconds
+
+# Or set absolute times (automatically converted to deltas)
+ramp.cumtimes = np.array([0, 10000, 30000, 60000, ...])
 
 # Write back (uses stored device/slot)
 ramp.write()
@@ -149,8 +176,9 @@ write_ramps(ramps, slot=2)              # override slot for all
 from pacsys import BoosterHVRampGroup
 
 group = BoosterHVRampGroup.read(["B:HS23T", "B:HS24T", "B:HS25T"], slot=0)
-group.values          # shape (64, 3) float64
-group.times           # shape (64, 3) float64
+group.values          # shape (64, 3) float64 - engineering units
+group.times           # shape (64, 3) float64 - delta microseconds
+group.cumtimes        # shape (64, 3) float64 - absolute microseconds (property)
 group.devices         # ["B:HS23T", "B:HS24T", "B:HS25T"]
 ```
 
@@ -303,6 +331,13 @@ try:
     ramp = BoosterHVRamp.read("B:BADDEV", slot=0)
 except DeviceError as e:
     print(f"Read failed: {e}")
+```
+
+Type errors are raised immediately on assignment if a non-numeric dtype is used:
+
+```python
+ramp.values = np.array(["a"] * 64)  # TypeError: must be numeric
+ramp.times = np.zeros(64, dtype=bool)  # TypeError: must be numeric
 ```
 
 Validation errors (values exceeding `max_value` or `max_time`) are raised during `to_bytes()` / `write()`:
