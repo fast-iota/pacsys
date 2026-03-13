@@ -66,6 +66,7 @@ ACK_CONNECT_EXT = 16  # ackConnectExt - extended connect response
 
 # Timeouts (milliseconds)
 DEFAULT_TIMEOUT = 5000  # Default request timeout
+INFINITE_TIMEOUT = 0x7FFFFFFF  # Max timeout (~24.8 days), used for timeout=0 requests
 HEARTBEAT_TIMEOUT = 10000  # Connection monitor interval
 RECONNECT_DELAY = 2000  # Delay before reconnect attempt
 

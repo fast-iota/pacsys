@@ -142,7 +142,7 @@ class Device(_DeviceBase):
 
         backend = self._get_backend()
         name = self.name
-        extra = f"<-{self._request.extra.name}" if self._request.extra else ""
+        extra = f"<-{self._request.extra_raw}" if self._request.extra else ""
 
         # Try DevDB-accelerated path (1 read instead of 3)
         devdb = self._get_devdb()

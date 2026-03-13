@@ -193,11 +193,18 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
                 logger.info("rpc=Read peer=%s elapsed_ms=%.1f items=%d", peer, elapsed, len(readings))
             else:
                 item_count = 0
-                # Multimap: same DRF at multiple positions → fan out readings
-                # Use original request positions so clients see correct indices
+                # Multimap: backend DRF → original request positions
+                # Keys are final_drfs (what backend returns in reading.drf),
+                # values are original drfs positions for correct client indices
                 drf_indices: dict[str, list[int]] = {}
-                for i, drf in enumerate(drfs):
-                    drf_indices.setdefault(drf, []).append(i)
+                if drfs == final_drfs:
+                    for i, drf in enumerate(drfs):
+                        drf_indices.setdefault(drf, []).append(i)
+                else:
+                    rmap = _reorder_map(drfs, final_drfs)
+                    assert rmap is not None
+                    for i in range(len(drfs)):
+                        drf_indices.setdefault(final_drfs[rmap[i]], []).append(i)
 
                 if isinstance(self._backend, AsyncBackend):
                     logger.debug("stream peer=%s event=started items=%d", peer, len(final_drfs))

@@ -893,6 +893,22 @@ class DPMHTTPBackend(Backend):
 
             meta = _device_info_to_meta(info) if info else None
 
+            if add_err is not None:
+                facility, error = parse_error(add_err.status)
+                readings.append(
+                    Reading(
+                        drf=original_drf,
+                        facility_code=facility,
+                        error_code=error,
+                        value=None,
+                        message=status_message(facility, error) or f"AddToList failed (status={add_err.status})",
+                        timestamp=None,
+                        cycle=0,
+                        meta=meta,
+                    )
+                )
+                continue
+
             if ref_id in logger_refs:
                 if ref_id in logger_complete and chunks:
                     # Complete logger response with data
@@ -930,22 +946,7 @@ class DPMHTTPBackend(Backend):
                     )
                 continue
 
-            if add_err is not None:
-                # AddToList failed for this device (server-side error, not transport)
-                facility, error = parse_error(add_err.status)
-                readings.append(
-                    Reading(
-                        drf=original_drf,
-                        facility_code=facility,
-                        error_code=error,
-                        value=None,
-                        message=status_message(facility, error) or f"AddToList failed (status={add_err.status})",
-                        timestamp=None,
-                        cycle=0,
-                        meta=meta,
-                    )
-                )
-            elif reply is None:
+            if reply is None:
                 has_timeout = True
                 ec = ERR_RETRY if transport_error is not None else ERR_TIMEOUT
                 msg = f"Connection error: {transport_error}" if transport_error is not None else "Request timeout"

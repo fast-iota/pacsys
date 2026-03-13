@@ -53,6 +53,7 @@ from .constants import (
     CMD_SEND_REQUEST_TIMEOUT,
     CMD_TASK_PID,
     DEFAULT_TIMEOUT,
+    INFINITE_TIMEOUT,
     RECV_BUFFER_SIZE,
     REPLY_ENDMULT,
     REPLY_NORMAL,
@@ -572,7 +573,7 @@ class AsyncAcnetConnectionBase:
         """Send a request and register a reply handler."""
         task_rad50 = _rad50_encode(task)
         mult_flag = 1 if multiple_reply else 0
-        tmo = timeout if timeout > 0 else DEFAULT_TIMEOUT
+        tmo = timeout if timeout > 0 else INFINITE_TIMEOUT
 
         content = (
             struct.pack(
@@ -1015,8 +1016,8 @@ class AsyncAcnetConnectionTCP(AsyncAcnetConnectionBase):
                     pkt_len = struct.unpack(">I", buffer[:4])[0]
 
                     if pkt_len < 2 or pkt_len > 65535:
-                        logger.warning(f"Invalid packet length: {pkt_len}")
-                        buffer = bytearray()
+                        logger.error(f"Invalid packet length: {pkt_len}, stream desynchronized")
+                        self._disposed = True
                         break
 
                     if len(buffer) < 4 + pkt_len:

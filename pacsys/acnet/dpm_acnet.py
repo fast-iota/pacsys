@@ -438,6 +438,17 @@ class DPMAcnet:
         if not was_active:
             self.start()
 
+        other_entries = {t: d for t, d in self._dev_list.items() if t != tag}
+        if other_entries:
+            import warnings
+
+            warnings.warn(
+                f"DPMAcnet.read() called with {len(other_entries)} other active "
+                f"entries in the list. Readings for those devices will be silently "
+                f"discarded. Use a separate DPMAcnet instance for read().",
+                stacklevel=2,
+            )
+
         try:
             start = time.time()
             for reading in self.readings(timeout=timeout):

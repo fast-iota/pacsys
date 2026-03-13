@@ -675,6 +675,15 @@ class TestCommonRoundTrip:
             recovered = _common_unscale(common, 86, c, 10)
             assert recovered == pytest.approx(primary, rel=1e-3)
 
+    def test_c86_increasing_roundtrip(self):
+        """Round-trip for piecewise lin/log/exp (c_index=86, increasing function)."""
+        # Increasing function: linear part slopes up, exp part grows
+        c = (2.0, 8.0, 1.5, -1.0, 0.2, 0.5)
+        for primary in [1.0, 5.0, 10.0]:
+            common = _common_scale(primary, 86, c)
+            recovered = _common_unscale(common, 86, c, 10)
+            assert recovered == pytest.approx(primary, rel=1e-3)
+
 
 class TestCommonBinarySearchRoundTrip:
     """Round-trip tests for common transforms that use binary search inverse."""

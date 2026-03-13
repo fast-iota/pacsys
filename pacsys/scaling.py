@@ -1267,10 +1267,16 @@ def _common_unscale(
         x0, x1 = c[0], c[1]
         y0 = c[2] * c[0] + c[3]
         y1 = math.exp(c[4] * c[1] + c[5])
-        if xx > y0:
-            return (xx - c[3]) / c[2]
-        if xx < y1:
-            return (math.log(xx) - c[5]) / c[4]
+        if y0 < y1:  # increasing
+            if xx < y0:
+                return (xx - c[3]) / c[2]
+            if xx > y1:
+                return (math.log(xx) - c[5]) / c[4]
+        else:  # decreasing
+            if xx > y0:
+                return (xx - c[3]) / c[2]
+            if xx < y1:
+                return (math.log(xx) - c[5]) / c[4]
         return (x1 - x0) * math.log(xx / y0) / math.log(y1 / y0) + x0
 
     if c_index == 90:

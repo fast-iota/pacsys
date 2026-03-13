@@ -41,6 +41,7 @@ from .constants import (
     CMD_SEND_REQUEST_TIMEOUT,
     DEFAULT_TIMEOUT,
     HEARTBEAT_TIMEOUT,
+    INFINITE_TIMEOUT,
     RECONNECT_DELAY,
     RECV_BUFFER_SIZE,
     REPLY_ENDMULT,
@@ -263,7 +264,7 @@ class AcnetConnection:
         """
         task_rad50 = rad50.encode(task)
         mult_flag = 1 if multiple_reply else 0
-        tmo = timeout if timeout > 0 else 0x7FFFFFFF
+        tmo = timeout if timeout > 0 else INFINITE_TIMEOUT
 
         request_time = time.monotonic()
         cmd_data = struct.pack("<IHhI", task_rad50, node, mult_flag, tmo)
@@ -283,9 +284,9 @@ class AcnetConnection:
         with self._requests_out_lock:
             self._requests_out[context.request_id] = context
             self._dead_requests.discard(context.request_id)
-
-        # Drain buffered replies (reply arrived before handler registration)
-        buffered = self._reply_buffer.pop(context.request_id, [])
+            # Pop buffer inside lock so data thread can't race between
+            # registration and drain
+            buffered = self._reply_buffer.pop(context.request_id, [])
         for reply, arrival_time in buffered:
             if arrival_time < request_time:
                 continue  # stale reply from previous use of this req_id
@@ -296,7 +297,7 @@ class AcnetConnection:
             if reply.last:
                 with self._requests_out_lock:
                     self._requests_out.pop(context.request_id, None)
-                self._dead_requests.add(context.request_id)
+                    self._dead_requests.add(context.request_id)
                 context._cancelled = True
                 break
 
@@ -471,7 +472,7 @@ class AcnetConnection:
         """Send a cancel for an outgoing request (cmdCancel)."""
         with self._requests_out_lock:
             self._requests_out.pop(context.request_id, None)
-        self._dead_requests.add(context.request_id)
+            self._dead_requests.add(context.request_id)
 
         cmd_data = struct.pack("<H", context.request_id.id)
         self._send_command(CMD_CANCEL, 0, cmd_data)
@@ -617,7 +618,7 @@ class AcnetConnection:
         if reply.last:
             with self._requests_out_lock:
                 self._requests_out.pop(reply.request_id, None)
-            self._dead_requests.add(reply.request_id)
+                self._dead_requests.add(reply.request_id)
             context._cancelled = True
 
     def _handle_request(self, request: AcnetRequest):
@@ -637,13 +638,13 @@ class AcnetConnection:
             except Exception as e:
                 logger.warning(f"Request handler exception: {e}")
                 try:
-                    self.send_reply(request, b"", REPLY_ENDMULT, last=True)
+                    self.send_reply(request, b"", 0, last=True)
                 except Exception:
                     pass
         else:
-            # No handler - send end-mult status
+            # No handler - send end-mult reply
             try:
-                self.send_reply(request, b"", REPLY_ENDMULT, last=True)
+                self.send_reply(request, b"", 0, last=True)
             except Exception:
                 pass
 

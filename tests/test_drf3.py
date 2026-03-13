@@ -177,6 +177,10 @@ def test_drf_parse(drf, expected_parts, expected_canonical, expected_qualified):
         ("N_I2B1RI", "N:I2B1RI"),
         ("N:I2B1RI@p,1000", "N:I2B1RI@p,1000"),
         ("N_I2B1RI@p,1000", "N:I2B1RI@p,1000"),
+        # Qualifier characters ^, #, ! must be recognized as ACNET names
+        ("M^OUTTMP", "M:OUTTMP"),
+        ("M#OUTTMP", "M:OUTTMP"),
+        ("M!OUTTMP", "M:OUTTMP"),
     ],
 )
 def test_drf_device_parse(drf, expected_canonical):

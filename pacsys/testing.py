@@ -54,7 +54,7 @@ def _base_key(drf: str) -> str:
             if req.field != default:
                 out += f".{req.field.name}"
         if req.extra is not None:
-            out += f"<-{req.extra.name}"
+            out += f"<-{req.extra_raw}"
         return out
     except ValueError:
         return drf
@@ -78,7 +78,7 @@ def _full_key(drf: str) -> str:
         if req.event is not None and req.event.mode != "U":
             out += f"@{req.event.raw_string}"
         if req.extra is not None:
-            out += f"<-{req.extra.name}"
+            out += f"<-{req.extra_raw}"
         return out
     except ValueError:
         return drf
@@ -87,6 +87,21 @@ def _full_key(drf: str) -> str:
 def _normalize_drf(drf: str) -> str:
     """Backward-compatible alias for _base_key."""
     return _base_key(drf)
+
+
+def _infer_value_type(value: Any) -> ValueType:
+    """Infer ValueType from a Python value."""
+    if isinstance(value, str):
+        return ValueType.TEXT
+    if isinstance(value, (bytes, bytearray)):
+        return ValueType.RAW
+    if isinstance(value, dict):
+        return ValueType.BASIC_STATUS
+    if isinstance(value, (list, tuple)):
+        if value and all(isinstance(v, str) for v in value):
+            return ValueType.TEXT_ARRAY
+        return ValueType.SCALAR_ARRAY
+    return ValueType.SCALAR
 
 
 def _get_range(drf: str) -> ARRAY_RANGE | BYTE_RANGE | None:
@@ -838,7 +853,7 @@ class FakeBackend(Backend):
             device_name = get_device_name(drf)
             updated = Reading(
                 drf=drf,
-                value_type=ValueType.SCALAR,
+                value_type=_infer_value_type(value),
                 value=value,
                 error_code=ERR_OK,
                 timestamp=datetime.now(timezone.utc),

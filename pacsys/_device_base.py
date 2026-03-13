@@ -107,7 +107,7 @@ class _DeviceBase:
                 out += f".{field.name}"
         out += f"@{event}"
         if self._request.extra is not None:
-            out += f"<-{self._request.extra.name}"
+            out += f"<-{self._request.extra_raw}"
         return out
 
     def _resolve_field(self, field: str | None, prop: DRF_PROPERTY) -> DRF_FIELD | None:

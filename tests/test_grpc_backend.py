@@ -728,6 +728,15 @@ class TestValueConversion:
         for key in original:
             assert result[key] == original[key]
 
+    def test_basic_status_round_trip_returns_bools(self):
+        """BasicStatus dict → proto → dict preserves bool types, not strings."""
+        original = {"on": True, "ready": False, "remote": True, "positive": False, "ramp": True}
+        proto = grpc_backend._value_to_proto_value(original)
+        result, vtype = grpc_backend._proto_value_to_python(proto)
+        assert vtype == ValueType.BASIC_STATUS
+        assert result == original
+        assert all(isinstance(v, bool) for v in result.values())
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Status Code Normalization

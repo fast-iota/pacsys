@@ -217,7 +217,7 @@ def _proto_value_to_python(proto_value: "device_pb2.Value") -> tuple[Value, Valu
             "tries_now": alarm.triesNow,
         }, ValueType.DIGITAL_ALARM
     elif value_type == "basicStatus":
-        return dict(proto_value.basicStatus.value), ValueType.BASIC_STATUS
+        return {k: v == "True" for k, v in proto_value.basicStatus.value.items()}, ValueType.BASIC_STATUS
     elif value_type is None:
         raise ValueError("Proto Value has no value set (empty oneof)")
     else:

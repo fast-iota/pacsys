@@ -2,7 +2,7 @@ import re
 
 from .property import DRF_PROPERTY
 
-PATTERN_NAME = re.compile("(?i)[A-Z0][:?_|&@$~][A-Z0-9_:]{1,62}")
+PATTERN_NAME = re.compile("(?i)[A-Z0#][:?_|&@$~^#!][A-Z0-9_:-]{1,62}")
 
 
 class Device:

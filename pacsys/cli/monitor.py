@@ -15,13 +15,14 @@ from pacsys.cli._common import (
     parse_slice,
 )
 from pacsys.drf3 import parse_request
+from pacsys.drf_utils import replace_event
 
 
 def _ensure_event(drf: str) -> str:
-    """Append @p,1000 if no event specified."""
+    """Add @p,1000 if no event specified."""
     req = parse_request(drf)
     if req.event is None or req.event.mode == "U":
-        return f"{drf}@p,1000"
+        return replace_event(drf, "p,1000")
     return drf
 
 
