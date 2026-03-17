@@ -30,8 +30,6 @@ dependencies = [
     "grpcio >= 1.66.0",
     "protobuf >= 6.30.0",
     "pika >= 1.2.0",
-    "gssapi >= 1.8.0",
-    "paramiko[gssapi] >= 3.0",
 ]
 requires-python = ">=3.10"
 
@@ -52,6 +50,10 @@ pacsys-monitor = "pacsys.cli.monitor:main"
 pacsys-info = "pacsys.cli.info:main"
 
 [project.optional-dependencies]
+kerberos = [
+  "gssapi >= 1.8.0",
+  "paramiko[gssapi] >= 3.0",
+]
 parquet = [
   "pyarrow >= 14.0",
 ]
@@ -73,6 +75,9 @@ dev = [
 mcp = [
   "fastmcp",
   "tomli >= 2.0; python_version < '3.11'",
+]
+all = [
+  "pacsys[kerberos,parquet,mcp]",
 ]
 doc = [
   "mkdocs",

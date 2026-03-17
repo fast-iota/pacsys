@@ -983,7 +983,12 @@ class DPMHTTPBackend(Backend):
         3. Create GSSAPI context targeting that service, send initial token
         4. Server accepts, optional mutual-auth token exchange
         """
-        import gssapi
+        try:
+            import gssapi
+        except ImportError:
+            raise ImportError(
+                "gssapi library required for Kerberos authentication. Install with: pip install pacsys[kerberos]"
+            )
 
         # Phase 1: request service name with empty token
         auth_req = Authenticate_request()

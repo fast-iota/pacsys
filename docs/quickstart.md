@@ -9,7 +9,7 @@
 ## Installation
 
 ```bash
-pip install pacsys
+pip install pacsys[all]
 ```
 
 ### Development Install

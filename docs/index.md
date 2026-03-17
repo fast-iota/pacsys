@@ -55,7 +55,7 @@ See [Backends](backends/index.md) for details.
 ## Installation
 
 ```bash
-pip install pacsys
+pip install pacsys[all]
 ```
 
 ## Next Steps

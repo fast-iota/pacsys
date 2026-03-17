@@ -175,6 +175,7 @@ ARRAY_DEVICE = "B:IRMS06[0:10]"
 # Test Devices - Properties
 # =============================================================================
 
+STRING_DEVICE = "B:BOOSBP"
 DESCRIPTION_DEVICE = "M~OUTTMP"
 RAW_DEVICE = "M:OUTTMP.RAW"
 STATUS_DEVICE = "N|LGXS"
@@ -396,6 +397,7 @@ DEVICE_TYPES = [
     ("G:AMANDA", ValueType.SCALAR, float, "scalar reading 2"),
     ("B:IRMS06[0:10]", ValueType.SCALAR_ARRAY, None, "array reading"),
     ("B:IRMS06[0]", ValueType.SCALAR, float, "array element"),
+    ("B:BOOSBP", ValueType.TEXT, str, "string channel"),
     ("M:OUTTMP.RAW", ValueType.RAW, bytes, "raw property"),
     ("M~OUTTMP", ValueType.TEXT, str, "description property"),
     ("N|LGXS", ValueType.BASIC_STATUS, dict, "status property"),

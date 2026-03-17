@@ -29,10 +29,27 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterator, Optional, Union
 
-import paramiko
-
 if TYPE_CHECKING:
+    import paramiko
     from pacsys.acl_session import ACLSession
+
+_paramiko_import_error = ""
+try:
+    import paramiko
+except ImportError as _e:
+    paramiko = None  # type: ignore[assignment]
+    _paramiko_import_error = str(_e)
+
+
+def _require_paramiko():
+    """Raise ImportError with helpful message if paramiko is not installed."""
+    if paramiko is None:
+        raise ImportError(
+            f"paramiko library required for SSH operations. "
+            f"Install with: pip install pacsys[ssh] or pacsys[kerberos]. "
+            f"Original error: {_paramiko_import_error}"
+        )
+
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +93,10 @@ class SSHTimeoutError(SSHError):
 
 def _gssapi_username() -> str:
     """Extract username from Kerberos principal"""
-    import gssapi
+    try:
+        import gssapi
+    except ImportError:
+        raise ImportError("gssapi library required for GSSAPI SSH auth. Install with: pip install pacsys[kerberos]")
 
     creds = gssapi.Credentials(usage="initiate")
     principal = str(creds.name)
@@ -474,6 +494,7 @@ class SSHClient:
         auth: Optional[object] = None,
         connect_timeout: float = 10.0,
     ):
+        _require_paramiko()
         self._hops = _normalize_hops(hops)
         self._auth = auth
         self._connect_timeout = connect_timeout
@@ -491,7 +512,7 @@ class SSHClient:
                 import gssapi  # noqa: F401
             except (ImportError, OSError) as exc:
                 raise ImportError(
-                    "gssapi library required for GSSAPI SSH auth. Install with: pip install gssapi"
+                    "gssapi library required for GSSAPI SSH auth. Install with: pip install pacsys[kerberos]"
                 ) from exc
 
         # Lazy connection state (protected by lock)

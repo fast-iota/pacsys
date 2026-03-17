@@ -903,7 +903,12 @@ class DMQBackend(Backend):
             ImportError: If gssapi library is not installed
             AuthenticationError: If context creation fails
         """
-        import gssapi
+        try:
+            import gssapi
+        except ImportError:
+            raise ImportError(
+                "gssapi library required for Kerberos authentication. Install with: pip install pacsys[kerberos]"
+            )
 
         try:
             name = gssapi.Name(DMQ_SERVICE_PRINCIPAL, gssapi.NameType.kerberos_principal)

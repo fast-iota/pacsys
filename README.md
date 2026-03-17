@@ -25,7 +25,7 @@ ACNET (Accelerator Control NETwork) is the control system used at Fermilab's par
 ## Installation
 
 ```bash
-pip install pacsys
+pip install pacsys[all]
 ```
 
 ## Device API (recommended)

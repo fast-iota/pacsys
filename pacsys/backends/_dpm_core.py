@@ -138,7 +138,12 @@ class _AsyncDpmCore:
 
     async def authenticate(self) -> None:
         """Kerberos GSSAPI authentication over the DPM connection."""
-        import gssapi
+        try:
+            import gssapi
+        except ImportError:
+            raise ImportError(
+                "gssapi library required for Kerberos authentication. Install with: pip install pacsys[kerberos]"
+            )
 
         assert self._conn is not None
         if self._auth is None:

@@ -93,7 +93,9 @@ class KerberosAuth(Auth):
         try:
             import gssapi
         except ImportError:
-            raise ImportError("gssapi library required for Kerberos authentication. Install with: pip install gssapi")
+            raise ImportError(
+                "gssapi library required for Kerberos authentication. Install with: pip install pacsys[kerberos]"
+            )
 
         from pacsys.errors import AuthenticationError
 
