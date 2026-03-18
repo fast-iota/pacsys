@@ -44,7 +44,7 @@ if TYPE_CHECKING:
     from pacsys.ssh import SSHClient, SSHHop
     from pacsys.supervised import SupervisedServer
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 
 logger = logging.getLogger(__name__)
 
