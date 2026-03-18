@@ -143,7 +143,8 @@ def format_value(value: Any, number_format: Optional[str]) -> str:
     """Format a value for display.
 
     numpy arrays and lists: space-joined elements, each formatted if spec given.
-    Scalars: format() if spec. Strings: str().
+    Dicts: status as key=T/F, timed arrays show data, others as compact JSON.
+    Bytes: hex string. Scalars: format() if spec. Strings: str().
     """
     np = sys.modules.get("numpy")
     if np is not None and isinstance(value, np.ndarray):
@@ -153,6 +154,25 @@ def format_value(value: Any, number_format: Optional[str]) -> str:
         if number_format:
             return " ".join(format(v, number_format) for v in value)
         return " ".join(format(v, "g") if isinstance(v, float) else str(v) for v in value)
+    if isinstance(value, dict):
+        # Timed scalar array — show just the data portion
+        if "data" in value:
+            data = value["data"]
+            if np is not None and isinstance(data, np.ndarray):
+                fmt = number_format or "g"
+                return " ".join(format(v, fmt) for v in data)
+            if isinstance(data, list):
+                if number_format:
+                    return " ".join(format(v, number_format) for v in data)
+                return " ".join(format(v, "g") if isinstance(v, float) else str(v) for v in data)
+            return str(data)
+        # Basic status — compact key=T/F
+        if value and all(isinstance(v, bool) for v in value.values()):
+            return " ".join(f"{k}={'T' if v else 'F'}" for k, v in value.items())
+        # Alarm blocks and other dicts — compact JSON
+        return json.dumps(value, separators=(",", ":"))
+    if isinstance(value, (bytes, bytearray)):
+        return value.hex()
     if isinstance(value, str):
         return value
     if isinstance(value, float) and value.is_integer() and number_format:
@@ -277,15 +297,21 @@ def format_write_result(result: WriteResult, *, fmt: str) -> str:
 
 
 def _json_safe(value: Any) -> Any:
-    """Convert numpy types to Python native for JSON serialization."""
+    """Convert non-JSON-native types for serialization."""
+    if isinstance(value, (bytes, bytearray)):
+        return value.hex()
     np = sys.modules.get("numpy")
     if np is not None:
         if isinstance(value, np.ndarray):
             return value.tolist()
+        if isinstance(value, np.bool_):
+            return bool(value)
         if isinstance(value, np.integer):
             return int(value)
         if isinstance(value, np.floating):
             return float(value)
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
     return value
 
 

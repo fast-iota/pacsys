@@ -1,4 +1,5 @@
 import re
+from typing import Any
 
 from .device import get_qualified_device, parse_device
 from .event import DRF_EVENT, DefaultEvent, parse_event
@@ -6,6 +7,8 @@ from .extra import DRF_EXTRA, parse_extra
 from .field import DEFAULT_FIELD_FOR_PROPERTY, DRF_FIELD, get_default_field, parse_field
 from .property import DRF_PROPERTY, DRF_PROPERTY_ALIASES, get_default_property, parse_property
 from .range import BYTE_RANGE, ARRAY_RANGE, parse_range
+
+_UNSET: Any = object()
 
 # 1=DEVIVE, 2=PROPERTY OR FIELD, 3=RANGE, 4=FIELD, 5=EVENT
 PATTERN_FULL = re.compile(
@@ -99,10 +102,10 @@ class DataRequest:
         self,
         device: str | None = None,
         property: DRF_PROPERTY | None = None,
-        range: ARRAY_RANGE | None = None,
+        range: ARRAY_RANGE | None = _UNSET,
         field: DRF_FIELD | None = None,
         event: DRF_EVENT | None = None,
-        extra: DRF_EXTRA | None = None,
+        extra: DRF_EXTRA | None = _UNSET,
     ) -> str:
         out = ""
         out += device or self.device
@@ -110,7 +113,7 @@ class DataRequest:
         if p is not None:
             out += "."
             out += p.name
-        r = range or self.range
+        r = self.range if range is _UNSET else range
         if r is not None:
             rs = str(r)
             out += rs
@@ -128,27 +131,28 @@ class DataRequest:
         if e is not None:
             if e.mode != "U":
                 out += f"@{e.raw_string}"
-        if extra is not None:
+        if extra is _UNSET:
+            if self.extra is not None:
+                out += f"<-{self.extra_raw}"
+        elif extra is not None:
             out += f"<-{extra.name}"
-        elif self.extra is not None:
-            out += f"<-{self.extra_raw}"
         return out
 
     def to_qualified(
         self,
         device: str | None = None,
         property: DRF_PROPERTY | None = None,
-        range: ARRAY_RANGE | None = None,
+        range: ARRAY_RANGE | None = _UNSET,
         field: DRF_FIELD | None = None,
         event: DRF_EVENT | None = None,
-        extra: DRF_EXTRA | None = None,
+        extra: DRF_EXTRA | None = _UNSET,
     ) -> str:
         out = ""
         d = device or self.device
         p = property or self.property
         ds = get_qualified_device(d, p)
         out += ds
-        r = range or self.range
+        r = self.range if range is _UNSET else range
         if r is not None:
             rs = str(r)
             out += rs
@@ -166,10 +170,11 @@ class DataRequest:
         if e is not None:
             if e.mode != "U":
                 out += f"@{e.raw_string}"
-        if extra is not None:
+        if extra is _UNSET:
+            if self.extra is not None:
+                out += f"<-{self.extra_raw}"
+        elif extra is not None:
             out += f"<-{extra.name}"
-        elif self.extra is not None:
-            out += f"<-{self.extra_raw}"
         return out
 
     def name_as(self, property: DRF_PROPERTY):

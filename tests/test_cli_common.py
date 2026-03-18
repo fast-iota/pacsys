@@ -205,6 +205,44 @@ class TestFormatValue:
 
         assert format_value(255, "x") == "ff"
 
+    def test_basic_status_dict(self):
+        from pacsys.cli._common import format_value
+
+        status = {"on": True, "ready": False, "remote": True}
+        result = format_value(status, None)
+        assert "on=T" in result
+        assert "ready=F" in result
+        assert "remote=T" in result
+
+    def test_alarm_dict(self):
+        from pacsys.cli._common import format_value
+
+        alarm = {"minimum": 0.0, "maximum": 100.0, "alarm_enable": True}
+        result = format_value(alarm, None)
+        # Mixed types → compact JSON
+        parsed = json.loads(result)
+        assert parsed["minimum"] == 0.0
+        assert parsed["maximum"] == 100.0
+
+    def test_timed_array_dict(self):
+        from pacsys.cli._common import format_value
+
+        timed = {"data": np.array([1.0, 2.0, 3.0]), "micros": np.array([100, 200, 300])}
+        result = format_value(timed, None)
+        assert result == "1 2 3"
+
+    def test_bytes_value(self):
+        from pacsys.cli._common import format_value
+
+        assert format_value(b"\x00\x01\xff", None) == "0001ff"
+
+    def test_timed_array_dict_plain_list(self):
+        from pacsys.cli._common import format_value
+
+        timed = {"data": [1.0, 2.0, 3.0], "micros": [100, 200, 300]}
+        result = format_value(timed, None)
+        assert result == "1 2 3"
+
 
 class TestFormatReading:
     """format_reading formats a Reading for text/terse/json output."""
@@ -560,6 +598,20 @@ class TestJsonSafe:
         assert _json_safe(42) == 42
         assert _json_safe("hello") == "hello"
         assert _json_safe([1, 2]) == [1, 2]
+
+    def test_bytes(self):
+        from pacsys.cli._common import _json_safe
+
+        assert _json_safe(b"\x00\xff") == "00ff"
+
+    def test_dict_with_numpy(self):
+        from pacsys.cli._common import _json_safe
+
+        d = {"on": np.bool_(True), "value": np.float64(1.5)}
+        result = _json_safe(d)
+        assert result == {"on": True, "value": 1.5}
+        assert isinstance(result["on"], bool)
+        assert isinstance(result["value"], float)
 
 
 class TestResolveAuth:

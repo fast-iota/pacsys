@@ -5,7 +5,8 @@ from __future__ import annotations
 import inspect
 from typing import Any
 
-from pacsys.drf3 import DataRequest, parse_event
+from pacsys.drf3 import DataRequest, parse_event, parse_extra
+from pacsys.drf3.event import DefaultEvent, PeriodicEvent
 from pacsys.drf3.field import (
     DRF_FIELD,
     parse_field,
@@ -14,7 +15,6 @@ from pacsys.drf3.field import (
 )
 from pacsys.drf3.property import DRF_PROPERTY
 from pacsys.drf3.range import ARRAY_RANGE
-from pacsys.drf3.event import PeriodicEvent
 from pacsys.types import BasicControl
 
 CONTROL_STATUS_MAP: dict[BasicControl, tuple[str, bool]] = {
@@ -135,6 +135,30 @@ class _DeviceBase:
             new_range = ARRAY_RANGE(mode="full")
         new_drf = self._request.to_canonical(range=new_range)
         return self._from_drf(new_drf)
+
+    def without_range(self) -> _DeviceBase:
+        """Return new device with array range removed."""
+        new_drf = self._request.to_canonical(range=None)
+        return self._from_drf(new_drf)
+
+    def without_event(self) -> _DeviceBase:
+        """Return new device with event removed (back to default/unspecified)."""
+        new_drf = self._request.to_canonical(event=DefaultEvent())
+        return self._from_drf(new_drf)
+
+    def with_extra(self, extra: str | None) -> _DeviceBase:
+        """Return new device with extra modifier set or cleared.
+
+        Args:
+            extra: Extra modifier string (e.g. "FTP", "LOGGER:123:456"),
+                   or None to remove the extra.
+        """
+        if extra is not None:
+            parse_extra(extra)  # validate
+        canonical = self._request.to_canonical(extra=None)
+        if extra is not None:
+            canonical += f"<-{extra}"
+        return self._from_drf(canonical)
 
     def _from_drf(self, drf: str) -> _DeviceBase:
         """Create new instance of same type from DRF. Override in subclasses."""

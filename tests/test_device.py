@@ -302,6 +302,145 @@ class TestSubclassPreservation:
         assert isinstance(modified, ArrayDevice)
 
 
+# Fluent Clearing Tests
+
+
+class TestWithoutRange:
+    """Tests for without_range() — removes array range."""
+
+    def test_without_range_clears_range(self):
+        dev = Device("B:HS23T[0:10]")
+        cleared = dev.without_range()
+        assert cleared.request.range is None
+        assert "[" not in cleared.drf
+
+    def test_without_range_returns_new_device(self):
+        dev = Device("B:HS23T[0:10]")
+        cleared = dev.without_range()
+        assert dev is not cleared
+        assert dev.request.range is not None  # original unchanged
+
+    def test_without_range_preserves_event(self):
+        dev = Device("B:HS23T[0:10]@p,1000")
+        cleared = dev.without_range()
+        assert cleared.has_event
+        assert cleared.is_periodic
+        assert "[" not in cleared.drf
+
+    def test_without_range_preserves_extra(self):
+        dev = Device("M:OUTTMP[0:10]<-FTP")
+        cleared = dev.without_range()
+        assert "<-FTP" in cleared.drf
+        assert "[" not in cleared.drf
+
+    def test_without_range_noop_when_no_range(self):
+        dev = Device("M:OUTTMP")
+        cleared = dev.without_range()
+        assert cleared.drf == dev.drf
+
+    def test_without_range_preserves_subclass(self):
+        dev = ArrayDevice("B:HS23T[0:10]")
+        cleared = dev.without_range()
+        assert isinstance(cleared, ArrayDevice)
+
+
+class TestWithoutEvent:
+    """Tests for without_event() — removes event."""
+
+    def test_without_event_clears_event(self):
+        dev = Device("M:OUTTMP@p,1000")
+        cleared = dev.without_event()
+        assert not cleared.has_event
+        assert "@" not in cleared.drf
+
+    def test_without_event_returns_new_device(self):
+        dev = Device("M:OUTTMP@p,1000")
+        cleared = dev.without_event()
+        assert dev is not cleared
+        assert dev.has_event  # original unchanged
+
+    def test_without_event_preserves_range(self):
+        dev = Device("B:HS23T[0:10]@p,1000")
+        cleared = dev.without_event()
+        assert "[0:10]" in cleared.drf
+        assert not cleared.has_event
+
+    def test_without_event_preserves_extra(self):
+        dev = Device("M:OUTTMP@p,1000<-FTP")
+        cleared = dev.without_event()
+        assert "<-FTP" in cleared.drf
+        assert not cleared.has_event
+
+    def test_without_event_noop_when_no_event(self):
+        dev = Device("M:OUTTMP")
+        cleared = dev.without_event()
+        assert cleared.drf == dev.drf
+
+    def test_without_event_preserves_subclass(self):
+        dev = ScalarDevice("M:OUTTMP@p,1000")
+        cleared = dev.without_event()
+        assert isinstance(cleared, ScalarDevice)
+
+
+class TestWithExtra:
+    """Tests for with_extra() — sets or clears extra modifier."""
+
+    def test_with_extra_adds_ftp(self):
+        dev = Device("M:OUTTMP")
+        modified = dev.with_extra("FTP")
+        assert "<-FTP" in modified.drf
+
+    def test_with_extra_adds_logger_with_params(self):
+        dev = Device("M:OUTTMP")
+        modified = dev.with_extra("LOGGER:123:456")
+        assert "<-LOGGER:123:456" in modified.drf
+
+    def test_with_extra_replaces_existing(self):
+        dev = Device("M:OUTTMP<-FTP")
+        modified = dev.with_extra("LIVEDATA")
+        assert "<-LIVEDATA" in modified.drf
+        assert "FTP" not in modified.drf
+
+    def test_with_extra_clears_extra(self):
+        dev = Device("M:OUTTMP<-FTP")
+        cleared = dev.with_extra(None)
+        assert "<-" not in cleared.drf
+
+    def test_with_extra_returns_new_device(self):
+        dev = Device("M:OUTTMP")
+        modified = dev.with_extra("FTP")
+        assert dev is not modified
+        assert "<-" not in dev.drf  # original unchanged
+
+    def test_with_extra_preserves_event(self):
+        dev = Device("M:OUTTMP@p,1000")
+        modified = dev.with_extra("FTP")
+        assert modified.has_event
+        assert "<-FTP" in modified.drf
+
+    def test_with_extra_preserves_range(self):
+        dev = Device("B:HS23T[0:10]")
+        modified = dev.with_extra("FTP")
+        assert "[0:10]" in modified.drf
+        assert "<-FTP" in modified.drf
+
+    def test_with_extra_invalid_raises(self):
+        dev = Device("M:OUTTMP")
+        with pytest.raises(ValueError, match="Invalid extra"):
+            dev.with_extra("NOTEXTRA")
+
+    def test_with_extra_preserves_subclass(self):
+        dev = ScalarDevice("M:OUTTMP")
+        modified = dev.with_extra("FTP")
+        assert isinstance(modified, ScalarDevice)
+
+    def test_with_extra_chaining(self, fake):
+        dev = Device("M:OUTTMP").with_event("p,1000").with_extra("FTP").with_backend(fake)
+        assert dev.is_periodic
+        assert "<-FTP" in dev.drf
+        assert dev._backend is fake
+
+
 # Edge Cases
 
 
