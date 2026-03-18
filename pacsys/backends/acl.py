@@ -384,7 +384,7 @@ class ACLBackend(Backend):
         url = f"{self._base_url}?acl={acl_command}"
         return self._fetch(url, effective_timeout)
 
-    def _fetch(self, url: str, timeout: float) -> str:
+    def _fetch(self, url: str, timeout: float, drf: str = "") -> str:
         """Fetch URL content.
 
         Raises:
@@ -396,21 +396,21 @@ class ACLBackend(Backend):
             return response.text
         except httpx.HTTPStatusError as e:
             raise DeviceError(
-                drf="",
+                drf=drf,
                 facility_code=0,
                 error_code=ERR_RETRY,
                 message=f"ACL request failed ({url}): HTTP {e.response.status_code}",
             ) from e
         except httpx.TimeoutException as e:
             raise DeviceError(
-                drf="",
+                drf=drf,
                 facility_code=0,
                 error_code=ERR_TIMEOUT,
                 message=f"ACL request timed out after {timeout}s ({self._base_url})",
             ) from e
         except httpx.TransportError as e:
             raise DeviceError(
-                drf="",
+                drf=drf,
                 facility_code=0,
                 error_code=ERR_RETRY,
                 message=f"ACL request failed ({self._base_url}): {e}",
@@ -480,7 +480,7 @@ class ACLBackend(Backend):
         logger.debug(f"ACL batch request: {url}")
 
         try:
-            response_text = self._fetch(url, effective_timeout)
+            response_text = self._fetch(url, effective_timeout, drf=drfs[0])
         except DeviceError as e:
             if e.error_code == ERR_TIMEOUT:
                 # Server is unresponsive - individual reads would each timeout too.
@@ -534,7 +534,7 @@ class ACLBackend(Backend):
         for drf in drfs:
             url = self._build_url([drf])
             try:
-                response_text = self._fetch(url, timeout)
+                response_text = self._fetch(url, timeout, drf=drf)
                 lines = response_text.strip().splitlines()
                 if not lines:
                     readings.append(
@@ -601,7 +601,7 @@ class ACLBackend(Backend):
         for key, field in zip(_BASIC_STATUS_KEYS, _BASIC_STATUS_FIELDS):
             url = self._build_url([f"{device}.STATUS.{field}"])
             try:
-                lines = self._fetch(url, timeout).strip().splitlines()
+                lines = self._fetch(url, timeout, drf=drf).strip().splitlines()
             except DeviceError as e:
                 return Reading(
                     drf=drf,

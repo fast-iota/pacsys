@@ -747,4 +747,6 @@ class TestDpmStreamCore:
 
         assert not dispatched
         assert len(errors) == 1
-        assert isinstance(errors[0], asyncio.IncompleteReadError)
+        assert isinstance(errors[0], DPMConnectionError)
+        assert isinstance(errors[0].__cause__, asyncio.IncompleteReadError)
+        assert TEMP_DEVICE in str(errors[0])

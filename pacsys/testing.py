@@ -1074,6 +1074,7 @@ class AsyncFakeBackend(_AsyncBackend):
     async def subscribe(self, drfs, callback=None, on_error=None):
         self._check_closed()
         handle = AsyncSubscriptionHandle()
+        handle._drfs = drfs
         self._handles.append(handle)
 
         def _on_reading(reading, _sync_handle):

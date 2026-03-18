@@ -31,6 +31,7 @@ class AsyncSubscriptionHandle:
         self._drop_count = 0
         self._last_drop_log = 0.0
         self._core: Any = None
+        self._drfs: list[str] = []
 
     @property
     def stopped(self) -> bool:
@@ -51,10 +52,17 @@ class AsyncSubscriptionHandle:
             self._drop_count += 1
             now = time.monotonic()
             if now - self._last_drop_log >= 5.0:
+                drfs = self._drfs
+                drf_summary = (
+                    (", ".join(drfs) if len(drfs) <= 5 else f"{', '.join(drfs[:5])} and {len(drfs) - 5} more")
+                    if drfs
+                    else "unknown"
+                )
                 logger.warning(
-                    "Async subscription buffer full (%d), dropped %d readings",
+                    "Async subscription buffer full (%d), dropped %d readings (devices: %s)",
                     self._maxsize,
                     self._drop_count,
+                    drf_summary,
                 )
                 self._drop_count = 0
                 self._last_drop_log = now

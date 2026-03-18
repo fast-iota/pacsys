@@ -27,6 +27,7 @@ class BufferedSubscriptionHandle(SubscriptionHandle):
         self._stopped = False
         self._exc: Optional[Exception] = None
         self._ref_ids: list[int] = []
+        self._drfs: list[str] = []
         self._drop_count = 0
         self._last_drop_log = 0.0
 
@@ -57,10 +58,17 @@ class BufferedSubscriptionHandle(SubscriptionHandle):
                 self._drop_count += 1
                 now = time.monotonic()
                 if now - self._last_drop_log >= 5.0:
+                    drfs = self._drfs
+                    drf_summary = (
+                        (", ".join(drfs) if len(drfs) <= 5 else f"{', '.join(drfs[:5])} and {len(drfs) - 5} more")
+                        if drfs
+                        else "unknown"
+                    )
                     logger.warning(
-                        "Subscription buffer full (%d), dropped %d readings",
+                        "Subscription buffer full (%d), dropped %d readings (devices: %s)",
                         self._maxsize,
                         self._drop_count,
+                        drf_summary,
                     )
                     self._drop_count = 0
                     self._last_drop_log = now

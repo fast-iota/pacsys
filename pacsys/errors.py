@@ -31,9 +31,11 @@ class ReadError(Exception):
         super().__init__(message)
 
     def __str__(self) -> str:
-        failed = [r.drf for r in self.readings if not r.ok]
         base = self.args[0]
-        if failed:
+        # Avoid duplicating device names when the caller already listed them
+        # (e.g. read_many's "Device errors: A, B")
+        failed = [r.drf for r in self.readings if not r.ok]
+        if failed and not any(drf in base for drf in failed):
             return f"{base} (failed: {', '.join(failed)})"
         return base
 

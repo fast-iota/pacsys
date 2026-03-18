@@ -551,8 +551,11 @@ class _DpmStreamCore:
 
                 if isinstance(reply, StartList_reply):
                     if reply.status != 0:
-                        logger.warning(f"StartList returned status {reply.status}")
-                        error_fn(DPMConnectionError(f"StartList failed (status={reply.status})"))
+                        drf_summary = ", ".join(drfs[:5]) + (f" and {len(drfs) - 5} more" if len(drfs) > 5 else "")
+                        logger.warning("StartList returned status %d (devices: %s)", reply.status, drf_summary)
+                        error_fn(
+                            DPMConnectionError(f"StartList failed (status={reply.status}, devices: {drf_summary})")
+                        )
                         return
                     continue
 
@@ -577,10 +580,14 @@ class _DpmStreamCore:
             pass  # Normal shutdown via task.cancel()
         except (asyncio.IncompleteReadError, DPMConnectionError, OSError) as e:
             if not stop_check():
-                error_fn(e)
+                drf_summary = ", ".join(drfs) if len(drfs) <= 5 else f"{', '.join(drfs[:5])} and {len(drfs) - 5} more"
+                wrapped = DPMConnectionError(f"{e} (devices: {drf_summary})")
+                wrapped.__cause__ = e
+                error_fn(wrapped)
         except Exception as e:
             if not stop_check():
-                logger.error(f"Unexpected streaming error: {e}")
+                drf_summary = ", ".join(drfs) if len(drfs) <= 5 else f"{', '.join(drfs[:5])} and {len(drfs) - 5} more"
+                logger.error(f"Unexpected streaming error: {e} (devices: {drf_summary})")
                 error_fn(e)
 
 
@@ -829,7 +836,10 @@ class DPMHTTPBackend(Backend):
                             device_infos[reply.ref_id] = reply
                         elif isinstance(reply, StartList_reply):
                             if reply.status != 0:
-                                logger.warning(f"StartList returned status {reply.status}")
+                                drf_summary = ", ".join(drfs[:5]) + (
+                                    f" and {len(drfs) - 5} more" if len(drfs) > 5 else ""
+                                )
+                                logger.warning("StartList returned status %d (devices: %s)", reply.status, drf_summary)
                                 break  # No data will arrive
                         elif isinstance(reply, ListStatus_reply):
                             pass
@@ -1391,7 +1401,11 @@ class DPMHTTPBackend(Backend):
                 received_infos += 1
             elif isinstance(reply, StartList_reply):
                 if reply.status != 0:
-                    logger.warning(f"StartList returned status {reply.status}")
+                    write_drfs = [drf for drf, _ in prepared_settings]
+                    drf_summary = ", ".join(write_drfs[:5]) + (
+                        f" and {len(write_drfs) - 5} more" if len(write_drfs) > 5 else ""
+                    )
+                    logger.warning("StartList returned status %d (devices: %s)", reply.status, drf_summary)
                     return None, add_errors
             elif isinstance(reply, Status_reply):
                 if reply.status != 0 and reply.ref_id > 0:
@@ -1399,10 +1413,15 @@ class DPMHTTPBackend(Backend):
                 received_infos += 1
 
         if received_infos < expected_count:
+            write_drfs = [drf for drf, _ in prepared_settings]
+            drf_summary = ", ".join(write_drfs[:5]) + (
+                f" and {len(write_drfs) - 5} more" if len(write_drfs) > 5 else ""
+            )
             logger.warning(
-                "Write setup timed out: received %d/%d device infos",
+                "Write setup timed out: received %d/%d device infos (devices: %s)",
                 received_infos,
                 expected_count,
+                drf_summary,
             )
             return None, add_errors
 

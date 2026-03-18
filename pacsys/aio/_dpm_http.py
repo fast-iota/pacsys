@@ -269,6 +269,7 @@ class AsyncDPMHTTPBackend(AsyncBackend):
             raise ValueError("drfs cannot be empty")
         core = await self._create_core()
         handle = AsyncSubscriptionHandle()
+        handle._drfs = drfs
         handle._task = asyncio.ensure_future(
             core.stream(drfs, handle._dispatch, handle._is_stopped, handle._signal_error)
         )

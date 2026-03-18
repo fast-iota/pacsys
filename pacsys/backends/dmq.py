@@ -781,11 +781,13 @@ class DMQBackend(Backend):
             job.exchange_name = exchange_name
             job.queue_name = queue_name
 
+            drf_summary = ", ".join(job.drfs[:5]) + (f" and {len(job.drfs) - 5} more" if len(job.drfs) > 5 else "")
+
             try:
                 ctx = self._create_gss_context()
                 token = ctx.step()
             except Exception as exc:
-                logger.error(f"GSS context creation failed for read: {exc}")
+                logger.error(f"GSS context creation failed for read: {exc} (devices: {drf_summary})")
                 job.error = exc
                 self._complete_read(job)
                 return
@@ -807,7 +809,7 @@ class DMQBackend(Backend):
                     auto_ack=False,
                 )
             except Exception as exc:
-                logger.error(f"Read setup failed after INIT: {exc}")
+                logger.error(f"Read setup failed after INIT: {exc} (devices: {drf_summary})")
                 job.error = exc
                 self._complete_read(job)
                 try:

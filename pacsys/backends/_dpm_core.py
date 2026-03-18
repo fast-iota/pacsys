@@ -300,7 +300,11 @@ class _AsyncDpmCore:
                     device_infos[reply.ref_id] = reply
                 elif isinstance(reply, StartList_reply):
                     if reply.status != 0:
-                        logger.warning(f"StartList returned status {reply.status}")
+                        logger.warning(
+                            "StartList returned status %d (devices: %s)",
+                            reply.status,
+                            ", ".join(drfs[:5]) + (f" and {len(drfs) - 5} more" if len(drfs) > 5 else ""),
+                        )
                         break
                 elif isinstance(reply, ListStatus_reply):
                     pass
@@ -508,7 +512,12 @@ class _AsyncDpmCore:
                 received_infos += 1
             elif isinstance(reply, StartList_reply):
                 if reply.status != 0:
-                    logger.warning(f"StartList returned status {reply.status}")
+                    write_drfs = [drf for drf, _ in settings]
+                    logger.warning(
+                        "StartList returned status %d (devices: %s)",
+                        reply.status,
+                        ", ".join(write_drfs[:5]) + (f" and {len(write_drfs) - 5} more" if len(write_drfs) > 5 else ""),
+                    )
                     return self._build_write_results(settings, None, add_errors)
             elif isinstance(reply, Status_reply):
                 if reply.status != 0 and reply.ref_id > 0:
@@ -660,8 +669,11 @@ class _AsyncDpmCore:
 
                 if isinstance(reply, StartList_reply):
                     if reply.status != 0:
-                        logger.warning(f"StartList returned status {reply.status}")
-                        error_fn(DPMConnectionError(f"StartList failed (status={reply.status})"))
+                        drf_summary = ", ".join(drfs[:5]) + (f" and {len(drfs) - 5} more" if len(drfs) > 5 else "")
+                        logger.warning("StartList returned status %d (devices: %s)", reply.status, drf_summary)
+                        error_fn(
+                            DPMConnectionError(f"StartList failed (status={reply.status}, devices: {drf_summary})")
+                        )
                         return
                     continue
 
@@ -686,8 +698,12 @@ class _AsyncDpmCore:
             pass
         except (asyncio.IncompleteReadError, DPMConnectionError, OSError) as e:
             if not stop_check():
-                error_fn(e)
+                drf_summary = ", ".join(drfs) if len(drfs) <= 5 else f"{', '.join(drfs[:5])} and {len(drfs) - 5} more"
+                wrapped = DPMConnectionError(f"{e} (devices: {drf_summary})")
+                wrapped.__cause__ = e
+                error_fn(wrapped)
         except Exception as e:
             if not stop_check():
-                logger.error(f"Unexpected streaming error: {e}")
+                drf_summary = ", ".join(drfs) if len(drfs) <= 5 else f"{', '.join(drfs[:5])} and {len(drfs) - 5} more"
+                logger.error(f"Unexpected streaming error: {e} (devices: {drf_summary})")
                 error_fn(e)

@@ -133,6 +133,7 @@ class AsyncGRPCBackend(AsyncBackend):
         await self._ensure_connected()
         assert self._core is not None
         handle = AsyncSubscriptionHandle()
+        handle._drfs = drfs
 
         def _error_adapter(exc, fatal=False):
             if fatal:

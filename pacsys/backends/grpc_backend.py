@@ -692,11 +692,12 @@ class _DaqCore:
                 code = e.code()
                 ec = _grpc_error_code(e)
                 fc = _grpc_facility_code(e)
+                drf_summary = ", ".join(drfs) if len(drfs) <= 5 else f"{', '.join(drfs[:5])} and {len(drfs) - 5} more"
                 exc = DeviceError(
                     drf=drfs[0] if drfs else "?",
                     facility_code=fc,
                     error_code=ec,
-                    message=f"gRPC stream error ({target}): {code.name}: {e.details()}",
+                    message=f"gRPC stream error ({target}): {code.name}: {e.details()} (devices: {drf_summary})",
                 )
                 if code in _RETRYABLE_STATUS_CODES:
                     error_fn(exc, fatal=False)
@@ -710,11 +711,12 @@ class _DaqCore:
                 if stop_check():
                     return
                 target = f"{self._host}:{self._port}"
+                drf_summary = ", ".join(drfs) if len(drfs) <= 5 else f"{', '.join(drfs[:5])} and {len(drfs) - 5} more"
                 exc = DeviceError(
                     drf=drfs[0] if drfs else "?",
                     facility_code=FACILITY_ACNET,
                     error_code=ERR_RETRY,
-                    message=f"gRPC stream error ({target}): {type(e).__name__}: {e}",
+                    message=f"gRPC stream error ({target}): {type(e).__name__}: {e} (devices: {drf_summary})",
                 )
                 error_fn(exc, fatal=False)
                 logger.error(f"gRPC stream error ({target}): {e}")
