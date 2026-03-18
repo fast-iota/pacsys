@@ -90,6 +90,24 @@ class TestMonitorResult:
             r.mean("A:DEV")
 
 
+class TestMonitorResultToDict:
+    def test_to_dict_returns_readings_per_channel(self):
+        r1 = _reading("A:DEV", 1.0)
+        r2 = _reading("A:DEV", 2.0)
+        r3 = _reading("B:DEV", 10.0)
+        ch_a = ChannelData("A:DEV", (r1, r2))
+        ch_b = ChannelData("B:DEV", (r3,))
+        result = MonitorResult(channels={"A:DEV": ch_a, "B:DEV": ch_b})
+        d = result.to_dict()
+        assert d["A:DEV"] == [r1, r2]
+        assert d["B:DEV"] == [r3]
+
+    def test_to_dict_empty_channels(self):
+        ch = ChannelData("A:DEV", ())
+        result = MonitorResult(channels={"A:DEV": ch})
+        assert result.to_dict() == {"A:DEV": []}
+
+
 class TestMonitorResultSlice:
     def test_slice_by_time_range(self):
         t1 = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)

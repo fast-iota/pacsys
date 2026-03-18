@@ -186,6 +186,10 @@ class MonitorResult:
             filtered.append(r)
         return ChannelData(drf=ch.drf, readings=tuple(filtered))
 
+    def to_dict(self) -> dict[str, list[Reading]]:
+        """Return {drf: [readings...]} for all channels."""
+        return {drf: list(ch.readings) for drf, ch in self.channels.items()}
+
     def to_numpy(self, drf: DeviceSpec) -> tuple:
         """Return (timestamps, values) as numpy arrays.
 
