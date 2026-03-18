@@ -394,6 +394,42 @@ class TestMonitorResultToNumpy:
         np.testing.assert_array_equal(values[1], [3.0, 4.0])
 
 
+class TestMonitorResultToNumpyGuard:
+    def test_to_numpy_rejects_text_channel(self):
+        pytest.importorskip("numpy")
+        ch = ChannelData(
+            "A:DEV",
+            (
+                Reading(
+                    drf="A:DEV",
+                    value_type=ValueType.TEXT,
+                    value="hello",
+                    timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                ),
+            ),
+        )
+        r = MonitorResult(channels={"A:DEV": ch})
+        with pytest.raises(TypeError, match="to_numpy.*text"):
+            r.to_numpy("A:DEV")
+
+    def test_to_numpy_rejects_basic_status(self):
+        pytest.importorskip("numpy")
+        ch = ChannelData(
+            "A:DEV",
+            (
+                Reading(
+                    drf="A:DEV",
+                    value_type=ValueType.BASIC_STATUS,
+                    value={"on": True},
+                    timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                ),
+            ),
+        )
+        r = MonitorResult(channels={"A:DEV": ch})
+        with pytest.raises(TypeError, match="to_numpy.*basicStatus"):
+            r.to_numpy("A:DEV")
+
+
 class TestMonitorResultDataframeRelative:
     def test_relative_single_channel(self):
         pytest.importorskip("pandas")

@@ -9,10 +9,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Callable, Iterator, Optional
 
-from pacsys.types import DeviceSpec, Reading, SubscriptionHandle, Value
+from pacsys.types import DeviceSpec, Reading, SubscriptionHandle, Value, ValueType
 from pacsys.exp._resolve import resolve_drf, resolve_backend
 
 if TYPE_CHECKING:
+    import numpy as np
     from pacsys.backends import Backend
 
 # Alias builtins to avoid shadowing by methods
@@ -135,7 +136,7 @@ class MonitorResult:
                 raise TypeError(f"Cannot compute stats on non-numeric value {type(v).__name__} in {drf}")
         return nums
 
-    def _mean_one(self, drf: DeviceSpec) -> float:
+    def _mean_one(self, drf: DeviceSpec) -> float | np.ndarray:
         stacked = self._try_array_stack(drf)
         if stacked is not None:
             return stacked.mean(axis=0)
@@ -144,13 +145,13 @@ class MonitorResult:
             raise ValueError(f"No readings for {drf}")
         return sum(vals) / len(vals)
 
-    def mean(self, drf: DeviceSpec | None = None) -> float | dict[str, float]:
+    def mean(self, drf: DeviceSpec | None = None) -> float | np.ndarray | dict[str, float | np.ndarray]:
         """Mean of values. Single channel if drf given, else dict of all."""
         if drf is not None:
             return self._mean_one(drf)
         return {d: self._mean_one(d) for d in self.channels}
 
-    def _std_one(self, drf: DeviceSpec) -> float:
+    def _std_one(self, drf: DeviceSpec) -> float | np.ndarray:
         stacked = self._try_array_stack(drf)
         if stacked is not None:
             return stacked.std(axis=0)
@@ -161,13 +162,13 @@ class MonitorResult:
         variance = sum((v - m) ** 2 for v in vals) / len(vals)
         return variance**0.5
 
-    def std(self, drf: DeviceSpec | None = None) -> float | dict[str, float]:
+    def std(self, drf: DeviceSpec | None = None) -> float | np.ndarray | dict[str, float | np.ndarray]:
         """Standard deviation. Single channel if drf given, else dict."""
         if drf is not None:
             return self._std_one(drf)
         return {d: self._std_one(d) for d in self.channels}
 
-    def _median_one(self, drf: DeviceSpec) -> float:
+    def _median_one(self, drf: DeviceSpec) -> float | np.ndarray:
         stacked = self._try_array_stack(drf)
         if stacked is not None:
             import numpy as np
@@ -182,13 +183,13 @@ class MonitorResult:
             return s[n // 2]
         return (s[n // 2 - 1] + s[n // 2]) / 2
 
-    def median(self, drf: DeviceSpec | None = None) -> float | dict[str, float]:
+    def median(self, drf: DeviceSpec | None = None) -> float | np.ndarray | dict[str, float | np.ndarray]:
         """Median of values. Single channel if drf given, else dict."""
         if drf is not None:
             return self._median_one(drf)
         return {d: self._median_one(d) for d in self.channels}
 
-    def _min_one(self, drf: DeviceSpec) -> float:
+    def _min_one(self, drf: DeviceSpec) -> float | np.ndarray:
         stacked = self._try_array_stack(drf)
         if stacked is not None:
             return stacked.min(axis=0)
@@ -197,13 +198,13 @@ class MonitorResult:
             raise ValueError(f"No readings for {drf}")
         return builtins_min(vals)
 
-    def min(self, drf: DeviceSpec | None = None) -> float | dict[str, float]:
+    def min(self, drf: DeviceSpec | None = None) -> float | np.ndarray | dict[str, float | np.ndarray]:
         """Minimum value. Single channel if drf given, else dict."""
         if drf is not None:
             return self._min_one(drf)
         return {d: self._min_one(d) for d in self.channels}
 
-    def _max_one(self, drf: DeviceSpec) -> float:
+    def _max_one(self, drf: DeviceSpec) -> float | np.ndarray:
         stacked = self._try_array_stack(drf)
         if stacked is not None:
             return stacked.max(axis=0)
@@ -212,7 +213,7 @@ class MonitorResult:
             raise ValueError(f"No readings for {drf}")
         return builtins_max(vals)
 
-    def max(self, drf: DeviceSpec | None = None) -> float | dict[str, float]:
+    def max(self, drf: DeviceSpec | None = None) -> float | np.ndarray | dict[str, float | np.ndarray]:
         """Maximum value. Single channel if drf given, else dict."""
         if drf is not None:
             return self._max_one(drf)
@@ -255,10 +256,13 @@ class MonitorResult:
         """Return {drf: [readings...]} for all channels."""
         return {drf: list(ch.readings) for drf, ch in self.channels.items()}
 
+    _NUMPY_TYPES = frozenset({ValueType.SCALAR, ValueType.SCALAR_ARRAY, ValueType.TIMED_SCALAR_ARRAY})
+
     def to_numpy(self, drf: DeviceSpec) -> tuple:
         """Return (timestamps, values) as numpy arrays.
 
         Timestamps are float64 epoch seconds (UTC). Error readings are skipped.
+        Only supports numeric channels (SCALAR, SCALAR_ARRAY, TIMED_SCALAR_ARRAY).
         Requires numpy.
         """
         try:
@@ -269,6 +273,11 @@ class MonitorResult:
         ok = [r for r in ch.readings if r.ok and r.value is not None]
         if not ok:
             return np.array([], dtype=np.float64), np.array([], dtype=np.float64)
+        vtype = ok[0].value_type
+        if vtype is not None and vtype not in self._NUMPY_TYPES:
+            raise TypeError(
+                f"to_numpy() requires numeric channels (SCALAR, SCALAR_ARRAY, TIMED_SCALAR_ARRAY), got {vtype.value}"
+            )
         timestamps = np.array([r.timestamp.timestamp() if r.timestamp else 0.0 for r in ok], dtype=np.float64)
         arrays = self._unwrap_arrays([r.value for r in ok])
         if arrays is not None:

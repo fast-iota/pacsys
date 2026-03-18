@@ -19,33 +19,6 @@ class LogWriter(Protocol):
     def close(self) -> None: ...
 
 
-class CsvWriter:
-    """Write readings to a CSV file.
-
-    Columns: timestamp, drf, value, units
-    """
-
-    def __init__(self, path: str | Path):
-        self._path = Path(path)
-        self._file = open(self._path, "w", newline="")
-        self._writer = csv.writer(self._file)
-        self._writer.writerow(["timestamp", "drf", "value", "units"])
-
-    def write_readings(self, readings: list[Reading]) -> None:
-        for r in readings:
-            self._writer.writerow(
-                [
-                    r.timestamp.isoformat() if r.timestamp else "",
-                    r.drf,
-                    r.value,
-                    r.units or "",
-                ]
-            )
-
-    def close(self) -> None:
-        self._file.close()
-
-
 _ARRAY_TYPES = frozenset({ValueType.SCALAR_ARRAY})
 _JSON_TYPES = frozenset({ValueType.TEXT_ARRAY, ValueType.ANALOG_ALARM, ValueType.DIGITAL_ALARM, ValueType.BASIC_STATUS})
 
@@ -67,36 +40,88 @@ def _timed_array_to_json(v: Value) -> str:
     return json.dumps(out)
 
 
-def _convert_value(r: Reading) -> tuple[float | None, list[float] | None, str | None]:
+def _format_value_str(r: Reading) -> str:
+    """Format a reading's value as a parseable string (for CSV)."""
+    if r.value is None:
+        return ""
+    if r.value_type == ValueType.SCALAR:
+        return str(r.value)
+    if r.value_type in _ARRAY_TYPES:
+        return json.dumps(_arraylike_to_floats(r.value))
+    if r.value_type == ValueType.TIMED_SCALAR_ARRAY:
+        return _timed_array_to_json(r.value)
+    if r.value_type == ValueType.TEXT:
+        return str(r.value)
+    if r.value_type == ValueType.RAW:
+        raw = r.value if isinstance(r.value, (bytes, bytearray)) else str(r.value).encode()
+        return base64.b64encode(raw).decode("ascii")
+    if r.value_type in _JSON_TYPES:
+        return json.dumps(r.value)
+    return str(r.value)
+
+
+class CsvWriter:
+    """Write readings to a CSV file.
+
+    Columns: timestamp, drf, value, units
+    Values are serialized as parseable strings: scalars as-is, arrays as JSON
+    lists, dicts as JSON objects, raw bytes as base64.
+    """
+
+    def __init__(self, path: str | Path):
+        self._path = Path(path)
+        self._file = open(self._path, "w", newline="")
+        self._writer = csv.writer(self._file)
+        self._writer.writerow(["timestamp", "drf", "value", "units"])
+
+    def write_readings(self, readings: list[Reading]) -> None:
+        for r in readings:
+            self._writer.writerow(
+                [
+                    r.timestamp.isoformat() if r.timestamp else "",
+                    r.drf,
+                    _format_value_str(r),
+                    r.units or "",
+                ]
+            )
+
+    def close(self) -> None:
+        self._file.close()
+
+
+def _convert_value(r: Reading) -> tuple[float | None, int | None, list[float] | None, str | None]:
     """Route a reading's value to the correct typed column.
 
-    Returns (value, value_array, value_text).
+    Returns (value, int_value, value_array, value_text).
     """
     if r.value is None or r.value_type is None:
-        return None, None, None
+        return None, None, None, None
 
     if r.value_type == ValueType.SCALAR:
-        return float(r.value), None, None  # type: ignore[arg-type]
+        # int/bool (includes numpy integer via int subclass) → int64 column
+        if isinstance(r.value, int):
+            return None, int(r.value), None, None
+        # float and any numpy floating type → float64 column
+        return float(r.value), None, None, None  # type: ignore[arg-type]
 
     if r.value_type in _ARRAY_TYPES:
-        return None, _arraylike_to_floats(r.value), None
+        return None, None, _arraylike_to_floats(r.value), None
 
     if r.value_type == ValueType.TIMED_SCALAR_ARRAY:
-        # {"data": ndarray, "micros": ndarray} — store as JSON
-        return None, None, _timed_array_to_json(r.value)
+        return None, None, None, _timed_array_to_json(r.value)
 
     if r.value_type == ValueType.TEXT:
-        return None, None, str(r.value)
+        return None, None, None, str(r.value)
 
     if r.value_type == ValueType.RAW:
         raw = r.value if isinstance(r.value, (bytes, bytearray)) else str(r.value).encode()
-        return None, None, base64.b64encode(raw).decode("ascii")
+        return None, None, None, base64.b64encode(raw).decode("ascii")
 
     if r.value_type in _JSON_TYPES:
-        return None, None, json.dumps(r.value)
+        return None, None, None, json.dumps(r.value)
 
     # Unknown type — fall back to string
-    return None, None, str(r.value)
+    return None, None, None, str(r.value)
 
 
 class ParquetWriter:
@@ -106,7 +131,8 @@ class ParquetWriter:
         timestamp   - timestamp[us, UTC]
         drf         - string (dictionary-encoded)
         value_type  - string (dictionary-encoded)
-        value       - float64 (scalars)
+        value       - float64 (float scalars)
+        int_value   - int64 (int/bool scalars)
         value_array - list<float64> (arrays)
         value_text  - string (text, JSON, base64)
         error_code  - int16
@@ -129,6 +155,7 @@ class ParquetWriter:
                 ("drf", pa.string()),
                 ("value_type", pa.string()),
                 ("value", pa.float64()),
+                ("int_value", pa.int64()),
                 ("value_array", pa.list_(pa.float64())),
                 ("value_text", pa.string()),
                 ("error_code", pa.int16()),
@@ -146,6 +173,7 @@ class ParquetWriter:
             "drf": [],
             "value_type": [],
             "value": [],
+            "int_value": [],
             "value_array": [],
             "value_text": [],
             "error_code": [],
@@ -156,8 +184,9 @@ class ParquetWriter:
             cols["timestamp"].append(r.timestamp)
             cols["drf"].append(r.drf)
             cols["value_type"].append(r.value_type.value if r.value_type else None)
-            v, va, vt = _convert_value(r)
+            v, iv, va, vt = _convert_value(r)
             cols["value"].append(v)
+            cols["int_value"].append(iv)
             cols["value_array"].append(va)
             cols["value_text"].append(vt)
             cols["error_code"].append(r.error_code)

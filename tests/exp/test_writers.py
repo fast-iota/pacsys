@@ -36,6 +36,43 @@ class TestCsvWriter:
         assert rows[1][1] == "M:OUTTMP"
         assert rows[1][2] == "72.5"
 
+    def test_csv_array_as_json(self, tmp_path):
+        """Scalar arrays are serialized as JSON lists, not Python repr."""
+        import numpy as np
+
+        path = tmp_path / "test.csv"
+        r = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=np.array([1.0, 2.0, 3.0]), timestamp=TS)
+        writer = CsvWriter(path)
+        writer.write_readings([r])
+        writer.close()
+
+        rows = list(csv.reader(open(path)))
+        assert json.loads(rows[1][2]) == [1.0, 2.0, 3.0]
+
+    def test_csv_basic_status_as_json(self, tmp_path):
+        """Status dicts are serialized as JSON, not Python repr."""
+        path = tmp_path / "test.csv"
+        status = {"on": True, "ready": False}
+        r = Reading(drf="M:OUTTMP", value_type=ValueType.BASIC_STATUS, value=status, timestamp=TS)
+        writer = CsvWriter(path)
+        writer.write_readings([r])
+        writer.close()
+
+        rows = list(csv.reader(open(path)))
+        assert json.loads(rows[1][2]) == status
+
+    def test_csv_raw_bytes_as_base64(self, tmp_path):
+        """Raw bytes are serialized as base64."""
+        path = tmp_path / "test.csv"
+        raw = b"\x00\x01\x02\xff"
+        r = Reading(drf="M:OUTTMP", value_type=ValueType.RAW, value=raw, timestamp=TS)
+        writer = CsvWriter(path)
+        writer.write_readings([r])
+        writer.close()
+
+        rows = list(csv.reader(open(path)))
+        assert base64.b64decode(rows[1][2]) == raw
+
     def test_implements_protocol(self):
         assert isinstance(CsvWriter, type)
         writer = CsvWriter.__new__(CsvWriter)
@@ -71,12 +108,13 @@ class TestParquetWriter:
         table = _read_parquet(path)
         assert len(table) == 2
         assert table.column("value").to_pylist() == [72.5, 73.0]
+        assert table.column("int_value").to_pylist() == [None, None]
         assert table.column("value_array").to_pylist() == [None, None]
         assert table.column("value_text").to_pylist() == [None, None]
         assert table.column("value_type").to_pylist() == ["scalar", "scalar"]
 
     def test_scalar_int_value(self, tmp_path):
-        """Integer scalars are stored as float64."""
+        """Integer scalars are stored as int64, preserving type."""
         pytest.importorskip("pyarrow")
         from pacsys.exp._writers import ParquetWriter
 
@@ -87,7 +125,23 @@ class TestParquetWriter:
         writer.close()
 
         table = _read_parquet(path)
-        assert table.column("value").to_pylist() == [42.0]
+        assert table.column("value").to_pylist() == [None]
+        assert table.column("int_value").to_pylist() == [42]
+
+    def test_scalar_bool_value(self, tmp_path):
+        """Boolean scalars are stored as int64."""
+        pytest.importorskip("pyarrow")
+        from pacsys.exp._writers import ParquetWriter
+
+        path = tmp_path / "test.parquet"
+        r = Reading(drf="Z:ACLTST", value_type=ValueType.SCALAR, value=True, timestamp=TS)
+        writer = ParquetWriter(path)
+        writer.write_readings([r])
+        writer.close()
+
+        table = _read_parquet(path)
+        assert table.column("value").to_pylist() == [None]
+        assert table.column("int_value").to_pylist() == [1]
 
     def test_scalar_array(self, tmp_path):
         """Scalar arrays stored in value_array as list<float64>."""
@@ -269,6 +323,7 @@ class TestParquetWriter:
 
         table = _read_parquet(path)
         assert table.column("value").to_pylist() == [None]
+        assert table.column("int_value").to_pylist() == [None]
         assert table.column("value_array").to_pylist() == [None]
         assert table.column("value_text").to_pylist() == [None]
         assert table.column("error_code").to_pylist() == [-66]
