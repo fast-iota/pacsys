@@ -299,7 +299,7 @@ class TestValidation:
         """Time that maps to raw ticks > 32767 raises on serialization."""
         ramp = _TestRamp(values=np.zeros(64), times=np.zeros(64))
         ramp.times[0] = 40_000.0  # raw ticks = 40000, exceeds int16 max
-        with pytest.raises(ValueError, match="overflow int16"):
+        with pytest.raises(ValueError, match="Ramp time overflow"):
             ramp.to_bytes()
 
     def test_string_values_rejected(self):

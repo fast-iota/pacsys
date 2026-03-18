@@ -38,6 +38,23 @@ class TestChannelData:
         ch = ChannelData(drf="M:OUTTMP", readings=(_reading("M:OUTTMP", 1.0, ts),))
         assert ch.timestamps() == [ts]
 
+    def test_getitem(self):
+        r0 = _reading("M:OUTTMP", 1.0)
+        r1 = _reading("M:OUTTMP", 2.0)
+        ch = ChannelData(drf="M:OUTTMP", readings=(r0, r1))
+        assert ch[0] is r0
+        assert ch[-1] is r1
+
+    def test_len(self):
+        ch = ChannelData(drf="M:OUTTMP", readings=(_reading("M:OUTTMP", 1.0),) * 3)
+        assert len(ch) == 3
+
+    def test_iter(self):
+        r0 = _reading("M:OUTTMP", 1.0)
+        r1 = _reading("M:OUTTMP", 2.0)
+        ch = ChannelData(drf="M:OUTTMP", readings=(r0, r1))
+        assert list(ch) == [r0, r1]
+
 
 class TestMonitorResult:
     def _result(self, values_a=(1.0, 2.0, 3.0), values_b=(10.0, 20.0)):
@@ -77,6 +94,36 @@ class TestMonitorResult:
     def test_values(self):
         r = self._result()
         assert r.values("A:DEV") == [1.0, 2.0, 3.0]
+
+    def test_getitem(self):
+        r = self._result()
+        ch = r["A:DEV"]
+        assert isinstance(ch, ChannelData)
+        assert ch.drf == "A:DEV"
+
+    def test_getitem_unknown_raises(self):
+        r = self._result()
+        with pytest.raises(KeyError, match="No channel"):
+            r["X:NOPE"]
+
+    def test_len(self):
+        r = self._result()
+        assert len(r) == 2
+
+    def test_iter(self):
+        r = self._result()
+        assert set(r) == {"A:DEV", "B:DEV"}
+
+    def test_contains(self):
+        r = self._result()
+        assert "A:DEV" in r
+        assert "X:NOPE" not in r
+
+    def test_getitem_chaining(self):
+        """result[drf][0] returns a Reading."""
+        r = self._result()
+        reading = r["A:DEV"][0]
+        assert reading.value == 1.0
 
     def test_unknown_channel_raises(self):
         r = self._result()
@@ -196,6 +243,98 @@ class TestMonitorResultMedian:
             r.median("A:DEV")
 
 
+class TestMonitorResultArrayValues:
+    """Stats on array-valued channels (e.g. B:IRM011[0:700])."""
+
+    def _array_result(self):
+        np = pytest.importorskip("numpy")
+        ch = ChannelData(
+            "B:IRM",
+            tuple(
+                Reading(
+                    drf="B:IRM",
+                    value_type=ValueType.SCALAR_ARRAY,
+                    value=np.array([float(i), float(i + 1), float(i + 2)]),
+                    timestamp=datetime.now(timezone.utc),
+                )
+                for i in range(4)
+            ),
+        )
+        return np, MonitorResult(channels={"B:IRM": ch})
+
+    def test_mean_array(self):
+        np, r = self._array_result()
+        # values: [0,1,2], [1,2,3], [2,3,4], [3,4,5] → mean = [1.5, 2.5, 3.5]
+        np.testing.assert_array_almost_equal(r.mean("B:IRM"), [1.5, 2.5, 3.5])
+
+    def test_std_array(self):
+        np, r = self._array_result()
+        result = r.std("B:IRM")
+        assert result.shape == (3,)
+        assert result[0] > 0
+
+    def test_median_array(self):
+        np, r = self._array_result()
+        # median of [0,1,2,3], [1,2,3,4], [2,3,4,5] → [1.5, 2.5, 3.5]
+        np.testing.assert_array_almost_equal(r.median("B:IRM"), [1.5, 2.5, 3.5])
+
+    def test_min_max_array(self):
+        np, r = self._array_result()
+        np.testing.assert_array_equal(r.min("B:IRM"), [0.0, 1.0, 2.0])
+        np.testing.assert_array_equal(r.max("B:IRM"), [3.0, 4.0, 5.0])
+
+    def test_mean_all_mixed(self):
+        """mean() across both scalar and array channels."""
+        np = pytest.importorskip("numpy")
+        ch_scalar = ChannelData("A:DEV", tuple(_reading("A:DEV", v) for v in (1.0, 3.0)))
+        ch_array = ChannelData(
+            "B:IRM",
+            tuple(
+                Reading(drf="B:IRM", value_type=ValueType.SCALAR_ARRAY, value=np.array([10.0, 20.0])) for _ in range(2)
+            ),
+        )
+        r = MonitorResult(channels={"A:DEV": ch_scalar, "B:IRM": ch_array})
+        means = r.mean()
+        assert means["A:DEV"] == pytest.approx(2.0)
+        np.testing.assert_array_equal(means["B:IRM"], [10.0, 20.0])
+
+
+class TestMonitorResultTimedScalarArray:
+    """Stats on TIMED_SCALAR_ARRAY channels (logger data with micros)."""
+
+    def _timed_result(self):
+        np = pytest.importorskip("numpy")
+        ch = ChannelData(
+            "L:DEV",
+            tuple(
+                Reading(
+                    drf="L:DEV",
+                    value_type=ValueType.TIMED_SCALAR_ARRAY,
+                    value={"data": np.array([float(i), float(i + 10)]), "micros": np.array([100, 200])},
+                    timestamp=datetime.now(timezone.utc),
+                )
+                for i in range(4)
+            ),
+        )
+        return np, MonitorResult(channels={"L:DEV": ch})
+
+    def test_mean_timed(self):
+        np, r = self._timed_result()
+        # data: [0,10], [1,11], [2,12], [3,13] → mean = [1.5, 11.5]
+        np.testing.assert_array_almost_equal(r.mean("L:DEV"), [1.5, 11.5])
+
+    def test_min_max_timed(self):
+        np, r = self._timed_result()
+        np.testing.assert_array_equal(r.min("L:DEV"), [0.0, 10.0])
+        np.testing.assert_array_equal(r.max("L:DEV"), [3.0, 13.0])
+
+    def test_to_numpy_timed(self):
+        np, r = self._timed_result()
+        timestamps, values = r.to_numpy("L:DEV")
+        assert values.shape == (4, 2)
+        np.testing.assert_array_equal(values[0], [0.0, 10.0])
+
+
 class TestMonitorResultToNumpy:
     def test_to_numpy_returns_arrays(self):
         np = pytest.importorskip("numpy")
@@ -236,6 +375,23 @@ class TestMonitorResultToNumpy:
         timestamps, values = r.to_numpy("A:DEV")
         assert len(timestamps) == 0
         assert len(values) == 0
+
+    def test_to_numpy_array_values(self):
+        np = pytest.importorskip("numpy")
+        t1 = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        t2 = datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc)
+        ch = ChannelData(
+            "B:IRM",
+            (
+                Reading(drf="B:IRM", value_type=ValueType.SCALAR_ARRAY, value=np.array([1.0, 2.0]), timestamp=t1),
+                Reading(drf="B:IRM", value_type=ValueType.SCALAR_ARRAY, value=np.array([3.0, 4.0]), timestamp=t2),
+            ),
+        )
+        r = MonitorResult(channels={"B:IRM": ch})
+        timestamps, values = r.to_numpy("B:IRM")
+        assert values.shape == (2, 2)
+        np.testing.assert_array_equal(values[0], [1.0, 2.0])
+        np.testing.assert_array_equal(values[1], [3.0, 4.0])
 
 
 class TestMonitorResultDataframeRelative:

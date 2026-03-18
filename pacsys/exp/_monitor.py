@@ -7,7 +7,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING, Callable, Iterator, Optional
 
 from pacsys.types import DeviceSpec, Reading, SubscriptionHandle, Value
 from pacsys.exp._resolve import resolve_drf, resolve_backend
@@ -27,6 +27,15 @@ class ChannelData:
     drf: str
     readings: tuple[Reading, ...] = ()
 
+    def __getitem__(self, index: int) -> Reading:
+        return self.readings[index]
+
+    def __len__(self) -> int:
+        return len(self.readings)
+
+    def __iter__(self) -> Iterator[Reading]:
+        return iter(self.readings)
+
     def values(self) -> list[Value]:
         """Extract values from all ok readings."""
         return [r.value for r in self.readings if r.ok and r.value is not None]
@@ -43,6 +52,22 @@ class MonitorResult:
     channels: dict[str, ChannelData]
     started: Optional[datetime] = None
     stopped: Optional[datetime] = None
+
+    def __getitem__(self, drf: DeviceSpec) -> ChannelData:
+        return self._get_channel(drf)
+
+    def __len__(self) -> int:
+        return len(self.channels)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.channels)
+
+    def __contains__(self, drf: DeviceSpec) -> bool:
+        try:
+            self._get_channel(drf)
+            return True
+        except KeyError:
+            return False
 
     @property
     def counts(self) -> dict[str, int]:
@@ -75,6 +100,29 @@ class MonitorResult:
             raise KeyError(f"No channel {key!r}. Available: {list(self.channels)}")
         return self.channels[key]
 
+    @staticmethod
+    def _unwrap_arrays(vals: list) -> list | None:
+        """Extract numeric arrays from values. Returns None if not array-valued."""
+        import numpy as np
+
+        if not vals:
+            return None
+        first = vals[0]
+        if isinstance(first, np.ndarray):
+            return vals
+        if isinstance(first, dict) and "data" in first:
+            return [v["data"] for v in vals]
+        return None
+
+    def _try_array_stack(self, drf: DeviceSpec):
+        """If channel holds ndarray values, stack into 2D numpy array. Else return None."""
+        import numpy as np
+
+        arrays = self._unwrap_arrays(self._get_channel(drf).values())
+        if arrays is None:
+            return None
+        return np.stack(arrays)  # type: ignore[arg-type]
+
     def _numeric_values(self, drf: DeviceSpec) -> list[float]:
         vals = self._get_channel(drf).values()
         nums = []
@@ -88,6 +136,9 @@ class MonitorResult:
         return nums
 
     def _mean_one(self, drf: DeviceSpec) -> float:
+        stacked = self._try_array_stack(drf)
+        if stacked is not None:
+            return stacked.mean(axis=0)
         vals = self._numeric_values(drf)
         if not vals:
             raise ValueError(f"No readings for {drf}")
@@ -100,6 +151,9 @@ class MonitorResult:
         return {d: self._mean_one(d) for d in self.channels}
 
     def _std_one(self, drf: DeviceSpec) -> float:
+        stacked = self._try_array_stack(drf)
+        if stacked is not None:
+            return stacked.std(axis=0)
         vals = self._numeric_values(drf)
         if not vals:
             raise ValueError(f"No readings for {drf}")
@@ -114,6 +168,11 @@ class MonitorResult:
         return {d: self._std_one(d) for d in self.channels}
 
     def _median_one(self, drf: DeviceSpec) -> float:
+        stacked = self._try_array_stack(drf)
+        if stacked is not None:
+            import numpy as np
+
+            return np.median(stacked, axis=0)
         vals = self._numeric_values(drf)
         if not vals:
             raise ValueError(f"No readings for {drf}")
@@ -130,6 +189,9 @@ class MonitorResult:
         return {d: self._median_one(d) for d in self.channels}
 
     def _min_one(self, drf: DeviceSpec) -> float:
+        stacked = self._try_array_stack(drf)
+        if stacked is not None:
+            return stacked.min(axis=0)
         vals = self._numeric_values(drf)
         if not vals:
             raise ValueError(f"No readings for {drf}")
@@ -142,6 +204,9 @@ class MonitorResult:
         return {d: self._min_one(d) for d in self.channels}
 
     def _max_one(self, drf: DeviceSpec) -> float:
+        stacked = self._try_array_stack(drf)
+        if stacked is not None:
+            return stacked.max(axis=0)
         vals = self._numeric_values(drf)
         if not vals:
             raise ValueError(f"No readings for {drf}")
@@ -205,7 +270,11 @@ class MonitorResult:
         if not ok:
             return np.array([], dtype=np.float64), np.array([], dtype=np.float64)
         timestamps = np.array([r.timestamp.timestamp() if r.timestamp else 0.0 for r in ok], dtype=np.float64)
-        values = np.array([float(r.value) for r in ok], dtype=np.float64)  # type: ignore[arg-type]
+        arrays = self._unwrap_arrays([r.value for r in ok])
+        if arrays is not None:
+            values = np.stack(arrays).astype(np.float64)  # type: ignore[arg-type]
+        else:
+            values = np.array([float(r.value) for r in ok], dtype=np.float64)  # type: ignore[arg-type]
         return timestamps, values
 
     def to_dataframe(self, drf: DeviceSpec | None = None, *, relative: bool = False):

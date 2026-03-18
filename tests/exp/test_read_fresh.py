@@ -61,6 +61,19 @@ class TestFreshResult:
         r = FreshResult(drf="X", readings=(r1, r2), requested_count=2)
         assert r.timestamps == [r1.timestamp, r2.timestamp]
 
+    def test_getitem(self):
+        r1 = _make_reading(value=1.0)
+        r2 = _make_reading(value=2.0)
+        r = FreshResult(drf="X", readings=(r1, r2), requested_count=2)
+        assert r[0] is r1
+        assert r[-1] is r2
+
+    def test_iter(self):
+        r1 = _make_reading(value=1.0)
+        r2 = _make_reading(value=2.0)
+        r = FreshResult(drf="X", readings=(r1, r2), requested_count=2)
+        assert list(r) == [r1, r2]
+
     def test_empty_readings_raises_on_value(self):
         r = FreshResult(drf="X", readings=(), requested_count=0)
         with pytest.raises(IndexError):

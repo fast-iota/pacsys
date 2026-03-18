@@ -77,7 +77,7 @@ from __future__ import annotations
 import struct
 
 import numpy as np
-from typing import TYPE_CHECKING, ClassVar, Optional
+from typing import TYPE_CHECKING, ClassVar, NoReturn, Optional
 
 from pacsys.scaling import Scaler
 
@@ -326,6 +326,45 @@ class Ramp:
         times_us = raw_times.astype(np.float64) * cls._tick_us()
         return cls(values=eng_values, times=times_us)
 
+    def _raise_value_overflow(
+        self,
+        scaler: Scaler | None = None,
+        raw_values: np.ndarray | None = None,
+    ) -> NoReturn:
+        """Raise ValueError with informative context about which values overflowed."""
+        i16 = np.iinfo(np.int16)
+        # Compute max representable engineering value from scaler
+        limit_msg = ""
+        if scaler is not None:
+            max_eng: float = float(scaler.scale(i16.max))
+            min_eng: float = float(scaler.scale(i16.min))
+            lo, hi = min(min_eng, max_eng), max(min_eng, max_eng)
+            limit_msg = f", representable range [{lo:.6g}, {hi:.6g}]"
+
+        # Find which points overflowed
+        if raw_values is not None:
+            bad = np.where((raw_values < i16.min) | (raw_values > i16.max))[0]
+        else:
+            # Scaler path: identify bad points from engineering values
+            bad = []
+            for idx, v in enumerate(self.values):
+                try:
+                    scaler.unscale(float(v))  # type: ignore[union-attr]
+                except Exception:
+                    bad.append(idx)
+            bad = np.array(bad)
+
+        device_info = f" for {self.device}" if self.device else ""
+        if len(bad) > 0:
+            worst = self.values[bad[0]]
+            points = bad.tolist() if len(bad) <= 5 else bad[:5].tolist() + ["..."]
+            raise ValueError(
+                f"Ramp value overflow{device_info}: "
+                f"value {worst:.6g} at point {bad[0]} exceeds "
+                f"int16 range{limit_msg} (points: {points})"
+            )
+        raise ValueError(f"Ramp value overflow{device_info}: exceeds int16 range{limit_msg}")
+
     def to_bytes(self) -> bytes:
         """Serialize ramp table to raw bytes (value-first wire order)."""
         from pacsys.scaling import ScalingError
@@ -342,8 +381,8 @@ class Ramp:
                 raise ValueError("Raw values contain NaN or Inf")
             try:
                 raw_values_f = scaler.unscale(self.values).astype(np.float64)
-            except ScalingError as e:
-                raise ValueError(f"Raw values overflow int16: {e}") from None
+            except ScalingError:
+                self._raise_value_overflow(scaler)
         else:
             primary = self.inverse_common_transform(self.values)
             raw_values_f = np.round(self.inverse_primary_transform(primary))
@@ -358,14 +397,16 @@ class Ramp:
         # Check int16 bounds before cast (numpy silently wraps on overflow)
         i16 = np.iinfo(np.int16)
         if np.any(raw_values_f < i16.min) or np.any(raw_values_f > i16.max):
-            raise ValueError(
-                f"Raw values overflow int16 [{i16.min}, {i16.max}]: "
-                f"range [{raw_values_f.min():.0f}, {raw_values_f.max():.0f}]"
-            )
+            self._raise_value_overflow(scaler, raw_values_f)
         if np.any(raw_times_f < i16.min) or np.any(raw_times_f > i16.max):
+            tick = self._tick_us()
+            max_time_us = 32767 * tick
+            bad = np.where((raw_times_f < i16.min) | (raw_times_f > i16.max))[0]
             raise ValueError(
-                f"Raw times overflow int16 [{i16.min}, {i16.max}]: "
-                f"range [{raw_times_f.min():.0f}, {raw_times_f.max():.0f}]"
+                f"Ramp time overflow at point(s) {bad.tolist()}: "
+                f"max delta time is {max_time_us:.0f} us ({max_time_us / 1e6:.6g} s) "
+                f"at {type(self).__name__} tick rate, "
+                f"got {self.times[bad[0]]:.0f} us"
             )
 
         raw_values = raw_values_f.astype(np.int16)

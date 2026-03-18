@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Iterator
 
 from pacsys.types import DeviceSpec, Reading, Value
 from pacsys.drf_utils import has_event, replace_event
@@ -27,8 +27,14 @@ class FreshResult:
     readings: tuple[Reading, ...]
     requested_count: int
 
+    def __getitem__(self, index: int) -> Reading:
+        return self.readings[index]
+
     def __len__(self) -> int:
         return len(self.readings)
+
+    def __iter__(self) -> Iterator[Reading]:
+        return iter(self.readings)
 
     @property
     def length(self) -> int:

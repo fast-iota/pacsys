@@ -30,6 +30,13 @@ class ReadError(Exception):
         self.readings = readings
         super().__init__(message)
 
+    def __str__(self) -> str:
+        failed = [r.drf for r in self.readings if not r.ok]
+        base = self.args[0]
+        if failed:
+            return f"{base} (failed: {', '.join(failed)})"
+        return base
+
     def __repr__(self) -> str:
         ok = sum(1 for r in self.readings if r.ok)
         total = len(self.readings)
