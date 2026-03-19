@@ -10,6 +10,7 @@ Requires grpcio package. See SPECIFICATION.md for protocol details.
 
 import asyncio
 import logging
+import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -62,9 +63,8 @@ except (ImportError, TypeError) as e:
     status_pb2 = None  # type: ignore
     _import_error = str(e)
 
-# Default settings - using test tunnel
-DEFAULT_HOST = "localhost"
-DEFAULT_PORT = 23456
+DEFAULT_HOST = os.environ.get("PACSYS_GRPC_HOST", "dce08.fnal.gov")
+DEFAULT_PORT = int(os.environ.get("PACSYS_GRPC_PORT", "50051"))
 DEFAULT_TIMEOUT = 5.0
 
 # Reconnection constants
