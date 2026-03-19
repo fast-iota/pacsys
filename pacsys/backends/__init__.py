@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Optional
 
+from pacsys.errors import ReadError
 from pacsys.types import (
     Value,
     Reading,
@@ -157,6 +158,30 @@ class Backend(ABC):
         Raises:
             ValueError: If any DRF syntax is invalid (before network I/O)
         """
+
+    def read_many(self, drfs: list[str], timeout: Optional[float] = None) -> list[Value]:
+        """Read multiple device values in a single batch.
+
+        Convenience wrapper around get_many() that extracts bare values
+        and raises on any device error.
+
+        Args:
+            drfs: List of device request strings
+            timeout: Total timeout for entire batch (not per-device)
+
+        Returns:
+            List of values in same order as input
+
+        Raises:
+            ReadError: If any reading is unusable
+            ValueError: If any DRF syntax is invalid (before network I/O)
+        """
+        readings = self.get_many(drfs, timeout=timeout)
+        errors = [r for r in readings if not r.ok]
+        if errors:
+            failed = ", ".join(r.drf for r in errors)
+            raise ReadError(readings, f"Device errors: {failed}")
+        return [r.value for r in readings]  # type: ignore[return-value]
 
     def write(
         self,

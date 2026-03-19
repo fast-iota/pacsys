@@ -3,6 +3,7 @@
 from abc import ABC, abstractmethod
 from typing import Optional
 
+from pacsys.errors import ReadError
 from pacsys.types import (
     Value,
     Reading,
@@ -30,6 +31,19 @@ class AsyncBackend(ABC):
 
     @abstractmethod
     async def get_many(self, drfs: list[str], timeout: Optional[float] = None) -> list[Reading]: ...
+
+    async def read_many(self, drfs: list[str], timeout: Optional[float] = None) -> list[Value]:
+        """Read multiple device values in a single batch.
+
+        Convenience wrapper around get_many() that extracts bare values
+        and raises on any device error.
+        """
+        readings = await self.get_many(drfs, timeout=timeout)
+        errors = [r for r in readings if not r.ok]
+        if errors:
+            failed = ", ".join(r.drf for r in errors)
+            raise ReadError(readings, f"Device errors: {failed}")
+        return [r.value for r in readings]  # type: ignore[return-value]
 
     async def write(self, drf: str, value: Value, timeout: Optional[float] = None) -> WriteResult:
         raise NotImplementedError("This backend does not support writes")
