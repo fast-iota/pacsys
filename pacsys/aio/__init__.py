@@ -49,11 +49,13 @@ def dpm(host=None, port=None, pool_size=None, timeout=None, auth=None, role=None
     """Create an async DPM HTTP backend."""
     from pacsys.aio._dpm_http import AsyncDPMHTTPBackend
 
+    from pacsys import _env_dpm_host, _env_dpm_port, _env_pool_size, _env_timeout
+
     return AsyncDPMHTTPBackend(
-        host=host if host is not None else "acsys-proxy.fnal.gov",
-        port=port if port is not None else 6802,
-        pool_size=pool_size if pool_size is not None else 4,
-        timeout=timeout if timeout is not None else 5.0,
+        host=host if host is not None else (_env_dpm_host if _env_dpm_host is not None else "acsys-proxy.fnal.gov"),
+        port=port if port is not None else (_env_dpm_port if _env_dpm_port is not None else 6802),
+        pool_size=pool_size if pool_size is not None else (_env_pool_size if _env_pool_size is not None else 4),
+        timeout=timeout if timeout is not None else (_env_timeout if _env_timeout is not None else 5.0),
         auth=auth,
         role=role,
     )

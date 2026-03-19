@@ -699,10 +699,12 @@ def dpm_http(
     """
     from pacsys.backends.dpm_http import DPMHTTPBackend
 
-    effective_host = host if host is not None else "acsys-proxy.fnal.gov"
-    effective_port = port if port is not None else 6802
-    effective_pool_size = pool_size if pool_size is not None else 4
-    effective_timeout = timeout if timeout is not None else 5.0
+    effective_host = (
+        host if host is not None else (_env_dpm_host if _env_dpm_host is not None else "acsys-proxy.fnal.gov")
+    )
+    effective_port = port if port is not None else (_env_dpm_port if _env_dpm_port is not None else 6802)
+    effective_pool_size = pool_size if pool_size is not None else (_env_pool_size if _env_pool_size is not None else 4)
+    effective_timeout = timeout if timeout is not None else (_env_timeout if _env_timeout is not None else 5.0)
 
     return _track(
         DPMHTTPBackend(
@@ -730,8 +732,8 @@ def grpc(
     JWT authentication.
 
     Args:
-        host: gRPC server hostname (default: localhost)
-        port: gRPC server port (default: 23456)
+        host: gRPC server hostname (env: PACSYS_GRPC_HOST, default: dce08.fnal.gov)
+        port: gRPC server port (env: PACSYS_GRPC_PORT, default: 50051)
         auth: Authentication object (JWTAuth for writes). If None, tries PACSYS_JWT_TOKEN env.
         timeout: Default operation timeout in seconds (default: 5.0)
 

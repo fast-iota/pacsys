@@ -38,8 +38,10 @@ class AsyncGRPCBackend(AsyncBackend):
     ):
         if not GRPC_AVAILABLE:
             raise ImportError("grpc package not available")
-        self._host = host if host is not None else "localhost"
-        self._port = port if port is not None else 23456
+        from pacsys.backends.grpc_backend import DEFAULT_HOST, DEFAULT_PORT
+
+        self._host = host if host is not None else DEFAULT_HOST
+        self._port = port if port is not None else DEFAULT_PORT
         self._auth = auth
         self._timeout = timeout
         self._core: Optional[_DaqCore] = None
