@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections import deque
@@ -19,6 +20,8 @@ if TYPE_CHECKING:
 # Alias builtins to avoid shadowing by methods
 builtins_min = min
 builtins_max = max
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -44,6 +47,24 @@ class ChannelData:
     def timestamps(self) -> list[datetime]:
         """Extract timestamps from all readings with timestamps."""
         return [r.timestamp for r in self.readings if r.timestamp is not None]
+
+
+@dataclass(frozen=True)
+class ChannelHealth:
+    """Per-channel health snapshot."""
+
+    drf: str
+    last_reading: Reading | None
+    last_received_at: float | None  # time.monotonic() value
+    total_received: int
+    stale: bool
+
+    @property
+    def gap(self) -> float:
+        """Seconds since last reading, or inf if never received."""
+        if self.last_received_at is None:
+            return float("inf")
+        return time.monotonic() - self.last_received_at
 
 
 @dataclass(frozen=True)
@@ -353,9 +374,14 @@ class Monitor:
         devices: list[DeviceSpec],
         buffer_size: int = 10_000,
         backend: Backend | None = None,
+        stale_after: float | None = None,
+        on_stale: Callable[[str, ChannelHealth], None] | None = None,
+        on_recover: Callable[[str, ChannelHealth], None] | None = None,
     ):
         if not devices:
             raise ValueError("devices cannot be empty")
+        if stale_after is not None and stale_after <= 0:
+            raise ValueError("stale_after must be positive")
         self._drfs = [resolve_drf(d) for d in devices]
         self._buffer_size = buffer_size
         self._backend = backend
@@ -365,6 +391,13 @@ class Monitor:
         self._latest: dict[str, Reading | None] = {drf: None for drf in self._drfs}
         self._started: datetime | None = None
         self._handle: SubscriptionHandle | None = None
+        self._received_at: dict[str, float | None] = {drf: None for drf in self._drfs}
+        self._stale_after = stale_after
+        self._on_stale = on_stale
+        self._on_recover = on_recover
+        self._stale_set: set[str] = set()
+        self._watchdog: threading.Thread | None = None
+        self._started_mono: float | None = None
 
     @property
     def running(self) -> bool:
@@ -380,6 +413,70 @@ class Monitor:
         """True if any channel has received readings since old_tags was captured."""
         with self._lock:
             return any(self._counters.get(drf, 0) > old_tags.get(drf, 0) for drf in self._counters)
+
+    def _build_health(self, drf: str, now: float) -> ChannelHealth:
+        received_at = self._received_at[drf]
+        if self._stale_after is None:
+            stale = False
+        elif received_at is not None:
+            stale = (now - received_at) > self._stale_after
+        elif self._started_mono is not None:
+            # Grace period: not stale until stale_after elapsed since start
+            stale = (now - self._started_mono) >= self._stale_after
+        else:
+            # Not started yet
+            stale = False
+        return ChannelHealth(
+            drf=drf,
+            last_reading=self._latest[drf],
+            last_received_at=received_at,
+            total_received=self._counters[drf],
+            stale=stale,
+        )
+
+    def _watchdog_loop(self) -> None:
+        assert self._stale_after is not None
+        interval = max(0.1, builtins_min(self._stale_after / 2, 1.0))
+        while self.running:
+            now = time.monotonic()
+            stale_events: list[tuple[str, ChannelHealth]] = []
+            recover_events: list[tuple[str, ChannelHealth]] = []
+            with self._lock:
+                for drf in self._drfs:
+                    was_stale = drf in self._stale_set
+                    ch = self._build_health(drf, now)
+                    if ch.stale and not was_stale:
+                        self._stale_set.add(drf)
+                        stale_events.append((drf, ch))
+                    elif not ch.stale and was_stale:
+                        self._stale_set.discard(drf)
+                        recover_events.append((drf, ch))
+            for drf, ch in stale_events:
+                logger.warning("channel %s stale (%.1fs since last reading)", drf, ch.gap)
+                if self._on_stale:
+                    try:
+                        self._on_stale(drf, ch)
+                    except Exception:
+                        logger.error("on_stale callback failed for %s", drf, exc_info=True)
+            for drf, ch in recover_events:
+                logger.info("channel %s recovered", drf)
+                if self._on_recover:
+                    try:
+                        self._on_recover(drf, ch)
+                    except Exception:
+                        logger.error("on_recover callback failed for %s", drf, exc_info=True)
+            time.sleep(interval)
+
+    def health(self, drf: DeviceSpec | None = None) -> ChannelHealth | dict[str, ChannelHealth]:
+        """Per-channel health snapshot."""
+        now = time.monotonic()
+        with self._lock:
+            if drf is not None:
+                key = resolve_drf(drf)
+                if key not in self._received_at:
+                    raise KeyError(f"No channel {key!r}. Available: {list(self._received_at)}")
+                return self._build_health(key, now)
+            return {d: self._build_health(d, now) for d in self._drfs}
 
     def await_next(self, drf: DeviceSpec, timeout: float = 5.0) -> Reading:
         """Block until the next new reading arrives on a channel.
@@ -410,9 +507,25 @@ class Monitor:
         """Start collecting readings in the background."""
         if self.running:
             raise RuntimeError("Monitor is already running")
+        # Ensure old watchdog is dead before restarting
+        if self._watchdog is not None:
+            self._watchdog.join(timeout=2.0)
+            self._watchdog = None
+        # Reset all per-run state
+        with self._lock:
+            for drf in self._drfs:
+                self._buffers[drf].clear()
+                self._counters[drf] = 0
+                self._latest[drf] = None
+                self._received_at[drf] = None
+            self._stale_set.clear()
         self._started = datetime.now(timezone.utc)
+        self._started_mono = time.monotonic()
         backend = resolve_backend(self._backend)
         self._handle = backend.subscribe(self._drfs, callback=self._on_reading)
+        if self._stale_after is not None:
+            self._watchdog = threading.Thread(target=self._watchdog_loop, daemon=True, name="pacsys-watchdog")
+            self._watchdog.start()
 
     def stop(self) -> None:
         """Stop collecting."""
@@ -420,6 +533,8 @@ class Monitor:
             self._handle.stop()
             with self._lock:
                 self._lock.notify_all()
+        if self._watchdog is not None and threading.current_thread() is not self._watchdog:
+            self._watchdog.join(timeout=2.0)
 
     def __len__(self) -> int:
         """Total readings across all buffers."""
@@ -428,11 +543,14 @@ class Monitor:
 
     def _on_reading(self, reading: Reading, handle: SubscriptionHandle) -> None:
         with self._lock:
+            if handle is not self._handle:
+                return  # ignore late deliveries from old subscriptions
             drf = reading.drf
             if drf in self._buffers:
                 self._buffers[drf].append(reading)
                 self._counters[drf] += 1
                 self._latest[drf] = reading
+                self._received_at[drf] = time.monotonic()
                 self._lock.notify_all()
 
     def snapshot(self) -> MonitorResult:
