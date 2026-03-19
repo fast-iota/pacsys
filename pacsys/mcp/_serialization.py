@@ -1,26 +1,11 @@
-"""Reading/WriteResult to JSON-safe dict conversion."""
+"""Reading/WriteResult to JSON-safe dict conversion for MCP tool output.
 
-import base64
+These produce compact, human-friendly dicts (with ``ok``, ``name``, ``error``
+convenience keys). For round-trippable serialization use ``Reading.to_dict()``
+/ ``Reading.from_dict()`` directly.
+"""
 
-from pacsys.types import Reading, WriteResult
-
-
-def _json_value(value):
-    """Convert a pacsys Value to a JSON-serializable Python object."""
-    if value is None:
-        return None
-    try:
-        import numpy as np
-
-        if isinstance(value, np.ndarray):
-            return value.tolist()
-        if isinstance(value, (np.integer, np.floating)):
-            return value.item()
-    except ImportError:
-        pass
-    if isinstance(value, bytes):
-        return base64.b64encode(value).decode("ascii")
-    return value
+from pacsys.types import Reading, WriteResult, _value_to_json
 
 
 def reading_to_dict(reading: Reading) -> dict:
@@ -29,7 +14,7 @@ def reading_to_dict(reading: Reading) -> dict:
         "ok": reading.ok,
         "name": reading.name,
         "drf": reading.drf,
-        "value": _json_value(reading.value),
+        "value": _value_to_json(reading.value),
     }
     if reading.meta and reading.meta.units:
         d["units"] = reading.meta.units

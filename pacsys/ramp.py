@@ -530,6 +530,53 @@ class Ramp:
         _validate_device_name(device)
         return _RampModifyContext(cls, device, slot, backend)
 
+    def to_dict(self) -> dict:
+        """Serialize to a JSON-safe dict. Round-trippable via ``Ramp.from_dict()``."""
+        return {
+            "type": type(self).__name__,
+            "values": self.values.tolist(),
+            "times": self.times.tolist(),
+            "device": self.device,
+            "slot": self.slot,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Ramp":
+        """Deserialize from a dict produced by ``to_dict()``.
+
+        When called on the ``Ramp`` base class, dispatches to the correct
+        built-in subclass via the ``"type"`` key.  Unknown type names raise
+        ``ValueError`` — call ``from_dict()`` on the custom subclass directly.
+        """
+        if cls is Ramp:
+            type_name = d.get("type")
+            if type_name is None:
+                raise ValueError("Missing 'type' key — cannot dispatch to subclass")
+            ramp_cls = _RAMP_REGISTRY.get(type_name)
+            if ramp_cls is None:
+                raise ValueError(f"Unknown ramp type {type_name!r} — call from_dict() on the subclass directly")
+            return ramp_cls.from_dict(d)
+        return cls(
+            values=np.array(d["values"]),
+            times=np.array(d["times"]),
+            device=d.get("device"),
+            slot=d.get("slot"),
+        )
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Ramp):
+            return NotImplemented
+        return (
+            type(self) is type(other)
+            and self.device == other.device
+            and self.slot == other.slot
+            and np.array_equal(self.values, other.values, equal_nan=True)
+            and np.array_equal(self.times, other.times, equal_nan=True)
+        )
+
+    def __hash__(self) -> int:
+        return hash((type(self).__name__, self.device, self.slot, self.values.tobytes(), self.times.tobytes()))
+
     def __repr__(self) -> str:
         n_active = int(np.count_nonzero(self.values))
         return f"{type(self).__name__}({n_active}/{self.POINTS_PER_SLOT} active points)"
@@ -848,6 +895,53 @@ class RampGroup:
     def __contains__(self, device: str) -> bool:
         return device in self._device_map
 
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, RampGroup):
+            return NotImplemented
+        return (
+            type(self) is type(other)
+            and self.devices == other.devices
+            and self.slot == other.slot
+            and np.array_equal(self.values, other.values, equal_nan=True)
+            and np.array_equal(self.times, other.times, equal_nan=True)
+        )
+
+    def __hash__(self) -> int:
+        return hash((type(self).__name__, tuple(self.devices), self.slot, self.values.tobytes(), self.times.tobytes()))
+
+    def to_dict(self) -> dict:
+        """Serialize to a JSON-safe dict. Round-trippable via ``RampGroup.from_dict()``."""
+        return {
+            "type": type(self).__name__,
+            "devices": list(self.devices),
+            "values": self.values.tolist(),
+            "times": self.times.tolist(),
+            "slot": self.slot,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "RampGroup":
+        """Deserialize from a dict produced by ``to_dict()``.
+
+        When called on the ``RampGroup`` base class, dispatches to the correct
+        built-in subclass via the ``"type"`` key.  Unknown type names raise
+        ``ValueError`` — call ``from_dict()`` on the custom subclass directly.
+        """
+        if cls is RampGroup:
+            type_name = d.get("type")
+            if type_name is None:
+                raise ValueError("Missing 'type' key — cannot dispatch to subclass")
+            group_cls = _RAMP_GROUP_REGISTRY.get(type_name)
+            if group_cls is None:
+                raise ValueError(f"Unknown ramp group type {type_name!r} — call from_dict() on the subclass directly")
+            return group_cls.from_dict(d)
+        return cls(
+            devices=d["devices"],
+            values=np.array(d["values"]),
+            times=np.array(d["times"]),
+            slot=d.get("slot", 0),
+        )
+
     def _to_ramps(self, slot: int | None = None, devices: list[str] | None = None) -> list[Ramp]:
         """Demux 2D arrays into individual Ramp objects."""
         targets = devices if devices is not None else self.devices
@@ -1014,3 +1108,29 @@ class BoosterQRampGroup(RampGroup):
     """RampGroup for Booster quads using BoosterQRamp transforms."""
 
     base = BoosterQRamp
+
+
+# Registries for from_dict() dispatch (built-in subclasses only).
+_RAMP_REGISTRY: dict[str, type[Ramp]] = {
+    c.__name__: c
+    for c in [
+        RecyclerQRamp,
+        RecyclerSRamp,
+        RecyclerSCRamp,
+        RecyclerHVSQRamp,
+        BoosterHVRamp,
+        BoosterQRamp,
+    ]
+}
+
+_RAMP_GROUP_REGISTRY: dict[str, type[RampGroup]] = {
+    c.__name__: c
+    for c in [
+        RecyclerQRampGroup,
+        RecyclerSRampGroup,
+        RecyclerSCRampGroup,
+        RecyclerHVSQRampGroup,
+        BoosterHVRampGroup,
+        BoosterQRampGroup,
+    ]
+}

@@ -8,11 +8,15 @@ from datetime import datetime
 
 import pytest
 
+import numpy as np
+
 from pacsys.testing import FakeBackend
 from pacsys.types import (
     CombinedStream,
+    DeviceMeta,
     ValueType,
     Reading,
+    WriteResult,
 )
 
 
@@ -65,6 +69,52 @@ class TestReading:
         """Reading.name extracts device name from DRF."""
         reading = Reading(drf=drf, value_type=ValueType.SCALAR)
         assert reading.name == expected_name
+
+
+class TestReadingEquality:
+    def test_equal_scalar(self):
+        a = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR, value=72.5)
+        b = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR, value=72.5)
+        assert a == b
+
+    def test_not_equal_different_value(self):
+        a = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR, value=72.5)
+        b = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR, value=73.0)
+        assert a != b
+
+    def test_equal_numpy_arrays(self):
+        a = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=np.array([1.0, 2.0]))
+        b = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=np.array([1.0, 2.0]))
+        assert a == b
+
+    def test_not_equal_numpy_arrays(self):
+        a = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=np.array([1.0, 2.0]))
+        b = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=np.array([1.0, 3.0]))
+        assert a != b
+
+    def test_equal_timed_scalar_array(self):
+        va = {"data": np.array([1.0]), "micros": np.array([0])}
+        vb = {"data": np.array([1.0]), "micros": np.array([0])}
+        a = Reading(drf="M:OUTTMP", value_type=ValueType.TIMED_SCALAR_ARRAY, value=va)
+        b = Reading(drf="M:OUTTMP", value_type=ValueType.TIMED_SCALAR_ARRAY, value=vb)
+        assert a == b
+
+    def test_not_equal_to_non_reading(self):
+        a = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR, value=1.0)
+        assert a != "not a reading"
+
+    def test_hash_includes_value(self):
+        a = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR, value=72.5)
+        b = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR, value=73.0)
+        assert hash(a) != hash(b)
+
+    def test_hash_numpy_array(self):
+        a = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=np.array([1.0, 2.0]))
+        b = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=np.array([1.0, 3.0]))
+        assert hash(a) != hash(b)
+        # equal arrays hash the same
+        c = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=np.array([1.0, 2.0]))
+        assert hash(a) == hash(c)
 
 
 class TestCombinedStream:
@@ -298,3 +348,128 @@ class TestCombinedStream:
 
         results = list(cs.readings(timeout=5))
         assert results == []
+
+
+class TestReadingToDict:
+    def test_scalar_round_trip(self):
+        r = Reading(
+            drf="M:OUTTMP",
+            value_type=ValueType.SCALAR,
+            value=72.5,
+            timestamp=datetime(2026, 3, 3, 14, 0, 0),
+            cycle=5,
+            meta=DeviceMeta(device_index=123, name="M:OUTTMP", description="Outside temp", units="deg F"),
+        )
+        d = r.to_dict()
+        r2 = Reading.from_dict(d)
+        assert r2.drf == r.drf
+        assert r2.value == 72.5
+        assert r2.value_type == ValueType.SCALAR
+        assert r2.timestamp == r.timestamp
+        assert r2.cycle == 5
+        assert r2.meta.name == "M:OUTTMP"
+        assert r2.meta.units == "deg F"
+
+    def test_array_round_trip(self):
+        arr = np.array([1.0, 2.0, 3.0])
+        r = Reading(drf="M:OUTTMP[0:2]", value_type=ValueType.SCALAR_ARRAY, value=arr)
+        d = r.to_dict()
+        r2 = Reading.from_dict(d)
+        np.testing.assert_array_equal(r2.value, arr)
+
+    def test_bytes_round_trip(self):
+        r = Reading(drf="M:OUTTMP.RAW", value_type=ValueType.RAW, value=b"\x01\x02\x03")
+        d = r.to_dict()
+        r2 = Reading.from_dict(d)
+        assert r2.value == b"\x01\x02\x03"
+
+    def test_error_reading_round_trip(self):
+        r = Reading(drf="M:BAD", error_code=-42, message="DIO_NO_SUCH")
+        d = r.to_dict()
+        r2 = Reading.from_dict(d)
+        assert r2.is_error
+        assert r2.error_code == -42
+        assert r2.message == "DIO_NO_SUCH"
+        assert r2.value is None
+
+    def test_json_safe(self):
+        import json
+
+        r = Reading(
+            drf="M:OUTTMP",
+            value_type=ValueType.SCALAR,
+            value=np.float64(72.5),
+            meta=DeviceMeta(device_index=0, name="M:OUTTMP", description="test"),
+        )
+        s = json.dumps(r.to_dict())
+        r2 = Reading.from_dict(json.loads(s))
+        assert r2.value == 72.5
+
+    def test_timed_scalar_array_round_trip(self):
+        import json
+
+        value = {"data": np.array([1.0, 2.0]), "micros": np.array([0, 1000])}
+        r = Reading(drf="M:OUTTMP", value_type=ValueType.TIMED_SCALAR_ARRAY, value=value)
+        d = r.to_dict()
+        # Must be JSON-safe (nested ndarrays converted to lists)
+        s = json.dumps(d)
+        r2 = Reading.from_dict(json.loads(s))
+        np.testing.assert_array_equal(r2.value["data"], value["data"])
+        np.testing.assert_array_equal(r2.value["micros"], value["micros"])
+
+    def test_omits_none_fields(self):
+        r = Reading(drf="M:OUTTMP", error_code=0)
+        d = r.to_dict()
+        assert "value" not in d
+        assert "timestamp" not in d
+        assert "cycle" not in d
+        assert "meta" not in d
+        assert "value_type" not in d
+
+
+class TestWriteResultToDict:
+    def test_success_round_trip(self):
+        wr = WriteResult(drf="Z:ACLTST", error_code=0)
+        d = wr.to_dict()
+        wr2 = WriteResult.from_dict(d)
+        assert wr2.ok
+        assert wr2.drf == "Z:ACLTST"
+
+    def test_error_round_trip(self):
+        wr = WriteResult(drf="Z:ACLTST", error_code=-1, message="Permission denied")
+        d = wr.to_dict()
+        wr2 = WriteResult.from_dict(d)
+        assert not wr2.ok
+        assert wr2.message == "Permission denied"
+
+    def test_verification_fields_round_trip(self):
+        wr = WriteResult(drf="Z:ACLTST", verified=True, skipped=True, attempts=3)
+        d = wr.to_dict()
+        wr2 = WriteResult.from_dict(d)
+        assert wr2.verified is True
+        assert wr2.skipped is True
+        assert wr2.attempts == 3
+
+    def test_json_safe(self):
+        import json
+
+        wr = WriteResult(drf="Z:ACLTST", error_code=0, message="ok")
+        s = json.dumps(wr.to_dict())
+        wr2 = WriteResult.from_dict(json.loads(s))
+        assert wr2.ok
+
+
+class TestDeviceMetaToDict:
+    def test_round_trip(self):
+        m = DeviceMeta(device_index=123, name="M:OUTTMP", description="Outside temp", units="deg F", format_hint=2)
+        d = m.to_dict()
+        m2 = DeviceMeta.from_dict(d)
+        assert m2 == m
+
+    def test_optional_fields_omitted(self):
+        m = DeviceMeta(device_index=0, name="X", description="test")
+        d = m.to_dict()
+        assert "units" not in d
+        assert "format_hint" not in d
+        m2 = DeviceMeta.from_dict(d)
+        assert m2 == m
