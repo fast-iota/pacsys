@@ -222,6 +222,42 @@ with BoosterHVRampGroup.modify(["B:HS23T", "B:HS24T"], slot=0) as group:
 
 ---
 
+## Serialization
+
+Ramps and ramp groups support round-trippable JSON serialization via `to_dict()` / `from_dict()`:
+
+```python
+import json
+
+# Ramp → dict → JSON → dict → Ramp
+ramp = BoosterHVRamp.read("B:HS23T", slot=0)
+d = ramp.to_dict()
+json_str = json.dumps(d)  # fully JSON-safe (plain lists, strings, ints)
+
+restored = Ramp.from_dict(json.loads(json_str))  # dispatches to BoosterHVRamp
+assert type(restored) is BoosterHVRamp
+
+# Same for groups
+group = BoosterHVRampGroup.read(["B:HS23T", "B:HS24T"])
+d = group.to_dict()
+restored_group = RampGroup.from_dict(json.loads(json.dumps(d)))
+```
+
+The `"type"` key in the dict identifies the subclass. `Ramp.from_dict()` and `RampGroup.from_dict()` dispatch to the correct built-in subclass automatically.
+
+**Custom subclasses** are not in the registry — calling `Ramp.from_dict()` with an unknown type raises `ValueError`. Instead, call `from_dict()` on the subclass directly:
+
+```python
+class MyRamp(Ramp):
+    ...
+
+d = my_ramp.to_dict()            # works — includes "type": "MyRamp"
+Ramp.from_dict(d)                # raises ValueError
+MyRamp.from_dict(d)              # works — bypasses registry
+```
+
+---
+
 ## Custom Machine Types
 
 !!! info

@@ -2,6 +2,7 @@
 Core data types - Reading, WriteResult, SubscriptionHandle, CombinedStream.
 """
 
+import base64
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Union, Optional, Callable, Iterator, TYPE_CHECKING
@@ -20,6 +21,51 @@ if TYPE_CHECKING:
     Value = Union[float, int, str, bytes, np.ndarray, list, dict]
 else:
     Value = Union[float, int, str, bytes, list, dict]
+
+
+def _value_to_json(value: object) -> object:
+    """Convert a Value to a JSON-serializable Python object.
+
+    Handles numpy arrays/scalars (→ lists/primitives), bytes (→ base64),
+    and dicts with numpy array values (e.g. TIMED_SCALAR_ARRAY).
+    """
+    if value is None:
+        return None
+    try:
+        import numpy as np
+
+        if isinstance(value, np.ndarray):
+            return value.tolist()  # type: ignore[no-matching-overload]
+        if isinstance(value, (np.integer, np.floating)):
+            return value.item()
+    except ImportError:
+        pass
+    if isinstance(value, bytes):
+        return base64.b64encode(value).decode("ascii")
+    if isinstance(value, dict):
+        return {k: _value_to_json(v) for k, v in value.items()}
+    return value
+
+
+def _value_from_json(value: object, value_type: "ValueType | None") -> "Value | None":
+    """Reconstruct a Value from its JSON representation and ValueType."""
+    if value is None:
+        return None
+    if value_type is None:
+        return value  # type: ignore[return-value]
+    try:
+        import numpy as np
+
+        if value_type in (ValueType.SCALAR_ARRAY, ValueType.TIMED_SCALAR_ARRAY):
+            if isinstance(value, dict):
+                return {k: np.array(v) for k, v in value.items()}
+            return np.array(value)
+    except ImportError:
+        pass
+    if value_type == ValueType.RAW and isinstance(value, str):
+        return base64.b64decode(value, validate=True)
+    return value  # type: ignore[return-value]
+
 
 # Type alias for functions accepting DRF strings or Device objects
 DeviceSpec = Union[str, "Device"]
@@ -107,6 +153,82 @@ class DeviceMeta:
     units: Optional[str] = None
     format_hint: Optional[int] = None
 
+    def to_dict(self) -> dict:
+        d: dict = {"device_index": self.device_index, "name": self.name, "description": self.description}
+        if self.units is not None:
+            d["units"] = self.units
+        if self.format_hint is not None:
+            d["format_hint"] = self.format_hint
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "DeviceMeta":
+        return cls(
+            device_index=d["device_index"],
+            name=d["name"],
+            description=d["description"],
+            units=d.get("units"),
+            format_hint=d.get("format_hint"),
+        )
+
+
+def _freeze_value(value: object) -> None:
+    """Make numpy arrays in a Value read-only (supports zero-copy hashing)."""
+    if value is None:
+        return
+    try:
+        import numpy as np
+
+        if isinstance(value, np.ndarray):
+            value.flags.writeable = False
+            return
+    except ImportError:
+        pass
+    if isinstance(value, dict):
+        for v in value.values():
+            _freeze_value(v)
+
+
+def _value_hashable(value: object) -> object:
+    """Convert a Value to something hashable for use in __hash__."""
+    if value is None:
+        return None
+    try:
+        import numpy as np
+
+        if isinstance(value, np.ndarray):
+            return (value.dtype.str, value.tobytes())
+    except ImportError:
+        pass
+    if isinstance(value, dict):
+        return tuple(sorted((k, _value_hashable(v)) for k, v in value.items()))
+    if isinstance(value, list):
+        return tuple(_value_hashable(v) for v in value)
+    return value
+
+
+def _values_equal(a: "Value | None", b: "Value | None") -> bool:
+    """Compare two Value objects, handling numpy arrays correctly."""
+    if a is None and b is None:
+        return True
+    if a is None or b is None:
+        return False
+    try:
+        import numpy as np
+
+        if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+            return (
+                isinstance(a, np.ndarray)
+                and isinstance(b, np.ndarray)
+                and a.dtype == b.dtype
+                and np.array_equal(a, b, equal_nan=True)
+            )
+    except ImportError:
+        pass
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_values_equal(a[k], b[k]) for k in a)
+    return a == b
+
 
 @dataclass(frozen=True)
 class Reading:
@@ -130,6 +252,37 @@ class Reading:
     def __post_init__(self) -> None:
         if self.value is not None and self.value_type is None:
             raise ValueError("value_type is required when value is set")
+        _freeze_value(self.value)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Reading):
+            return NotImplemented
+        return (
+            self.drf == other.drf
+            and self.value_type == other.value_type
+            and self.facility_code == other.facility_code
+            and self.error_code == other.error_code
+            and self.message == other.message
+            and self.timestamp == other.timestamp
+            and self.cycle == other.cycle
+            and self.meta == other.meta
+            and _values_equal(self.value, other.value)
+        )
+
+    def __hash__(self) -> int:
+        return hash(
+            (
+                self.drf,
+                self.value_type,
+                self.facility_code,
+                self.error_code,
+                self.message,
+                self.timestamp,
+                self.cycle,
+                self.meta,
+                _value_hashable(self.value),
+            )
+        )
 
     @property
     def is_success(self) -> bool:
@@ -163,6 +316,45 @@ class Reading:
         """Engineering units from metadata, or None if unavailable."""
         return self.meta.units if self.meta else None
 
+    def to_dict(self) -> dict:
+        """Serialize to a JSON-safe dict. Round-trippable via ``Reading.from_dict()``."""
+        d: dict = {
+            "drf": self.drf,
+            "facility_code": self.facility_code,
+            "error_code": self.error_code,
+        }
+        if self.value_type is not None:
+            d["value_type"] = self.value_type.value
+        if self.value is not None:
+            d["value"] = _value_to_json(self.value)
+        if self.message is not None:
+            d["message"] = self.message
+        if self.timestamp is not None:
+            d["timestamp"] = self.timestamp.isoformat()
+        if self.cycle is not None:
+            d["cycle"] = self.cycle
+        if self.meta is not None:
+            d["meta"] = self.meta.to_dict()
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Reading":
+        """Deserialize from a dict produced by ``to_dict()``."""
+        vt = ValueType(d["value_type"]) if "value_type" in d else None
+        ts = datetime.fromisoformat(d["timestamp"]) if "timestamp" in d else None
+        meta = DeviceMeta.from_dict(d["meta"]) if "meta" in d else None
+        return cls(
+            drf=d["drf"],
+            value_type=vt,
+            facility_code=d.get("facility_code", 0),
+            error_code=d.get("error_code", 0),
+            value=_value_from_json(d.get("value"), vt),
+            message=d.get("message"),
+            timestamp=ts,
+            cycle=d.get("cycle"),
+            meta=meta,
+        )
+
 
 @dataclass(frozen=True)
 class WriteResult:
@@ -187,6 +379,39 @@ class WriteResult:
     def success(self) -> bool:
         """Alias for ok."""
         return self.ok
+
+    def to_dict(self) -> dict:
+        """Serialize to a JSON-safe dict. Round-trippable via ``WriteResult.from_dict()``."""
+        d: dict = {
+            "drf": self.drf,
+            "facility_code": self.facility_code,
+            "error_code": self.error_code,
+        }
+        if self.message is not None:
+            d["message"] = self.message
+        if self.verified is not None:
+            d["verified"] = self.verified
+        if self.readback is not None:
+            d["readback"] = _value_to_json(self.readback)
+        if self.skipped:
+            d["skipped"] = self.skipped
+        if self.attempts:
+            d["attempts"] = self.attempts
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "WriteResult":
+        """Deserialize from a dict produced by ``to_dict()``."""
+        return cls(
+            drf=d["drf"],
+            facility_code=d.get("facility_code", 0),
+            error_code=d.get("error_code", 0),
+            message=d.get("message"),
+            verified=d.get("verified"),
+            readback=d.get("readback"),
+            skipped=d.get("skipped", False),
+            attempts=d.get("attempts", 0),
+        )
 
 
 class SubscriptionHandle:

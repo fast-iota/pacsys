@@ -1170,6 +1170,143 @@ class TestBoosterHVRampGroup:
         assert isinstance(group["B:HS23T"], BoosterHVRamp)
 
 
+class TestRampToDict:
+    def test_round_trip_builtin_subclass(self):
+        values = np.arange(64, dtype=np.float64)
+        times = np.ones(64, dtype=np.float64) * 100.0
+        ramp = BoosterHVRamp(values=values, times=times, device="B:HS23T", slot=2)
+        d = ramp.to_dict()
+        restored = Ramp.from_dict(d)
+        assert isinstance(restored, BoosterHVRamp)
+        np.testing.assert_array_equal(restored.values, values)
+        np.testing.assert_array_equal(restored.times, times)
+        assert restored.device == "B:HS23T"
+        assert restored.slot == 2
+
+    def test_dict_is_json_safe(self):
+        import json
+
+        ramp = BoosterHVRamp(values=np.zeros(64), times=np.zeros(64), device="B:HS23T", slot=0)
+        d = ramp.to_dict()
+        s = json.dumps(d)
+        d2 = json.loads(s)
+        restored = Ramp.from_dict(d2)
+        assert isinstance(restored, BoosterHVRamp)
+        np.testing.assert_array_equal(restored.values, ramp.values)
+
+    def test_all_builtin_subclasses(self):
+        for cls in [RecyclerQRamp, RecyclerSRamp, RecyclerSCRamp, RecyclerHVSQRamp, BoosterHVRamp, BoosterQRamp]:
+            ramp = cls(values=np.zeros(64), times=np.zeros(64))
+            d = ramp.to_dict()
+            assert d["type"] == cls.__name__
+            restored = Ramp.from_dict(d)
+            assert type(restored) is cls
+
+    def test_unknown_type_raises(self):
+        d = {"type": "MyCustomRamp", "values": [0] * 64, "times": [0] * 64}
+        with pytest.raises(ValueError, match="Unknown ramp type"):
+            Ramp.from_dict(d)
+
+    def test_missing_type_raises(self):
+        d = {"values": [0] * 64, "times": [0] * 64}
+        with pytest.raises(ValueError, match="Missing 'type' key"):
+            Ramp.from_dict(d)
+
+    def test_custom_subclass_direct_from_dict(self):
+        d = {"type": "_TestRamp", "values": [0] * 64, "times": [0] * 64}
+        ramp = _TestRamp.from_dict(d)
+        assert type(ramp) is _TestRamp
+
+    def test_optional_fields_default_none(self):
+        d = {"type": "BoosterHVRamp", "values": [0] * 64, "times": [0] * 64}
+        ramp = Ramp.from_dict(d)
+        assert ramp.device is None
+        assert ramp.slot is None
+
+
+class TestRampGroupToDict:
+    def test_round_trip_builtin_subclass(self):
+        devs = ["B:HS23T", "B:HS24T"]
+        values = np.zeros((64, 2))
+        times = np.ones((64, 2)) * 50.0
+        group = BoosterHVRampGroup(devices=devs, values=values, times=times, slot=3)
+        d = group.to_dict()
+        restored = RampGroup.from_dict(d)
+        assert isinstance(restored, BoosterHVRampGroup)
+        np.testing.assert_array_equal(restored.values, values)
+        np.testing.assert_array_equal(restored.times, times)
+        assert restored.devices == devs
+        assert restored.slot == 3
+
+    def test_dict_is_json_safe(self):
+        import json
+
+        devs = ["B:HS23T", "B:HS24T"]
+        group = BoosterHVRampGroup(devices=devs, values=np.zeros((64, 2)), times=np.zeros((64, 2)), slot=0)
+        d = group.to_dict()
+        s = json.dumps(d)
+        d2 = json.loads(s)
+        restored = RampGroup.from_dict(d2)
+        assert isinstance(restored, BoosterHVRampGroup)
+        assert restored.devices == devs
+
+    def test_unknown_type_raises(self):
+        d = {"type": "MyCustomGroup", "devices": ["X"], "values": [[0] * 64], "times": [[0] * 64]}
+        with pytest.raises(ValueError, match="Unknown ramp group type"):
+            RampGroup.from_dict(d)
+
+    def test_missing_type_raises(self):
+        d = {"devices": ["X"], "values": [[0] * 64], "times": [[0] * 64]}
+        with pytest.raises(ValueError, match="Missing 'type' key"):
+            RampGroup.from_dict(d)
+
+    def test_custom_subclass_direct_from_dict(self):
+        d = {
+            "type": "_TestRampGroup",
+            "devices": ["X"],
+            "values": np.zeros((64, 1)).tolist(),
+            "times": np.zeros((64, 1)).tolist(),
+        }
+        group = _TestRampGroup.from_dict(d)
+        assert type(group) is _TestRampGroup
+
+
+class TestRampEquality:
+    def test_equal(self):
+        a = BoosterHVRamp(values=np.ones(64), times=np.ones(64), device="B:HS23T", slot=0)
+        b = BoosterHVRamp(values=np.ones(64), times=np.ones(64), device="B:HS23T", slot=0)
+        assert a == b
+        assert hash(a) == hash(b)
+
+    def test_not_equal_values(self):
+        a = BoosterHVRamp(values=np.ones(64), times=np.ones(64))
+        b = BoosterHVRamp(values=np.zeros(64), times=np.ones(64))
+        assert a != b
+        assert hash(a) != hash(b)
+
+    def test_not_equal_different_subclass(self):
+        a = BoosterHVRamp(values=np.zeros(64), times=np.zeros(64))
+        b = BoosterQRamp(values=np.zeros(64), times=np.zeros(64))
+        assert a != b
+
+    def test_not_equal_to_non_ramp(self):
+        a = BoosterHVRamp(values=np.zeros(64), times=np.zeros(64))
+        assert a != "not a ramp"
+
+
+class TestRampGroupEquality:
+    def test_equal(self):
+        a = BoosterHVRampGroup(devices=["B:HS23T"], values=np.zeros((64, 1)), times=np.zeros((64, 1)))
+        b = BoosterHVRampGroup(devices=["B:HS23T"], values=np.zeros((64, 1)), times=np.zeros((64, 1)))
+        assert a == b
+        assert hash(a) == hash(b)
+
+    def test_not_equal_different_devices(self):
+        a = BoosterHVRampGroup(devices=["B:HS23T"], values=np.zeros((64, 1)), times=np.zeros((64, 1)))
+        b = BoosterHVRampGroup(devices=["B:HS24T"], values=np.zeros((64, 1)), times=np.zeros((64, 1)))
+        assert a != b
+
+
 @pytest.fixture
 def fake_backend():
     from pacsys.testing import FakeBackend

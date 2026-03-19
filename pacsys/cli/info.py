@@ -292,19 +292,12 @@ def _display_text(
 
 def _reading_to_json(reading) -> dict:
     """Convert a Reading to a JSON-safe dict."""
+    from pacsys.types import _value_to_json
+
     if not reading.ok:
         return {"error": reading.message or f"error {reading.error_code}"}
-    val = reading.value
-    np = sys.modules.get("numpy")
-    if np is not None:
-        if isinstance(val, np.ndarray):
-            val = val.tolist()
-        elif isinstance(val, np.integer):
-            val = int(val)
-        elif isinstance(val, np.floating):
-            val = float(val)
     return {
-        "value": val,
+        "value": _value_to_json(reading.value),
         "units": reading.units or None,
         "type": reading.value_type.name if reading.value_type is not None else None,
     }
