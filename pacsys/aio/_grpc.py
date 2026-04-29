@@ -42,7 +42,12 @@ class AsyncGRPCBackend(AsyncBackend):
 
         self._host = host if host is not None else DEFAULT_HOST
         self._port = port if port is not None else DEFAULT_PORT
-        self._auth = auth
+        if auth is not None:
+            self._auth = auth
+        else:
+            from pacsys.backends.grpc_backend import JWTAuth
+
+            self._auth = JWTAuth.from_env()
         self._timeout = timeout
         self._core: Optional[_DaqCore] = None
         self._connected = False
@@ -134,7 +139,7 @@ class AsyncGRPCBackend(AsyncBackend):
             raise ValueError("drfs cannot be empty")
         await self._ensure_connected()
         assert self._core is not None
-        handle = AsyncSubscriptionHandle()
+        handle = AsyncSubscriptionHandle(remover=self.remove)
         handle._drfs = drfs
 
         def _error_adapter(exc, fatal=False):

@@ -1,6 +1,6 @@
 import pytest
 
-from pacsys.drf_utils import ensure_immediate_event
+from pacsys.drf_utils import ensure_immediate_event, prepare_for_write
 from pacsys.drf3 import (
     ARRAY_RANGE,
     ClockEvent,
@@ -229,3 +229,17 @@ def test_parse_time_freq(raw, expected_ms):
     from pacsys.drf3.event import _parse_time_freq
 
     assert _parse_time_freq(raw) == expected_ms
+
+
+@pytest.mark.parametrize(
+    "drf,expected",
+    [
+        ("M:OUTTMP", "M:OUTTMP.SETTING@N"),
+        ("M:OUTTMP.READING.RAW", "M:OUTTMP.SETTING.RAW@N"),
+        ("M:OUTTMP.STATUS", "M:OUTTMP.CONTROL@N"),
+        ("M:OUTTMP.STATUS.ON", "M:OUTTMP.CONTROL@N"),
+        ("M_OUTTMP", "M:OUTTMP.SETTING@N"),
+    ],
+)
+def test_prepare_for_write(drf, expected):
+    assert prepare_for_write(drf) == expected

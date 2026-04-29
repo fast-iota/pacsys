@@ -1045,11 +1045,34 @@ class AsyncFakeBackend(_AsyncBackend):
     def writes(self):
         return self._sync.writes
 
+    def set_write_result(self, drf, success=True, error_code=None, message=None):
+        self._sync.set_write_result(drf, success, error_code, message)
+
+    def set_analog_alarm(self, drf, alarm_dict):
+        self._sync.set_analog_alarm(drf, alarm_dict)
+
+    def set_digital_alarm(self, drf, alarm_dict):
+        self._sync.set_digital_alarm(drf, alarm_dict)
+
+    def emit_error(self, exception):
+        self._sync.emit_error(exception)
+
+    def get_written_value(self, drf):
+        return self._sync.get_written_value(drf)
+
     # -- AsyncBackend interface -----------------------------------------------
 
     @property
     def capabilities(self) -> BackendCapability:
         return self._sync.capabilities
+
+    @property
+    def authenticated(self) -> bool:
+        return self._sync.authenticated
+
+    @property
+    def principal(self) -> str | None:
+        return self._sync.principal
 
     async def read(self, drf, timeout=None):
         self._check_closed()
@@ -1071,9 +1094,18 @@ class AsyncFakeBackend(_AsyncBackend):
         self._check_closed()
         return self._sync.write_many(settings, timeout=timeout)
 
+    async def remove(self, handle):
+        if isinstance(handle, AsyncSubscriptionHandle):
+            await handle.stop()
+            if handle in self._handles:
+                idx = self._handles.index(handle)
+                self._handles.remove(handle)
+                self._sync_handles[idx].stop()
+                self._sync_handles.pop(idx)
+
     async def subscribe(self, drfs, callback=None, on_error=None):
         self._check_closed()
-        handle = AsyncSubscriptionHandle()
+        handle = AsyncSubscriptionHandle(remover=self.remove)
         handle._drfs = drfs
         self._handles.append(handle)
 

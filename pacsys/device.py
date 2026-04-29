@@ -133,6 +133,11 @@ class Device(_DeviceBase):
                 "or set PACSYS_DEVDB_HOST environment variable."
             )
         results: dict[str, DeviceInfoResult] = devdb.get_device_info([self.name], timeout=timeout)
+        if self.name not in results:
+            from pacsys.errors import DeviceError
+            from pacsys.acnet.errors import FACILITY_DBM, ERR_NOPROP
+
+            raise DeviceError(self.drf, FACILITY_DBM, ERR_NOPROP, f"Device '{self.name}' not found in DevDB")
         return results[self.name]
 
     def digital_status(self, timeout: float | None = None) -> DigitalStatus:

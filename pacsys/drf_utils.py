@@ -161,6 +161,7 @@ def prepare_for_write(drf: str) -> str:
         DRF ready for write operation (e.g. "Z:ACLTST.SETTING@N")
     """
     from pacsys.drf3.property import DRF_PROPERTY
+    from pacsys.drf3.field import ALLOWED_FIELD_FOR_PROPERTY
 
     request = parse_request(drf)
 
@@ -171,5 +172,13 @@ def prepare_for_write(drf: str) -> str:
     }
     new_property = _WRITE_PROPERTY.get(request.property, request.property)
 
+    # We must explicitly pass the field if we want to keep it,
+    # because to_canonical drops inherited fields when property changes.
+    new_field = request.field
+    if new_property != request.property:
+        allowed = ALLOWED_FIELD_FOR_PROPERTY.get(new_property, [])
+        if new_field not in allowed:
+            new_field = None
+
     # Force @N -- writes never need a response event
-    return request.to_canonical(property=new_property, event=NeverEvent())
+    return request.to_canonical(property=new_property, field=new_field, event=NeverEvent())

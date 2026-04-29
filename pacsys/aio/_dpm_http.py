@@ -268,7 +268,7 @@ class AsyncDPMHTTPBackend(AsyncBackend):
         if not drfs:
             raise ValueError("drfs cannot be empty")
         core = await self._create_core()
-        handle = AsyncSubscriptionHandle()
+        handle = AsyncSubscriptionHandle(remover=self.remove)
         handle._drfs = drfs
         handle._task = asyncio.ensure_future(
             core.stream(drfs, handle._dispatch, handle._is_stopped, handle._signal_error)
@@ -313,7 +313,8 @@ class AsyncDPMHTTPBackend(AsyncBackend):
             except asyncio.QueueEmpty:
                 break
             try:
-                await core.close()
+                if core is not None:
+                    await core.close()
             except Exception:
                 pass
         self._pool_count = 0

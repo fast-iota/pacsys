@@ -21,7 +21,6 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 
-from pacsys.errors import DeviceError
 
 logger = logging.getLogger(__name__)
 
@@ -417,7 +416,6 @@ class DevDBClient:
         reply = self._stub.getDeviceInfo(request, timeout=timeout or self._timeout)
 
         pending: dict[str, DeviceInfoResult] = {}
-        error: tuple[str, str] | None = None
         for entry in reply.set:
             which = entry.WhichOneof("result")
             if which == "device":
@@ -434,15 +432,11 @@ class DevDBClient:
                     and info.control is None
                     and info.status_bits is None
                 ):
-                    if error is None:
-                        error = (entry.name, f"Device '{entry.name}' not found")
+                    logger.warning(f"DevDB: Device '{entry.name}' not found")
                 else:
                     pending[entry.name] = info
-            elif which == "errMsg" and error is None:
-                error = (entry.name, entry.errMsg)
-
-        if error is not None:
-            raise DeviceError(error[0], 0, -1, error[1])
+            elif which == "errMsg":
+                logger.warning(f"DevDB: Error for '{entry.name}': {entry.errMsg}")
 
         for name, info in pending.items():
             result[name] = info

@@ -634,6 +634,7 @@ class AsyncAcnetConnectionBase:
                 logger.warning(f"Reply handler exception (buffered): {e}")
             if reply.last:
                 self._reply_handlers.pop(context.request_id, None)
+                self._dead_requests.add(context.request_id)
                 context._cancelled = True
                 break
 

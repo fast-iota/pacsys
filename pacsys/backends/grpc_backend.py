@@ -288,8 +288,34 @@ def _reply_to_readings(reply, drfs: list[str]) -> list[Reading]:
         results = []
         for rd in reading_list:
             ts = _proto_timestamp_to_datetime(rd.timestamp)
-            value, value_type = _proto_value_to_python(rd.data)
             facility, error, message = _proto_status_to_codes(rd.status)
+            if error != 0:
+                results.append(
+                    Reading(
+                        drf=drf,
+                        facility_code=facility,
+                        error_code=error,
+                        message=message,
+                        timestamp=ts or now,
+                    )
+                )
+                continue
+
+            try:
+                value, value_type = _proto_value_to_python(rd.data)
+            except ValueError as e:
+                # If there's no data and it wasn't an error, it's malformed
+                results.append(
+                    Reading(
+                        drf=drf,
+                        facility_code=FACILITY_ACNET,
+                        error_code=ERR_RETRY,
+                        message=str(e),
+                        timestamp=ts or now,
+                    )
+                )
+                continue
+
             results.append(
                 Reading(
                     drf=drf,

@@ -66,7 +66,7 @@ def decode(rad50: int) -> str:
         6-character string (may have trailing spaces)
 
     Example:
-        >>> decode(0x000004A2)
+        >>> decode(0x1b8d)
         'DPM   '
     """
     v1 = rad50 & 0xFFFF

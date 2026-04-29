@@ -281,25 +281,26 @@ class AcnetConnection:
             reply_handler=reply_handler,
         )
 
-        with self._requests_out_lock:
-            self._requests_out[context.request_id] = context
-            self._dead_requests.discard(context.request_id)
-            # Pop buffer inside lock so data thread can't race between
-            # registration and drain
-            buffered = self._reply_buffer.pop(context.request_id, [])
-        for reply, arrival_time in buffered:
-            if arrival_time < request_time:
-                continue  # stale reply from previous use of this req_id
-            try:
-                context.reply_handler(reply)
-            except Exception as e:
-                logger.warning(f"Reply handler exception (buffered): {e}")
-            if reply.last:
-                with self._requests_out_lock:
-                    self._requests_out.pop(context.request_id, None)
-                    self._dead_requests.add(context.request_id)
-                context._cancelled = True
-                break
+        while True:
+            with self._requests_out_lock:
+                buffered = self._reply_buffer.pop(context.request_id, [])
+                if not buffered:
+                    self._requests_out[context.request_id] = context
+                    self._dead_requests.discard(context.request_id)
+                    break
+
+            for reply, arrival_time in buffered:
+                if arrival_time < request_time:
+                    continue  # stale reply from previous use of this req_id
+                try:
+                    context.reply_handler(reply)
+                except Exception as e:
+                    logger.warning(f"Reply handler exception (buffered): {e}")
+                if reply.last:
+                    with self._requests_out_lock:
+                        self._dead_requests.add(context.request_id)
+                    context._cancelled = True
+                    return context
 
         return context
 

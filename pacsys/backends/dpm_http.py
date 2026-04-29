@@ -1378,8 +1378,9 @@ class DPMHTTPBackend(Backend):
         # Wait for device info / add replies before sending settings
         received_infos = 0
         expected_count = len(prepared_settings)
+        received_start_list_reply = False
 
-        while received_infos < expected_count:
+        while received_infos < expected_count or not received_start_list_reply:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
@@ -1400,6 +1401,7 @@ class DPMHTTPBackend(Backend):
             elif isinstance(reply, DeviceInfo_reply):
                 received_infos += 1
             elif isinstance(reply, StartList_reply):
+                received_start_list_reply = True
                 if reply.status != 0:
                     write_drfs = [drf for drf, _ in prepared_settings]
                     drf_summary = ", ".join(write_drfs[:5]) + (
@@ -1412,15 +1414,16 @@ class DPMHTTPBackend(Backend):
                     add_errors[reply.ref_id] = reply.status
                 received_infos += 1
 
-        if received_infos < expected_count:
+        if received_infos < expected_count or not received_start_list_reply:
             write_drfs = [drf for drf, _ in prepared_settings]
             drf_summary = ", ".join(write_drfs[:5]) + (
                 f" and {len(write_drfs) - 5} more" if len(write_drfs) > 5 else ""
             )
             logger.warning(
-                "Write setup timed out: received %d/%d device infos (devices: %s)",
+                "Write setup timed out: received %d/%d device infos, StartList_reply=%s (devices: %s)",
                 received_infos,
                 expected_count,
+                received_start_list_reply,
                 drf_summary,
             )
             return None, add_errors
@@ -1587,6 +1590,8 @@ class DPMHTTPBackend(Backend):
         for status_struct in apply_reply.status:
             status_map[status_struct.ref_id] = status_struct.status
 
+        global_err = status_map.get(0)
+
         results: list[WriteResult] = []
         for i, (drf, _) in enumerate(settings):
             ref_id = i + 1
@@ -1603,18 +1608,38 @@ class DPMHTTPBackend(Backend):
                 )
                 continue
 
-            status = status_map.get(ref_id, -1)
-
-            if status == 0:
-                results.append(WriteResult(drf=drf, error_code=ERR_OK))
-            else:
-                facility, error = parse_error(status)
+            if ref_id in status_map:
+                status = status_map[ref_id]
+                if status == 0:
+                    results.append(WriteResult(drf=drf, error_code=ERR_OK))
+                else:
+                    facility, error = parse_error(status)
+                    results.append(
+                        WriteResult(
+                            drf=drf,
+                            facility_code=facility,
+                            error_code=error,
+                            message=status_message(facility, error)
+                            or f"Write error (facility={facility}, error={error})",
+                        )
+                    )
+            elif global_err is not None and global_err != 0:
+                facility, error = parse_error(global_err)
                 results.append(
                     WriteResult(
                         drf=drf,
                         facility_code=facility,
                         error_code=error,
-                        message=status_message(facility, error) or f"Write error (facility={facility}, error={error})",
+                        message=status_message(facility, error) or f"Global error {global_err}",
+                    )
+                )
+            else:
+                results.append(
+                    WriteResult(
+                        drf=drf,
+                        facility_code=FACILITY_ACNET,
+                        error_code=ERR_TIMEOUT,
+                        message="No reply from server",
                     )
                 )
 
