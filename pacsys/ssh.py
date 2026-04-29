@@ -380,9 +380,10 @@ class RemoteProcess:
                 if len(self._buf) > self._MAX_BUF:
                     raise SSHError(f"Buffer exceeded {self._MAX_BUF} bytes waiting for marker {marker!r}")
             elif self._channel.closed or self._channel.exit_status_ready():
-                raise SSHError(
-                    f"Process exited while waiting for marker {marker!r} (buffer tail: {self._buf[-200:]!r})"
-                )
+                if not self._channel.recv_ready():
+                    raise SSHError(
+                        f"Process exited while waiting for marker {marker!r} (buffer tail: {self._buf[-200:]!r})"
+                    )
             else:
                 self._channel.status_event.wait(min(0.05, remaining))
 
@@ -405,7 +406,8 @@ class RemoteProcess:
                 if len(self._buf) > self._MAX_BUF:
                     raise SSHError(f"Buffer exceeded {self._MAX_BUF} bytes in read_for")
             elif self._channel.closed or self._channel.exit_status_ready():
-                break
+                if not self._channel.recv_ready():
+                    break
             else:
                 self._channel.status_event.wait(min(0.05, remaining))
 
@@ -737,10 +739,10 @@ class SSHClient:
                     if chan.recv_stderr_ready():
                         stderr_chunks.append(chan.recv_stderr(65536))
 
-                    if chan.exit_status_ready() and not chan.recv_ready():
+                    if chan.exit_status_ready() and not chan.recv_ready() and not chan.recv_stderr_ready():
                         break
 
-                    if not chan.recv_ready() and not chan.exit_status_ready():
+                    if not chan.recv_ready() and not chan.recv_stderr_ready() and not chan.exit_status_ready():
                         chan.status_event.wait(0.1)
                 except socket.timeout as e:
                     raise SSHTimeoutError(str(e)) from e

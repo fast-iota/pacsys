@@ -490,8 +490,9 @@ class _AsyncDpmCore:
         # Phase 1: Wait for device infos
         received_infos = 0
         expected_count = len(settings)
+        received_start_list_reply = False
 
-        while received_infos < expected_count:
+        while received_infos < expected_count or not received_start_list_reply:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
@@ -511,6 +512,7 @@ class _AsyncDpmCore:
             elif isinstance(reply, DeviceInfo_reply):
                 received_infos += 1
             elif isinstance(reply, StartList_reply):
+                received_start_list_reply = True
                 if reply.status != 0:
                     write_drfs = [drf for drf, _ in settings]
                     logger.warning(
@@ -523,6 +525,20 @@ class _AsyncDpmCore:
                 if reply.status != 0 and reply.ref_id > 0:
                     add_errors[reply.ref_id] = reply.status
                 received_infos += 1
+
+        if received_infos < expected_count or not received_start_list_reply:
+            write_drfs = [drf for drf, _ in settings]
+            drf_summary = ", ".join(write_drfs[:5]) + (
+                f" and {len(write_drfs) - 5} more" if len(write_drfs) > 5 else ""
+            )
+            logger.warning(
+                "Write setup timed out: received %d/%d device infos, StartList_reply=%s (devices: %s)",
+                received_infos,
+                expected_count,
+                received_start_list_reply,
+                drf_summary,
+            )
+            return self._build_write_results(settings, None, add_errors)
 
         # Phase 2: Build and send ApplySettings
         apply_req = ApplySettings_request()
@@ -586,6 +602,8 @@ class _AsyncDpmCore:
             for status_struct in apply_reply.status:
                 status_map[status_struct.ref_id] = status_struct.status
 
+        global_err = status_map.get(0)
+
         results: list[WriteResult] = []
         for i, (drf, _) in enumerate(settings):
             ref_id = i + 1
@@ -607,6 +625,16 @@ class _AsyncDpmCore:
                         facility_code=facility,
                         error_code=error,
                         message=status_message(facility, error) if error != ERR_OK else None,
+                    )
+                )
+            elif global_err is not None and global_err != 0:
+                facility, error = parse_error(global_err)
+                results.append(
+                    WriteResult(
+                        drf=drf,
+                        facility_code=facility,
+                        error_code=error,
+                        message=status_message(facility, error) or f"Global error {global_err}",
                     )
                 )
             else:

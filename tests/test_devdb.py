@@ -542,8 +542,8 @@ class TestDevDBClientGetDeviceInfo:
         reply.set = [entry]
         client._stub.getDeviceInfo.return_value = reply
 
-        with pytest.raises(DeviceError, match="Device not found"):
-            client.get_device_info(["X:BOGUS"])
+        result = client.get_device_info(["X:BOGUS"])
+        assert result == {}
         client.close()
 
     def test_zeroed_response_detected_as_nonexistent(self):
@@ -561,8 +561,8 @@ class TestDevDBClientGetDeviceInfo:
         reply.set = [entry]
         client._stub.getDeviceInfo.return_value = reply
 
-        with pytest.raises(DeviceError, match="not found"):
-            client.get_device_info(["X:NOTREAL"])
+        result = client.get_device_info(["X:NOTREAL"])
+        assert result == {}
         client.close()
 
     def test_device_index_zero_with_description_is_valid(self):

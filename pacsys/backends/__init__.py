@@ -157,6 +157,7 @@ class Backend(ABC):
 
         Raises:
             ValueError: If any DRF syntax is invalid (before network I/O)
+            ReadError: On transport-level failures (connection refused, timeout, etc.)
         """
 
     def read_many(self, drfs: list[str], timeout: Optional[float] = None) -> list[Value]:

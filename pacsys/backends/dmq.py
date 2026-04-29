@@ -1487,13 +1487,19 @@ class DMQBackend(Backend):
             # Fail the specific pending request instead of silently dropping
             if corr_id and corr_id in session.pending:
                 i, drf, results, tracker = session.pending.pop(corr_id)
-                results[i] = WriteResult(
-                    drf=drf, facility_code=FACILITY_ACNET, error_code=ERR_RETRY, message=f"Unmarshal error: {e}"
-                )
-                logger.warning(f"Write result[{i}] set to error=-1 for {drf}")
-                device_still_has_pending = any(t is tracker for _, _, _, t in session.pending.values())
-                if not device_still_has_pending:
-                    tracker.device_complete()
+            elif session.pending:
+                oldest_key = next(iter(session.pending))
+                i, drf, results, tracker = session.pending.pop(oldest_key)
+            else:
+                return
+
+            results[i] = WriteResult(
+                drf=drf, facility_code=FACILITY_ACNET, error_code=ERR_RETRY, message=f"Unmarshal error: {e}"
+            )
+            logger.warning(f"Write result[{i}] set to error=-1 for {drf}")
+            device_still_has_pending = any(t is tracker for _, _, _, t in session.pending.values())
+            if not device_still_has_pending:
+                tracker.device_complete()
             return
 
         if TRACE:

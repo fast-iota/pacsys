@@ -21,10 +21,11 @@ class AsyncSubscriptionHandle:
     Consumer uses async for reading, handle in handle.readings().
     """
 
-    def __init__(self) -> None:
+    def __init__(self, remover=None) -> None:
         self._maxsize = _DEFAULT_BUFFER_MAXSIZE
         self._queue: asyncio.Queue[Reading | None] = asyncio.Queue(maxsize=self._maxsize)
         self._stopped = False
+        self._stopping = False
         self._exc: Optional[Exception] = None
         self._task: Optional[asyncio.Task] = None
         self._callback_task: Optional[asyncio.Task] = None
@@ -32,6 +33,7 @@ class AsyncSubscriptionHandle:
         self._last_drop_log = 0.0
         self._core: Any = None
         self._drfs: list[str] = []
+        self._remover = remover
 
     @property
     def stopped(self) -> bool:
@@ -110,7 +112,12 @@ class AsyncSubscriptionHandle:
             yield (item, self)
 
     async def stop(self) -> None:
+        if self._stopping:
+            return
+        self._stopping = True
         self._signal_stop()
+        if self._remover is not None:
+            await self._remover(self)
         if self._task is not None and not self._task.done():
             self._task.cancel()
             try:
@@ -157,3 +164,14 @@ async def _callback_feeder(handle: AsyncSubscriptionHandle, callback, on_error) 
                     logger.error("Error in on_error callback: %s", err_exc)
     except asyncio.CancelledError:
         pass
+    except Exception as exc:
+        if on_error:
+            try:
+                if is_async_err:
+                    await on_error(exc, handle)
+                else:
+                    on_error(exc, handle)
+            except Exception as err_exc:
+                logger.error("Error in on_error callback: %s", err_exc)
+        else:
+            logger.error("Unhandled error in stream: %s", exc)

@@ -360,7 +360,7 @@ class ACLBackend(Backend):
         commands = []
         for drf in drfs:
             cmd, clean_drf, qualifiers = _acl_read_command(drf)
-            quoted = urllib.parse.quote(clean_drf, safe=":[]@,.$|~")
+            quoted = urllib.parse.quote(clean_drf, safe=":[]@,.$|~{}")
             commands.append(f"{cmd}+{quoted}{qualifiers}")
         return f"{self._base_url}?acl={_ACL_CMD_SEP.join(commands)}"
 
@@ -620,10 +620,7 @@ class ACLBackend(Backend):
             line = lines[0]
 
             # DIO_NOATT means the device lacks this attribute - omit the
-            # key, matching DPM behavior.  The response format includes the
-            # device name before the error code ("- Z:ACLTST DIO_NOATT"),
-            # so we check the line directly rather than relying on
-            # _is_error_response (whose regex expects a bare error code).
+            # key, matching DPM behavior.
             if "DIO_NOATT" in line:
                 continue
 
