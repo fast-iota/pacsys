@@ -129,8 +129,10 @@ class DPMAcnet:
         self._lock = threading.Lock()
 
     @property
-    def list_id(self) -> Optional[int]:
+    def list_id(self) -> int:
         """Get the current list ID."""
+        if self._list_id is None:
+            raise DPMError(-1, "DPM list is not open")
         return self._list_id
 
     @property
@@ -142,11 +144,13 @@ class DPMAcnet:
         """Connect to ACNET and DPM."""
         # Create ACNET connection
         self._con = AcnetConnectionTCP(host=self._host, port=self._port, trace=self._trace)
-        self._con.connect()
-
-        # Find DPM and open list
-        self._find_dpm()
-        self._open_list()
+        try:
+            self._con.connect()
+            self._find_dpm()
+            self._open_list()
+        except BaseException:
+            self.close()
+            raise
 
         logger.info(f"Connected to DPM at {self._dpm_task}, list_id={self._list_id}")
 
@@ -157,6 +161,7 @@ class DPMAcnet:
                 self._request_ctx.cancel()
             except Exception:
                 pass
+            self._request_ctx = None
 
         if self._con:
             try:
@@ -164,6 +169,11 @@ class DPMAcnet:
             except Exception:
                 pass
             self._con = None
+
+        self._list_id = None
+        self._dpm_node = None
+        self._dpm_task = None
+        self._active = False
 
         logger.info("Closed DPM ACNET connection")
 
@@ -267,7 +277,7 @@ class DPMAcnet:
             raise ValueError("drf must be a string")
 
         msg = AddToList_request()
-        msg.list_id = self._list_id
+        msg.list_id = self.list_id
         msg.ref_id = tag
         msg.drf_request = drf
 
@@ -286,7 +296,7 @@ class DPMAcnet:
     def start(self, model: str | None = None):
         """Start data acquisition."""
         msg = StartList_request()
-        msg.list_id = self._list_id
+        msg.list_id = self.list_id
         if model:
             msg.model = model
 
@@ -305,7 +315,7 @@ class DPMAcnet:
             return
 
         msg = StopList_request()
-        msg.list_id = self._list_id
+        msg.list_id = self.list_id
 
         try:
             self._send_request(msg)
@@ -318,7 +328,7 @@ class DPMAcnet:
     def clear_list(self):
         """Clear all entries from the list."""
         msg = ClearList_request()
-        msg.list_id = self._list_id
+        msg.list_id = self.list_id
 
         try:
             self._send_request(msg)

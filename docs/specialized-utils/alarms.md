@@ -47,6 +47,11 @@ with DigitalAlarm.modify("Z:ACLTST") as alarm:
 
 Alarm state is read on context entrance and changes are written on context exit; nothing is written if no changes were made or an exception occurs.
 
+Digital `nominal`/`mask` and shared `tries_needed` changes are taken from the current
+alarm object. Raw-only changes such as FTD are written through the raw alarm block. If
+both raw and structured fields change together, `modify()` preserves both while
+retaining the server-transformed analog limits.
+
 ### Engineering Units
 
 Both `read()` and `modify()` fetch engineering ('common') values. If you read alarm channels as `.RAW` directly, you will get the raw byte values without raw-to-primary-to-common transforms.

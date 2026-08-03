@@ -1,7 +1,7 @@
 """Async backend abstract base class."""
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Optional, cast
 
 from pacsys.errors import ReadError
 from pacsys.types import (
@@ -43,7 +43,7 @@ class AsyncBackend(ABC):
         if errors:
             failed = ", ".join(r.drf for r in errors)
             raise ReadError(readings, f"Device errors: {failed}")
-        return [r.value for r in readings]  # type: ignore[return-value]
+        return [cast(Value, r.value) for r in readings]
 
     async def write(self, drf: str, value: Value, timeout: Optional[float] = None) -> WriteResult:
         raise NotImplementedError("This backend does not support writes")

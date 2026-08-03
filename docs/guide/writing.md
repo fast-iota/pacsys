@@ -126,6 +126,10 @@ result = backend.write("Z:ACLTS1[0:10]", np.array([1.0, 2.0, 3.0]))
 result = backend.write("Z:ACLTS1[0:10]", [1.0, 2.0, 3.0])   # list also works
 ```
 
+DPM/HTTP accepts one-dimensional homogeneous arrays: all numeric values or all strings.
+Mixed text/numeric arrays and multidimensional NumPy arrays raise `TypeError` before any
+protocol message is sent.
+
 ---
 
 ## Batch Writes

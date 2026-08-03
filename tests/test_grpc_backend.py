@@ -33,9 +33,9 @@ from tests.devices import make_jwt_token
 
 # Check if grpc and proto files are available
 try:
-    from pacsys.backends import grpc_backend
     from pacsys._proto.controls.common.v1 import device_pb2, status_pb2
     from pacsys._proto.controls.service.DAQ.v1 import DAQ_pb2
+    from pacsys.backends import grpc_backend
 
     GRPC_AVAILABLE = grpc_backend.GRPC_AVAILABLE
 except ImportError:
@@ -48,8 +48,7 @@ except ImportError:
 if not GRPC_AVAILABLE:
     pytest.skip("grpc and proto files not available", allow_module_level=True)
 
-import grpc  # noqa: E402
-
+import grpc
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Async mock helpers
@@ -1248,3 +1247,37 @@ class TestDaqCoreStream:
 
         # sleeps: 1.0 (err1), 2.0 (err2 - NOT reset), 4.0 (err3 - keeps growing)
         assert sleeps == [1.0, 2.0, 4.0]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Logger DRF error handling (review §1.5: errors were converted to ok=True empty)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestLoggerReadErrors:
+    """Status replies with real errors for logger DRFs must not become ok=True empty arrays."""
+
+    def test_logger_error_status_surfaced(self, backend_with_mock_stub):
+        backend, mock_stub = backend_with_mock_stub
+        mock_stub.Read.return_value = AsyncMockIterator(
+            [make_reading_reply(0, error_code=-34, error_message="DBM_NOREC")]
+        )
+        readings = backend.get_many(["M:OUTTMP<-LOGGERDURATION:60000"])
+        assert len(readings) == 1
+        assert not readings[0].ok
+        assert readings[0].error_code != 0
+        assert "DBM_NOREC" in (readings[0].message or "")
+
+    def test_logger_status_zero_still_terminates(self, backend_with_mock_stub):
+        """A status-code-0 reply remains the end-of-stream terminator."""
+        backend, mock_stub = backend_with_mock_stub
+        mock_stub.Read.return_value = AsyncMockIterator(
+            [
+                make_reading_reply(0, scalar_value=1.5),  # data chunk
+                make_reading_reply(0, error_code=0),  # terminator
+            ]
+        )
+        readings = backend.get_many(["M:OUTTMP<-LOGGERDURATION:60000"])
+        assert len(readings) == 1
+        assert readings[0].ok
+        assert len(readings[0].value["data"]) == 1

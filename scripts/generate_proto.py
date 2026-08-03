@@ -9,7 +9,7 @@ Prerequisites:
 
 This script:
   1. Compiles .proto files from interface-definitions/ using grpc_tools.protoc
-  2. Writes generated *_pb2.py and *_pb2_grpc.py to pacsys/_proto/
+  2. Writes generated *_pb2.py, *_pb2.pyi, and *_pb2_grpc.py to pacsys/_proto/
   3. Creates __init__.py files for all intermediate packages
   4. Patches module names in generated code so imports work as pacsys._proto.*
 """
@@ -53,6 +53,8 @@ def clean_output():
     if OUTPUT_DIR.exists():
         for f in OUTPUT_DIR.rglob("*_pb2*.py"):
             f.unlink()
+        for f in OUTPUT_DIR.rglob("*_pb2.pyi"):
+            f.unlink()
 
 
 def generate():
@@ -69,6 +71,7 @@ def generate():
             "grpc_tools.protoc",
             f"--proto_path={IFACE_DIR}",
             f"--python_out={tmpdir}",
+            f"--pyi_out={tmpdir}",
             f"--grpc_python_out={tmpdir}",
         ] + [str(IFACE_DIR / pf) for pf in PROTO_FILES]
 
@@ -122,6 +125,12 @@ def patch_module_names():
         if patched != text:
             pyfile.write_text(patched)
 
+    for stubfile in OUTPUT_DIR.rglob("*_pb2.pyi"):
+        text = stubfile.read_text()
+        patched = text.replace("from proto.", "from pacsys._proto.")
+        if patched != text:
+            stubfile.write_text(patched)
+
     for pyfile in OUTPUT_DIR.rglob("*_pb2_grpc.py"):
         text = pyfile.read_text()
         patched = text.replace("from proto.", "from pacsys._proto.")
@@ -137,7 +146,7 @@ def main():
     create_init_files()
     patch_module_names()
 
-    generated = list(OUTPUT_DIR.rglob("*_pb2*.py"))
+    generated = list(OUTPUT_DIR.rglob("*_pb2*.py")) + list(OUTPUT_DIR.rglob("*_pb2.pyi"))
     print(f"Generated {len(generated)} files in {OUTPUT_DIR}")
     for f in sorted(generated):
         print(f"  {f.relative_to(ROOT)}")

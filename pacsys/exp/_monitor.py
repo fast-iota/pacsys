@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Callable, Iterator, Optional
 
 from pacsys.types import DeviceSpec, Reading, SubscriptionHandle, Value, ValueType
 from pacsys.exp._resolve import resolve_drf, resolve_backend
+from pacsys.exp._values import numeric_value
 
 if TYPE_CHECKING:
     import numpy as np
@@ -149,10 +150,8 @@ class MonitorResult:
         vals = self._get_channel(drf).values()
         nums = []
         for v in vals:
-            if isinstance(v, bool) or type(v).__name__ == "bool_":
-                raise TypeError(f"Cannot compute stats on non-numeric value {type(v).__name__} in {drf}")
             try:
-                nums.append(float(v))  # type: ignore[arg-type]
+                nums.append(numeric_value(v))
             except (TypeError, ValueError):
                 raise TypeError(f"Cannot compute stats on non-numeric value {type(v).__name__} in {drf}")
         return nums
@@ -304,7 +303,7 @@ class MonitorResult:
         if arrays is not None:
             values = np.stack(arrays).astype(np.float64)  # type: ignore[arg-type]
         else:
-            values = np.array([float(r.value) for r in ok], dtype=np.float64)  # type: ignore[arg-type]
+            values = np.array([numeric_value(r.value) for r in ok], dtype=np.float64)
         return timestamps, values
 
     def to_dataframe(self, drf: DeviceSpec | None = None, *, relative: bool = False):
@@ -319,7 +318,8 @@ class MonitorResult:
         except ImportError:
             raise ImportError("pandas is required for to_dataframe(). Install with: pip install pandas")
 
-        if relative and self.started is None:
+        started = self.started
+        if relative and started is None:
             raise ValueError("Cannot use relative=True: started timestamp is None")
 
         if drf is not None:
@@ -329,7 +329,13 @@ class MonitorResult:
                 if r.ok:
                     rows.append({"value": r.value, "units": r.units})
             if relative:
-                index = [(r.timestamp - self.started).total_seconds() for r in ch.readings if r.ok]  # type: ignore[operator]
+                index = []
+                for r in ch.readings:
+                    if not r.ok:
+                        continue
+                    if r.timestamp is None or started is None:
+                        raise ValueError(f"Cannot compute relative time for {r.drf}: timestamp is None")
+                    index.append((r.timestamp - started).total_seconds())
                 df = pd.DataFrame(rows, index=index)  # type: ignore[arg-type]
                 df.index.name = "elapsed_s"
             else:
@@ -347,7 +353,9 @@ class MonitorResult:
                         "units": r.units,
                     }
                     if relative:
-                        row["elapsed_s"] = (r.timestamp - self.started).total_seconds()  # type: ignore[operator]
+                        if r.timestamp is None or started is None:
+                            raise ValueError(f"Cannot compute relative time for {r.drf}: timestamp is None")
+                        row["elapsed_s"] = (r.timestamp - started).total_seconds()
                     else:
                         row["timestamp"] = r.timestamp
                     rows.append(row)
@@ -501,7 +509,10 @@ class Monitor:
                 if not self.running:
                     raise RuntimeError("Monitor is not running")
                 self._lock.wait(timeout=builtins_min(remaining, 0.5))
-            return self._latest[key]  # type: ignore[return-value]
+            reading = self._latest[key]
+            if reading is None:
+                raise RuntimeError(f"Reading counter advanced without a value for {key!r}")
+            return reading
 
     def start(self) -> None:
         """Start collecting readings in the background."""

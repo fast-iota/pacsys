@@ -11,14 +11,14 @@ from pacsys.backends.grpc_backend import _value_to_proto_value
 from pacsys.types import Reading, WriteResult
 
 
-def reading_to_proto_reply(reading: Reading, index: int) -> "DAQ_pb2.ReadingReply":  # type: ignore[unresolved-attribute]
+def reading_to_proto_reply(reading: Reading, index: int) -> "DAQ_pb2.ReadingReply":
     """Convert a Reading to a ReadingReply proto message.
 
     Readings without usable data (errors AND warnings-without-data) use the
     status oneof - matching real DPM gRPC server behavior. Only readings with
     actual values use the readings oneof.
     """
-    reply = DAQ_pb2.ReadingReply()  # type: ignore[unresolved-attribute]
+    reply = DAQ_pb2.ReadingReply()
     reply.index = index
 
     if not reading.ok:
@@ -28,7 +28,7 @@ def reading_to_proto_reply(reading: Reading, index: int) -> "DAQ_pb2.ReadingRepl
             reply.status.message = reading.message
         return reply
 
-    rd = DAQ_pb2.Reading()  # type: ignore[unresolved-attribute]
+    rd = DAQ_pb2.Reading()
     if reading.timestamp is not None:
         ts = timestamp_pb2.Timestamp()
         ts.FromDatetime(reading.timestamp)
@@ -44,9 +44,9 @@ def reading_to_proto_reply(reading: Reading, index: int) -> "DAQ_pb2.ReadingRepl
     return reply
 
 
-def write_result_to_proto_status(result: WriteResult) -> "status_pb2.Status":  # type: ignore[unresolved-attribute]
+def write_result_to_proto_status(result: WriteResult) -> "status_pb2.Status":
     """Convert a WriteResult to a Status proto message."""
-    status = status_pb2.Status()  # type: ignore[unresolved-attribute]
+    status = status_pb2.Status()
     status.facility_code = result.facility_code
     status.status_code = result.error_code
     if result.message:

@@ -22,6 +22,7 @@ import logging
 import os
 import socket
 import struct
+from collections.abc import Sized
 from typing import Optional, Union
 
 from pacsys.dpm_protocol import (
@@ -47,8 +48,9 @@ MAX_MESSAGE_SIZE = 1024 * 1024
 
 def _safe_len(value: object) -> Optional[int]:
     try:
-        return len(value)  # type: ignore[arg-type]
-    except Exception:
+        return len(value) if isinstance(value, Sized) else None
+    except Exception as e:
+        logger.debug("Could not determine protocol field length: %s", e)
         return None
 
 
@@ -320,8 +322,9 @@ class DPMConnection:
             raise DPMConnectionError("Not connected")
 
         # Marshal if it's a protocol message object
-        if hasattr(msg, "marshal"):
-            data = bytes(msg.marshal())  # type: ignore[call-arg]
+        marshal = getattr(msg, "marshal", None)
+        if callable(marshal):
+            data = bytes(marshal())
         elif isinstance(msg, (bytes, bytearray)):
             data = bytes(msg)
         else:

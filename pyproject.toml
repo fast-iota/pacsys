@@ -109,6 +109,9 @@ skip_empty = true
 line-length = 120
 exclude = ["stub-acsys", "pacsys/_proto", "*.md"]
 
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
 [tool.ty.environment]
 python-version = "3.10"
 
@@ -184,3 +187,6 @@ output-format = "concise"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["pacsys*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.pyi"]

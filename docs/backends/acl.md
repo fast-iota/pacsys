@@ -18,7 +18,7 @@ sequenceDiagram
 
 | Parameter | Default | Environment Variable |
 |-----------|---------|---------------------|
-| `base_url` | www-bd.fnal.gov | `PACSYS_ACL_URL` |
+| `base_url` | https://www-bd.fnal.gov/cgi-bin/acl.pl | `PACSYS_ACL_URL` |
 
 ## Characteristics
 

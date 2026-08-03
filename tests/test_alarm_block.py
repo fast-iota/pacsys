@@ -16,6 +16,36 @@ from pacsys.alarm_block import (
 )
 
 
+def _analog_structured(**overrides):
+    value = {
+        "minimum": 0.0,
+        "maximum": 100.0,
+        "alarm_enable": True,
+        "alarm_status": False,
+        "abort": False,
+        "abort_inhibit": False,
+        "tries_needed": 1,
+        "tries_now": 0,
+    }
+    value.update(overrides)
+    return value
+
+
+def _digital_structured(**overrides):
+    value = {
+        "nominal": 0x1234,
+        "mask": 0xFFFF,
+        "alarm_enable": True,
+        "alarm_status": False,
+        "abort": False,
+        "abort_inhibit": False,
+        "tries_needed": 1,
+        "tries_now": 0,
+    }
+    value.update(overrides)
+    return value
+
+
 class TestFTD:
     def test_periodic_from_word(self):
         # 60 ticks = 1 Hz
@@ -331,6 +361,124 @@ class TestModifyContext:
         drf, value = writes[0]
         assert ".RAW" in drf
         assert isinstance(value, bytes)
+
+    @pytest.mark.parametrize(("field", "changed"), [("nominal", 0xABCD), ("mask", 0x00FF)])
+    def test_modify_digital_value_change_uses_current_block(self, fake_backend, field, changed):
+        alarm_data = DigitalAlarm()
+        alarm_data.flags |= AlarmFlags.DIGITAL
+        alarm_data.data_length = DataLength.BYTES_2
+        alarm_data.nominal = 0x1234
+        alarm_data.mask = 0xFFFF
+
+        fake_backend.set_reading("Z:TEST.DIGITAL{0:20}.RAW@I", alarm_data.to_bytes(), value_type=ValueType.RAW)
+        fake_backend.set_digital_alarm("Z:TEST.DIGITAL@I", _digital_structured())
+
+        with DigitalAlarm.modify("Z:TEST", backend=fake_backend) as alarm:
+            setattr(alarm, field, changed)
+
+        assert len(fake_backend.writes) == 1
+        drf, value = fake_backend.writes[0]
+        assert drf == "Z:TEST.DIGITAL@N"
+        assert isinstance(value, dict)
+        assert value[field] == changed
+
+    def test_modify_analog_tries_needed_uses_current_block(self, fake_backend):
+        alarm_data = AnalogAlarm(tries_needed=1)
+        fake_backend.set_reading("Z:TEST.ANALOG{0:20}.RAW@I", alarm_data.to_bytes(), value_type=ValueType.RAW)
+        fake_backend.set_analog_alarm("Z:TEST.ANALOG@I", _analog_structured())
+
+        with AnalogAlarm.modify("Z:TEST", backend=fake_backend) as alarm:
+            alarm.tries_needed = 5
+
+        _, value = fake_backend.writes[0]
+        assert isinstance(value, dict)
+        assert value["tries_needed"] == 5
+
+    def test_modify_digital_tries_needed_uses_current_block(self, fake_backend):
+        alarm_data = DigitalAlarm(tries_needed=1)
+        fake_backend.set_reading("Z:TEST.DIGITAL{0:20}.RAW@I", alarm_data.to_bytes(), value_type=ValueType.RAW)
+        fake_backend.set_digital_alarm("Z:TEST.DIGITAL@I", _digital_structured())
+
+        with DigitalAlarm.modify("Z:TEST", backend=fake_backend) as alarm:
+            alarm.tries_needed = 4
+
+        _, value = fake_backend.writes[0]
+        assert isinstance(value, dict)
+        assert value["tries_needed"] == 4
+
+    def test_modify_without_structured_data_falls_back_to_raw(self, fake_backend):
+        alarm_data = DigitalAlarm()
+        alarm_data.data_length = DataLength.BYTES_2
+        alarm_data.nominal = 0x1234
+        fake_backend.set_reading("Z:TEST.DIGITAL{0:20}.RAW@I", alarm_data.to_bytes(), value_type=ValueType.RAW)
+
+        with DigitalAlarm.modify("Z:TEST", backend=fake_backend) as alarm:
+            alarm.nominal = 0xABCD
+
+        assert len(fake_backend.writes) == 1
+        drf, value = fake_backend.writes[0]
+        assert drf == "Z:TEST.DIGITAL{0:20}.RAW@N"
+        assert isinstance(value, bytes)
+        assert DigitalAlarm.from_bytes(value).nominal == 0xABCD
+
+    def test_modify_combined_digital_changes_survive_fresh_raw_patch(self, fake_backend):
+        alarm_data = DigitalAlarm(tries_needed=1)
+        alarm_data.flags |= AlarmFlags.DIGITAL
+        alarm_data.data_length = DataLength.BYTES_2
+        alarm_data.nominal = 0x1234
+        alarm_data.mask = 0xFFFF
+        alarm_data.ftd = FTD.periodic_hz(1.0)
+        raw_read_drf = "Z:TEST.DIGITAL{0:20}.RAW@I"
+        fake_backend.set_reading(raw_read_drf, alarm_data.to_bytes(), value_type=ValueType.RAW)
+        fake_backend.set_digital_alarm("Z:TEST.DIGITAL@I", _digital_structured())
+
+        with DigitalAlarm.modify("Z:TEST", backend=fake_backend) as alarm:
+            alarm.nominal = 0xABCD
+            alarm.mask = 0x00FF
+            alarm.tries_needed = 4
+            alarm.ftd = FTD.periodic_hz(10.0)
+
+        assert len(fake_backend.writes) == 2
+        _, structured = fake_backend.writes[0]
+        assert isinstance(structured, dict)
+        assert structured["nominal"] == 0xABCD
+        assert structured["mask"] == 0x00FF
+        assert structured["tries_needed"] == 4
+
+        raw_write_drf, raw_value = fake_backend.writes[1]
+        assert raw_write_drf == "Z:TEST.DIGITAL{0:20}.RAW@N"
+        assert isinstance(raw_value, bytes)
+        patched = DigitalAlarm.from_bytes(raw_value)
+        assert patched.nominal == 0xABCD
+        assert patched.mask == 0x00FF
+        assert patched.tries_needed == 4
+        assert patched.ftd == FTD.periodic_hz(10.0)
+
+    def test_modify_combined_analog_keeps_fresh_transformed_limits(self, fake_backend):
+        initial = AnalogAlarm(tries_needed=1)
+        initial.data_type = DataType.FLOAT
+        initial._min_value_raw = 10.0
+        initial._max_value_raw = 100.0
+        raw_read_drf = "Z:TEST.ANALOG{0:20}.RAW@I"
+        fake_backend.set_reading(raw_read_drf, initial.to_bytes(), value_type=ValueType.RAW)
+        fake_backend.set_analog_alarm("Z:TEST.ANALOG@I", _analog_structured(minimum=32.0, maximum=212.0))
+
+        fresh = AnalogAlarm.from_bytes(initial.to_bytes())
+        fresh._min_value_raw = 12.0
+        fresh._max_value_raw = 104.0
+
+        with AnalogAlarm.modify("Z:TEST", backend=fake_backend) as alarm:
+            alarm.maximum = 220.0
+            alarm.ftd = FTD.periodic_hz(10.0)
+            fake_backend.set_reading(raw_read_drf, fresh.to_bytes(), value_type=ValueType.RAW)
+
+        raw_write_drf, raw_value = fake_backend.writes[1]
+        assert raw_write_drf == "Z:TEST.ANALOG{0:20}.RAW@N"
+        assert isinstance(raw_value, bytes)
+        patched = AnalogAlarm.from_bytes(raw_value)
+        assert patched._min_value_raw == pytest.approx(12.0)
+        assert patched._max_value_raw == pytest.approx(104.0)
+        assert patched.ftd == FTD.periodic_hz(10.0)
 
     def test_modify_no_change_no_write(self, fake_backend):
         """No changes should result in no writes."""

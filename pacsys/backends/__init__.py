@@ -4,7 +4,7 @@ Backend abstract base class. See SPECIFICATION.md for backend comparison.
 
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, cast
 
 from pacsys.errors import ReadError
 from pacsys.types import (
@@ -182,7 +182,7 @@ class Backend(ABC):
         if errors:
             failed = ", ".join(r.drf for r in errors)
             raise ReadError(readings, f"Device errors: {failed}")
-        return [r.value for r in readings]  # type: ignore[return-value]
+        return [cast(Value, r.value) for r in readings]
 
     def write(
         self,

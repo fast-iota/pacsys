@@ -67,7 +67,10 @@ def main() -> int:
             )
             for drf, value in settings:
                 dev = Device(drf, backend=backend)
-                result = dev.write(value, verify=verify_cfg, timeout=args.timeout)
+                if isinstance(value, BasicControl):
+                    result = dev.control(value, verify=verify_cfg, timeout=args.timeout)
+                else:
+                    result = dev.write(value, verify=verify_cfg, timeout=args.timeout)
                 print(format_write_result(result, fmt=fmt))
                 if not result.ok:
                     has_error = True

@@ -16,16 +16,24 @@ req = parse_request("M:OUTTMP.READING[0:10]@p,1000")
 req.device          # "M:OUTTMP"
 req.property        # DRF_PROPERTY.READING
 req.range           # ARRAY_RANGE [0:10]
-req.event           # PeriodicEvent(period=1000, ...)
+req.event           # PeriodicEvent with .freq == 1000
 
 # Get canonical (normalized) form
 req.to_canonical()  # "M:OUTTMP.READING[0:10]@p,1000" - we follow Java here instead of writing 1S
 
-# Validation happens at parse time
-parse_request("INVALID!")  # raises ValueError
+# Validation happens at parse time for events/fields/ranges
+parse_request("M:OUTTMP@p,bad")  # raises ValueError (bad event)
 ```
 
+Note: an unrecognized device name is **not** rejected — by default it is accepted as an
+EPICS-style device. `parse_request("INVALID!")` returns a `DataRequest` with
+`device="INVALID!"`. Only malformed events, fields, and ranges raise `ValueError`.
+
 The parser accepts any valid DRF2/DRF3 syntax including property aliases, qualifier shortcuts, and various event formats.
+
+`ensure_immediate_event()` returns a canonical DRF when it replaces the default event
+with `@I`. Requests with explicit non-default events and historical logger requests are
+returned unchanged.
 
 ## DRF Utilities
 
@@ -102,6 +110,9 @@ The **second character** can be a property qualifier shortcut:
 | `@` | ANALOG alarm | `M@OUTTMP` |
 | `$` | DIGITAL alarm | `M$OUTTMP` |
 | `~` | DESCRIPTION | `M~OUTTMP` |
+| `^` | INDEX | `M^OUTTMP` |
+| `#` | LONG_NAME | `M#OUTTMP` |
+| `!` | ALARM_LIST_NAME | `M!OUTTMP` |
 
 ---
 
@@ -118,8 +129,10 @@ Properties specify which aspect of a device to access:
 | Analog Alarm | `ANALOG` | ANALOG_ALARM, AA, PRANAB | Analog alarm limits |
 | Digital Alarm | `DIGITAL` | DIGITAL_ALARM, DA, PRDABL | Digital alarm configuration |
 | Description | `DESCRIPTION` | DESC, PRDESC | Device description text |
-| Index | `INDEX` | - | Numeric device index |
+| Index | `INDEX` | IDX, PRIDX | Numeric device index |
 | Long Name | `LONG_NAME` | LNGNAM, PRLNAM | Extended device name |
+| Alarm List Name | `ALARM_LIST_NAME` | LSTNAM, PRALNM | Alarm list membership (`!` qualifier) |
+| Bit Status | `BIT_STATUS` | BITSTATUS | Per-bit status table (no qualifier char; explicit `.BIT_STATUS` only) |
 
 ---
 
@@ -213,7 +226,9 @@ Continuous data at fixed intervals:
 | `@p,500,TRUE` | 500ms, immediate first reading |
 | `@q,1000` | Non-continuous (only on change) |
 
-All periodic values are in **milliseconds** (no unit suffixes). The Java server accepts unit suffixes but they are not implemented in pacsys.
+Periodic values default to **milliseconds**, but unit suffixes are supported (matching the Java
+`TimeFreq` parser) and converted to milliseconds: `S`=seconds, `M`=milliseconds (default),
+`U`=microseconds, `H`=Hz, `K`=kHz. For example `@p,1S` == `@p,1000` and `@p,2H` == `@p,500`.
 
 ### Clock Event (`@E`)
 

@@ -11,7 +11,7 @@ import sys
 import threading
 import types as _stdlib_types
 import weakref
-from typing import Optional, Union, TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional, Union, cast
 
 from pacsys.auth import Auth, KerberosAuth, JWTAuth
 from pacsys.drf3 import DataRequest
@@ -198,9 +198,11 @@ def configure(
                 raise ValueError(f"Invalid backend {backend!r}, must be one of {sorted(_VALID_BACKENDS)}")
             _config_backend = backend
         if not isinstance(auth, _Unset):
-            if auth == "krb":
+            if isinstance(auth, str):
+                if auth != "krb":
+                    raise ValueError("auth string must be 'krb'")
                 auth = KerberosAuth()
-            _config_auth = auth  # type: ignore[assignment]
+            _config_auth = auth
         if not isinstance(role, _Unset):
             _config_role = role
         if not isinstance(dpm_host, _Unset):
@@ -501,7 +503,7 @@ def read_many(
     if errors:
         failed = ", ".join(r.drf for r in errors)
         raise ReadError(readings, f"Device errors: {failed}")
-    return [r.value for r in readings]  # type: ignore[return-value]  # ok check above ensures non-None
+    return [cast(Value, r.value) for r in readings]
 
 
 def write(device: DeviceSpec, value: Value, timeout: Optional[float] = None) -> WriteResult:

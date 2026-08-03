@@ -161,7 +161,7 @@ policies = [RateLimitPolicy(max_requests=100, window_seconds=60)]
 
 ### ValueRangePolicy
 
-Deny writes where numeric values fall outside allowed ranges. Non-numeric values and unmatched devices are passed through.
+Deny writes where numeric values fall outside allowed ranges. Unmatched devices are passed through. For range-limited devices the policy fails closed: array/list values are checked element-by-element, and non-numeric values (text, bytes, mixed lists) as well as NaN/inf are denied.
 
 ```python
 from pacsys.supervised import ValueRangePolicy
@@ -177,6 +177,8 @@ policies = [ValueRangePolicy(limits={"M:*": (0.0, 100.0), "G:*": (-50.0, 50.0)})
 ### SlewRatePolicy
 
 Enforce maximum step size and/or rate of change per device. Stateful -- tracks the last written value and timestamp. First write to any device is always allowed. Accepts that failed backend writes will leave stale history.
+
+For slew-limited devices the policy fails closed: only finite numeric scalars (or single-element lists/arrays) are accepted; text, multi-element arrays, and NaN/inf are denied since slew against a scalar history is undefined for them.
 
 Each device pattern maps to a `SlewLimit(max_step=..., max_rate=...)`. At least one must be set; both can be combined.
 

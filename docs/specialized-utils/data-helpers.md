@@ -166,6 +166,9 @@ df = result.to_dataframe()
 df = result.to_dataframe("M:OUTTMP@p,1000", relative=True)
 ```
 
+Relative export requires both the collection start time and a timestamp on every included
+reading; missing timestamps raise `ValueError` instead of producing an invalid index.
+
 ---
 
 ## read_fresh

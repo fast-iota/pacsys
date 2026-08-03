@@ -1,9 +1,13 @@
 """Tests for scan."""
 
+from unittest import mock
+
+import numpy as np
 import pytest
 
-from pacsys.exp._scan import scan, ScanResult, _build_values
+from pacsys.exp._scan import scan, ScanResult, _build_values, _read_step
 from pacsys.testing import FakeBackend
+from pacsys.types import Reading, ValueType
 
 
 @pytest.fixture
@@ -129,6 +133,15 @@ class TestScan:
             backend=fake,
         )
         assert len(result.readings) == 1
+
+    def test_readings_per_step_does_not_average_numpy_boolean(self):
+        reading = Reading(drf="Z:BOOL", value_type=ValueType.SCALAR, value=np.bool_(True))
+        backend = mock.Mock()
+        backend.get_many.return_value = [reading]
+
+        result = _read_step(backend, ["Z:BOOL"], readings_per_step=2, timeout=None)
+
+        assert result["Z:BOOL"] is reading
 
     def test_readings_per_step_zero_raises(self, fake):
         with pytest.raises(ValueError, match="readings_per_step must be >= 1"):

@@ -6,7 +6,7 @@ instead of fragile string splitting.
 """
 
 from pacsys.drf3 import parse_request
-from pacsys.drf3.event import NeverEvent, parse_event
+from pacsys.drf3.event import ImmediateEvent, NeverEvent, parse_event
 from pacsys.drf3.extra import HISTORICAL_EXTRAS
 
 
@@ -20,27 +20,26 @@ def ensure_immediate_event(drf: str) -> str:
         drf: DRF string (e.g., "M:OUTTMP" or "M:OUTTMP@p,1000")
 
     Returns:
-        DRF with @I appended if no event was present.
-        Preserves the original form (doesn't canonicalize).
+        Canonical DRF with @I when the request uses the default event.
+        Requests with explicit non-default events are returned unchanged.
     """
     request = parse_request(drf)
     # Logger extras provide their own data -- never inject @I
     if request.extra in HISTORICAL_EXTRAS:
         return drf
     if request.event is None or request.event.mode == "U":
-        # Strip explicit @U before inserting @I (avoid producing "@U@I")
-        base = drf
-        if request.event is not None and request.event.mode == "U":
-            u_idx = drf.upper().rfind("@U")
-            if u_idx >= 0:
-                base = drf[:u_idx] + drf[u_idx + 2 :]
-        # Insert @I before <-extra if present, otherwise append
-        if request.extra is not None and request.extra_raw is not None:
-            idx = base.upper().rfind(f"<-{request.extra_raw.upper()}")
-            if idx >= 0:
-                return f"{base[:idx]}@I{base[idx:]}"
-        return f"{base}@I"
+        return request.to_canonical(event=ImmediateEvent())
     return drf
+
+
+def is_immediate_only(drf: str) -> bool:
+    """True if the DRF's event is explicitly @I (exactly one reply per request).
+
+    Repeating events (@p, @e, @s, ...) keep producing replies after the first,
+    so connections that carried them must not be reused for batched reads.
+    """
+    ev = parse_request(drf).event
+    return ev is not None and ev.mode == "I"
 
 
 def get_device_name(drf: str) -> str:
@@ -160,8 +159,8 @@ def prepare_for_write(drf: str) -> str:
     Returns:
         DRF ready for write operation (e.g. "Z:ACLTST.SETTING@N")
     """
-    from pacsys.drf3.property import DRF_PROPERTY
     from pacsys.drf3.field import ALLOWED_FIELD_FOR_PROPERTY
+    from pacsys.drf3.property import DRF_PROPERTY
 
     request = parse_request(drf)
 

@@ -83,7 +83,7 @@ from pacsys.scaling import Scaler
 
 if TYPE_CHECKING:
     from pacsys.backends import Backend
-    from pacsys.types import WriteResult
+    from pacsys.types import Value, WriteResult
 
 
 def _get_backend(backend: Optional["Backend"]) -> "Backend":
@@ -346,10 +346,12 @@ class Ramp:
             bad = np.where((raw_values < i16.min) | (raw_values > i16.max))[0]
         else:
             # Scaler path: identify bad points from engineering values
+            if scaler is None:
+                raise RuntimeError("Ramp overflow analysis requires a scaler or raw values")
             bad = []
             for idx, v in enumerate(self.values):
                 try:
-                    scaler.unscale(float(v))  # type: ignore[union-attr]
+                    scaler.unscale(float(v))
                 except Exception:
                     bad.append(idx)
             bad = np.array(bad)
@@ -796,7 +798,7 @@ def write_ramps(
             flat.append(item)
 
     be = _get_backend(backend)
-    settings: list[tuple[str, bytes]] = []
+    settings: list[tuple[str, Value]] = []
     for ramp in flat:
         dev = ramp.device
         if dev is None:
@@ -807,7 +809,7 @@ def write_ramps(
         name = get_device_name(dev)
         drf = type(ramp)._make_drf(name, s)
         settings.append((drf, ramp.to_bytes()))
-    return be.write_many(settings)  # type: ignore[arg-type]  # bytes is a valid Value
+    return be.write_many(settings)
 
 
 class RampGroup:
@@ -971,8 +973,13 @@ class RampGroup:
         ramps = read_ramps(cls.base, devices, slot=slot, backend=backend)
         values = np.column_stack([r.values for r in ramps])
         times = np.column_stack([r.times for r in ramps])
+        ramp_devices = []
+        for ramp in ramps:
+            if ramp.device is None:
+                raise RuntimeError("read_ramps() returned a ramp without a device")
+            ramp_devices.append(ramp.device)
         return cls(
-            devices=[r.device for r in ramps],  # type: ignore[misc]  # read_ramps sets .device
+            devices=ramp_devices,
             values=values,
             times=times,
             slot=slot,
@@ -1050,7 +1057,7 @@ class _RampGroupModifyContext:
         from pacsys.drf_utils import get_device_name
 
         be = _get_backend(self._backend)
-        settings: list[tuple[str, bytes]] = []
+        settings: list[tuple[str, Value]] = []
         for i, dev in enumerate(self._group.devices):
             ramp = self._cls.base(
                 values=self._group.values[:, i],
@@ -1063,7 +1070,7 @@ class _RampGroupModifyContext:
                 settings.append((drf, current_bytes))
 
         if settings:
-            results = be.write_many(settings)  # type: ignore[arg-type]
+            results = be.write_many(settings)
             failures = [(drf, r.message) for (drf, _), r in zip(settings, results) if not r.success]
             if failures:
                 raise RuntimeError(

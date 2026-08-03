@@ -28,9 +28,8 @@ class TestSingleWrite:
         mock_mb.return_value = backend
 
         buf = io.StringIO()
-        with mock.patch("sys.argv", ["acput", "M:OUTTMP", "72.5"]):
-            with contextlib.redirect_stdout(buf):
-                rc = main()
+        with mock.patch("sys.argv", ["acput", "M:OUTTMP", "72.5"]), contextlib.redirect_stdout(buf):
+            rc = main()
 
         assert rc == 0
         backend.write.assert_called_once_with("M:OUTTMP", 72.5, timeout=5.0)
@@ -52,9 +51,8 @@ class TestMultipleWrites:
         mock_mb.return_value = backend
 
         buf = io.StringIO()
-        with mock.patch("sys.argv", ["acput", "M:OUTTMP", "72.5", "G:AMANDA", "1.0"]):
-            with contextlib.redirect_stdout(buf):
-                rc = main()
+        with mock.patch("sys.argv", ["acput", "M:OUTTMP", "72.5", "G:AMANDA", "1.0"]), contextlib.redirect_stdout(buf):
+            rc = main()
 
         assert rc == 0
         backend.write_many.assert_called_once_with([("M:OUTTMP", 72.5), ("G:AMANDA", 1.0)], timeout=5.0)
@@ -75,9 +73,8 @@ class TestWriteError:
         mock_mb.return_value = backend
 
         buf = io.StringIO()
-        with mock.patch("sys.argv", ["acput", "M:OUTTMP", "72.5"]):
-            with contextlib.redirect_stdout(buf):
-                rc = main()
+        with mock.patch("sys.argv", ["acput", "M:OUTTMP", "72.5"]), contextlib.redirect_stdout(buf):
+            rc = main()
 
         assert rc == 1
         assert "FAILED" in buf.getvalue()
@@ -90,12 +87,11 @@ class TestOddArgsError:
         from pacsys.cli.put import main
 
         err = io.StringIO()
-        with mock.patch("sys.argv", ["acput", "M:OUTTMP"]):
-            with contextlib.redirect_stderr(err):
-                try:
-                    rc = main()
-                except SystemExit as e:
-                    rc = e.code
+        with mock.patch("sys.argv", ["acput", "M:OUTTMP"]), contextlib.redirect_stderr(err):
+            try:
+                rc = main()
+            except SystemExit as e:
+                rc = e.code
         assert rc == 2
 
 
@@ -111,9 +107,8 @@ class TestJsonOutput:
         mock_mb.return_value = backend
 
         buf = io.StringIO()
-        with mock.patch("sys.argv", ["acput", "--format", "json", "M:OUTTMP", "72.5"]):
-            with contextlib.redirect_stdout(buf):
-                rc = main()
+        with mock.patch("sys.argv", ["acput", "--format", "json", "M:OUTTMP", "72.5"]), contextlib.redirect_stdout(buf):
+            rc = main()
 
         assert rc == 0
         data = json.loads(buf.getvalue().strip())
@@ -132,9 +127,8 @@ class TestArrayValue:
         mock_mb.return_value = backend
 
         buf = io.StringIO()
-        with mock.patch("sys.argv", ["acput", "M:OUTTMP", "1.0,2.0,3.0"]):
-            with contextlib.redirect_stdout(buf):
-                rc = main()
+        with mock.patch("sys.argv", ["acput", "M:OUTTMP", "1.0,2.0,3.0"]), contextlib.redirect_stdout(buf):
+            rc = main()
 
         assert rc == 0
         backend.write.assert_called_once_with("M:OUTTMP", [1.0, 2.0, 3.0], timeout=5.0)
@@ -146,15 +140,17 @@ class TestConnectionError:
     def test_connection_error(self):
         from pacsys.cli.put import main
 
-        with mock.patch("pacsys.cli.put.make_backend", side_effect=Exception("connection refused")):
-            with mock.patch("sys.argv", ["acput", "M:OUTTMP", "72.5"]):
-                err = io.StringIO()
-                try:
-                    with contextlib.redirect_stderr(err):
-                        rc = main()
-                except SystemExit as e:
-                    rc = e.code
-                assert rc == 2
+        with (
+            mock.patch("pacsys.cli.put.make_backend", side_effect=Exception("connection refused")),
+            mock.patch("sys.argv", ["acput", "M:OUTTMP", "72.5"]),
+        ):
+            err = io.StringIO()
+            try:
+                with contextlib.redirect_stderr(err):
+                    rc = main()
+            except SystemExit as e:
+                rc = e.code
+            assert rc == 2
 
 
 class TestControlWrite:
@@ -169,9 +165,8 @@ class TestControlWrite:
         mock_mb.return_value = backend
 
         buf = io.StringIO()
-        with mock.patch("sys.argv", ["acput", "Z|ACLTST", "on"]):
-            with contextlib.redirect_stdout(buf):
-                rc = main()
+        with mock.patch("sys.argv", ["acput", "Z|ACLTST", "on"]), contextlib.redirect_stdout(buf):
+            rc = main()
 
         assert rc == 0
         # STATUS qualifier preserved — prepare_for_write maps it to CONTROL
@@ -187,9 +182,8 @@ class TestControlWrite:
         mock_mb.return_value = backend
 
         buf = io.StringIO()
-        with mock.patch("sys.argv", ["acput", "Z:ACLTST", "on"]):
-            with contextlib.redirect_stdout(buf):
-                rc = main()
+        with mock.patch("sys.argv", ["acput", "Z:ACLTST", "on"]), contextlib.redirect_stdout(buf):
+            rc = main()
 
         assert rc == 0
         drf_arg = backend.write.call_args[0][0]
@@ -213,15 +207,35 @@ class TestVerifyPath:
             MockDevice.return_value = mock_dev
 
             buf = io.StringIO()
-            with mock.patch("sys.argv", ["acput", "--verify", "M:OUTTMP", "72.5"]):
-                with contextlib.redirect_stdout(buf):
-                    rc = main()
+            with mock.patch("sys.argv", ["acput", "--verify", "M:OUTTMP", "72.5"]), contextlib.redirect_stdout(buf):
+                rc = main()
 
             assert rc == 0
             MockDevice.assert_called_once()
             mock_dev.write.assert_called_once()
             call_kwargs = mock_dev.write.call_args
             assert call_kwargs is not None
+
+    @mock.patch("pacsys.cli.put.make_backend")
+    def test_verify_control_never_writes_setting(self, mock_mb):
+        """acput DEV reset --verify must go through control() (.CONTROL@N), never .SETTING@N."""
+        from pacsys.cli.put import main
+
+        backend = mock.MagicMock()
+        backend.write.return_value = _ok_result("Z:ACLTST.CONTROL")
+        backend.read.return_value = True  # STATUS.READY readback
+        mock_mb.return_value = backend
+
+        buf = io.StringIO()
+        with mock.patch("sys.argv", ["acput", "--verify", "Z:ACLTST", "reset"]), contextlib.redirect_stdout(buf):
+            rc = main()
+
+        assert rc == 0
+        write_drf, written_value = backend.write.call_args[0][:2]
+        assert ".CONTROL" in write_drf and "@N" in write_drf
+        assert written_value == BasicControl.RESET
+        all_drfs = [c[0][0] for c in backend.write.call_args_list] + [c[0][0] for c in backend.read.call_args_list]
+        assert not any("SETTING" in d for d in all_drfs)
 
     @mock.patch("pacsys.cli.put.make_backend")
     def test_tolerance_implies_verify(self, mock_mb):
@@ -237,9 +251,11 @@ class TestVerifyPath:
             MockDevice.return_value = mock_dev
 
             buf = io.StringIO()
-            with mock.patch("sys.argv", ["acput", "--tolerance", "0.5", "M:OUTTMP", "72.5"]):
-                with contextlib.redirect_stdout(buf):
-                    rc = main()
+            with (
+                mock.patch("sys.argv", ["acput", "--tolerance", "0.5", "M:OUTTMP", "72.5"]),
+                contextlib.redirect_stdout(buf),
+            ):
+                rc = main()
 
             assert rc == 0
             mock_dev.write.assert_called_once()

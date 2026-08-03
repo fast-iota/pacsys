@@ -2,22 +2,22 @@
 
 import asyncio
 import logging
-from typing import Optional
 
 from pacsys.aio._backends import AsyncBackend
 from pacsys.aio._subscription import AsyncSubscriptionHandle, _callback_feeder
 from pacsys.auth import KerberosAuth
+from pacsys.backends._dpm_core import _AsyncDpmCore
+from pacsys.backends.dpm_http import _value_to_setting
 from pacsys.drf_utils import prepare_for_write
 from pacsys.errors import AuthenticationError, DeviceError
 from pacsys.types import (
-    Value,
-    Reading,
-    WriteResult,
     BackendCapability,
-    ReadingCallback,
     ErrorCallback,
+    Reading,
+    ReadingCallback,
+    Value,
+    WriteResult,
 )
-from pacsys.backends._dpm_core import _AsyncDpmCore
 
 logger = logging.getLogger(__name__)
 
@@ -90,8 +90,8 @@ class AsyncDPMHTTPBackend(AsyncBackend):
         port: int = 6802,
         pool_size: int = 4,
         timeout: float = 5.0,
-        auth: Optional[KerberosAuth] = None,
-        role: Optional[str] = None,
+        auth: KerberosAuth | None = None,
+        role: str | None = None,
     ):
         if pool_size < 1:
             raise ValueError(f"pool_size must be >= 1, got {pool_size}")
@@ -171,12 +171,12 @@ class AsyncDPMHTTPBackend(AsyncBackend):
         return self._auth is not None
 
     @property
-    def principal(self) -> Optional[str]:
+    def principal(self) -> str | None:
         return self._auth.principal if self._auth else None
 
     # ── Read ──────────────────────────────────────────────────────────────
 
-    async def read(self, drf: str, timeout: Optional[float] = None) -> Value:
+    async def read(self, drf: str, timeout: float | None = None) -> Value:
         reading = await self.get(drf, timeout=timeout)
         if not reading.ok:
             raise DeviceError(
@@ -188,18 +188,23 @@ class AsyncDPMHTTPBackend(AsyncBackend):
         assert reading.value is not None
         return reading.value
 
-    async def get(self, drf: str, timeout: Optional[float] = None) -> Reading:
+    async def get(self, drf: str, timeout: float | None = None) -> Reading:
         readings = await self.get_many([drf], timeout=timeout)
         return readings[0]
 
-    async def get_many(self, drfs: list[str], timeout: Optional[float] = None) -> list[Reading]:
+    async def get_many(self, drfs: list[str], timeout: float | None = None) -> list[Reading]:
         if not drfs:
             return []
         effective_timeout = timeout if timeout is not None else self._timeout
         core = await self._borrow_core()
         try:
             result = await core.read_many(drfs, effective_timeout)
-            await self._release_core(core)
+            # read_many closes its connection on repeating-event DRFs or failures —
+            # such cores must be discarded, not re-pooled.
+            if core.connected:
+                await self._release_core(core)
+            else:
+                await self._discard_core(core)
             return result
         except BaseException:
             await self._discard_core(core)
@@ -207,7 +212,7 @@ class AsyncDPMHTTPBackend(AsyncBackend):
 
     # ── Write ─────────────────────────────────────────────────────────────
 
-    async def write(self, drf: str, value: Value, timeout: Optional[float] = None) -> WriteResult:
+    async def write(self, drf: str, value: Value, timeout: float | None = None) -> WriteResult:
         # Alarm dict expansion (same pattern as sync DPMHTTPBackend)
         if isinstance(value, dict):
             from pacsys.acnet.errors import ERR_OK
@@ -233,7 +238,7 @@ class AsyncDPMHTTPBackend(AsyncBackend):
     async def write_many(
         self,
         settings: list[tuple[str, Value]],
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
     ) -> list[WriteResult]:
         if not settings:
             return []
@@ -242,11 +247,16 @@ class AsyncDPMHTTPBackend(AsyncBackend):
             raise AuthenticationError("Backend not configured for authenticated operations. Pass auth=KerberosAuth().")
         effective_timeout = timeout if timeout is not None else self._timeout
         prepared = [(prepare_for_write(drf), value) for drf, value in settings]
+        setting_payloads = [_value_to_setting(i, value) for i, (_, value) in enumerate(settings, 1)]
 
         # Dedicated core for writes (fresh authenticated connection)
         core = await self._create_core()
         try:
-            result = await core.write_many(prepared, timeout=effective_timeout)
+            result = await core.write_many(
+                prepared,
+                timeout=effective_timeout,
+                setting_payloads=setting_payloads,
+            )
             await core.close()
             return result
         except BaseException:
@@ -261,8 +271,8 @@ class AsyncDPMHTTPBackend(AsyncBackend):
     async def subscribe(
         self,
         drfs: list[str],
-        callback: Optional[ReadingCallback] = None,
-        on_error: Optional[ErrorCallback] = None,
+        callback: ReadingCallback | None = None,
+        on_error: ErrorCallback | None = None,
     ) -> AsyncSubscriptionHandle:
         self._check_closed()
         if not drfs:

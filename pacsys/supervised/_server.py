@@ -17,6 +17,7 @@ from pacsys.backends import Backend
 from pacsys.backends.grpc_backend import _proto_value_to_python
 from pacsys.drf_utils import get_device_name
 from pacsys.errors import AuthenticationError
+from pacsys.types import Value
 
 from ._audit import AuditLog
 from ._conversions import reading_to_proto_reply, write_result_to_proto_status
@@ -102,7 +103,13 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
             logger.error("audit log_response failed", exc_info=True)
 
     def _check_policies(
-        self, drfs: list[str], rpc_method: str, context, *, values=None, raw_request=None
+        self,
+        drfs: list[str],
+        rpc_method: str,
+        context,
+        *,
+        values: list[tuple[str, Value]] | None = None,
+        raw_request=None,
     ) -> tuple[RequestContext, PolicyDecision]:
         """Run policy chain. Returns (original_ctx, decision)."""
         peer = context.peer() or "unknown"
@@ -284,13 +291,13 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
         from pacsys._proto.controls.service.DAQ.v1 import DAQ_pb2
 
         if not self._check_token(context):
-            return DAQ_pb2.SettingReply()  # type: ignore[unresolved-attribute]
+            return DAQ_pb2.SettingReply()
 
         settings_proto = list(request.setting)
         if not settings_proto:
             context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
             context.set_details("Empty settings list")
-            return DAQ_pb2.SettingReply()  # type: ignore[unresolved-attribute]
+            return DAQ_pb2.SettingReply()
 
         drfs = [s.device for s in settings_proto]
         peer = context.peer() or "unknown"
@@ -299,14 +306,14 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
             devices += f" (+{len(drfs) - 5} more)"
 
         try:
-            values = []
+            values: list[tuple[str, Value]] = []
             for s in settings_proto:
                 value, _ = _proto_value_to_python(s.value)
                 values.append((s.device, value))
         except ValueError as e:
             context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
             context.set_details(str(e))
-            return DAQ_pb2.SettingReply()  # type: ignore[unresolved-attribute]
+            return DAQ_pb2.SettingReply()
 
         try:
             req_ctx, decision = self._check_policies(drfs, "Set", context, values=values, raw_request=request)
@@ -314,7 +321,7 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
             logger.error("rpc=Set peer=%s policy error=%s", peer, e, exc_info=True)
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(f"Policy error: {e}")
-            return DAQ_pb2.SettingReply()  # type: ignore[unresolved-attribute]
+            return DAQ_pb2.SettingReply()
 
         seq = self._audit_request(req_ctx, decision)
 
@@ -322,10 +329,10 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
             logger.warning("rpc=Set peer=%s devices=%s decision=denied reason=%s", peer, devices, decision.reason)
             context.set_code(grpc.StatusCode.PERMISSION_DENIED)
             context.set_details(decision.reason)
-            return DAQ_pb2.SettingReply()  # type: ignore[unresolved-attribute]
+            return DAQ_pb2.SettingReply()
 
         if self._check_unapproved(drfs, decision, peer, "Set", context):
-            return DAQ_pb2.SettingReply()  # type: ignore[unresolved-attribute]
+            return DAQ_pb2.SettingReply()
 
         logger.info("rpc=Set peer=%s devices=%s decision=allowed", peer, devices)
         start = time.monotonic()
@@ -344,7 +351,7 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
             else:
                 results = await asyncio.to_thread(self._backend.write_many, backend_settings)
             rmap = _reorder_map(drfs, decision.ctx.drfs)
-            reply = DAQ_pb2.SettingReply()  # type: ignore[unresolved-attribute]
+            reply = DAQ_pb2.SettingReply()
             for i in range(len(drfs)):
                 result = results[rmap[i]] if rmap else results[i]
                 reply.status.append(write_result_to_proto_status(result))
@@ -356,26 +363,26 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
         except ValueError as e:
             context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
             context.set_details(str(e))
-            reply = DAQ_pb2.SettingReply()  # type: ignore[unresolved-attribute]
+            reply = DAQ_pb2.SettingReply()
             self._audit_response(seq, peer, "Set", reply)
             return reply
         except NotImplementedError as e:
             context.set_code(grpc.StatusCode.UNIMPLEMENTED)
             context.set_details(str(e) or "Backend does not support this operation")
-            reply = DAQ_pb2.SettingReply()  # type: ignore[unresolved-attribute]
+            reply = DAQ_pb2.SettingReply()
             self._audit_response(seq, peer, "Set", reply)
             return reply
         except AuthenticationError as e:
             context.set_code(grpc.StatusCode.UNAUTHENTICATED)
             context.set_details(str(e))
-            reply = DAQ_pb2.SettingReply()  # type: ignore[unresolved-attribute]
+            reply = DAQ_pb2.SettingReply()
             self._audit_response(seq, peer, "Set", reply)
             return reply
         except Exception as e:
             logger.error("rpc=Set peer=%s error=%s", peer, e, exc_info=True)
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(f"Backend error: {e}")
-            reply = DAQ_pb2.SettingReply()  # type: ignore[unresolved-attribute]
+            reply = DAQ_pb2.SettingReply()
             self._audit_response(seq, peer, "Set", reply)
             return reply
 

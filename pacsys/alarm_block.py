@@ -788,27 +788,34 @@ class _AlarmModifyContext:
         # Determine what changed
         current_raw = self._block.to_bytes()
         raw_changed = current_raw != self._initial_raw
+        init_block = self._cls.from_bytes(self._initial_raw)
 
         eng_changed = False
-        struct_changed = False
+        struct_changed = self._block.tries_needed != init_block.tries_needed
         s = self._block._structured
         init = self._block._initial_structured
         if s is not None and init is not None:
             # Check if engineering unit values changed
             if self._cls is AnalogAlarm:
                 eng_changed = s.get("minimum") != init.get("minimum") or s.get("maximum") != init.get("maximum")
-            else:  # DigitalAlarm
-                eng_changed = s.get("nominal") != init.get("nominal") or s.get("mask") != init.get("mask")
+            elif isinstance(self._block, DigitalAlarm) and isinstance(init_block, DigitalAlarm):
+                eng_changed = self._block.nominal != init_block.nominal or self._block.mask != init_block.mask
             # Check if any structured flag changed
-            for key in ("alarm_enable", "abort", "abort_inhibit", "tries_needed"):
+            for key in ("alarm_enable", "abort", "abort_inhibit"):
                 if s.get(key) != init.get(key):
                     struct_changed = True
                     break
+        elif isinstance(self._block, DigitalAlarm) and isinstance(init_block, DigitalAlarm):
+            eng_changed = self._block.nominal != init_block.nominal or self._block.mask != init_block.mask
+
+        if s is None:
+            if raw_changed:
+                self._write_structured(backend, name, prop)
+            return False
 
         # Check if raw-only fields changed (ftd, fe_data, etc.)
         raw_only_changed = False
         if raw_changed:
-            init_block = self._cls.from_bytes(self._initial_raw)
             if self._block.ftd.to_word() != init_block.ftd.to_word():
                 raw_only_changed = True
             if self._block.fe_data != init_block.fe_data:
@@ -821,28 +828,34 @@ class _AlarmModifyContext:
 
         # Decide write strategy
         if raw_only_changed and (eng_changed or struct_changed):
-            # Both raw-only fields (ftd, fe_data) and engineering values changed.
-            # Write structured first (eng values), then raw (for ftd/fe_data).
+            # Both raw-only fields and structured values changed.
+            # Write structured first, then patch the fresh raw block.
             self._write_structured(backend, name, prop)
             # Re-read to get updated raw bytes with new eng values, then
             # patch raw-only fields on top and write.
-            raw_drf = f"{name}.{prop}{{{offset}:20}}.RAW@I"
-            fresh = backend.read(raw_drf)
+            raw_read_drf = f"{name}.{prop}{{{offset}:20}}.RAW@I"
+            fresh = backend.read(raw_read_drf)
             if isinstance(fresh, bytes):
                 patched = self._cls.from_bytes(fresh)
             else:
                 patched = self._cls.from_bytes(current_raw)
-            # Apply raw-only field changes from user's block onto the fresh read
+            # Keep fresh analog value bytes from the server-side transform.
             patched.ftd = self._block.ftd
             patched.fe_data = self._block.fe_data
             patched.data_length = self._block.data_length
+            patched.tries_needed = self._block.tries_needed
+            # Digital values depend on data_length, so apply them afterward.
+            if isinstance(self._block, DigitalAlarm) and isinstance(patched, DigitalAlarm):
+                patched.nominal = self._block.nominal
+                patched.mask = self._block.mask
             if isinstance(self._block, AnalogAlarm) and isinstance(patched, AnalogAlarm):
                 patched.limit_type = self._block.limit_type
-            result = backend.write(raw_drf, patched.to_bytes())
+            raw_write_drf = f"{name}.{prop}{{{offset}:20}}.RAW@N"
+            result = backend.write(raw_write_drf, patched.to_bytes())
             if not result.success:
                 raise RuntimeError(f"Failed to write alarm (raw): {result.message}")
         elif raw_only_changed:
-            # Only raw-only fields changed (ftd, fe_data, etc.)
+            # Only raw-only fields changed
             raw_drf = f"{name}.{prop}{{{offset}:20}}.RAW@N"
             result = backend.write(raw_drf, current_raw)
             if not result.success:
@@ -883,16 +896,17 @@ class _AlarmModifyContext:
                 "alarm_enable": s["alarm_enable"],
                 "abort": s["abort"],
                 "abort_inhibit": s["abort_inhibit"],
-                "tries_needed": s["tries_needed"],
+                "tries_needed": self._block.tries_needed,
             }
         else:  # DigitalAlarm
+            assert isinstance(self._block, DigitalAlarm)
             write_val = {
-                "nominal": s["nominal"],
-                "mask": s["mask"],
+                "nominal": self._block.nominal,
+                "mask": self._block.mask,
                 "alarm_enable": s["alarm_enable"],
                 "abort": s["abort"],
                 "abort_inhibit": s["abort_inhibit"],
-                "tries_needed": s["tries_needed"],
+                "tries_needed": self._block.tries_needed,
             }
 
         result = backend.write(drf, write_val)

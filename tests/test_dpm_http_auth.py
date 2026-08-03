@@ -10,25 +10,27 @@ Tests cover:
 - Kerberos authentication flow (mocked)
 """
 
-import pytest
 from unittest import mock
 
-from pacsys.backends.dpm_http import DPMHTTPBackend
-from pacsys.auth import KerberosAuth
-from pacsys.types import WriteResult
-from pacsys.errors import AuthenticationError
+import pytest
+
 from pacsys.acnet.errors import make_error
+from pacsys.auth import KerberosAuth
+from pacsys.backends.dpm_http import DPMHTTPBackend
+from pacsys.errors import AuthenticationError
+from pacsys.types import WriteResult
 from tests.devices import (
-    MockGSSAPIModule,
-    MockSocketWithReplies,
-    make_device_info,
-    make_start_list,
-    make_auth_reply,
-    make_apply_settings_reply,
-    make_enable_settings_reply,
-    make_write_sequence,
     TEMP_DEVICE,
     TEMP_VALUE,
+    MockGSSAPIModule,
+    MockSocketWithReplies,
+    make_apply_settings_reply,
+    make_auth_reply,
+    make_device_info,
+    make_enable_settings_reply,
+    make_start_list,
+    make_status_reply,
+    make_write_sequence,
 )
 
 
@@ -168,6 +170,30 @@ class TestWriteFailure:
                     result = backend.write(TEMP_DEVICE, TEMP_VALUE)
                     assert not result.success
                     assert result.error_code == -42
+                finally:
+                    backend.close()
+
+    def test_write_ref0_status_surfaces_job_error(self):
+        """Ref-0 Status_reply during setup = job start failure — surfaced, not 'Request timeout'."""
+        mock_gssapi = MockGSSAPIModule()
+        replies = [
+            make_auth_reply(),
+            make_auth_reply(),
+            make_enable_settings_reply(),
+            make_status_reply(status=make_error(1, -88), ref_id=0),
+        ]
+        mock_socket = MockSocketWithReplies(list_id=1, replies=replies)
+
+        with mock.patch.dict("sys.modules", {"gssapi": mock_gssapi}):
+            with mock.patch("socket.socket", return_value=mock_socket):
+                auth = KerberosAuth()
+                backend = DPMHTTPBackend(auth=auth, role="Operator")
+                try:
+                    results = backend.write_many([("M:OUTTMP", 72.5)], timeout=1.0)
+                    assert not results[0].success
+                    assert results[0].error_code == -88
+                    assert results[0].facility_code == 1
+                    assert "timeout" not in (results[0].message or "").lower()
                 finally:
                     backend.close()
 

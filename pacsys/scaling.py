@@ -19,7 +19,7 @@ from __future__ import annotations
 import math
 import struct
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from pacsys.devdb import PropertyInfo
@@ -29,7 +29,7 @@ try:
 
     _HAS_NUMPY = True
 except ImportError:
-    _np = None  # type: ignore[assignment]
+    _np = cast(Any, None)
     _HAS_NUMPY = False
 
 

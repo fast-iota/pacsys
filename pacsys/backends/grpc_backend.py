@@ -14,18 +14,18 @@ import os
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Optional, cast
+from typing import TypeGuard, cast
 
 import numpy as np
 
 from pacsys.acnet.errors import ERR_RETRY, ERR_TIMEOUT, FACILITY_ACNET, normalize_error_code
 from pacsys.auth import Auth, JWTAuth
 from pacsys.backends import Backend, validate_alarm_dict
+from pacsys.backends._dispatch import CallbackDispatcher
+from pacsys.backends._subscription import BufferedSubscriptionHandle
 from pacsys.drf3.extra import HISTORICAL_EXTRAS
 from pacsys.drf_utils import prepare_for_write
 from pacsys.errors import AuthenticationError, DeviceError, ReadError
-from pacsys.backends._dispatch import CallbackDispatcher
-from pacsys.backends._subscription import BufferedSubscriptionHandle
 from pacsys.types import (
     BackendCapability,
     DispatchMode,
@@ -98,9 +98,9 @@ def _grpc_facility_code(e: "grpc.aio.AioRpcError") -> int:
     return 0
 
 
-def _value_to_proto_value(value: Value, *, for_write: bool = False) -> "device_pb2.Value":  # type: ignore[unresolved-attribute]
+def _value_to_proto_value(value: Value, *, for_write: bool = False) -> "device_pb2.Value":
     """Convert Python value to proto Value message."""
-    proto_value = device_pb2.Value()  # type: ignore[unresolved-attribute]
+    proto_value = device_pb2.Value()
 
     if isinstance(value, float):
         proto_value.scalar = value
@@ -125,7 +125,7 @@ def _value_to_proto_value(value: Value, *, for_write: bool = False) -> "device_p
         if all(isinstance(v, (int, float)) for v in value):
             proto_value.scalarArr.value.extend([float(v) for v in value])
         elif all(isinstance(v, str) for v in value):
-            proto_value.textArr.value.extend(list(value))
+            proto_value.textArr.value.extend(v for v in value if isinstance(v, str))
         else:
             raise ValueError(f"Cannot convert mixed list to proto value: {value}")
     elif isinstance(value, np.ndarray):
@@ -139,12 +139,12 @@ def _value_to_proto_value(value: Value, *, for_write: bool = False) -> "device_p
 _BASIC_STATUS_KEYS = frozenset({"on", "ready", "remote", "positive", "ramp"})
 
 
-def _is_basic_status_dict(d: dict) -> bool:
+def _is_basic_status_dict(d: dict) -> TypeGuard[dict[str, bool]]:
     """True if dict looks like a basic status reading (bool values, status keys)."""
     return bool(d) and set(d.keys()) <= _BASIC_STATUS_KEYS and all(isinstance(v, bool) for v in d.values())
 
 
-def _dict_to_proto_alarm(d: dict, proto_value: "device_pb2.Value") -> None:  # type: ignore[unresolved-attribute]
+def _dict_to_proto_alarm(d: dict, proto_value: "device_pb2.Value") -> None:
     """Populate proto Value with an alarm dict (analog or digital).
 
     Requires at least one type-specific key (minimum/maximum for analog,
@@ -177,7 +177,7 @@ def _dict_to_proto_alarm(d: dict, proto_value: "device_pb2.Value") -> None:  # t
             a.triesNeeded = int(d["tries_needed"])
 
 
-def _proto_value_to_python(proto_value: "device_pb2.Value") -> tuple[Value, ValueType]:  # type: ignore[unresolved-attribute]
+def _proto_value_to_python(proto_value: "device_pb2.Value") -> tuple[Value, ValueType]:
     """Convert proto Value message to Python value."""
     value_type = proto_value.WhichOneof("value")
 
@@ -224,7 +224,7 @@ def _proto_value_to_python(proto_value: "device_pb2.Value") -> tuple[Value, Valu
         raise ValueError(f"Unknown proto value type: {value_type!r}")
 
 
-def _proto_timestamp_to_datetime(ts: "timestamp_pb2.Timestamp") -> Optional[datetime]:
+def _proto_timestamp_to_datetime(ts: "timestamp_pb2.Timestamp") -> datetime | None:
     """Convert proto Timestamp to Python datetime.
 
     NOTE: Python datetime only supports microsecond precision, so nanoseconds
@@ -243,7 +243,7 @@ def _proto_timestamp_to_datetime(ts: "timestamp_pb2.Timestamp") -> Optional[date
         return None
 
 
-def _proto_status_to_codes(status: "status_pb2.Status") -> tuple[int, int, Optional[str]]:  # type: ignore[unresolved-attribute]
+def _proto_status_to_codes(status: "status_pb2.Status") -> tuple[int, int, str | None]:
     """Extract status codes from proto Status message."""
     if status is None:
         return 0, 0, None
@@ -420,13 +420,13 @@ def _merge_logger_readings(chunks: list[Reading], drf: str) -> Reading:
 class _DaqCore:
     """Pure-async gRPC logic. Owns the aio channel and stub."""
 
-    def __init__(self, host: str, port: int, auth: Optional[JWTAuth], timeout: float):
+    def __init__(self, host: str, port: int, auth: JWTAuth | None, timeout: float):
         self._host = host
         self._port = port
         self._auth = auth
         self._timeout = timeout
-        self._channel: Optional["grpc_aio.Channel"] = None
-        self._stub: Optional["DAQ_pb2_grpc.DAQStub"] = None
+        self._channel: grpc_aio.Channel | None = None
+        self._stub: DAQ_pb2_grpc.DAQStub | None = None
 
     async def connect(self):
         target = f"{self._host}:{self._port}"
@@ -447,14 +447,14 @@ class _DaqCore:
             self._stub = None
             logger.debug("Async gRPC channel closed")
 
-    def _metadata(self) -> Optional[list[tuple[str, str]]]:
+    def _metadata(self) -> list[tuple[str, str]] | None:
         if self._auth is not None:
             return [("authorization", f"Bearer {self._auth.token}")]
         return None
 
     async def read_many(self, drfs: list[str], timeout: float) -> list[Reading]:
         assert self._stub is not None, "Not connected"
-        request = DAQ_pb2.ReadingList()  # type: ignore[unresolved-attribute]
+        request = DAQ_pb2.ReadingList()
         for drf in drfs:
             request.drf.append(drf)
 
@@ -465,11 +465,11 @@ class _DaqCore:
         logger_chunks: dict[int, list[Reading]] = {}  # index -> accumulated chunks
         logger_complete: set[int] = set()  # indices that received the terminator
 
-        results = cast(list[Optional[Reading]], [None] * len(drfs))
+        results = cast(list[Reading | None], [None] * len(drfs))
         received_count = 0
         expected_count = len(drfs)
         now = datetime.now(timezone.utc)
-        transport_error: Optional[BaseException] = None
+        transport_error: BaseException | None = None
 
         call = None
         try:
@@ -495,7 +495,24 @@ class _DaqCore:
 
                 if index in logger_indices:
                     # Logger: accumulate chunks; empty readings = done
-                    if value_field == "readings" and len(reply.readings.reading) > 0:
+                    if (
+                        value_field == "status"
+                        and index not in logger_complete
+                        and _proto_status_to_codes(reply.status)[1] != 0
+                    ):
+                        # Real error (bad device, auth failure, ...) — not an
+                        # end-of-stream terminator (mirrors _dpm_core Status_reply handling)
+                        facility, error, message = _proto_status_to_codes(reply.status)
+                        results[index] = Reading(
+                            drf=drfs[index],
+                            facility_code=facility,
+                            error_code=error,
+                            message=message or "gRPC error",
+                            timestamp=now,
+                        )
+                        logger_complete.add(index)
+                        received_count += 1
+                    elif value_field == "readings" and len(reply.readings.reading) > 0:
                         chunk = _aggregate_proto_readings(reply.readings.reading, drfs[index], now)
                         logger_chunks.setdefault(index, []).append(chunk)
                     elif index not in logger_complete:
@@ -571,20 +588,26 @@ class _DaqCore:
                     timestamp=now,
                 )
 
-        if transport_error is not None or has_missing:
-            raise ReadError(results, str(transport_error or "Incomplete response")) from transport_error  # type: ignore[arg-type]
+        complete_results: list[Reading] = []
+        for result in results:
+            if result is None:
+                raise RuntimeError("gRPC read result backfill left an empty slot")
+            complete_results.append(result)
 
-        return results  # type: ignore
+        if transport_error is not None or has_missing:
+            raise ReadError(complete_results, str(transport_error or "Incomplete response")) from transport_error
+
+        return complete_results
 
     async def write_many(self, settings: list[tuple[str, Value]], timeout: float) -> list[WriteResult]:
         assert self._stub is not None, "Not connected"
         # Phase 1: Validate
-        valid_items: list[tuple[int, str, "DAQ_pb2.Setting"]] = []  # type: ignore[unresolved-attribute]
+        valid_items: list[tuple[int, str, DAQ_pb2.Setting]] = []
         validation_errors: dict[int, str] = {}
 
         for i, (drf, value) in enumerate(settings):
             try:
-                setting = DAQ_pb2.Setting()  # type: ignore[unresolved-attribute]
+                setting = DAQ_pb2.Setting()
                 setting.device = drf
                 setting.value.CopyFrom(_value_to_proto_value(value, for_write=True))
                 valid_items.append((i, drf, setting))
@@ -596,7 +619,7 @@ class _DaqCore:
         rpc_results: dict[int, WriteResult] = {}
 
         if valid_items:
-            request = DAQ_pb2.SettingList()  # type: ignore[unresolved-attribute]
+            request = DAQ_pb2.SettingList()
             for _, _, proto_setting in valid_items:
                 request.setting.append(proto_setting)
 
@@ -676,7 +699,7 @@ class _DaqCore:
 
         while not stop_check():
             try:
-                request = DAQ_pb2.ReadingList()  # type: ignore[unresolved-attribute]
+                request = DAQ_pb2.ReadingList()
                 for drf in drfs:
                     request.drf.append(drf)
 
@@ -766,8 +789,8 @@ class _GRPCSubscriptionHandle(BufferedSubscriptionHandle):
         self,
         backend: "GRPCBackend",
         drfs: list[str],
-        callback: Optional[ReadingCallback],
-        on_error: Optional[ErrorCallback],
+        callback: ReadingCallback | None,
+        on_error: ErrorCallback | None,
     ):
         super().__init__()
         self._backend = backend
@@ -776,7 +799,7 @@ class _GRPCSubscriptionHandle(BufferedSubscriptionHandle):
         self._on_error = on_error
         self._is_callback_mode = callback is not None
         self._ref_ids = list(range(len(drfs)))
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
 
     def _dispatch(self, reading: Reading) -> None:
         """Called from the reactor thread to deliver a reading."""
@@ -837,10 +860,10 @@ class GRPCBackend(Backend):
 
     def __init__(
         self,
-        host: Optional[str] = None,
-        port: Optional[int] = None,
-        auth: Optional[Auth] = None,
-        timeout: Optional[float] = None,
+        host: str | None = None,
+        port: int | None = None,
+        auth: Auth | None = None,
+        timeout: float | None = None,
         dispatch_mode: DispatchMode = DispatchMode.WORKER,
     ):
         if not GRPC_AVAILABLE:
@@ -856,7 +879,7 @@ class GRPCBackend(Backend):
         if auth is not None:
             if not isinstance(auth, JWTAuth):
                 raise ValueError(f"auth must be JWTAuth or None, got {type(auth).__name__}")
-            self._auth: Optional[JWTAuth] = auth
+            self._auth: JWTAuth | None = auth
         else:
             self._auth = JWTAuth.from_env()
 
@@ -868,9 +891,9 @@ class GRPCBackend(Backend):
             raise ValueError(f"timeout must be positive, got {self._timeout}")
 
         # Reactor state -- all lazy
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._reactor_thread: Optional[threading.Thread] = None
-        self._core: Optional[_DaqCore] = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._reactor_thread: threading.Thread | None = None
+        self._core: _DaqCore | None = None
         self._closed = False
         self._reactor_lock = threading.Lock()
 
@@ -942,7 +965,7 @@ class GRPCBackend(Backend):
                 raise
             self._core = core
 
-    def _run_sync(self, coro, timeout: Optional[float] = None):
+    def _run_sync(self, coro, timeout: float | None = None):
         """Bridge sync → async: submit coroutine to reactor and wait."""
         self._ensure_reactor()
         assert self._loop is not None, "Reactor loop not initialized"
@@ -968,7 +991,7 @@ class GRPCBackend(Backend):
         return self._auth is not None
 
     @property
-    def principal(self) -> Optional[str]:
+    def principal(self) -> str | None:
         if self._auth is not None:
             return self._auth.principal
         return None
@@ -987,7 +1010,7 @@ class GRPCBackend(Backend):
 
     # ── Read methods ──────────────────────────────────────────────────────
 
-    def read(self, drf: str, timeout: Optional[float] = None) -> Value:
+    def read(self, drf: str, timeout: float | None = None) -> Value:
         reading = self.get(drf, timeout=timeout)
         if not reading.ok:
             raise DeviceError(
@@ -1000,11 +1023,11 @@ class GRPCBackend(Backend):
         assert reading.value is not None
         return reading.value
 
-    def get(self, drf: str, timeout: Optional[float] = None) -> Reading:
+    def get(self, drf: str, timeout: float | None = None) -> Reading:
         readings = self.get_many([drf], timeout=timeout)
         return readings[0]
 
-    def get_many(self, drfs: list[str], timeout: Optional[float] = None) -> list[Reading]:
+    def get_many(self, drfs: list[str], timeout: float | None = None) -> list[Reading]:
         if self._closed:
             raise RuntimeError("Backend is closed")
         if not drfs:
@@ -1020,7 +1043,7 @@ class GRPCBackend(Backend):
         self,
         drf: str,
         value: Value,
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
     ) -> WriteResult:
         results = self.write_many([(drf, value)], timeout=timeout)
         return results[0]
@@ -1028,7 +1051,7 @@ class GRPCBackend(Backend):
     def write_many(
         self,
         settings: list[tuple[str, Value]],
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
     ) -> list[WriteResult]:
         if self._closed:
             raise RuntimeError("Backend is closed")
@@ -1050,8 +1073,8 @@ class GRPCBackend(Backend):
     def subscribe(
         self,
         drfs: list[str],
-        callback: Optional[ReadingCallback] = None,
-        on_error: Optional[ErrorCallback] = None,
+        callback: ReadingCallback | None = None,
+        on_error: ErrorCallback | None = None,
     ) -> SubscriptionHandle:
         """Subscribe to devices for streaming data.
 
@@ -1195,4 +1218,4 @@ class GRPCBackend(Backend):
         return f"GRPCBackend({self._host}:{self._port}, {status}{auth})"
 
 
-__all__ = ["GRPCBackend", "GRPC_AVAILABLE", "DEFAULT_HOST", "DEFAULT_PORT", "DEFAULT_TIMEOUT"]
+__all__ = ["DEFAULT_HOST", "DEFAULT_PORT", "DEFAULT_TIMEOUT", "GRPC_AVAILABLE", "GRPCBackend"]

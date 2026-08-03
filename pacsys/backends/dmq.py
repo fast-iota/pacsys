@@ -75,6 +75,12 @@ from pacsys.drf_utils import ensure_immediate_event, get_device_name, prepare_fo
 
 logger = logging.getLogger(__name__)
 
+
+def _set_sample_ref_id(sample: object, ref_id: int) -> None:
+    """Set the optional SDD ref_id field used by DMQ sample messages."""
+    setattr(sample, "ref_id", ref_id)
+
+
 # Enable verbose protocol tracing for write channel messages
 TRACE = False
 
@@ -135,7 +141,7 @@ def _dict_to_alarm_sample(d: dict, ref_id: int, timestamp_ms: int):
         sample = AnalogAlarmSample_reply()
         sample.value = alarm
         sample.time = timestamp_ms
-        sample.ref_id = ref_id  # type: ignore[attr-defined]
+        _set_sample_ref_id(sample, ref_id)
         return sample
     else:
         alarm = DigitalAlarm_struct()
@@ -152,7 +158,7 @@ def _dict_to_alarm_sample(d: dict, ref_id: int, timestamp_ms: int):
         sample = DigitalAlarmSample_reply()
         sample.value = alarm
         sample.time = timestamp_ms
-        sample.ref_id = ref_id  # type: ignore[attr-defined]
+        _set_sample_ref_id(sample, ref_id)
         return sample
 
 
@@ -1628,13 +1634,13 @@ class DMQBackend(Backend):
                 sample = BasicControlSample_reply()
                 sample.value = sdd_const
                 sample.time = timestamp_ms
-                sample.ref_id = ref_id  # type: ignore[attr-defined]
+                _set_sample_ref_id(sample, ref_id)
                 return sample
             # LOCAL, REMOTE, TRIP -- send as double ordinal
             sample = DoubleSample_reply()
             sample.value = float(value)
             sample.time = timestamp_ms
-            sample.ref_id = ref_id  # type: ignore[attr-defined]
+            _set_sample_ref_id(sample, ref_id)
             return sample
 
         if isinstance(value, dict):
@@ -1644,19 +1650,19 @@ class DMQBackend(Backend):
             sample = IntegerSample_reply()
             sample.value = int(value)
             sample.time = timestamp_ms
-            sample.ref_id = ref_id  # type: ignore[attr-defined]
+            _set_sample_ref_id(sample, ref_id)
             return sample
         if isinstance(value, int):
             sample = IntegerSample_reply()
             sample.value = value
             sample.time = timestamp_ms
-            sample.ref_id = ref_id  # type: ignore[attr-defined]
+            _set_sample_ref_id(sample, ref_id)
             return sample
         elif isinstance(value, float):
             sample = DoubleSample_reply()
             sample.value = value
             sample.time = timestamp_ms
-            sample.ref_id = ref_id  # type: ignore[attr-defined]
+            _set_sample_ref_id(sample, ref_id)
             return sample
         elif isinstance(value, (list, np.ndarray)):
             if len(value) > 0 and isinstance(value[0], str):
@@ -1666,13 +1672,13 @@ class DMQBackend(Backend):
                 sample = DoubleArraySample_reply()
                 sample.value = [float(v) for v in value]
             sample.time = timestamp_ms
-            sample.ref_id = ref_id  # type: ignore[attr-defined]
+            _set_sample_ref_id(sample, ref_id)
             return sample
         elif isinstance(value, str):
             sample = StringSample_reply()
             sample.value = value
             sample.time = timestamp_ms
-            sample.ref_id = ref_id  # type: ignore[attr-defined]
+            _set_sample_ref_id(sample, ref_id)
             return sample
         elif isinstance(value, bytes):
             raise ValueError(

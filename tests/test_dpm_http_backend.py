@@ -12,35 +12,33 @@ Tests cover:
 - Factory function
 """
 
-import socket
 from unittest import mock
 from unittest.mock import MagicMock
 
 import pytest
 
-from pacsys.backends.dpm_http import DPMHTTPBackend
-from pacsys.types import Reading, ValueType
-from pacsys.errors import DeviceError, AuthenticationError, ReadError
 from pacsys.acnet.errors import make_error
+from pacsys.backends.dpm_http import DPMHTTPBackend, _value_to_setting
 from pacsys.dpm_protocol import ListStatus_reply, Raw_reply, StartList_reply
-from tests.test_dpm_http_auth import create_mock_kerberos_auth
+from pacsys.errors import AuthenticationError, DeviceError, ReadError
+from pacsys.types import Reading, ValueType
 
 # Shared test helpers
 from tests.devices import (
-    MockSocketWithReplies,
-    make_add_to_list_reply,
-    make_device_info,
-    make_start_list,
-    make_scalar_reply,
-    make_scalar_array_reply,
-    make_text_reply,
-    make_status_reply,
-    make_read_sequence,
     TEMP_DEVICE,
     TEMP_VALUE,
     TIMESTAMP_MILLIS,
+    MockSocketWithReplies,
+    make_add_to_list_reply,
+    make_device_info,
+    make_read_sequence,
+    make_scalar_array_reply,
+    make_scalar_reply,
+    make_start_list,
+    make_status_reply,
+    make_text_reply,
 )
-
+from tests.test_dpm_http_auth import create_mock_kerberos_auth
 
 # =============================================================================
 # Backend Abstract Base Class Tests
@@ -66,6 +64,29 @@ class TestDPMHTTPBackendInit:
     def test_invalid_init_params(self, kwargs, match):
         with pytest.raises(ValueError, match=match):
             DPMHTTPBackend(**kwargs)
+
+
+class TestValueToSetting:
+    def test_rejects_multidimensional_array(self):
+        import numpy as np
+
+        with pytest.raises(TypeError, match="one-dimensional"):
+            _value_to_setting(1, np.ones((2, 2)))
+
+    @pytest.mark.parametrize("value", [["on", 1], [1, "on"]])
+    def test_rejects_mixed_text_array(self, value):
+        with pytest.raises(TypeError, match="only strings"):
+            _value_to_setting(1, value)
+
+    def test_write_prevalidates_before_getting_connection(self):
+        backend = DPMHTTPBackend(auth=create_mock_kerberos_auth())
+        try:
+            with mock.patch.object(backend, "_get_write_connection") as get_connection:
+                with pytest.raises(TypeError, match="only strings"):
+                    backend.write_many([("M:OUTTMP", ["on", 1])])
+            get_connection.assert_not_called()
+        finally:
+            backend.close()
 
 
 # =============================================================================
@@ -641,7 +662,7 @@ class TestDelayedErrorResponse:
         replies = [
             make_add_to_list_reply(ref_id=1, status=0),
             make_start_list(),
-            socket.timeout("delayed response"),  # 2s mini-timeout fires here
+            TimeoutError("delayed response"),  # 2s mini-timeout fires here
             make_status_reply(status=error_status, ref_id=1),
         ]
         mock_socket = MockSocketWithReplies(list_id=1, replies=replies)
@@ -662,7 +683,7 @@ class TestDelayedErrorResponse:
         replies = [
             make_add_to_list_reply(ref_id=1, status=0),
             make_start_list(),
-            socket.timeout("delayed response"),
+            TimeoutError("delayed response"),
             make_status_reply(status=error_status, ref_id=1),
         ]
         mock_socket = MockSocketWithReplies(list_id=1, replies=replies)
@@ -688,7 +709,7 @@ class TestDelayedErrorResponse:
             make_device_info(name="G:AMANDA", ref_id=3, di=12346),
             make_start_list(),
             make_scalar_reply(value=72.5, ref_id=1),
-            socket.timeout("delayed DPM_PEND"),
+            TimeoutError("delayed DPM_PEND"),
             make_status_reply(status=error_status, ref_id=2),
             make_scalar_reply(value=1.234, ref_id=3),
         ]
@@ -913,3 +934,139 @@ class TestGetManyTimeoutConnectionCleanup:
 
         # The connection MUST be closed so the pool discards it
         mock_conn.close.assert_called()
+
+
+# =============================================================================
+# Pooled-connection hygiene (review §1.4: stale-reply desync)
+# =============================================================================
+
+
+class TestPooledConnectionHygiene:
+    """Stale/spurious replies must never be counted or re-pooled into the next call."""
+
+    def test_ref0_status_is_job_error(self):
+        """Ref-0 Status_reply = job start failure: surfaced, connection closed."""
+        replies = [
+            make_add_to_list_reply(ref_id=1, status=0),
+            make_start_list(),
+            make_status_reply(status=make_error(1, -42), ref_id=0),
+        ]
+        mock_socket = MockSocketWithReplies(list_id=1, replies=replies)
+        with mock.patch("socket.socket", return_value=mock_socket):
+            backend = DPMHTTPBackend()
+            try:
+                with pytest.raises(ReadError, match="job start failed"):
+                    backend.get_many([TEMP_DEVICE], timeout=1.0)
+                assert mock_socket._closed
+            finally:
+                backend.close()
+
+    def test_ref0_status_preserves_later_healthy_reply(self):
+        error_status = make_error(1, -42)
+        replies = [
+            make_add_to_list_reply(ref_id=1, status=0),
+            make_add_to_list_reply(ref_id=2, status=0),
+            make_device_info(name=TEMP_DEVICE, ref_id=1),
+            make_device_info(name="G:AMANDA", ref_id=2),
+            make_start_list(),
+            make_status_reply(status=error_status, ref_id=0),
+            make_scalar_reply(value=1.234, ref_id=2),
+        ]
+        mock_socket = MockSocketWithReplies(list_id=1, replies=replies)
+        with mock.patch("socket.socket", return_value=mock_socket):
+            backend = DPMHTTPBackend()
+            try:
+                with pytest.raises(ReadError) as exc_info:
+                    backend.get_many([TEMP_DEVICE, "G:AMANDA"], timeout=0.01)
+                assert exc_info.value.readings[0].error_code == -42
+                assert exc_info.value.readings[1].value == 1.234
+            finally:
+                backend.close()
+
+    def test_ref0_status_is_used_for_incomplete_logger(self):
+        error_status = make_error(1, -42)
+        replies = [
+            make_add_to_list_reply(ref_id=1, status=0),
+            make_start_list(),
+            make_status_reply(status=error_status, ref_id=0),
+        ]
+        mock_socket = MockSocketWithReplies(list_id=1, replies=replies)
+        with mock.patch("socket.socket", return_value=mock_socket):
+            backend = DPMHTTPBackend()
+            try:
+                with pytest.raises(ReadError) as exc_info:
+                    backend.get_many(["M:OUTTMP<-LOGGER:1736942400000:1736946000000"], timeout=0.01)
+                assert exc_info.value.readings[0].error_code == -42
+                assert "incomplete" not in (exc_info.value.readings[0].message or "").lower()
+            finally:
+                backend.close()
+
+    def test_stale_out_of_range_reply_ignored(self):
+        """A reply with a ref outside 1..N is stale/unknown — never counted."""
+        replies = [
+            make_add_to_list_reply(ref_id=1, status=0),
+            make_device_info(),
+            make_start_list(),
+            make_scalar_reply(value=99.0, ref_id=7),  # stale ref from a previous borrow
+            make_scalar_reply(value=TEMP_VALUE, ref_id=1),
+        ]
+        mock_socket = MockSocketWithReplies(list_id=1, replies=replies)
+        with mock.patch("socket.socket", return_value=mock_socket):
+            backend = DPMHTTPBackend()
+            try:
+                readings = backend.get_many([TEMP_DEVICE], timeout=2.0)
+                assert readings[0].ok
+                assert readings[0].value == TEMP_VALUE
+                assert not mock_socket._closed  # @I read — safe to re-pool
+            finally:
+                backend.close()
+
+    def test_repeating_event_closes_connection(self):
+        """A connection that carried @p must be closed, not re-pooled."""
+        replies = [
+            make_add_to_list_reply(ref_id=1, status=0),
+            make_device_info(),
+            make_start_list(),
+            make_scalar_reply(value=1.0, ref_id=1),
+        ]
+        mock_socket = MockSocketWithReplies(list_id=1, replies=replies)
+        with mock.patch("socket.socket", return_value=mock_socket):
+            backend = DPMHTTPBackend()
+            try:
+                readings = backend.get_many(["M:OUTTMP@p,1000"], timeout=2.0)
+                assert readings[0].value == 1.0
+                assert mock_socket._closed
+            finally:
+                backend.close()
+
+    def test_no_cross_call_misattribution(self):
+        """End-to-end: an extra periodic reply must not become the next call's value."""
+        sock1 = MockSocketWithReplies(
+            list_id=1,
+            replies=[
+                make_add_to_list_reply(ref_id=1, status=0),
+                make_device_info(),
+                make_start_list(),
+                make_scalar_reply(value=1.0, ref_id=1),
+                make_scalar_reply(value=2.0, ref_id=1),  # extra periodic sample left in stream
+            ],
+        )
+        sock2 = MockSocketWithReplies(
+            list_id=1,
+            replies=[
+                make_add_to_list_reply(ref_id=1, status=0),
+                make_device_info(name="G:AMANDA"),
+                make_start_list(),
+                make_scalar_reply(value=55.5, ref_id=1),
+            ],
+        )
+        with mock.patch("socket.socket", side_effect=[sock1, sock2]):
+            backend = DPMHTTPBackend()
+            try:
+                r1 = backend.get_many(["M:OUTTMP@p,1000"], timeout=2.0)
+                assert r1[0].value == 1.0
+                r2 = backend.get_many(["G:AMANDA"], timeout=2.0)
+                assert r2[0].ok
+                assert r2[0].value == 55.5  # NOT 2.0 — the stale sample from call 1
+            finally:
+                backend.close()

@@ -91,7 +91,7 @@ pip install -e ".[dev]"
     async for reading, handle in stream.readings(timeout=30):
         print(f"{reading.name}: {reading.value}")
         if reading.value > 100:
-            handle.stop()
+            await handle.stop()
     ```
 
 The `@p,1000` means "send data every 1000 milliseconds". For streaming, a repeating event type must be specified.

@@ -10,16 +10,17 @@ Write methods: write(), control(), on(), off(), reset(), etc.
 from __future__ import annotations
 
 import time
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
-from pacsys._device_base import _DeviceBase, CONTROL_STATUS_MAP, _validate_callback
-from pacsys.drf3 import parse_request, parse_event
+from pacsys._device_base import CONTROL_STATUS_MAP, _DeviceBase, _require_str_list, _validate_callback
+from pacsys.drf3 import parse_event, parse_request
 from pacsys.drf3.event import NeverEvent
 from pacsys.drf3.property import DRF_PROPERTY
-from pacsys.types import Value, Reading, WriteResult, BasicControl, ReadingCallback, ErrorCallback, SubscriptionHandle
+from pacsys.types import BasicControl, ErrorCallback, Reading, ReadingCallback, SubscriptionHandle, Value, WriteResult
 
 if TYPE_CHECKING:
     import numpy as np
+
     from pacsys.backends import Backend
     from pacsys.digital_status import DigitalStatus
     from pacsys.verify import Verify
@@ -33,7 +34,7 @@ class Device(_DeviceBase):
 
     __slots__ = ("_backend",)
 
-    def __init__(self, drf: str, backend: Optional[Backend] = None):
+    def __init__(self, drf: str, backend: Backend | None = None):
         """Create a device from DRF string.
 
         Args:
@@ -124,7 +125,7 @@ class Device(_DeviceBase):
 
     def info(self, timeout: float | None = None):
         """Fetch device metadata from DevDB (cached)."""
-        from pacsys.devdb import DeviceInfoResult  # noqa: F811
+        from pacsys.devdb import DeviceInfoResult
 
         devdb = self._get_devdb()
         if devdb is None:
@@ -134,8 +135,8 @@ class Device(_DeviceBase):
             )
         results: dict[str, DeviceInfoResult] = devdb.get_device_info([self.name], timeout=timeout)
         if self.name not in results:
+            from pacsys.acnet.errors import ERR_NOPROP, FACILITY_DBM
             from pacsys.errors import DeviceError
-            from pacsys.acnet.errors import FACILITY_DBM, ERR_NOPROP
 
             raise DeviceError(self.drf, FACILITY_DBM, ERR_NOPROP, f"Device '{self.name}' not found in DevDB")
         return results[self.name]
@@ -188,15 +189,11 @@ class Device(_DeviceBase):
         bit_values = readings[2].value
         if not isinstance(raw_value, (int, float)):
             raise TypeError(f"Expected numeric BIT_VALUE, got {type(raw_value).__name__}")
-        if not isinstance(bit_names, list):
-            raise TypeError(f"Expected list for BIT_NAMES, got {type(bit_names).__name__}")
-        if not isinstance(bit_values, list):
-            raise TypeError(f"Expected list for BIT_VALUES, got {type(bit_values).__name__}")
         return DigitalStatus.from_bit_arrays(
             device=name,
             raw_value=int(raw_value),
-            bit_names=bit_names,  # type: ignore[arg-type]
-            bit_values=bit_values,  # type: ignore[arg-type]
+            bit_names=_require_str_list(bit_names, "BIT_NAMES"),
+            bit_values=_require_str_list(bit_values, "BIT_VALUES"),
         )
 
     # ─── Write Methods ────────────────────────────────────────────────────
@@ -212,6 +209,10 @@ class Device(_DeviceBase):
         """Write to SETTING property."""
         from pacsys.verify import resolve_verify, values_match
 
+        if isinstance(value, BasicControl):
+            raise TypeError(
+                f"BasicControl.{value.name} targets the CONTROL property - use control() instead of write()"
+            )
         v = resolve_verify(verify)
         resolved_field = self._resolve_field(field, DRF_PROPERTY.SETTING)
         write_drf = self._build_drf(DRF_PROPERTY.SETTING, resolved_field, "N")
@@ -497,10 +498,15 @@ class Device(_DeviceBase):
 
     def with_backend(self, backend: Backend) -> Device:
         """Return new Device bound to a specific backend."""
-        return self.__class__(self.drf, backend)
+        return self._new(self.drf, backend)
 
     def _from_drf(self, drf: str) -> Device:
-        return self.__class__(drf, self._backend)
+        return self._new(drf, self._backend)
+
+    def _new(self, drf: str, backend: Backend | None) -> Device:
+        device = self.__class__(drf, backend)
+        device._request.field_explicit = self._request.field_explicit
+        return device
 
     # ─── Internal ─────────────────────────────────────────────────────────
 
@@ -556,4 +562,4 @@ class TextDevice(Device):
         return value
 
 
-__all__ = ["Device", "ScalarDevice", "ArrayDevice", "TextDevice"]
+__all__ = ["ArrayDevice", "Device", "ScalarDevice", "TextDevice"]

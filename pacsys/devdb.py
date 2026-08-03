@@ -20,6 +20,7 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from typing import Any, Generic, TypeVar, cast
 
 
 logger = logging.getLogger(__name__)
@@ -32,9 +33,9 @@ try:
     DEVDB_AVAILABLE = True
 except (ImportError, TypeError) as e:
     DEVDB_AVAILABLE = False
-    grpc = None  # type: ignore[assignment]
-    DevDB_pb2 = None  # type: ignore[assignment]
-    DevDB_pb2_grpc = None  # type: ignore[assignment]
+    grpc = cast(Any, None)
+    DevDB_pb2 = cast(Any, None)
+    DevDB_pb2_grpc = cast(Any, None)
     _import_error = str(e)
 
 
@@ -294,16 +295,19 @@ def _convert_alarm_text(proto_text) -> AlarmText:
 # ─── TTL Cache ────────────────────────────────────────────────────────────────
 
 
-class _TTLCache:
+_T = TypeVar("_T")
+
+
+class _TTLCache(Generic[_T]):
     """Thread-safe TTL cache with max size eviction."""
 
     def __init__(self, ttl: float, max_size: int = 10000):
         self._ttl = ttl
         self._max_size = max_size
         self._lock = threading.Lock()
-        self._data: OrderedDict[str, tuple[float, object]] = OrderedDict()
+        self._data: OrderedDict[str, tuple[float, _T]] = OrderedDict()
 
-    def get(self, key: str) -> object | None:
+    def get(self, key: str) -> _T | None:
         with self._lock:
             entry = self._data.get(key)
             if entry is None:
@@ -315,7 +319,7 @@ class _TTLCache:
             self._data.move_to_end(key)
             return value
 
-    def put(self, key: str, value: object) -> None:
+    def put(self, key: str, value: _T) -> None:
         with self._lock:
             if key in self._data:
                 self._data.move_to_end(key)
@@ -375,7 +379,7 @@ class DevDBClient:
         )
         self._port = port if port is not None else int(os.environ.get("PACSYS_DEVDB_PORT", "6802"))
         self._timeout = timeout if timeout is not None else 5.0
-        self._cache = _TTLCache(cache_ttl)
+        self._cache = _TTLCache[DeviceInfoResult](cache_ttl)
         self._closed = False
 
         target = self._host if "/" in self._host else f"{self._host}:{self._port}"
@@ -405,14 +409,14 @@ class DevDBClient:
         for name in names:
             cached = self._cache.get(f"info:{name.upper()}")
             if cached is not None:
-                result[name] = cached  # type: ignore[assignment]
+                result[name] = cached
             else:
                 uncached.append(name)
 
         if not uncached:
             return result
 
-        request = DevDB_pb2.DeviceList(device=uncached)  # type: ignore[unresolved-attribute]
+        request = DevDB_pb2.DeviceList(device=uncached)
         reply = self._stub.getDeviceInfo(request, timeout=timeout or self._timeout)
 
         pending: dict[str, DeviceInfoResult] = {}
@@ -457,7 +461,7 @@ class DevDBClient:
             grpc.RpcError: On gRPC transport failure.
         """
         self._check_closed()
-        request = DevDB_pb2.DeviceList(device=names)  # type: ignore[unresolved-attribute]
+        request = DevDB_pb2.DeviceList(device=names)
         reply = self._stub.getAllAlarmInfo(request, timeout=self._timeout)
         return [_convert_alarm_info(a) for a in reply.alarm_info]
 
@@ -474,7 +478,7 @@ class DevDBClient:
             grpc.RpcError: On gRPC transport failure.
         """
         self._check_closed()
-        request = DevDB_pb2.AlarmTextIdList(alarm_text_id=ids)  # type: ignore[unresolved-attribute]
+        request = DevDB_pb2.AlarmTextIdList(alarm_text_id=ids)
         reply = self._stub.getAlarmText(request, timeout=self._timeout)
         return [_convert_alarm_text(t) for t in reply.device_alarm_text]
 
