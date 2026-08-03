@@ -510,7 +510,7 @@ class TestDMQBackendRead:
     def test_get_many_same_device_different_properties(self):
         """Regression: routing key matching when ref_id is missing."""
         replies = [make_double_reply(1.0), make_double_reply(2.0)]
-        routing_keys = [f"R.{TEMP_DEVICE}@I", f"R.{TEMP_DEVICE}.SETTING@I"]
+        routing_keys = [f"R.{TEMP_DEVICE}.READING@I", f"R.{TEMP_DEVICE}.SETTING@I"]
         with _mock_dmq_backend(replies, routing_keys) as backend:
             readings = backend.get_many([TEMP_DEVICE, f"{TEMP_DEVICE}.SETTING"])
             assert len(readings) == 2
@@ -520,7 +520,7 @@ class TestDMQBackendRead:
     def test_get_many_out_of_order_routing_keys(self):
         """Test correct matching when responses arrive out of order."""
         replies = [make_double_reply(99.0), make_double_reply(42.0)]
-        routing_keys = [f"R.{TEMP_DEVICE}.SETTING@I", f"R.{TEMP_DEVICE}@I"]
+        routing_keys = [f"R.{TEMP_DEVICE}.SETTING@I", f"R.{TEMP_DEVICE}.READING@I"]
         with _mock_dmq_backend(replies, routing_keys) as backend:
             readings = backend.get_many([TEMP_DEVICE, f"{TEMP_DEVICE}.SETTING"])
             assert len(readings) == 2

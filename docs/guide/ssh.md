@@ -306,6 +306,11 @@ with ssh.acl_session() as acl:
         print(f"ACL error: {e}")
 ```
 
+Persistent sessions reject commands containing line breaks; combine statements with
+semicolons instead. If sending or prompt detection fails, the session closes itself to
+prevent delayed output from being attributed to a later command. Create a new session
+before retrying.
+
 Sending on a closed session also raises `ACLError`:
 
 ```python

@@ -9,6 +9,7 @@ from typing import Callable, TYPE_CHECKING
 
 from pacsys.types import DeviceSpec, Reading, Value, WriteResult
 from pacsys.exp._resolve import resolve_drf, resolve_backend
+from pacsys.exp._values import numeric_value
 
 if TYPE_CHECKING:
     from pacsys.backends import Backend
@@ -184,18 +185,17 @@ def _read_step(
 
     result: dict[str, Reading] = {}
     for drf, rs in accumulated.items():
-        ok_readings = []
+        ok_readings: list[tuple[Reading, float]] = []
         for r in rs:
-            if r.ok and not isinstance(r.value, bool) and type(r.value).__name__ != "bool_":
-                try:
-                    float(r.value)  # type: ignore[arg-type]
-                    ok_readings.append(r)
-                except (TypeError, ValueError):
-                    pass
+            if not r.ok:
+                continue
+            try:
+                ok_readings.append((r, numeric_value(r.value)))
+            except (TypeError, ValueError):
+                pass
         if ok_readings:
-            numeric = [float(r.value) for r in ok_readings]
-            avg = sum(numeric) / len(numeric)
-            result[drf] = replace(ok_readings[-1], value=avg)
+            avg = sum(value for _, value in ok_readings) / len(ok_readings)
+            result[drf] = replace(ok_readings[-1][0], value=avg)
         else:
             result[drf] = rs[-1]
     return result

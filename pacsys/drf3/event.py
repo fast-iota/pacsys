@@ -38,10 +38,11 @@ def parse_event(parse_str: Optional[str]):
         return None
     if not parse_str:
         raise ValueError("event string must not be empty")
-    char = parse_str[0].upper()
-    if char == "U":
+    normalized = parse_str.upper()
+    char = normalized[0]
+    if normalized == "U":
         return DefaultEvent()
-    elif char == "I":
+    elif normalized == "I":
         return ImmediateEvent()
     elif char in ["P", "Q"]:
         return PeriodicEvent(parse_str, char)

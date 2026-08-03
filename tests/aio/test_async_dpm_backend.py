@@ -131,6 +131,17 @@ class TestAsyncDPMWrite:
         result = await b.write_many([])
         assert result == []
 
+    @pytest.mark.asyncio
+    async def test_write_many_prevalidates_before_connecting(self):
+        auth = KerberosAuth(_lazy=True)
+        backend = AsyncDPMHTTPBackend(host="localhost", port=6802, auth=auth)
+        backend._create_core = mock.AsyncMock()
+
+        with pytest.raises(TypeError, match="only strings"):
+            await backend.write_many([("M:OUTTMP", ["on", 1])])
+
+        backend._create_core.assert_not_awaited()
+
 
 class TestAsyncDPMSubscribe:
     @pytest.mark.asyncio

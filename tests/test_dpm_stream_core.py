@@ -222,6 +222,31 @@ class TestDpmStreamCore:
         assert isinstance(errors[0], DPMConnectionError)
         assert "status=99" in str(errors[0])
 
+    def test_ref0_status_failure_calls_error_fn(self):
+        """A job-start failure is fatal instead of being ignored as an unknown ref."""
+        conn = MockAsyncDPMConnection(
+            replies=[
+                make_start_list(),
+                make_status_reply(status=0xBB06, ref_id=0),
+                make_scalar_reply(ref_id=1),
+            ]
+        )
+        dispatched, errors = [], []
+
+        self._run(
+            self._core(conn).stream(
+                drfs=[TEMP_DEVICE],
+                dispatch_fn=dispatched.append,
+                stop_check=lambda: False,
+                error_fn=errors.append,
+            )
+        )
+
+        assert not dispatched
+        assert len(errors) == 1
+        assert isinstance(errors[0], DPMConnectionError)
+        assert "job start failed" in str(errors[0]).lower()
+
     # -- Connection error calls error_fn -----------------------------------
 
     def test_connection_error_calls_error_fn(self):

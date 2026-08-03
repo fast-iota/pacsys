@@ -6,8 +6,11 @@ import base64
 import csv
 import json
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
+import numpy as np
+
+from pacsys.exp._values import numeric_value
 from pacsys.types import Reading, Value, ValueType
 
 
@@ -23,20 +26,42 @@ _ARRAY_TYPES = frozenset({ValueType.SCALAR_ARRAY})
 _JSON_TYPES = frozenset({ValueType.TEXT_ARRAY, ValueType.ANALOG_ALARM, ValueType.DIGITAL_ALARM, ValueType.BASIC_STATUS})
 
 
+def _ndarray_to_list(value: np.ndarray) -> list[Any]:
+    if value.ndim != 1:
+        raise TypeError("Logged arrays must be one-dimensional")
+    result = cast(Any, value).tolist()
+    if not isinstance(result, list):
+        raise TypeError("NumPy array conversion did not produce a list")
+    return result
+
+
+def _arraylike_to_list(v: Value) -> list[Any]:
+    if isinstance(v, np.ndarray):
+        return _ndarray_to_list(v)
+    if isinstance(v, list):
+        return [value.item() if isinstance(value, np.generic) else value for value in v]
+    raise TypeError(f"Expected an array value, got {type(v).__name__}")
+
+
 def _arraylike_to_floats(v: Value) -> list[float]:
-    """Convert ndarray or list to list[float], avoiding redundant float() on numpy tolist()."""
-    if hasattr(v, "tolist"):
-        return v.tolist()  # type: ignore[union-attr]
-    return [float(x) for x in v]  # type: ignore[arg-type]
+    """Convert a one-dimensional ndarray or list to list[float]."""
+    return [float(value) for value in _arraylike_to_list(v)]
 
 
 def _timed_array_to_json(v: Value) -> str:
     """Serialize a timed scalar array dict {"data": ndarray, "micros": ndarray} to JSON."""
     if not isinstance(v, dict):
         v = {"data": v}
-    out = {}
+    out: dict[str, list] = {}
     for k, arr in v.items():
-        out[k] = arr.tolist() if hasattr(arr, "tolist") else list(arr)  # type: ignore[union-attr]
+        if not isinstance(k, str):
+            raise TypeError("Timed scalar array keys must be strings")
+        if isinstance(arr, np.ndarray):
+            out[k] = _ndarray_to_list(arr)
+        elif isinstance(arr, list):
+            out[k] = arr
+        else:
+            raise TypeError(f"Timed scalar array field {k!r} must be an array")
     return json.dumps(out)
 
 
@@ -47,7 +72,7 @@ def _format_value_str(r: Reading) -> str:
     if r.value_type == ValueType.SCALAR:
         return str(r.value)
     if r.value_type in _ARRAY_TYPES:
-        return json.dumps(_arraylike_to_floats(r.value))
+        return json.dumps(_arraylike_to_list(r.value))
     if r.value_type == ValueType.TIMED_SCALAR_ARRAY:
         return _timed_array_to_json(r.value)
     if r.value_type == ValueType.TEXT:
@@ -102,7 +127,7 @@ def _convert_value(r: Reading) -> tuple[float | None, int | None, list[float] | 
         if isinstance(r.value, int):
             return None, int(r.value), None, None
         # float and any numpy floating type → float64 column
-        return float(r.value), None, None, None  # type: ignore[arg-type]
+        return numeric_value(r.value), None, None, None
 
     if r.value_type in _ARRAY_TYPES:
         return None, None, _arraylike_to_floats(r.value), None

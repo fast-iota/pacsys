@@ -49,8 +49,8 @@ with pacsys.grpc(auth=auth) as backend:
 
 | Parameter | Default | Environment Variable |
 |-----------|---------|---------------------|
-| `host` | dce08.fnal.gov | - |
-| `port` | 50051 | - |
+| `host` | dce08.fnal.gov | `PACSYS_GRPC_HOST` |
+| `port` | 50051 | `PACSYS_GRPC_PORT` |
 | `auth` | None | `PACSYS_JWT_TOKEN` |
 
 ## Write Permissions (JWT)

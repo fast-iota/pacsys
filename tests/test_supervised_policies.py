@@ -2,6 +2,7 @@
 
 import time
 
+import numpy as np
 import pytest
 
 from pacsys.supervised._policies import (
@@ -334,10 +335,41 @@ class TestValueRangePolicy:
         d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 5.0)]))
         assert not d.allowed
 
-    def test_non_numeric_skipped(self):
+    def test_non_numeric_denied_for_limited_device(self):
+        """Fail closed: values the policy can't interpret must not bypass a configured limit."""
         p = ValueRangePolicy(limits={"M:*": (0.0, 100.0)})
         d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", "hello")]))
+        assert not d.allowed
+        assert "Non-numeric" in d.reason
+
+    def test_non_numeric_allowed_for_unlimited_device(self):
+        p = ValueRangePolicy(limits={"G:*": (0.0, 100.0)})
+        d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", "hello")]))
         assert d.allowed
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            [9999.0],
+            "9999",
+            np.array([9999.0]),
+            np.int32(9999),
+            [1.0, 9999.0],  # one bad element in an otherwise-good array
+            float("nan"),
+            b"\x01",
+        ],
+    )
+    def test_bypass_encodings_denied(self, value):
+        """Regression for policy bypass: every re-encoding of an out-of-range value is denied."""
+        p = ValueRangePolicy(limits={"M:*": (0.0, 100.0)})
+        d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", value)]))
+        assert not d.allowed
+
+    def test_in_range_array_allowed(self):
+        p = ValueRangePolicy(limits={"M:*": (0.0, 100.0)})
+        for value in ([1.0, 50.0, 100.0], np.array([1.0, 2.0]), np.int32(50)):
+            d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", value)]))
+            assert d.allowed, f"{value!r} should be allowed"
 
     def test_reads_pass_through(self):
         p = ValueRangePolicy(limits={"M:*": (0.0, 100.0)})
@@ -462,6 +494,39 @@ class TestSlewRatePolicy:
     def test_empty_limits_raises(self):
         with pytest.raises(ValueError, match="empty"):
             SlewRatePolicy(limits={})
+
+    @pytest.mark.parametrize(
+        "value",
+        ["100", [1.0, 2.0], float("nan"), b"\x01"],
+    )
+    def test_non_scalar_denied_for_limited_device(self, value):
+        """Fail closed: non-scalar/non-finite values must not bypass a slew limit."""
+        p = SlewRatePolicy(limits={"M:*": SlewLimit(max_step=5.0)})
+        d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", value)]))
+        assert not d.allowed
+        assert "slew-limited" in d.reason
+
+    @pytest.mark.parametrize("value", [[100.0], np.array([100.0])])
+    def test_single_element_container_enforced(self, value):
+        """A length-1 list/array is treated as its scalar — enforced, not bypassed."""
+        p = SlewRatePolicy(limits={"M:*": SlewLimit(max_step=5.0)})
+        p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 0.0)]))
+        d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", value)]))
+        assert not d.allowed
+        assert "Step" in d.reason
+
+    def test_non_scalar_allowed_for_unlimited_device(self):
+        p = SlewRatePolicy(limits={"G:*": SlewLimit(max_step=5.0)})
+        d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", [100.0])]))
+        assert d.allowed
+
+    def test_numpy_scalar_enforced(self):
+        """np.int32 previously bypassed the isinstance check entirely."""
+        p = SlewRatePolicy(limits={"M:*": SlewLimit(max_step=5.0)})
+        p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", np.int32(0))]))
+        d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", np.int32(100))]))
+        assert not d.allowed
+        assert "Step" in d.reason
 
 
 # ── Chain Evaluation ──────────────────────────────────────────────────────

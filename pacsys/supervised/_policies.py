@@ -1,14 +1,43 @@
 """Pluggable policy system for supervised proxy server."""
 
 import fnmatch
+import math
 import re
 import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
+
+import numpy as np
 
 from pacsys.drf_utils import get_device_name
+from pacsys.types import Value
+
+
+def _numeric_elements(value: object) -> list[float] | None:
+    """Flatten *value* to its numeric elements; None if any element is non-numeric.
+
+    Policies must fail closed: a value they cannot interpret numerically
+    (str, bytes, dict, mixed list, ...) returns None and must be denied for
+    limited devices, not skipped.
+    """
+    if isinstance(value, (bool, int, float)):  # covers np.float64 (subclasses float)
+        return [float(value)]
+    if isinstance(value, np.generic):
+        return [float(value)] if isinstance(value, (np.bool_, np.integer, np.floating)) else None
+    if isinstance(value, np.ndarray):
+        if value.dtype == bool or np.issubdtype(value.dtype, np.number):
+            return [float(x) for x in np.asarray(value).ravel()]
+        return None
+    if isinstance(value, (list, tuple)):
+        out: list[float] = []
+        for item in value:
+            sub = _numeric_elements(item)
+            if sub is None:
+                return None
+            out.extend(sub)
+        return out
+    return None
 
 
 @dataclass(frozen=True)
@@ -19,7 +48,7 @@ class RequestContext:
     rpc_method: str  # "Read" or "Set"
     peer: str
     metadata: dict[str, str]
-    values: list[tuple[str, object]]  # [(DRF, value), ...] — empty for reads
+    values: list[tuple[str, Value]]  # [(DRF, value), ...] — empty for reads
     raw_request: object  # raw protobuf message
     allowed: frozenset[int] = frozenset()  # slot indices approved for this operation
 
@@ -34,8 +63,8 @@ class PolicyDecision:
     """
 
     allowed: bool
-    reason: Optional[str] = None
-    ctx: Optional[RequestContext] = None
+    reason: str | None = None
+    ctx: RequestContext | None = None
 
     def __post_init__(self):
         if not self.allowed and not self.reason:
@@ -196,7 +225,7 @@ class ValueRangePolicy(Policy):
             raise ValueError("limits must not be empty")
         self._limits = limits
 
-    def _bound_for(self, device_name: str) -> Optional[tuple[float, float]]:
+    def _bound_for(self, device_name: str) -> tuple[float, float] | None:
         upper = device_name.upper()
         for pattern, bound in self._limits.items():
             if fnmatch.fnmatchcase(upper, pattern.upper()):
@@ -207,18 +236,24 @@ class ValueRangePolicy(Policy):
         if ctx.rpc_method != "Set":
             return _ALLOW
         for drf, value in ctx.values:
-            if not isinstance(value, (int, float)):
-                continue
-            bound = self._bound_for(get_device_name(drf))
+            name = get_device_name(drf)
+            bound = self._bound_for(name)
             if bound is None:
                 continue
-            lo, hi = bound
-            if not (lo <= value <= hi):
-                name = get_device_name(drf)
+            elements = _numeric_elements(value)
+            if elements is None:
                 return PolicyDecision(
                     allowed=False,
-                    reason=f"Value {value} for {name} outside range [{lo}, {hi}]",
+                    reason=f"Non-numeric value {value!r} for range-limited device {name}",
                 )
+            lo, hi = bound
+            for v in elements:
+                # NaN/inf fail the comparison and are denied (fail closed)
+                if not (lo <= v <= hi):
+                    return PolicyDecision(
+                        allowed=False,
+                        reason=f"Value {v} for {name} outside range [{lo}, {hi}]",
+                    )
         return _ALLOW
 
 
@@ -233,8 +268,8 @@ class SlewLimit:
         max_rate: Maximum rate of change (units/second).
     """
 
-    max_step: Optional[float] = None
-    max_rate: Optional[float] = None
+    max_step: float | None = None
+    max_rate: float | None = None
 
     def __post_init__(self):
         if self.max_step is None and self.max_rate is None:
@@ -259,7 +294,7 @@ class SlewRatePolicy(Policy):
         self._lock = threading.Lock()
         self._history: dict[str, tuple[float, float]] = {}  # device -> (value, timestamp)
 
-    def _limit_for(self, device_name: str) -> Optional[SlewLimit]:
+    def _limit_for(self, device_name: str) -> SlewLimit | None:
         upper = device_name.upper()
         for pattern, limit in self._limits.items():
             if fnmatch.fnmatchcase(upper, pattern.upper()):
@@ -275,12 +310,18 @@ class SlewRatePolicy(Policy):
         with self._lock:
             # First pass: validate all values
             for drf, value in ctx.values:
-                if not isinstance(value, (int, float)):
-                    continue
                 name = get_device_name(drf)
                 limit = self._limit_for(name)
                 if limit is None:
                     continue
+                elements = _numeric_elements(value)
+                if elements is None or len(elements) != 1 or not math.isfinite(elements[0]):
+                    # Slew against scalar history is undefined for arrays/text/NaN — fail closed
+                    return PolicyDecision(
+                        allowed=False,
+                        reason=f"Non-scalar or non-finite value {value!r} for slew-limited device {name}",
+                    )
+                value = elements[0]
                 prev = self._history.get(name)
                 if prev is None:
                     continue  # first write always allowed
@@ -304,11 +345,12 @@ class SlewRatePolicy(Policy):
 
             # Second pass: update history (only if all passed)
             for drf, value in ctx.values:
-                if not isinstance(value, (int, float)):
-                    continue
                 name = get_device_name(drf)
-                if self._limit_for(name) is not None:
-                    self._history[name] = (float(value), now)
+                if self._limit_for(name) is None:
+                    continue
+                elements = _numeric_elements(value)
+                if elements is not None and len(elements) == 1:  # guaranteed by first pass
+                    self._history[name] = (elements[0], now)
 
         return _ALLOW
 

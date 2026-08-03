@@ -6,11 +6,12 @@ from unittest import mock
 import numpy as np
 import pytest
 
-from pacsys.errors import AuthenticationError, ReadError
-from pacsys.types import ValueType
-
+from pacsys.backends._dpm_core import _AsyncDpmCore
+from pacsys.backends.dpm_http import _AsyncDPMConnection
+from pacsys.dpm_connection import DPMConnectionError
 from pacsys.dpm_protocol import (
     AddToList_reply,
+    ApplySettings_reply,
     Authenticate_reply,
     Authenticate_request,
     DeviceInfo_reply,
@@ -20,9 +21,9 @@ from pacsys.dpm_protocol import (
     StartList_reply,
     Status_reply,
     TimedScalarArray_reply,
-    ApplySettings_reply,
 )
-from pacsys.backends._dpm_core import _AsyncDpmCore
+from pacsys.errors import AuthenticationError, ReadError
+from pacsys.types import ValueType
 from tests.devices import MockGSSAPIModule, make_auth_reply
 
 
@@ -67,6 +68,13 @@ def _status_ok(ref_id=0):
     r = Status_reply()
     r.ref_id = ref_id
     r.status = 0
+    return r
+
+
+def _status_err(ref_id=0, status=0xBB06):
+    r = Status_reply()
+    r.ref_id = ref_id
+    r.status = status
     return r
 
 
@@ -119,6 +127,20 @@ class FakeAsyncConn:
 
     async def close(self):
         self._closed = True
+
+
+@pytest.mark.asyncio
+async def test_async_connection_list_id_tracks_lifecycle():
+    conn = _AsyncDPMConnection("localhost", 6802)
+    with pytest.raises(DPMConnectionError, match=r"connect\(\) must complete"):
+        _ = conn.list_id
+
+    conn._list_id = 42
+    assert conn.list_id == 42
+    await conn.close()
+
+    with pytest.raises(DPMConnectionError, match=r"connect\(\) must complete"):
+        _ = conn.list_id
 
 
 @pytest.fixture
@@ -214,6 +236,84 @@ class TestReadMany:
 
         assert conn._closed is True
 
+    @pytest.mark.asyncio
+    async def test_read_ref0_status_is_job_error(self, make_core):
+        """Ref-0 Status_reply = job start failure: surfaced, core closed."""
+        replies = [_add_ok(1), _start_ok(), _status_err(ref_id=0)]
+        core, conn = make_core(replies)
+
+        with pytest.raises(ReadError, match="job start failed"):
+            await core.read_many(["M:OUTTMP"], timeout=1.0)
+
+        assert conn._closed is True
+        assert not core.connected
+
+    @pytest.mark.asyncio
+    async def test_read_ref0_status_preserves_later_healthy_reply(self, make_core):
+        replies = [
+            _add_ok(1),
+            _add_ok(2),
+            _device_info(1),
+            _device_info(2),
+            _start_ok(),
+            _status_err(ref_id=0, status=0xBB06),
+            _scalar_reply(2, 20.0),
+        ]
+        core, conn = make_core(replies)
+
+        with pytest.raises(ReadError) as exc_info:
+            await core.read_many(["M:OUTTMP", "G:AMANDA"], timeout=0.01)
+
+        assert exc_info.value.readings[0].error_code != 0
+        assert exc_info.value.readings[1].value == 20.0
+
+    @pytest.mark.asyncio
+    async def test_read_stale_out_of_range_reply_ignored(self, make_core):
+        """A reply with a ref outside 1..N is stale/unknown — never counted."""
+        replies = [
+            _add_ok(1),
+            _device_info(1),
+            _start_ok(),
+            _scalar_reply(7, 99.0),  # stale ref from a previous borrow
+            _scalar_reply(1, 72.5),
+        ]
+        core, conn = make_core(replies)
+        readings = await core.read_many(["M:OUTTMP"], timeout=2.0)
+        assert readings[0].value == 72.5
+        assert conn._closed is False  # @I read — safe to re-pool
+        assert core.connected
+
+    @pytest.mark.asyncio
+    async def test_read_repeating_event_closes_core(self, make_core):
+        """A core that carried @p must be closed so the pool discards it."""
+        replies = [_add_ok(1), _device_info(1), _start_ok(), _scalar_reply(1, 1.0)]
+        core, conn = make_core(replies)
+        readings = await core.read_many(["M:OUTTMP@p,1000"], timeout=2.0)
+        assert readings[0].value == 1.0
+        assert conn._closed is True
+        assert not core.connected
+
+    @pytest.mark.asyncio
+    async def test_read_stop_send_failure_closes_core(self, make_core):
+        """StopList send failure = unknown connection state — close (match sync)."""
+        replies = [_add_ok(1), _device_info(1), _start_ok(), _scalar_reply(1, 5.0)]
+        core, conn = make_core(replies)
+
+        orig = conn.send_messages_batch
+        calls = {"n": 0}
+
+        async def flaky(msgs):
+            calls["n"] += 1
+            if calls["n"] == 2:  # first batch = setup, second = stop/clear
+                raise OSError("send failed")
+            await orig(msgs)
+
+        conn.send_messages_batch = flaky
+        readings = await core.read_many(["M:OUTTMP"], timeout=2.0)
+        assert readings[0].value == 5.0
+        assert conn._closed is True
+        assert not core.connected
+
 
 class TestWriteMany:
     @pytest.mark.asyncio
@@ -296,6 +396,39 @@ class TestWriteMany:
         # Must reflect actual Status_reply error, not generic timeout
         assert results[0].message != "No reply from server"
 
+    @pytest.mark.asyncio
+    async def test_write_ref0_status_surfaces_job_error(self, make_core):
+        """Ref-0 Status_reply during setup = job start failure — surfaced per device."""
+        replies = [_status_err(ref_id=0, status=0xBB06)]
+        core, conn = make_core(replies)
+        core._settings_enabled = True
+        core._auth = mock.MagicMock()
+        core._auth.principal = "test@fnal.gov"
+
+        results = await core.write_many([("M:OUTTMP.SETTING@N", 72.5)], timeout=1.0)
+        assert len(results) == 1
+        assert not results[0].success
+        assert results[0].message != "No reply from server"
+        # Decoded from the ref-0 status, not a generic timeout
+        from pacsys.acnet.errors import parse_error
+
+        facility, error = parse_error(0xBB06)
+        assert results[0].error_code == error
+        assert results[0].facility_code == facility
+
+    @pytest.mark.asyncio
+    async def test_write_prevalidates_before_authentication(self, make_core):
+        core, conn = make_core([])
+        core.authenticate = mock.AsyncMock()
+        core.enable_settings = mock.AsyncMock()
+
+        with pytest.raises(TypeError, match="only strings"):
+            await core.write_many([("M:OUTTMP.SETTING@N", ["on", 1])])
+
+        core.authenticate.assert_not_awaited()
+        core.enable_settings.assert_not_awaited()
+        assert not conn.sent
+
 
 class TestStream:
     @pytest.mark.asyncio
@@ -329,6 +462,20 @@ class TestStream:
         await core.stream(["M:OUTTMP@p,1000"], dispatch, lambda: stopped, lambda e: None)
         assert len(dispatched) == 1
         assert dispatched[0].is_error
+
+    @pytest.mark.asyncio
+    async def test_stream_ref0_status_is_fatal(self, make_core):
+        replies = [_start_ok(), _status_err(ref_id=0, status=0xBB06), _scalar_reply(1, 42.0)]
+        core, conn = make_core(replies)
+        dispatched = []
+        errors = []
+
+        await core.stream(["M:OUTTMP@p,1000"], dispatched.append, lambda: False, errors.append)
+
+        assert not dispatched
+        assert len(errors) == 1
+        assert isinstance(errors[0], DPMConnectionError)
+        assert "job start failed" in str(errors[0]).lower()
 
 
 class TestEnableSettings:
@@ -464,6 +611,18 @@ class TestLoggerRead:
         assert readings[0].error_code != 0
 
     @pytest.mark.asyncio
+    async def test_logger_ref0_status_uses_job_error(self, make_core):
+        replies = [_add_ok(1), _start_ok(), _status_err(ref_id=0, status=0xBB06)]
+        core, conn = make_core(replies)
+
+        with pytest.raises(ReadError) as exc_info:
+            await core.read_many([LOGGER_DRF], timeout=0.01)
+
+        reading = exc_info.value.readings[0]
+        assert reading.error_code != 0
+        assert "incomplete" not in (reading.message or "").lower()
+
+    @pytest.mark.asyncio
     async def test_logger_error_terminator(self, make_core):
         """Empty terminator with nonzero status surfaces as error, not empty success."""
         error_term = TimedScalarArray_reply()
@@ -531,6 +690,24 @@ class TestAuthenticate:
             auth_reqs = [m for m in conn.sent if isinstance(m, Authenticate_request)]
             assert len(auth_reqs) == 2
             assert auth_reqs[0].token == b""
+
+    @pytest.mark.asyncio
+    async def test_security_context_receives_flag_bitmask(self, make_core, mock_kerberos_auth):
+        mock_gssapi = MockGSSAPIModule()
+        captured = {}
+
+        class CapturingContext(MockGSSAPIContextForAuth):
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                super().__init__(**kwargs)
+
+        mock_gssapi.SecurityContext = CapturingContext
+        with mock.patch.dict("sys.modules", {"gssapi": mock_gssapi}):
+            auth = mock_kerberos_auth(mock_gssapi)
+            core, _ = make_core([make_auth_reply("dpm"), make_auth_reply()], auth=auth)
+            await core.authenticate()
+
+        assert isinstance(captured["flags"], int)
 
     @pytest.mark.asyncio
     async def test_no_auth_raises(self, make_core):

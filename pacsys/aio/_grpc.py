@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from typing import Optional
+from typing import Any, Optional, cast
 
 from pacsys.aio._backends import AsyncBackend
 from pacsys.aio._subscription import AsyncSubscriptionHandle, _callback_feeder
@@ -23,7 +23,7 @@ try:
     from pacsys.backends.grpc_backend import _DaqCore, GRPC_AVAILABLE
 except ImportError:
     GRPC_AVAILABLE = False
-    _DaqCore = None  # type: ignore[assignment,misc]
+    _DaqCore = cast(Any, None)
 
 
 class AsyncGRPCBackend(AsyncBackend):

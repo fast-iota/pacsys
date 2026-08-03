@@ -14,16 +14,16 @@ Tests cover:
 - Field validation
 """
 
-import pytest
 from unittest import mock
-import numpy as np
 
-from pacsys.device import Device, ScalarDevice, ArrayDevice, TextDevice
+import numpy as np
+import pytest
+
+from pacsys.device import ArrayDevice, Device, ScalarDevice, TextDevice
 from pacsys.errors import DeviceError
 from pacsys.testing import FakeBackend
-from pacsys.types import Reading, ValueType, WriteResult, BasicControl
+from pacsys.types import BasicControl, Reading, ValueType, WriteResult
 from pacsys.verify import Verify
-
 
 # Fixtures
 
@@ -105,6 +105,33 @@ class TestDeviceImmutability:
         modified = dev.with_event("E,0F")
         assert not modified.is_periodic
         assert "@E,0F" in modified.drf.upper() or "E,0F" in modified.drf
+
+    @pytest.mark.parametrize(
+        ("drf", "method", "args"),
+        [
+            ("M:OUTTMP.ANALOG.ALL", "with_event", ("P,1000",)),
+            ("M:OUTTMP.ANALOG.ALL", "with_range", (0, 1)),
+            ("M:OUTTMP.ANALOG[0:1].ALL", "without_range", ()),
+            ("M:OUTTMP.ANALOG.ALL@P,1000", "without_event", ()),
+            ("M:OUTTMP.ANALOG.ALL", "with_extra", ("FTP",)),
+        ],
+    )
+    def test_fluent_modifiers_preserve_explicit_default_field(self, drf, method, args):
+        modified = getattr(Device(drf), method)(*args)
+        assert modified.request.field_explicit
+
+    def test_fluent_modifier_preserves_default_field_behavior(self, mock_backend):
+        device = Device("M:OUTTMP.ANALOG.ALL", backend=mock_backend)
+        device.status()
+        device.with_event("P,1000").status()
+        assert mock_backend.read.call_args_list == [
+            mock.call("M:OUTTMP.STATUS.ALL@I", None),
+            mock.call("M:OUTTMP.STATUS.ALL@I", None),
+        ]
+
+    def test_with_backend_preserves_explicit_default_field(self, mock_backend):
+        modified = Device("M:OUTTMP.ANALOG.ALL").with_backend(mock_backend)
+        assert modified.request.field_explicit
 
 
 # Read/Get Delegation Tests
@@ -586,6 +613,42 @@ class TestDeviceFieldValidation:
             dev.read(field="nonexistent")
 
 
+class TestConstructorFieldCarryover:
+    """Explicit field in the constructor DRF must reach the wire (was silently dropped)."""
+
+    def test_read_honors_constructor_field(self, fake):
+        fake.set_reading("M:OUTTMP.READING.RAW", b"\x01", value_type=ValueType.RAW)
+        dev = Device("M:OUTTMP.READING.RAW", backend=fake)
+        dev.read()
+        assert fake.reads[-1] == "M:OUTTMP.READING.RAW@I"
+
+    def test_write_honors_constructor_field(self, fake):
+        fake.set_reading("M:OUTTMP.SETTING.RAW", 100)
+        dev = Device("M:OUTTMP.SETTING.RAW", backend=fake)
+        result = dev.write(100, verify=Verify(initial_delay=0.0, retry_delay=0.0))
+        assert fake.writes[-1][0] == "M:OUTTMP.SETTING.RAW@N"
+        assert fake.reads[-1] == "M:OUTTMP.SETTING.RAW@I"  # readback stays consistent
+        assert result.verified
+
+    def test_method_field_arg_overrides_constructor(self, fake):
+        fake.set_reading("M:OUTTMP.READING", 72.5)
+        dev = Device("M:OUTTMP.READING.RAW", backend=fake)
+        dev.read(field="scaled")
+        assert fake.reads[-1] == "M:OUTTMP.READING@I"
+
+    def test_cross_property_disallowed_field_drops_to_default(self, fake):
+        fake.set_reading("M:OUTTMP.SETTING", 50.0)
+        dev = Device("M:OUTTMP.STATUS.ON", backend=fake)
+        dev.setting()  # ON not allowed for SETTING
+        assert fake.reads[-1] == "M:OUTTMP.SETTING@I"
+
+    def test_default_filled_field_not_carried(self, fake):
+        fake.set_reading("M:OUTTMP.STATUS", 0)
+        dev = Device("M:OUTTMP", backend=fake)  # parser default-fills SCALED
+        dev.status()  # must not become .STATUS.SCALED (invalid)
+        assert fake.reads[-1] == "M:OUTTMP.STATUS@I"
+
+
 # ─── Write method tests ────────────────────────────────────────────────
 
 
@@ -639,6 +702,13 @@ class TestDeviceWriteMethods:
         dev = Device("Z:ACLTST", backend=fake)
         getattr(dev, method)()
         assert fake.writes[-1][1] == expected
+
+    def test_write_rejects_basic_control(self, fake):
+        """BasicControl values must go through control(), never write() (setpoint corruption)."""
+        dev = Device("Z:ACLTST", backend=fake)
+        with pytest.raises(TypeError, match="control\\(\\)"):
+            dev.write(BasicControl.RESET)
+        assert fake.writes == []
 
     def test_write_failed_returns_result(self, fake):
         fake.set_write_result("M:OUTTMP.SETTING", success=False, error_code=-1, message="Fail")

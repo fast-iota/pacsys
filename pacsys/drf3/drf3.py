@@ -6,7 +6,7 @@ from .event import DRF_EVENT, DefaultEvent, parse_event
 from .extra import DRF_EXTRA, parse_extra
 from .field import DEFAULT_FIELD_FOR_PROPERTY, DRF_FIELD, get_default_field, parse_field
 from .property import DRF_PROPERTY, DRF_PROPERTY_ALIASES, get_default_property, parse_property
-from .range import BYTE_RANGE, ARRAY_RANGE, parse_range
+from .range import ARRAY_RANGE, BYTE_RANGE, parse_range
 
 _UNSET: Any = object()
 
@@ -52,6 +52,7 @@ class DataRequest:
         # Raw extra string preserving parameters (e.g., "LOGGER:123:456")
         self.extra_raw = extra_raw or (extra.name if extra is not None else None)
         self.property_explicit = False
+        self.field_explicit = False
 
     def __eq__(self, other):
         if not isinstance(other, DataRequest):
@@ -235,4 +236,5 @@ def parse_request(device_str: str) -> DataRequest:
 
     req = DataRequest(device_str, dev_name, prop_obj, rng, field_obj, event_obj, extra_obj, extra_str)
     req.property_explicit = prop_explicit
+    req.field_explicit = field is not None
     return req

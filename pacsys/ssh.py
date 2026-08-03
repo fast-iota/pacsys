@@ -27,7 +27,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterator, Optional, Union
+from typing import TYPE_CHECKING, Any, Iterator, Optional, Union, cast
 
 if TYPE_CHECKING:
     import paramiko
@@ -37,7 +37,7 @@ _paramiko_import_error = ""
 try:
     import paramiko
 except ImportError as _e:
-    paramiko = None  # type: ignore[assignment]
+    paramiko = cast(Any, None)
     _paramiko_import_error = str(_e)
 
 

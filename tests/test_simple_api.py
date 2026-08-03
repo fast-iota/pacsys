@@ -320,6 +320,10 @@ class TestConfigure:
         with pytest.raises(ValueError, match="Invalid backend"):
             pacsys.configure(backend="nosql")
 
+    def test_configure_invalid_auth_string_raises(self):
+        with pytest.raises(ValueError, match="auth string must be 'krb'"):
+            pacsys.configure(auth="password")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # shutdown() Tests

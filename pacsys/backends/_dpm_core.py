@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import time
-from typing import Optional
 
 import numpy as np
 
@@ -16,16 +15,18 @@ from pacsys.acnet.errors import (
     status_message,
 )
 from pacsys.auth import KerberosAuth
-from pacsys.dpm_connection import DPMConnectionError
-from pacsys.drf_utils import ensure_immediate_event
-from pacsys.errors import AuthenticationError, ReadError
-from pacsys.types import (
-    DeviceMeta,
-    Reading,
-    Value,
-    ValueType,
-    WriteResult,
+
+# Reuse pure helpers from sync backend
+from pacsys.backends.dpm_http import (
+    _SettingPayload,
+    _aggregate_logger_chunks,
+    _AsyncDPMConnection,
+    _device_info_to_meta,
+    _is_logger_drf,
+    _reply_to_reading,
+    _value_to_setting,
 )
+from pacsys.dpm_connection import DPMConnectionError
 from pacsys.dpm_protocol import (
     AddToList_reply,
     AddToList_request,
@@ -37,63 +38,24 @@ from pacsys.dpm_protocol import (
     DeviceInfo_reply,
     EnableSettings_request,
     ListStatus_reply,
-    RawSetting_struct,
     ScalarArray_reply,
-    ScaledSetting_struct,
     StartList_reply,
     StartList_request,
     Status_reply,
     StopList_request,
-    TextSetting_struct,
     TimedScalarArray_reply,
 )
-
-# Reuse pure helpers from sync backend
-from pacsys.backends.dpm_http import (
-    _reply_to_reading,
-    _device_info_to_meta,
-    _is_logger_drf,
-    _aggregate_logger_chunks,
-    _AsyncDPMConnection,
+from pacsys.drf_utils import ensure_immediate_event, is_immediate_only
+from pacsys.errors import AuthenticationError, ReadError
+from pacsys.types import (
+    DeviceMeta,
+    Reading,
+    Value,
+    ValueType,
+    WriteResult,
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _value_to_setting(
-    ref_id: int,
-    value: Value,
-) -> tuple[Optional[RawSetting_struct], Optional[ScaledSetting_struct], Optional[TextSetting_struct]]:
-    """Convert a value to the appropriate setting struct."""
-    raw_setting = None
-    scaled_setting = None
-    text_setting = None
-
-    if isinstance(value, bytes):
-        raw_setting = RawSetting_struct()
-        raw_setting.ref_id = ref_id
-        raw_setting.data = value
-    elif isinstance(value, str):
-        text_setting = TextSetting_struct()
-        text_setting.ref_id = ref_id
-        text_setting.data = [value]
-    elif isinstance(value, (list, tuple, np.ndarray)):
-        if len(value) > 0 and isinstance(value[0], str):  # type: ignore[arg-type]
-            text_setting = TextSetting_struct()
-            text_setting.ref_id = ref_id
-            text_setting.data = list(value)
-        else:
-            scaled_setting = ScaledSetting_struct()
-            scaled_setting.ref_id = ref_id
-            scaled_setting.data = [float(v) for v in value]
-    elif isinstance(value, dict):
-        raise TypeError("write_many() does not support alarm dicts; use write() instead")
-    else:
-        scaled_setting = ScaledSetting_struct()
-        scaled_setting.ref_id = ref_id
-        scaled_setting.data = [float(value)]
-
-    return raw_setting, scaled_setting, text_setting
 
 
 class _AsyncDpmCore:
@@ -107,22 +69,23 @@ class _AsyncDpmCore:
         host: str,
         port: int,
         timeout: float,
-        auth: Optional[KerberosAuth] = None,
-        role: Optional[str] = None,
+        auth: KerberosAuth | None = None,
+        role: str | None = None,
     ):
         self._host = host
         self._port = port
         self._timeout = timeout
         self._auth = auth
         self._role = role
-        self._conn: Optional[_AsyncDPMConnection] = None
+        self._conn: _AsyncDPMConnection | None = None
         self._settings_enabled = False
-        self._mic: Optional[bytes] = None
-        self._mic_message: Optional[bytes] = None
+        self._mic: bytes | None = None
+        self._mic_message: bytes | None = None
 
     async def connect(self) -> None:
-        self._conn = _AsyncDPMConnection(self._host, self._port)
-        await self._conn.connect()
+        conn = _AsyncDPMConnection(self._host, self._port)
+        await conn.connect()
+        self._conn = conn
 
     async def close(self) -> None:
         if self._conn is not None:
@@ -130,9 +93,14 @@ class _AsyncDpmCore:
             self._conn = None
 
     @property
+    def connected(self) -> bool:
+        return self._conn is not None
+
+    @property
     def list_id(self) -> int:
-        assert self._conn is not None
-        return self._conn.list_id  # type: ignore[return-value]  # guaranteed after connect()
+        if self._conn is None:
+            raise DPMConnectionError("DPM core is not connected")
+        return self._conn.list_id
 
     # ── Authentication ────────────────────────────────────────────────────
 
@@ -151,7 +119,7 @@ class _AsyncDpmCore:
 
         # Phase 1: request service name
         auth_req = Authenticate_request()
-        auth_req.list_id = self._conn.list_id
+        auth_req.list_id = self.list_id
         auth_req.token = b""
         await self._conn.send_message(auth_req)
 
@@ -173,18 +141,18 @@ class _AsyncDpmCore:
             name=service_name,
             usage="initiate",
             creds=creds,
-            flags=[  # type: ignore[arg-type]
-                gssapi.RequirementFlag.replay_detection,
-                gssapi.RequirementFlag.integrity,
-                gssapi.RequirementFlag.out_of_sequence_detection,
-            ],
+            flags=(
+                gssapi.RequirementFlag.replay_detection
+                | gssapi.RequirementFlag.integrity
+                | gssapi.RequirementFlag.out_of_sequence_detection
+            ),
             mech=gssapi.MechType.kerberos,
         )
 
         token = ctx.step()
 
         auth_req = Authenticate_request()
-        auth_req.list_id = self._conn.list_id
+        auth_req.list_id = self.list_id
         auth_req.token = bytes(token) if token else b""
         await self._conn.send_message(auth_req)
 
@@ -196,7 +164,7 @@ class _AsyncDpmCore:
             token = ctx.step(reply.token)
             if token:
                 auth_req = Authenticate_request()
-                auth_req.list_id = self._conn.list_id
+                auth_req.list_id = self.list_id
                 auth_req.token = bytes(token)
                 await self._conn.send_message(auth_req)
 
@@ -216,11 +184,11 @@ class _AsyncDpmCore:
     async def enable_settings(self) -> None:
         """Enable settings on the connection after authentication."""
         assert self._conn is not None
-        if self._mic is None:
+        if self._mic is None or self._mic_message is None:
             raise AuthenticationError("Must authenticate before enabling settings")
 
         enable_req = EnableSettings_request()
-        enable_req.list_id = self._conn.list_id
+        enable_req.list_id = self.list_id
         enable_req.MIC = self._mic
         enable_req.message = self._mic_message
 
@@ -248,7 +216,7 @@ class _AsyncDpmCore:
         deadline = time.monotonic() + timeout
 
         prepared_drfs = [ensure_immediate_event(drf) for drf in drfs]
-        list_id = self._conn.list_id
+        list_id = self.list_id
 
         # Logger DRFs arrive in 487-point chunks with a final empty chunk.
         logger_refs: set[int] = set()
@@ -263,8 +231,14 @@ class _AsyncDpmCore:
         add_errors: dict[int, AddToList_reply] = {}
         received_count = 0
         expected_count = len(drfs)
+        job_error: int | None = None  # ref-0 Status_reply = job start failure
         conn_broken = False
-        transport_error: Optional[BaseException] = None
+        transport_error: BaseException | None = None
+
+        # Repeating events (@p/@e/...) keep producing replies after the first —
+        # a core that carried one must be closed, not re-pooled, or stale replies
+        # get attributed to the next borrower's refs.
+        reuse_safe = all((i + 1) in logger_refs or is_immediate_only(d) for i, d in enumerate(prepared_drfs))
 
         # Batch AddToList + StartList
         setup_msgs = []
@@ -293,11 +267,12 @@ class _AsyncDpmCore:
                     continue
 
                 if isinstance(reply, AddToList_reply):
-                    if reply.status != 0:
+                    if reply.status != 0 and 1 <= reply.ref_id <= expected_count and reply.ref_id not in add_errors:
                         add_errors[reply.ref_id] = reply
                         received_count += 1
                 elif isinstance(reply, DeviceInfo_reply):
-                    device_infos[reply.ref_id] = reply
+                    if 1 <= reply.ref_id <= expected_count:
+                        device_infos[reply.ref_id] = reply
                 elif isinstance(reply, StartList_reply):
                     if reply.status != 0:
                         logger.warning(
@@ -310,26 +285,35 @@ class _AsyncDpmCore:
                     pass
                 elif isinstance(reply, Status_reply):
                     ref_id = reply.ref_id
-                    if ref_id in logger_refs:
+                    if ref_id == 0:
+                        # On the TCP transport StartList_reply.status is hardwired OK;
+                        # a ref-0 Status_reply is the real job-start-failure signal.
+                        if reply.status != 0 and job_error is None:
+                            job_error = reply.status
+                    elif ref_id in logger_refs:
                         # Error for a logger DRF — record as an error chunk
-                        logger_chunks.setdefault(ref_id, []).append(reply)
-                        logger_complete.add(ref_id)
-                        received_count += 1
-                    elif ref_id not in data_replies:
+                        if ref_id not in logger_complete:
+                            logger_chunks.setdefault(ref_id, []).append(reply)
+                            logger_complete.add(ref_id)
+                            received_count += 1
+                    elif 1 <= ref_id <= expected_count and ref_id not in data_replies:
                         data_replies[ref_id] = reply
                         received_count += 1
                 elif hasattr(reply, "ref_id"):
                     ref_id = reply.ref_id
-                    if ref_id in logger_refs:
+                    if not (1 <= ref_id <= expected_count):
+                        pass  # stale/unknown ref — never count toward expected_count
+                    elif ref_id in logger_refs:
                         is_empty = (
                             isinstance(reply, (TimedScalarArray_reply, ScalarArray_reply)) and len(reply.data) == 0
                         )
                         if is_empty:
-                            if hasattr(reply, "status") and reply.status != 0:
-                                # Error terminator — accumulate so _aggregate_logger_chunks surfaces the error
-                                logger_chunks.setdefault(ref_id, []).append(reply)
-                            logger_complete.add(ref_id)
-                            received_count += 1
+                            if ref_id not in logger_complete:
+                                if hasattr(reply, "status") and reply.status != 0:
+                                    # Error terminator — accumulate so _aggregate_logger_chunks surfaces the error
+                                    logger_chunks.setdefault(ref_id, []).append(reply)
+                                logger_complete.add(ref_id)
+                                received_count += 1
                         else:
                             logger_chunks.setdefault(ref_id, []).append(reply)
                     elif ref_id not in data_replies:
@@ -340,8 +324,8 @@ class _AsyncDpmCore:
             transport_error = e
         finally:
             if not conn_broken:
-                if received_count < expected_count:
-                    await self._conn.close()
+                if job_error is not None or received_count < expected_count:
+                    await self.close()
                 else:
                     try:
                         stop_req = StopList_request()
@@ -350,7 +334,14 @@ class _AsyncDpmCore:
                         clear_req.list_id = list_id
                         await self._conn.send_messages_batch([stop_req, clear_req])
                     except Exception:
-                        pass  # connection may be dead
+                        # Match sync: a failed StopList send means unknown connection
+                        # state — close so the core is not re-pooled dirty.
+                        await self.close()
+                    else:
+                        if not reuse_safe:
+                            await self.close()
+            else:
+                await self.close()
 
         # Assemble readings
         readings: list[Reading] = []
@@ -393,16 +384,21 @@ class _AsyncDpmCore:
                     )
                 else:
                     has_timeout = True
-                    ec = ERR_RETRY if transport_error is not None else ERR_TIMEOUT
-                    msg = (
-                        f"Connection error: {transport_error}"
-                        if transport_error is not None
-                        else "Logger response incomplete"
-                    )
+                    if job_error is not None:
+                        fc, ec = parse_error(job_error)
+                        msg = status_message(fc, ec) or f"DPM job start failed (status={job_error})"
+                    else:
+                        fc = FACILITY_ACNET
+                        ec = ERR_RETRY if transport_error is not None else ERR_TIMEOUT
+                        msg = (
+                            f"Connection error: {transport_error}"
+                            if transport_error is not None
+                            else "Logger response incomplete"
+                        )
                     readings.append(
                         Reading(
                             drf=original_drf,
-                            facility_code=FACILITY_ACNET,
+                            facility_code=fc,
                             error_code=ec,
                             value=None,
                             message=msg,
@@ -413,12 +409,17 @@ class _AsyncDpmCore:
                     )
             elif reply is None:
                 has_timeout = True
-                ec = ERR_RETRY if transport_error is not None else ERR_TIMEOUT
-                msg = f"Connection error: {transport_error}" if transport_error is not None else "Request timeout"
+                if job_error is not None:
+                    fc, ec = parse_error(job_error)
+                    msg = status_message(fc, ec) or f"DPM job start failed (status={job_error})"
+                else:
+                    fc = FACILITY_ACNET
+                    ec = ERR_RETRY if transport_error is not None else ERR_TIMEOUT
+                    msg = f"Connection error: {transport_error}" if transport_error is not None else "Request timeout"
                 readings.append(
                     Reading(
                         drf=original_drf,
-                        facility_code=FACILITY_ACNET,
+                        facility_code=fc,
                         error_code=ec,
                         value=None,
                         message=msg,
@@ -431,6 +432,9 @@ class _AsyncDpmCore:
                 readings.append(_reply_to_reading(reply, original_drf, meta))
 
         if transport_error is not None or has_timeout:
+            if job_error is not None:
+                fc, ec = parse_error(job_error)
+                raise ReadError(readings, f"DPM job start failed: {status_message(fc, ec) or job_error}")
             raise ReadError(readings, str(transport_error or "Request timeout")) from transport_error
 
         return readings
@@ -440,20 +444,24 @@ class _AsyncDpmCore:
     async def write_many(
         self,
         settings: list[tuple[str, Value]],
-        role: Optional[str] = None,
-        timeout: Optional[float] = None,
+        role: str | None = None,
+        timeout: float | None = None,
+        setting_payloads: list[_SettingPayload] | None = None,
     ) -> list[WriteResult]:
         """Write multiple devices."""
         assert self._conn is not None
         effective_timeout = timeout if timeout is not None else self._timeout
         deadline = time.monotonic() + effective_timeout
 
+        if setting_payloads is None:
+            setting_payloads = [_value_to_setting(i, value) for i, (_, value) in enumerate(settings, 1)]
+
         if not self._settings_enabled:
             await self.authenticate()
             await self.enable_settings()
 
         role = role or self._role
-        list_id = self._conn.list_id
+        list_id = self.list_id
         add_errors: dict[int, int] = {}
 
         # Batch: StopList + ClearList + optional ROLE + AddToList*N + StartList
@@ -491,6 +499,7 @@ class _AsyncDpmCore:
         received_infos = 0
         expected_count = len(settings)
         received_start_list_reply = False
+        seen_refs: set[int] = set()  # count each ref at most once
 
         while received_infos < expected_count or not received_start_list_reply:
             remaining = deadline - time.monotonic()
@@ -506,11 +515,14 @@ class _AsyncDpmCore:
             if isinstance(reply, ListStatus_reply):
                 pass
             elif isinstance(reply, AddToList_reply):
-                if reply.status != 0 and reply.ref_id > 0:
+                if reply.status != 0 and 1 <= reply.ref_id <= expected_count and reply.ref_id not in seen_refs:
                     add_errors[reply.ref_id] = reply.status
+                    seen_refs.add(reply.ref_id)
                     received_infos += 1
             elif isinstance(reply, DeviceInfo_reply):
-                received_infos += 1
+                if 1 <= reply.ref_id <= expected_count and reply.ref_id not in seen_refs:
+                    seen_refs.add(reply.ref_id)
+                    received_infos += 1
             elif isinstance(reply, StartList_reply):
                 received_start_list_reply = True
                 if reply.status != 0:
@@ -522,9 +534,18 @@ class _AsyncDpmCore:
                     )
                     return self._build_write_results(settings, None, add_errors)
             elif isinstance(reply, Status_reply):
-                if reply.status != 0 and reply.ref_id > 0:
-                    add_errors[reply.ref_id] = reply.status
-                received_infos += 1
+                ref_id = reply.ref_id
+                if ref_id == 0:
+                    # Job-start failure: StartList_reply.status is hardwired OK on the
+                    # TCP transport — this is the real signal. Surface via add_errors[0].
+                    if reply.status != 0:
+                        add_errors[0] = reply.status
+                        return self._build_write_results(settings, None, add_errors)
+                elif 1 <= ref_id <= expected_count and ref_id not in seen_refs:
+                    if reply.status != 0:
+                        add_errors[ref_id] = reply.status
+                    seen_refs.add(ref_id)
+                    received_infos += 1
 
         if received_infos < expected_count or not received_start_list_reply:
             write_drfs = [drf for drf, _ in settings]
@@ -549,9 +570,7 @@ class _AsyncDpmCore:
         scaled_settings = []
         text_settings = []
 
-        for i, (_, value) in enumerate(settings):
-            ref_id = i + 1
-            raw, scaled, text = _value_to_setting(ref_id, value)
+        for raw, scaled, text in setting_payloads:
             if raw:
                 raw_settings.append(raw)
             if scaled:
@@ -560,11 +579,11 @@ class _AsyncDpmCore:
                 text_settings.append(text)
 
         if raw_settings:
-            apply_req.raw_array = raw_settings  # type: ignore[unresolved-attribute]
+            setattr(apply_req, "raw_array", raw_settings)
         if scaled_settings:
-            apply_req.scaled_array = scaled_settings  # type: ignore[unresolved-attribute]
+            setattr(apply_req, "scaled_array", scaled_settings)
         if text_settings:
-            apply_req.text_array = text_settings  # type: ignore[unresolved-attribute]
+            setattr(apply_req, "text_array", text_settings)
 
         await self._conn.send_message(apply_req)
 
@@ -592,7 +611,7 @@ class _AsyncDpmCore:
     def _build_write_results(
         self,
         settings: list[tuple[str, Value]],
-        apply_reply: Optional[ApplySettings_reply],
+        apply_reply: ApplySettings_reply | None,
         add_errors: dict[int, int],
     ) -> list[WriteResult]:
         """Convert ApplySettings_reply + add_errors into WriteResult list."""
@@ -603,6 +622,7 @@ class _AsyncDpmCore:
                 status_map[status_struct.ref_id] = status_struct.status
 
         global_err = status_map.get(0)
+        job_err = add_errors.get(0)  # ref-0 setup status = job start failure
 
         results: list[WriteResult] = []
         for i, (drf, _) in enumerate(settings):
@@ -637,6 +657,16 @@ class _AsyncDpmCore:
                         message=status_message(facility, error) or f"Global error {global_err}",
                     )
                 )
+            elif job_err is not None:
+                facility, error = parse_error(job_err)
+                results.append(
+                    WriteResult(
+                        drf=drf,
+                        facility_code=facility,
+                        error_code=error,
+                        message=status_message(facility, error) or f"DPM job start failed (status={job_err})",
+                    )
+                )
             else:
                 results.append(
                     WriteResult(
@@ -657,7 +687,7 @@ class _AsyncDpmCore:
         drf_map: dict[int, str] = {}
 
         try:
-            list_id = self._conn.list_id
+            list_id = self.list_id
 
             setup_msgs = []
             for i, drf in enumerate(drfs):
@@ -710,6 +740,14 @@ class _AsyncDpmCore:
 
                 if isinstance(reply, DeviceInfo_reply):
                     metas[reply.ref_id] = _device_info_to_meta(reply)
+                    continue
+
+                if isinstance(reply, Status_reply) and reply.ref_id == 0:
+                    if reply.status != 0:
+                        facility, error = parse_error(reply.status)
+                        message = status_message(facility, error) or f"status={reply.status}"
+                        error_fn(DPMConnectionError(f"DPM job start failed: {message}"))
+                        return
                     continue
 
                 if hasattr(reply, "ref_id"):

@@ -8,10 +8,11 @@ See SPECIFICATION.md for protocol details.
 
 import asyncio
 import logging
+import socket
 import struct
 import threading
 import time
-from typing import Optional
+from typing import Any, SupportsFloat, SupportsIndex, cast
 
 import numpy as np
 
@@ -25,26 +26,9 @@ from pacsys.acnet.errors import (
 )
 from pacsys.auth import Auth, KerberosAuth
 from pacsys.backends import Backend, timestamp_from_millis
-import socket
-
 from pacsys.backends._dispatch import CallbackDispatcher
 from pacsys.backends._subscription import BufferedSubscriptionHandle
 from pacsys.dpm_connection import DPM_HANDSHAKE, MAX_MESSAGE_SIZE, DPMConnection, DPMConnectionError
-from pacsys.errors import AuthenticationError, DeviceError, ReadError
-from pacsys.pool import ConnectionPool
-from pacsys.types import (
-    BackendCapability,
-    DispatchMode,
-    DeviceMeta,
-    ErrorCallback,
-    Reading,
-    ReadingCallback,
-    SubscriptionHandle,
-    Value,
-    ValueType,
-    WriteResult,
-)
-
 from pacsys.dpm_protocol import (
     AddToList_reply,
     AddToList_request,
@@ -77,7 +61,21 @@ from pacsys.dpm_protocol import (
     unmarshal_reply,
 )
 from pacsys.drf3.extra import HISTORICAL_EXTRAS
-from pacsys.drf_utils import ensure_immediate_event, prepare_for_write
+from pacsys.drf_utils import ensure_immediate_event, is_immediate_only, prepare_for_write
+from pacsys.errors import AuthenticationError, DeviceError, ReadError
+from pacsys.pool import ConnectionPool
+from pacsys.types import (
+    BackendCapability,
+    DeviceMeta,
+    DispatchMode,
+    ErrorCallback,
+    Reading,
+    ReadingCallback,
+    SubscriptionHandle,
+    Value,
+    ValueType,
+    WriteResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +86,69 @@ DEFAULT_POOL_SIZE = 4
 DEFAULT_TIMEOUT = 5.0
 _MAX_WRITE_CONNECTIONS = 4  # max concurrent write connections (pooled + in-flight)
 
+_SettingPayload = tuple[RawSetting_struct | None, ScaledSetting_struct | None, TextSetting_struct | None]
+
 # Kerberos service principal for DPM
+
+
+def _coerce_setting_float(value: object) -> float:
+    if isinstance(value, str):
+        return float(value)
+    if isinstance(value, SupportsFloat):
+        return float(value)
+    if isinstance(value, SupportsIndex):
+        return float(value)
+    raise TypeError(f"DPM scaled setting value is not numeric: {type(value).__name__}")
+
+
+def _value_to_setting(
+    ref_id: int,
+    value: Value,
+) -> tuple[RawSetting_struct | None, ScaledSetting_struct | None, TextSetting_struct | None]:
+    """Convert a public value into exactly one DPM setting payload."""
+    if isinstance(value, bytes):
+        setting = RawSetting_struct()
+        setting.ref_id = ref_id
+        setting.data = value
+        return setting, None, None
+
+    if isinstance(value, str):
+        setting = TextSetting_struct()
+        setting.ref_id = ref_id
+        setting.data = [value]
+        return None, None, setting
+
+    if isinstance(value, dict):
+        raise TypeError("write_many() does not support alarm dicts; use write() instead")
+
+    if isinstance(value, np.ndarray):
+        if value.ndim != 1:
+            raise TypeError("DPM array settings must be one-dimensional")
+        items = cast(list[object], cast(Any, value).tolist())
+    elif isinstance(value, (list, tuple)):
+        items = list(value)
+    else:
+        items = None
+
+    if items is not None and items:
+        text_items = [isinstance(item, str) for item in items]
+        if all(text_items):
+            setting = TextSetting_struct()
+            setting.ref_id = ref_id
+            setting.data = cast(list[str], items)
+            return None, None, setting
+        if any(text_items):
+            raise TypeError("DPM text array settings must contain only strings")
+
+    try:
+        data = [_coerce_setting_float(item) for item in items] if items is not None else [_coerce_setting_float(value)]
+    except (TypeError, ValueError) as e:
+        raise TypeError("DPM scaled settings must contain numeric values") from e
+
+    setting = ScaledSetting_struct()
+    setting.ref_id = ref_id
+    setting.data = data
+    return None, setting, None
 
 
 def _is_logger_drf(drf: str) -> bool:
@@ -150,7 +210,7 @@ def _aggregate_logger_chunks(chunks: list, drf: str, meta) -> Reading:
     )
 
 
-def _reply_to_value_and_type(reply) -> tuple[Optional[Value], Optional[ValueType]]:
+def _reply_to_value_and_type(reply) -> tuple[Value | None, ValueType | None]:
     """Extract value and type from a DPM data reply."""
     if isinstance(reply, Scalar_reply):
         return reply.data, ValueType.SCALAR
@@ -210,7 +270,7 @@ def _reply_to_value_and_type(reply) -> tuple[Optional[Value], Optional[ValueType
     return None, None
 
 
-def _reply_to_reading(reply, drf: str, meta: Optional[DeviceMeta]) -> Reading:
+def _reply_to_reading(reply, drf: str, meta: DeviceMeta | None) -> Reading:
     """Convert a DPM reply to a Reading object."""
     if isinstance(reply, Status_reply):
         facility, error = parse_error(reply.status)
@@ -291,12 +351,14 @@ class _AsyncDPMConnection:
         self._host = host
         self._port = port
         self._timeout = timeout
-        self._reader: Optional[asyncio.StreamReader] = None
-        self._writer: Optional[asyncio.StreamWriter] = None
-        self._list_id: Optional[int] = None
+        self._reader: asyncio.StreamReader | None = None
+        self._writer: asyncio.StreamWriter | None = None
+        self._list_id: int | None = None
 
     @property
-    def list_id(self) -> Optional[int]:
+    def list_id(self) -> int:
+        if self._list_id is None:
+            raise DPMConnectionError("DPM connection has no list ID; connect() must complete first")
         return self._list_id
 
     async def connect(self) -> None:
@@ -374,7 +436,7 @@ class _AsyncDPMConnection:
         self._writer.write(buf)
         await self._writer.drain()
 
-    async def recv_message(self, timeout: Optional[float] = None):
+    async def recv_message(self, timeout: float | None = None):
         """Receive and unmarshal one reply. Handles partial packets natively.
 
         Uses a read timeout to detect silent connection drops. The DPM server
@@ -404,14 +466,16 @@ class _AsyncDPMConnection:
             raise DPMConnectionError(f"Protocol error: {e}")
 
     async def close(self) -> None:
-        if self._writer is not None:
+        writer = self._writer
+        self._writer = None
+        self._reader = None
+        self._list_id = None
+        if writer is not None:
             try:
-                self._writer.close()
-                await self._writer.wait_closed()
+                writer.close()
+                await writer.wait_closed()
             except Exception:
                 pass
-            self._writer = None
-            self._reader = None
 
 
 class _WriteConnection:
@@ -424,7 +488,7 @@ class _WriteConnection:
     Reuse flow: StopList -> ClearList -> AddToList -> StartList -> ApplySettings
     """
 
-    def __init__(self, conn: DPMConnection, principal: str, role: Optional[str]):
+    def __init__(self, conn: DPMConnection, principal: str, role: str | None):
         self.conn = conn
         self.principal = principal
         self.role = role
@@ -453,8 +517,8 @@ class _DPMHTTPSubscriptionHandle(BufferedSubscriptionHandle):
         self,
         backend: "DPMHTTPBackend",
         drfs: list[str],
-        callback: Optional[ReadingCallback],
-        on_error: Optional[ErrorCallback] = None,
+        callback: ReadingCallback | None,
+        on_error: ErrorCallback | None = None,
     ):
         super().__init__()
         self._backend = backend
@@ -463,7 +527,7 @@ class _DPMHTTPSubscriptionHandle(BufferedSubscriptionHandle):
         self._is_callback_mode = callback is not None
         self._on_error = on_error
         self._ref_ids = list(range(1, len(drfs) + 1))
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
 
     def _dispatch(self, reading: Reading) -> None:
         """Called from the reactor thread to deliver a reading."""
@@ -566,6 +630,14 @@ class _DpmStreamCore:
                     metas[reply.ref_id] = _device_info_to_meta(reply)
                     continue
 
+                if isinstance(reply, Status_reply) and reply.ref_id == 0:
+                    if reply.status != 0:
+                        facility, error = parse_error(reply.status)
+                        message = status_message(facility, error) or f"status={reply.status}"
+                        error_fn(DPMConnectionError(f"DPM job start failed: {message}"))
+                        return
+                    continue
+
                 if hasattr(reply, "ref_id"):
                     ref_id = reply.ref_id
                     drf = drf_map.get(ref_id)
@@ -618,8 +690,8 @@ class DPMHTTPBackend(Backend):
         port: int = DEFAULT_PORT,
         pool_size: int = DEFAULT_POOL_SIZE,
         timeout: float = DEFAULT_TIMEOUT,
-        auth: Optional[Auth] = None,
-        role: Optional[str] = None,
+        auth: Auth | None = None,
+        role: str | None = None,
         dispatch_mode: DispatchMode = DispatchMode.WORKER,
     ):
         """
@@ -648,9 +720,9 @@ class DPMHTTPBackend(Backend):
         self._port = port
         self._pool_size = pool_size
         self._timeout = timeout
-        self._auth: Optional[KerberosAuth] = auth
+        self._auth: KerberosAuth | None = auth
         self._role = role
-        self._pool: Optional[ConnectionPool] = None
+        self._pool: ConnectionPool | None = None
         self._pool_lock = threading.Lock()
         self._closed = False
 
@@ -659,8 +731,8 @@ class DPMHTTPBackend(Backend):
         self._dispatcher = CallbackDispatcher(dispatch_mode)
 
         # Streaming state -- asyncio reactor (matches gRPC backend pattern)
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._reactor_thread: Optional[threading.Thread] = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._reactor_thread: threading.Thread | None = None
         self._reactor_lock = threading.Lock()
         self._handles: list[_DPMHTTPSubscriptionHandle] = []
         self._handles_lock = threading.Lock()
@@ -698,7 +770,7 @@ class DPMHTTPBackend(Backend):
         return self._auth is not None
 
     @property
-    def principal(self) -> Optional[str]:
+    def principal(self) -> str | None:
         """Principal name if authenticated, else None."""
         if self._auth is not None:
             return self._auth.principal
@@ -748,7 +820,7 @@ class DPMHTTPBackend(Backend):
     # Read Methods
     # ─────────────────────────────────────────────────────────────────────────
 
-    def read(self, drf: str, timeout: Optional[float] = None) -> Value:
+    def read(self, drf: str, timeout: float | None = None) -> Value:
         """Read a single device value."""
         reading = self.get(drf, timeout=timeout)
 
@@ -763,12 +835,12 @@ class DPMHTTPBackend(Backend):
         assert reading.value is not None
         return reading.value
 
-    def get(self, drf: str, timeout: Optional[float] = None) -> Reading:
+    def get(self, drf: str, timeout: float | None = None) -> Reading:
         """Read a single device with full metadata."""
         readings = self.get_many([drf], timeout=timeout)
         return readings[0]
 
-    def get_many(self, drfs: list[str], timeout: Optional[float] = None) -> list[Reading]:
+    def get_many(self, drfs: list[str], timeout: float | None = None) -> list[Reading]:
         """Read multiple devices in a single batch."""
         if not drfs:
             return []
@@ -792,10 +864,16 @@ class DPMHTTPBackend(Backend):
         add_errors: dict[int, AddToList_reply] = {}  # ref_id -> failed AddToList
         received_count = 0
         expected_count = len(drfs)
+        job_error: int | None = None  # ref-0 Status_reply = job start failure
+
+        # Repeating events (@p/@e/...) keep producing replies after the first —
+        # a connection that carried one must be closed, not re-pooled, or stale
+        # replies get attributed to the next borrower's refs.
+        reuse_safe = all((i + 1) in logger_refs or is_immediate_only(d) for i, d in enumerate(prepared_drfs))
 
         pool = self._get_pool()
         conn_broken = False
-        transport_error: Optional[BaseException] = None
+        transport_error: BaseException | None = None
 
         try:
             with pool.connection(wait_timeout=effective_timeout) as conn:
@@ -829,11 +907,16 @@ class DPMHTTPBackend(Backend):
                             continue
 
                         if isinstance(reply, AddToList_reply):
-                            if reply.status != 0:
+                            if (
+                                reply.status != 0
+                                and 1 <= reply.ref_id <= expected_count
+                                and reply.ref_id not in add_errors
+                            ):
                                 add_errors[reply.ref_id] = reply
                                 received_count += 1
                         elif isinstance(reply, DeviceInfo_reply):
-                            device_infos[reply.ref_id] = reply
+                            if 1 <= reply.ref_id <= expected_count:
+                                device_infos[reply.ref_id] = reply
                         elif isinstance(reply, StartList_reply):
                             if reply.status != 0:
                                 drf_summary = ", ".join(drfs[:5]) + (
@@ -844,28 +927,38 @@ class DPMHTTPBackend(Backend):
                         elif isinstance(reply, ListStatus_reply):
                             pass
                         elif isinstance(reply, Status_reply):
-                            if reply.ref_id in logger_refs:
+                            ref_id = reply.ref_id
+                            if ref_id == 0:
+                                # On the TCP transport StartList_reply.status is hardwired OK;
+                                # a ref-0 Status_reply is the real job-start-failure signal.
+                                if reply.status != 0 and job_error is None:
+                                    job_error = reply.status
+                            elif ref_id in logger_refs:
                                 # Error for a logger DRF — record as an error chunk
-                                logger_chunks.setdefault(reply.ref_id, []).append(reply)
-                                logger_complete.add(reply.ref_id)
-                                received_count += 1
-                            elif reply.ref_id not in data_replies:
-                                data_replies[reply.ref_id] = reply
+                                if ref_id not in logger_complete:
+                                    logger_chunks.setdefault(ref_id, []).append(reply)
+                                    logger_complete.add(ref_id)
+                                    received_count += 1
+                            elif 1 <= ref_id <= expected_count and ref_id not in data_replies:
+                                data_replies[ref_id] = reply
                                 received_count += 1
                         elif hasattr(reply, "ref_id"):
                             ref_id = reply.ref_id
-                            if ref_id in logger_refs:
+                            if not (1 <= ref_id <= expected_count):
+                                pass  # stale/unknown ref — never count toward expected_count
+                            elif ref_id in logger_refs:
                                 # Logger: accumulate chunks; empty chunk = done
                                 is_empty = (
                                     isinstance(reply, (TimedScalarArray_reply, ScalarArray_reply))
                                     and len(reply.data) == 0
                                 )
                                 if is_empty:
-                                    if hasattr(reply, "status") and reply.status != 0:
-                                        # Error terminator — accumulate so _aggregate_logger_chunks surfaces the error
-                                        logger_chunks.setdefault(ref_id, []).append(reply)
-                                    logger_complete.add(ref_id)
-                                    received_count += 1
+                                    if ref_id not in logger_complete:
+                                        if hasattr(reply, "status") and reply.status != 0:
+                                            # Error terminator — accumulate so _aggregate_logger_chunks surfaces the error
+                                            logger_chunks.setdefault(ref_id, []).append(reply)
+                                        logger_complete.add(ref_id)
+                                        received_count += 1
                                 else:
                                     logger_chunks.setdefault(ref_id, []).append(reply)
                             elif ref_id not in data_replies:
@@ -876,7 +969,7 @@ class DPMHTTPBackend(Backend):
                     transport_error = e
                 finally:
                     if not conn_broken:
-                        if received_count < expected_count:
+                        if job_error is not None or received_count < expected_count:
                             conn.close()
                         else:
                             try:
@@ -887,6 +980,9 @@ class DPMHTTPBackend(Backend):
                                 conn.send_messages_batch([stop_req, clear_req])
                             except Exception:
                                 conn.close()
+                            else:
+                                if not reuse_safe:
+                                    conn.close()
         except Exception as e:
             # Pool borrow failure, connection error, or re-raised inner exception
             transport_error = e
@@ -937,16 +1033,21 @@ class DPMHTTPBackend(Backend):
                 else:
                     # No terminator — partial data or timeout
                     has_timeout = True
-                    ec = ERR_RETRY if transport_error is not None else ERR_TIMEOUT
-                    msg = (
-                        f"Connection error: {transport_error}"
-                        if transport_error is not None
-                        else "Logger response incomplete"
-                    )
+                    if job_error is not None:
+                        fc, ec = parse_error(job_error)
+                        msg = status_message(fc, ec) or f"DPM job start failed (status={job_error})"
+                    else:
+                        fc = FACILITY_ACNET
+                        ec = ERR_RETRY if transport_error is not None else ERR_TIMEOUT
+                        msg = (
+                            f"Connection error: {transport_error}"
+                            if transport_error is not None
+                            else "Logger response incomplete"
+                        )
                     readings.append(
                         Reading(
                             drf=original_drf,
-                            facility_code=FACILITY_ACNET,
+                            facility_code=fc,
                             error_code=ec,
                             value=None,
                             message=msg,
@@ -958,12 +1059,17 @@ class DPMHTTPBackend(Backend):
 
             if reply is None:
                 has_timeout = True
-                ec = ERR_RETRY if transport_error is not None else ERR_TIMEOUT
-                msg = f"Connection error: {transport_error}" if transport_error is not None else "Request timeout"
+                if job_error is not None:
+                    fc, ec = parse_error(job_error)
+                    msg = status_message(fc, ec) or f"DPM job start failed (status={job_error})"
+                else:
+                    fc = FACILITY_ACNET
+                    ec = ERR_RETRY if transport_error is not None else ERR_TIMEOUT
+                    msg = f"Connection error: {transport_error}" if transport_error is not None else "Request timeout"
                 readings.append(
                     Reading(
                         drf=original_drf,
-                        facility_code=FACILITY_ACNET,
+                        facility_code=fc,
                         error_code=ec,
                         value=None,
                         message=msg,
@@ -976,6 +1082,9 @@ class DPMHTTPBackend(Backend):
                 readings.append(_reply_to_reading(reply, original_drf, meta))
 
         if transport_error is not None or has_timeout:
+            if job_error is not None:
+                fc, ec = parse_error(job_error)
+                raise ReadError(readings, f"DPM job start failed: {status_message(fc, ec) or job_error}")
             raise ReadError(readings, str(transport_error or "Request timeout")) from transport_error
 
         return readings
@@ -1028,11 +1137,11 @@ class DPMHTTPBackend(Backend):
             name=service_name,
             usage="initiate",
             creds=creds,
-            flags=[  # type: ignore[arg-type]  # no stubs for gssapi
-                gssapi.RequirementFlag.replay_detection,
-                gssapi.RequirementFlag.integrity,
-                gssapi.RequirementFlag.out_of_sequence_detection,
-            ],
+            flags=(
+                gssapi.RequirementFlag.replay_detection
+                | gssapi.RequirementFlag.integrity
+                | gssapi.RequirementFlag.out_of_sequence_detection
+            ),
             mech=gssapi.MechType.kerberos,
         )
 
@@ -1203,42 +1312,6 @@ class DPMHTTPBackend(Backend):
             self._write_connections.clear()
             logger.debug("Closed all write connections")
 
-    def _value_to_setting(
-        self,
-        ref_id: int,
-        value: Value,
-    ) -> tuple[Optional[RawSetting_struct], Optional[ScaledSetting_struct], Optional[TextSetting_struct]]:
-        """Convert a value to the appropriate setting struct."""
-        raw_setting = None
-        scaled_setting = None
-        text_setting = None
-
-        if isinstance(value, bytes):
-            raw_setting = RawSetting_struct()
-            raw_setting.ref_id = ref_id
-            raw_setting.data = value
-        elif isinstance(value, str):
-            text_setting = TextSetting_struct()
-            text_setting.ref_id = ref_id
-            text_setting.data = [value]
-        elif isinstance(value, (list, tuple, np.ndarray)):
-            if len(value) > 0 and isinstance(value[0], str):  # type: ignore[arg-type]  # numpy indexing
-                text_setting = TextSetting_struct()
-                text_setting.ref_id = ref_id
-                text_setting.data = list(value)
-            else:
-                scaled_setting = ScaledSetting_struct()
-                scaled_setting.ref_id = ref_id
-                scaled_setting.data = [float(v) for v in value]
-        elif isinstance(value, dict):
-            raise TypeError("write_many() does not support alarm dicts; use write() instead")
-        else:
-            scaled_setting = ScaledSetting_struct()
-            scaled_setting.ref_id = ref_id
-            scaled_setting.data = [float(value)]
-
-        return raw_setting, scaled_setting, text_setting
-
     # Writable alarm dict keys → DRF field names, keyed by DRF property.
     # "abort" and "alarm_status" are read-only status bits, not settable.
     _ANALOG_ALARM_FIELDS: dict[str, str] = {
@@ -1303,7 +1376,7 @@ class DPMHTTPBackend(Backend):
         self,
         drf: str,
         value: Value,
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
     ) -> WriteResult:
         """Write a single device value."""
         # DPM/HTTP has no structured alarm setting type -- expand dict to
@@ -1332,8 +1405,9 @@ class DPMHTTPBackend(Backend):
         conn: DPMConnection,
         list_id: int,
         prepared_settings: list[tuple[str, Value]],
+        setting_payloads: list[_SettingPayload],
         deadline: float,
-    ) -> tuple[Optional[ApplySettings_reply], dict[int, int]]:
+    ) -> tuple[ApplySettings_reply | None, dict[int, int]]:
         """Execute the write protocol on an authenticated connection.
 
         Returns (ApplySettings_reply, add_errors) or (None, add_errors) on timeout.
@@ -1379,6 +1453,7 @@ class DPMHTTPBackend(Backend):
         received_infos = 0
         expected_count = len(prepared_settings)
         received_start_list_reply = False
+        seen_refs: set[int] = set()  # count each ref at most once
 
         while received_infos < expected_count or not received_start_list_reply:
             remaining = deadline - time.monotonic()
@@ -1395,11 +1470,14 @@ class DPMHTTPBackend(Backend):
             if isinstance(reply, ListStatus_reply):
                 pass
             elif isinstance(reply, AddToList_reply):
-                if reply.status != 0 and reply.ref_id > 0:
+                if reply.status != 0 and 1 <= reply.ref_id <= expected_count and reply.ref_id not in seen_refs:
                     add_errors[reply.ref_id] = reply.status
+                    seen_refs.add(reply.ref_id)
                     received_infos += 1
             elif isinstance(reply, DeviceInfo_reply):
-                received_infos += 1
+                if 1 <= reply.ref_id <= expected_count and reply.ref_id not in seen_refs:
+                    seen_refs.add(reply.ref_id)
+                    received_infos += 1
             elif isinstance(reply, StartList_reply):
                 received_start_list_reply = True
                 if reply.status != 0:
@@ -1410,9 +1488,18 @@ class DPMHTTPBackend(Backend):
                     logger.warning("StartList returned status %d (devices: %s)", reply.status, drf_summary)
                     return None, add_errors
             elif isinstance(reply, Status_reply):
-                if reply.status != 0 and reply.ref_id > 0:
-                    add_errors[reply.ref_id] = reply.status
-                received_infos += 1
+                ref_id = reply.ref_id
+                if ref_id == 0:
+                    # Job-start failure: StartList_reply.status is hardwired OK on the
+                    # TCP transport — this is the real signal. Surface via add_errors[0].
+                    if reply.status != 0:
+                        add_errors[0] = reply.status
+                        return None, add_errors
+                elif 1 <= ref_id <= expected_count and ref_id not in seen_refs:
+                    if reply.status != 0:
+                        add_errors[ref_id] = reply.status
+                    seen_refs.add(ref_id)
+                    received_infos += 1
 
         if received_infos < expected_count or not received_start_list_reply:
             write_drfs = [drf for drf, _ in prepared_settings]
@@ -1437,9 +1524,7 @@ class DPMHTTPBackend(Backend):
         scaled_settings = []
         text_settings = []
 
-        for i, (_, value) in enumerate(prepared_settings):
-            ref_id = i + 1
-            raw, scaled, text = self._value_to_setting(ref_id, value)
+        for raw, scaled, text in setting_payloads:
             if raw:
                 raw_settings.append(raw)
             if scaled:
@@ -1448,11 +1533,11 @@ class DPMHTTPBackend(Backend):
                 text_settings.append(text)
 
         if raw_settings:
-            apply_req.raw_array = raw_settings  # type: ignore[unresolved-attribute]
+            setattr(apply_req, "raw_array", raw_settings)
         if scaled_settings:
-            apply_req.scaled_array = scaled_settings  # type: ignore[unresolved-attribute]
+            setattr(apply_req, "scaled_array", scaled_settings)
         if text_settings:
-            apply_req.text_array = text_settings  # type: ignore[unresolved-attribute]
+            setattr(apply_req, "text_array", text_settings)
 
         conn.send_message(apply_req)
 
@@ -1479,7 +1564,7 @@ class DPMHTTPBackend(Backend):
     def write_many(
         self,
         settings: list[tuple[str, Value]],
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
     ) -> list[WriteResult]:
         """Write multiple device values.
 
@@ -1499,6 +1584,7 @@ class DPMHTTPBackend(Backend):
 
         # Prepare settings (add .SETTING and @I if needed)
         prepared_settings = [(prepare_for_write(drf), value) for drf, value in settings]
+        setting_payloads = [_value_to_setting(i, value) for i, (_, value) in enumerate(settings, 1)]
 
         # Try up to twice: first attempt may hit a stale pooled connection
         add_errors: dict[int, int] = {}
@@ -1523,7 +1609,9 @@ class DPMHTTPBackend(Backend):
 
             try:
                 assert list_id is not None, "list_id must be set after connect"
-                apply_reply, add_errors = self._execute_write(conn, list_id, prepared_settings, deadline)
+                apply_reply, add_errors = self._execute_write(
+                    conn, list_id, prepared_settings, setting_payloads, deadline
+                )
 
                 if apply_reply is None:
                     # Timeout: server's late reply may still be in the TCP stream,
@@ -1564,6 +1652,7 @@ class DPMHTTPBackend(Backend):
 
         # Parse results
         if apply_reply is None:
+            job_err = add_errors.get(0)  # ref-0 status = job start failure
             results: list[WriteResult] = []
             for i, (drf, _) in enumerate(settings):
                 ref_id = i + 1
@@ -1576,6 +1665,16 @@ class DPMHTTPBackend(Backend):
                             error_code=error,
                             message=status_message(facility, error)
                             or f"AddToList failed (status={add_errors[ref_id]})",
+                        )
+                    )
+                elif job_err is not None:
+                    facility, error = parse_error(job_err)
+                    results.append(
+                        WriteResult(
+                            drf=drf,
+                            facility_code=facility,
+                            error_code=error,
+                            message=status_message(facility, error) or f"DPM job start failed (status={job_err})",
                         )
                     )
                 else:
@@ -1712,8 +1811,8 @@ class DPMHTTPBackend(Backend):
     def subscribe(
         self,
         drfs: list[str],
-        callback: Optional[ReadingCallback] = None,
-        on_error: Optional[ErrorCallback] = None,
+        callback: ReadingCallback | None = None,
+        on_error: ErrorCallback | None = None,
     ) -> SubscriptionHandle:
         """Subscribe to devices for streaming data.
 

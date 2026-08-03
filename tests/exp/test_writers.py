@@ -5,6 +5,7 @@ import json
 import base64
 from datetime import datetime, timezone
 
+import numpy as np
 import pytest
 
 from pacsys.exp._writers import CsvWriter, LogWriter
@@ -48,6 +49,21 @@ class TestCsvWriter:
 
         rows = list(csv.reader(open(path)))
         assert json.loads(rows[1][2]) == [1.0, 2.0, 3.0]
+
+    @pytest.mark.parametrize(
+        "value",
+        ([True, False], np.array([True, False], dtype=np.bool_)),
+        ids=("list", "ndarray"),
+    )
+    def test_csv_boolean_array_as_json(self, tmp_path, value):
+        path = tmp_path / "test.csv"
+        r = Reading(drf="Z:BOOL", value_type=ValueType.SCALAR_ARRAY, value=value, timestamp=TS)
+        writer = CsvWriter(path)
+        writer.write_readings([r])
+        writer.close()
+
+        rows = list(csv.reader(open(path)))
+        assert json.loads(rows[1][2]) == [True, False]
 
     def test_csv_basic_status_as_json(self, tmp_path):
         """Status dicts are serialized as JSON, not Python repr."""
@@ -182,6 +198,24 @@ class TestParquetWriter:
 
         table = _read_parquet(path)
         assert table.column("value_array").to_pylist() == [[10.0, 20.0]]
+
+    @pytest.mark.parametrize(
+        "value",
+        ([True, False], np.array([True, False], dtype=np.bool_)),
+        ids=("list", "ndarray"),
+    )
+    def test_scalar_array_boolean(self, tmp_path, value):
+        pytest.importorskip("pyarrow")
+        from pacsys.exp._writers import ParquetWriter
+
+        path = tmp_path / "test.parquet"
+        r = Reading(drf="Z:BOOL", value_type=ValueType.SCALAR_ARRAY, value=value, timestamp=TS)
+        writer = ParquetWriter(path)
+        writer.write_readings([r])
+        writer.close()
+
+        table = _read_parquet(path)
+        assert table.column("value_array").to_pylist() == [[1.0, 0.0]]
 
     def test_timed_scalar_array(self, tmp_path):
         """Timed scalar arrays (dict with data+micros) stored as JSON in value_text."""

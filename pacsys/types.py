@@ -5,7 +5,7 @@ Core data types - Reading, WriteResult, SubscriptionHandle, CombinedStream.
 import base64
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Union, Optional, Callable, Iterator, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Optional, Union, cast
 from enum import Enum, Flag, IntEnum, auto
 
 if TYPE_CHECKING:
@@ -35,7 +35,7 @@ def _value_to_json(value: object) -> object:
         import numpy as np
 
         if isinstance(value, np.ndarray):
-            return value.tolist()  # type: ignore[no-matching-overload]
+            return cast(Any, value).tolist()
         if isinstance(value, (np.integer, np.floating)):
             return value.item()
     except ImportError:
@@ -52,7 +52,7 @@ def _value_from_json(value: object, value_type: "ValueType | None") -> "Value | 
     if value is None:
         return None
     if value_type is None:
-        return value  # type: ignore[return-value]
+        return cast("Value", value)
     try:
         import numpy as np
 
@@ -64,7 +64,7 @@ def _value_from_json(value: object, value_type: "ValueType | None") -> "Value | 
         pass
     if value_type == ValueType.RAW and isinstance(value, str):
         return base64.b64decode(value, validate=True)
-    return value  # type: ignore[return-value]
+    return cast("Value", value)
 
 
 # Type alias for functions accepting DRF strings or Device objects

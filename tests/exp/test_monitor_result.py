@@ -1,6 +1,7 @@
 """Tests for MonitorResult and ChannelData."""
 
 import pytest
+import numpy as np
 from datetime import datetime, timezone
 
 from pacsys.exp._monitor import ChannelData, MonitorResult
@@ -134,6 +135,11 @@ class TestMonitorResult:
         ch = ChannelData("A:DEV", ())
         r = MonitorResult(channels={"A:DEV": ch})
         with pytest.raises(ValueError, match="No readings"):
+            r.mean("A:DEV")
+
+    def test_stats_reject_numpy_boolean(self):
+        r = self._result(values_a=(np.bool_(True),))
+        with pytest.raises(TypeError, match="non-numeric value bool"):
             r.mean("A:DEV")
 
 
@@ -464,3 +470,15 @@ class TestMonitorResultDataframeRelative:
         r = MonitorResult(channels={"A:DEV": ch}, started=None)
         with pytest.raises(ValueError, match="started"):
             r.to_dataframe("A:DEV", relative=True)
+
+    @pytest.mark.parametrize("drf", [None, "A:DEV"])
+    def test_relative_missing_reading_timestamp_raises(self, drf):
+        pytest.importorskip("pandas")
+        reading = Reading(drf="A:DEV", value_type=ValueType.SCALAR, value=1.0)
+        result = MonitorResult(
+            channels={"A:DEV": ChannelData("A:DEV", (reading,))},
+            started=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+
+        with pytest.raises(ValueError, match="timestamp is None"):
+            result.to_dataframe(drf, relative=True)

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Iterator
 from pacsys.types import DeviceSpec, Reading, Value
 from pacsys.drf_utils import has_event, replace_event
 from pacsys.exp._resolve import resolve_drf, resolve_backend
+from pacsys.exp._values import numeric_value
 
 if TYPE_CHECKING:
     from pacsys.backends import Backend
@@ -77,10 +78,8 @@ class FreshResult:
             raise ValueError(f"No values for {self.drf}")
         nums = []
         for v in vals:
-            if isinstance(v, bool) or type(v).__name__ == "bool_":
-                raise TypeError(f"Cannot compute stats on {type(v).__name__}")
             try:
-                nums.append(float(v))  # type: ignore[arg-type]
+                nums.append(numeric_value(v))
             except (TypeError, ValueError):
                 raise TypeError(f"Cannot compute stats on {type(v).__name__}")
         return nums

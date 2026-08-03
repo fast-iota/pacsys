@@ -1,19 +1,20 @@
 import pytest
 
-from pacsys.drf_utils import ensure_immediate_event, prepare_for_write
 from pacsys.drf3 import (
     ARRAY_RANGE,
-    ClockEvent,
     DRF_FIELD,
     DRF_PROPERTY,
+    ClockEvent,
     DefaultEvent,
     ImmediateEvent,
     PeriodicEvent,
     get_qualified_device,
     parse_device,
+    parse_event,
     parse_range,
     parse_request,
 )
+from pacsys.drf_utils import ensure_immediate_event, prepare_for_write
 
 _NO_RANGE = parse_range(None)
 
@@ -194,18 +195,39 @@ def test_get_qualified_device():
 @pytest.mark.parametrize(
     "drf,expected",
     [
-        ("M:OUTTMP", "M:OUTTMP@I"),
-        ("B:HS23T[0:10]", "B:HS23T[0:10]@I"),
+        ("M:OUTTMP", "M:OUTTMP.READING@I"),
+        ("B:HS23T[0:10]", "B:HS23T.READING[0:10]@I"),
+        ("M@UTEST", "M:UTEST.ANALOG@I"),
+        ("M@UTEST@U", "M:UTEST.ANALOG@I"),
         ("M:OUTTMP@p,1000", "M:OUTTMP@p,1000"),
         ("M:OUTTMP@p,100H", "M:OUTTMP@p,100H"),
         ("M:OUTTMP@E,0F", "M:OUTTMP@E,0F"),
         ("M:OUTTMP@I", "M:OUTTMP@I"),
-        ("M:OUTTMP<-FTP", "M:OUTTMP@I<-FTP"),
+        ("M:OUTTMP<-FTP", "M:OUTTMP.READING@I<-FTP"),
+        ("Z:ACLTST<-REDIR:N@UALL", "Z:ACLTST.READING@I<-REDIR:N@UALL"),
+        ("M:OUTTMP<-LOGGER", "M:OUTTMP<-LOGGER"),
         ("M:OUTTMP@p,100H<-FTP", "M:OUTTMP@p,100H<-FTP"),
     ],
 )
 def test_ensure_immediate_event(drf, expected):
     assert ensure_immediate_event(drf) == expected
+
+
+@pytest.mark.parametrize(
+    "event,event_type",
+    [
+        ("u", DefaultEvent),
+        ("i", ImmediateEvent),
+    ],
+)
+def test_parse_simple_event_is_case_insensitive(event, event_type):
+    assert isinstance(parse_event(event), event_type)
+
+
+@pytest.mark.parametrize("event", ["Ujunk", "Ifoo"])
+def test_parse_simple_event_rejects_trailing_text(event):
+    with pytest.raises(ValueError, match=f"Invalid event: {event}"):
+        parse_event(event)
 
 
 @pytest.mark.parametrize(
@@ -243,3 +265,18 @@ def test_parse_time_freq(raw, expected_ms):
 )
 def test_prepare_for_write(drf, expected):
     assert prepare_for_write(drf) == expected
+
+
+@pytest.mark.parametrize(
+    "drf,expected",
+    [
+        ("M:OUTTMP", False),  # parser default-fills SCALED
+        ("M:OUTTMP.READING", False),  # explicit property, no field
+        ("M:OUTTMP.READING.RAW", True),
+        ("M:OUTTMP.RAW", True),  # bare field reinterpreted from property slot
+        ("M:OUTTMP.STATUS.ON", True),
+        ("Z|ACLTST", False),  # qualifier sets property, not field
+    ],
+)
+def test_field_explicit(drf, expected):
+    assert parse_request(drf).field_explicit is expected

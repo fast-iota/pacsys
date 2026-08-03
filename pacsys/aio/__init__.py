@@ -16,6 +16,7 @@ from typing import Optional
 from pacsys.aio._backends import AsyncBackend
 from pacsys.aio._device import AsyncDevice
 from pacsys.aio._subscription import AsyncSubscriptionHandle
+from pacsys.auth import Auth
 
 __all__ = [
     "AsyncBackend",
@@ -63,11 +64,16 @@ def dpm(host=None, port=None, pool_size=None, timeout=None, auth=None, role=None
 
 # ── Module-level Global Backend ──────────────────────────────────────────
 
-_UNSET = object()
+
+class _Unset:
+    """Sentinel distinguishing omitted configuration from an explicit None."""
+
+
+_UNSET = _Unset()
 _VALID_ASYNC_BACKENDS = {"dpm", "grpc"}
 
 _config_backend: Optional[str] = None
-_config_auth = None
+_config_auth: Auth | None = None
 _config_role: Optional[str] = None
 _config_host: Optional[str] = None
 _config_port: Optional[int] = None
@@ -80,13 +86,13 @@ _async_backend_initialized: bool = False
 
 def configure(
     *,
-    backend: Optional[str] = _UNSET,  # type: ignore[assignment]
-    host: Optional[str] = _UNSET,  # type: ignore[assignment]
-    port: Optional[int] = _UNSET,  # type: ignore[assignment]
-    pool_size: Optional[int] = _UNSET,  # type: ignore[assignment]
-    timeout: Optional[float] = _UNSET,  # type: ignore[assignment]
-    auth=_UNSET,
-    role: Optional[str] = _UNSET,  # type: ignore[assignment]
+    backend: str | None | _Unset = _UNSET,
+    host: str | None | _Unset = _UNSET,
+    port: int | None | _Unset = _UNSET,
+    pool_size: int | None | _Unset = _UNSET,
+    timeout: float | None | _Unset = _UNSET,
+    auth: Auth | str | None | _Unset = _UNSET,
+    role: str | None | _Unset = _UNSET,
 ) -> None:
     """Configure async backend settings.
 
@@ -128,25 +134,27 @@ def configure(
                 # No running loop -- force close synchronously
                 old_backend._closed = True
 
-    if backend is not _UNSET:
+    if not isinstance(backend, _Unset):
         if backend is not None and backend not in _VALID_ASYNC_BACKENDS:
             raise ValueError(f"Invalid backend {backend!r}, must be one of {sorted(_VALID_ASYNC_BACKENDS)}")
         _config_backend = backend
-    if auth is not _UNSET:
-        if auth == "krb":
+    if not isinstance(auth, _Unset):
+        if isinstance(auth, str):
+            if auth != "krb":
+                raise ValueError("auth string must be 'krb'")
             from pacsys.auth import KerberosAuth
 
             auth = KerberosAuth()
         _config_auth = auth
-    if role is not _UNSET:
+    if not isinstance(role, _Unset):
         _config_role = role
-    if host is not _UNSET:
+    if not isinstance(host, _Unset):
         _config_host = host
-    if port is not _UNSET:
+    if not isinstance(port, _Unset):
         _config_port = port
-    if pool_size is not _UNSET:
+    if not isinstance(pool_size, _Unset):
         _config_pool_size = pool_size
-    if timeout is not _UNSET:
+    if not isinstance(timeout, _Unset):
         _config_timeout = timeout
 
 

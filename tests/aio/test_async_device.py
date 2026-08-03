@@ -4,9 +4,9 @@ from unittest import mock
 
 import pytest
 
+from pacsys.aio._device import AsyncDevice
 from pacsys.testing import AsyncFakeBackend
 from pacsys.types import BasicControl
-from pacsys.aio._device import AsyncDevice
 
 
 class TestAsyncDeviceRead:
@@ -74,6 +74,14 @@ class TestAsyncDeviceWrite:
         assert result.verified
 
     @pytest.mark.asyncio
+    async def test_write_rejects_basic_control(self):
+        fb = AsyncFakeBackend()
+        device = AsyncDevice("Z:ACLTST", backend=fb)
+        with pytest.raises(TypeError, match="control\\(\\)"):
+            await device.write(BasicControl.RESET)
+        assert fb.writes == []
+
+    @pytest.mark.asyncio
     async def test_control_on(self):
         fb = AsyncFakeBackend()
         fb.set_reading("M:OUTTMP.CONTROL", 0)
@@ -108,6 +116,29 @@ class TestAsyncDeviceFluent:
         d2 = device.with_backend(backend2)
         assert isinstance(d2, AsyncDevice)
         assert d2._backend is backend2
+
+    @pytest.mark.parametrize(
+        ("drf", "method", "args"),
+        [
+            ("M:OUTTMP.ANALOG.ALL", "with_event", ("P,1000",)),
+            ("M:OUTTMP.ANALOG.ALL", "with_range", (0, 1)),
+            ("M:OUTTMP.ANALOG[0:1].ALL", "without_range", ()),
+            ("M:OUTTMP.ANALOG.ALL@P,1000", "without_event", ()),
+            ("M:OUTTMP.ANALOG.ALL", "with_extra", ("FTP",)),
+        ],
+    )
+    def test_fluent_modifiers_preserve_explicit_default_field(self, drf, method, args):
+        modified = getattr(AsyncDevice(drf), method)(*args)
+        assert modified.request.field_explicit
+
+    @pytest.mark.asyncio
+    async def test_fluent_modifier_preserves_default_field_behavior(self):
+        backend = AsyncFakeBackend()
+        backend.set_reading("M:OUTTMP.STATUS.ALL", 1)
+        device = AsyncDevice("M:OUTTMP.ANALOG.ALL", backend=backend)
+        await device.status()
+        await device.with_event("P,1000").status()
+        assert backend.reads == ["M:OUTTMP.STATUS.ALL@I", "M:OUTTMP.STATUS.ALL@I"]
 
     def test_repr(self):
         device = AsyncDevice("M:OUTTMP")

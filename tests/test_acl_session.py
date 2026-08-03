@@ -320,6 +320,22 @@ class TestACLSession:
         with pytest.raises(ACLError, match="closed"):
             session.send("read M:OUTTMP")
 
+    @pytest.mark.parametrize("command", ["read M:OUTTMP\nread G:AMANDA", "read M:OUTTMP\rread G:AMANDA"])
+    @patch("paramiko.Transport")
+    @patch("socket.create_connection")
+    def test_send_rejects_line_breaks(self, mock_connect, mock_transport_cls, command):
+        ssh, transport = connected_ssh(mock_connect, mock_transport_cls)
+        chan = make_interactive_channel([b"\nACL> "])
+        transport.open_session.return_value = chan
+
+        session = ACLSession(ssh)
+        with pytest.raises(ValueError, match="line breaks"):
+            session.send(command)
+
+        assert not session._closed
+        chan.sendall.assert_not_called()
+        session.close()
+
     @patch("paramiko.Transport")
     @patch("socket.create_connection")
     def test_context_manager(self, mock_connect, mock_transport_cls):
@@ -383,6 +399,23 @@ class TestACLSession:
 
         with pytest.raises(ACLError, match="Timed out"):
             ACLSession(ssh, timeout=0.1)
+
+    @patch("paramiko.Transport")
+    @patch("socket.create_connection")
+    def test_command_timeout_closes_session(self, mock_connect, mock_transport_cls):
+        ssh, transport = connected_ssh(mock_connect, mock_transport_cls)
+        chan = make_interactive_channel([b"\nACL> "])
+        transport.open_session.return_value = chan
+
+        session = ACLSession(ssh, timeout=0.01)
+        with pytest.raises(ACLError, match="Timed out"):
+            session.send("slow command")
+
+        assert session._closed
+        chan.close.assert_called_once()
+        with pytest.raises(ACLError, match="closed"):
+            session.send("next command")
+        chan.sendall.assert_called_once_with(b"slow command\n")
 
     @patch("paramiko.Transport")
     @patch("socket.create_connection")

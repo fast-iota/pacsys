@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import inspect
-from typing import Any
+from typing import Any, cast
 
 from pacsys.drf3 import DataRequest, parse_event, parse_extra
 from pacsys.drf3.event import DefaultEvent, PeriodicEvent
 from pacsys.drf3.field import (
+    ALLOWED_FIELD_FOR_PROPERTY,
+    DEFAULT_FIELD_FOR_PROPERTY,
     DRF_FIELD,
     parse_field,
-    DEFAULT_FIELD_FOR_PROPERTY,
-    ALLOWED_FIELD_FOR_PROPERTY,
 )
 from pacsys.drf3.property import DRF_PROPERTY
 from pacsys.drf3.range import ARRAY_RANGE
@@ -65,6 +65,14 @@ def _validate_callback(callback: object, on_error: object) -> None:
             raise TypeError(f"on_error must accept 2 arguments (exception, handle), but {on_error!r} accepts {n}")
 
 
+def _require_str_list(value: object, field: str) -> list[str]:
+    if not isinstance(value, list):
+        raise TypeError(f"Expected list for {field}, got {type(value).__name__}")
+    if not all(isinstance(item, str) for item in value):
+        raise TypeError(f"Expected list[str] for {field}")
+    return cast(list[str], value)
+
+
 class _DeviceBase:
     """DRF building, field resolution, fluent modification. No I/O."""
 
@@ -112,6 +120,11 @@ class _DeviceBase:
 
     def _resolve_field(self, field: str | None, prop: DRF_PROPERTY) -> DRF_FIELD | None:
         if field is None:
+            # A field typed in the constructor DRF (e.g. Device("X.SETTING.RAW")) carries
+            # over when valid for the target property; cross-property mismatches drop to
+            # the target's default (same policy as prepare_for_write/to_canonical).
+            if self._request.field_explicit and self._request.field in ALLOWED_FIELD_FOR_PROPERTY.get(prop, []):
+                return self._request.field
             return DEFAULT_FIELD_FOR_PROPERTY.get(prop)
         f = parse_field(field.upper())
         allowed = ALLOWED_FIELD_FOR_PROPERTY.get(prop, [])

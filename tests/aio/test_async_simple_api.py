@@ -64,6 +64,10 @@ class TestConfigure:
         with pytest.raises(ValueError, match="Invalid backend"):
             aio.configure(backend="nosql")
 
+    def test_configure_invalid_auth_string(self):
+        with pytest.raises(ValueError, match="auth string must be 'krb'"):
+            aio.configure(auth="password")
+
     def test_configure_after_init_auto_replaces(self, fake_backend):
         aio.configure(host="other")
         assert fake_backend._closed is True

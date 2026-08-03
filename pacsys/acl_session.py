@@ -91,9 +91,12 @@ class ACLSession:
 
         Raises:
             ACLError: If the session is closed, the process exits, or prompt times out
+            ValueError: If command contains a line break
         """
         if self._closed:
             raise ACLError("ACL session is closed")
+        if "\n" in command or "\r" in command:
+            raise ValueError("ACLSession commands cannot contain line breaks; use semicolons")
 
         effective_timeout = timeout if timeout is not None else self._timeout
 
@@ -101,8 +104,10 @@ class ACLSession:
             self._proc.send_line(command)
             raw = self._proc.read_until(_ACL_PROMPT, timeout=effective_timeout)
         except ACLError:
+            self.close()
             raise
         except Exception as e:
+            self.close()
             raise ACLError(str(e)) from e
 
         # Decode and strip echoed command (first line) from output
