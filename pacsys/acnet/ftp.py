@@ -904,6 +904,7 @@ class SnapshotHandle:
         self._snap_class_info = get_snap_class_info(snap_class_code) if snap_class_code else None
         self._cancelled = False
         self._lock = threading.Lock()
+        self._metadata_consumed: set[int] = set()
 
         # State tracking: keyed by device di
         self._ready_event = threading.Event()
@@ -1053,8 +1054,9 @@ class SnapshotHandle:
             point_number: Starting point (0-based), or -1 for sequential.
             has_timestamps: Override timestamp parsing.  When None, auto-detect
                 from class info (True for most classes).
-            skip_first_point: Override first-point skipping.  When None,
-                auto-detect from class info (True for nearly all classes).
+            skip_first_point: Override first-point skipping.  When None, class
+                metadata is skipped on the first sequential retrieval for each
+                device, but not on later pages or random-access retrievals.
             timeout: Timeout in seconds.
         """
         # Validate and resolve params under lock (brief)
@@ -1062,13 +1064,15 @@ class SnapshotHandle:
             if self._cancelled:
                 raise RuntimeError("Snapshot has been cancelled")
             ci = self._snap_class_info
+            if skip_first_point is None:
+                skip_first_point = bool(
+                    ci and ci.skip_first_point and point_number == -1 and device_index not in self._metadata_consumed
+                )
 
         if num_points is None:
             num_points = ci.retrieval_max if ci else 512
         if has_timestamps is None:
             has_timestamps = ci.has_timestamps if ci else True
-        if skip_first_point is None:
-            skip_first_point = ci.skip_first_point if ci else False
         if ci and num_points > ci.retrieval_max:
             raise ValueError(
                 f"num_points ({num_points}) exceeds class retrieval_max ({ci.retrieval_max}) for snap class {ci.code}"
@@ -1099,7 +1103,18 @@ class SnapshotHandle:
         if status < 0:
             raise AcnetError(status, "Snapshot retrieve failed")
 
-        return parse_snapshot_data_reply(data, dev, has_timestamps=has_timestamps, skip_first_point=skip_first_point)
+        points = parse_snapshot_data_reply(
+            data,
+            dev,
+            has_timestamps=has_timestamps,
+            skip_first_point=skip_first_point,
+        )
+        point_size = dev.data_length + (2 if has_timestamps else 0)
+        has_complete_point = len(data) >= 4 + point_size and struct.unpack_from("<H", data, 2)[0] > 0
+        if point_number == -1 and ci and ci.skip_first_point and has_complete_point:
+            with self._lock:
+                self._metadata_consumed.add(device_index)
+        return points
 
     def restart(self, timeout: float = 5.0):
         """Re-arm and re-trigger the snapshot.
@@ -1137,6 +1152,8 @@ class SnapshotHandle:
 
         if status < 0:
             raise AcnetError(status, "Snapshot restart failed")
+        with self._lock:
+            self._metadata_consumed.clear()
 
     def reset_pointers(self, timeout: float = 5.0):
         """Reset retrieval pointers."""
@@ -1165,6 +1182,8 @@ class SnapshotHandle:
 
         if status < 0:
             raise AcnetError(status, "Snapshot reset pointers failed")
+        with self._lock:
+            self._metadata_consumed.clear()
 
     def cancel(self):
         """Cancel the snapshot and stop the monitor thread."""

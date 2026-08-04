@@ -957,6 +957,27 @@ class TestSnapshotHandle:
             snap_class_code=snap_class_code,
         )
 
+    @staticmethod
+    def _data_reply(*values):
+        data = struct.pack("<hH", 0, len(values))
+        for timestamp, value in values:
+            data += struct.pack("<Hh", timestamp, value)
+        return data
+
+    @staticmethod
+    def _serve(handle, *retrieve_replies):
+        replies = iter(retrieve_replies)
+
+        def request_single(*, data, reply_handler, **_kwargs):
+            typecode = struct.unpack_from("<H", data, 0)[0]
+            if typecode == TYPECODE_SNAPSHOT_RETRIEVE:
+                status, payload = next(replies)
+            else:
+                status, payload = 0, b""
+            reply_handler(MagicMock(status=status, data=payload, last=True))
+
+        handle._connection.request_single.side_effect = request_single
+
     def test_snap_class_info_populated(self):
         """snap_class_code=13 populates snap_class_info."""
         handle = self._make_handle(snap_class_code=13)
@@ -990,6 +1011,92 @@ class TestSnapshotHandle:
             # (will fail at the network level since conn is mocked, but no ValueError)
             with pytest.raises(Exception, match="(?!retrieval_max)"):
                 handle.retrieve(num_points=4096, timeout=0.1)
+        finally:
+            handle.cancel()
+
+    def test_auto_skip_only_first_sequential_page_per_device(self):
+        devices = [
+            FTPDevice(di=1, pi=12, ssdn=b"\x00" * 8),
+            FTPDevice(di=2, pi=12, ssdn=b"\x00" * 8),
+        ]
+        handle = self._make_handle(snap_class_code=13, devices=devices)
+        self._serve(
+            handle,
+            (0, self._data_reply((0, 9999), (10, 100))),
+            (0, self._data_reply((20, 200), (30, 300))),
+            (0, self._data_reply((0, 8888), (10, 400))),
+        )
+        try:
+            assert [p.raw_value for p in handle.retrieve(device_index=0)] == [100]
+            assert [p.raw_value for p in handle.retrieve(device_index=0)] == [200, 300]
+            assert [p.raw_value for p in handle.retrieve(device_index=1)] == [400]
+        finally:
+            handle.cancel()
+
+    def test_random_access_does_not_auto_skip(self):
+        handle = self._make_handle(snap_class_code=13)
+        self._serve(handle, (0, self._data_reply((10, 100), (20, 200))))
+        try:
+            points = handle.retrieve(point_number=100)
+            assert [p.raw_value for p in points] == [100, 200]
+        finally:
+            handle.cancel()
+
+    def test_explicit_keep_on_first_sequential_page_advances_state(self):
+        handle = self._make_handle(snap_class_code=13)
+        self._serve(
+            handle,
+            (0, self._data_reply((0, 9999), (10, 100))),
+            (0, self._data_reply((20, 200), (30, 300))),
+        )
+        try:
+            first = handle.retrieve(skip_first_point=False)
+            assert [p.raw_value for p in first] == [9999, 100]
+            assert [p.raw_value for p in handle.retrieve()] == [200, 300]
+        finally:
+            handle.cancel()
+
+    @pytest.mark.parametrize(
+        ("skip_first_point", "expected"),
+        [(False, [9999, 100]), (True, [100])],
+    )
+    def test_random_access_honors_explicit_skip_override(self, skip_first_point, expected):
+        handle = self._make_handle(snap_class_code=13)
+        self._serve(handle, (0, self._data_reply((0, 9999), (10, 100))))
+        try:
+            points = handle.retrieve(point_number=0, skip_first_point=skip_first_point)
+            assert [p.raw_value for p in points] == expected
+        finally:
+            handle.cancel()
+
+    def test_failed_retrieval_does_not_advance_auto_skip(self):
+        handle = self._make_handle(snap_class_code=13)
+        self._serve(
+            handle,
+            (-123, b""),
+            (0, self._data_reply((0, 9999), (10, 100))),
+        )
+        try:
+            with pytest.raises(AcnetError):
+                handle.retrieve()
+            assert [p.raw_value for p in handle.retrieve()] == [100]
+        finally:
+            handle.cancel()
+
+    @pytest.mark.parametrize("reset_method", ["restart", "reset_pointers"])
+    def test_cursor_reset_restores_auto_skip(self, reset_method):
+        handle = self._make_handle(snap_class_code=13)
+        self._serve(
+            handle,
+            (0, self._data_reply((0, 9999), (10, 100))),
+            (0, self._data_reply((20, 200), (30, 300))),
+            (0, self._data_reply((0, 8888), (10, 400))),
+        )
+        try:
+            assert [p.raw_value for p in handle.retrieve()] == [100]
+            assert [p.raw_value for p in handle.retrieve()] == [200, 300]
+            getattr(handle, reset_method)()
+            assert [p.raw_value for p in handle.retrieve()] == [400]
         finally:
             handle.cancel()
 

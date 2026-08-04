@@ -163,18 +163,15 @@ with AcnetConnectionTCP() as conn:
     ) as snap:
         snap.wait(timeout=10.0)
 
-        # Retrieve in 512-point chunks using sequential access.
-        # First chunk: skip metadata point. Subsequent: don't skip.
+        # Retrieve in 512-point chunks using sequential access. SnapshotHandle
+        # skips the collection metadata only on the first page for this device.
         all_points = []
-        first = True
         while True:
             points = snap.retrieve(
                 device_index=0,
                 num_points=512,
-                point_number=-1,       # sequential access
-                skip_first_point=first,
+                point_number=-1,  # sequential access
             )
-            first = False
             if not points:
                 break
             all_points.extend(points)
@@ -182,6 +179,11 @@ with AcnetConnectionTCP() as conn:
         print(f"Total: {len(all_points)} points")
         # => Total: 2047 points  (2048 minus 1 skipped metadata point)
 ```
+
+Automatic metadata skipping is tracked independently for each device. Random-access
+retrievals keep the requested first point. `restart()` and `reset_pointers()` rewind the
+tracking; pass `skip_first_point=True` or `False` only when overriding class behavior
+explicitly.
 
 ### Class Code Lookup
 
