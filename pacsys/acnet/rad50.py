@@ -14,13 +14,13 @@ def _char_to_index(c: str) -> int:
     c = c.upper()
     if "A" <= c <= "Z":
         return ord(c) - ord("A") + 1
-    elif "0" <= c <= "9":
+    if "0" <= c <= "9":
         return ord(c) - ord("0") + 30
-    elif c == "$":
+    if c == "$":
         return 27
-    elif c == ".":
+    if c == ".":
         return 28
-    elif c == "%":
+    if c == "%":
         return 29
     return 0  # Space or invalid
 

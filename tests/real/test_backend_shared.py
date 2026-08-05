@@ -8,23 +8,26 @@ Tests here verify cross-backend behavior consistency. Backend-specific tests
 should remain in their individual test files (test_dmq_backend.py, etc.).
 """
 
-import pytest
-import time
 import threading
+import time
+
+import pytest
 
 from pacsys.backends import Backend
 from pacsys.drf3 import parse_request
 from pacsys.drf3.property import DRF_PROPERTY
 from pacsys.drf_utils import strip_event
-from pacsys.types import BasicControl, Reading, ValueType, BackendCapability, SubscriptionHandle
-from pacsys.errors import DeviceError
+from pacsys.errors import DeviceError, ReadError
+from pacsys.types import BackendCapability, BasicControl, Reading, SubscriptionHandle, ValueType
 
 from .devices import (
     ACLTST_NONEXISTENT_ORDINAL,
     ACLTST_UNPAIRED_CONTROLS,
+    ARRAY_DEVICE,
     CONTROL_PAIRS,
     CONTROL_RESET,
     DEVICE_TYPES,
+    FAST_PERIODIC,
     FTP_DEVICE,
     LOGGER_DEVICE,
     LOGGER_DEVICE_BAD_NODE,
@@ -33,19 +36,17 @@ from .devices import (
     NONEXISTENT_DEVICE,
     NOPROP_DEVICE,
     PERIODIC_DEVICE,
-    FAST_PERIODIC,
-    SLOW_PERIODIC,
     SCALAR_DEVICE,
     SCALAR_DEVICE_2,
     SCALAR_DEVICE_3,
+    SCALAR_ELEMENT,
     SCALAR_SETPOINT,
     SCALAR_SETPOINT_RAW,
     SETTING_ON_READONLY,
+    SLOW_PERIODIC,
     STATUS_CONTROL_DEVICE,
-    ARRAY_DEVICE,
-    SCALAR_ELEMENT,
-    TIMEOUT_READ,
     TIMEOUT_BATCH,
+    TIMEOUT_READ,
     TIMEOUT_STREAM_EVENT,
     TIMEOUT_STREAM_ITER,
     requires_kerberos,
@@ -183,11 +184,13 @@ class TestBackendValueTypes:
     # ACL CGI doesn't understand qualifier chars (~|@$) but _acl_read_prefix
     # canonicalizes them to explicit .PROPERTY names. Status/alarm properties
     # still can't return structured dicts - ACL returns plain text for those.
-    _ACL_UNSUPPORTED_PROPERTIES = {
-        DRF_PROPERTY.ANALOG,
-        DRF_PROPERTY.DIGITAL,
-        DRF_PROPERTY.BIT_STATUS,
-    }
+    _ACL_UNSUPPORTED_PROPERTIES = frozenset(
+        {
+            DRF_PROPERTY.ANALOG,
+            DRF_PROPERTY.DIGITAL,
+            DRF_PROPERTY.BIT_STATUS,
+        }
+    )
 
     @staticmethod
     def _is_acl(backend) -> bool:
@@ -201,7 +204,7 @@ class TestBackendValueTypes:
 
         return isinstance(backend, GRPCBackend)
 
-    @pytest.mark.parametrize("drf,expected_type,python_type,desc", DEVICE_TYPES)
+    @pytest.mark.parametrize(("drf", "expected_type", "python_type", "desc"), DEVICE_TYPES)
     def test_get_value_type(self, read_backend_cls: Backend, drf, expected_type, python_type, desc):
         """get() returns correct value_type for {desc}."""
         if self._is_acl(read_backend_cls):
@@ -445,9 +448,7 @@ class TestBackendStreaming:
         """Backend.close() stops all subscriptions."""
         _skip_if_no_stream(read_backend)
 
-        handles = []
-        for _ in range(2):
-            handles.append(read_backend.subscribe([PERIODIC_DEVICE], callback=lambda r, h: None))
+        handles = [read_backend.subscribe([PERIODIC_DEVICE], callback=lambda r, h: None) for _ in range(2)]
         time.sleep(0.1)
 
         read_backend.close()
@@ -478,7 +479,8 @@ class TestBackendStreaming:
             with lock:
                 readings_by_drf.setdefault(reading.drf, []).append(reading)
                 print(
-                    f"Received reading for {reading.drf}: ok={reading.ok}, value={reading.value}, error_code={reading.error_code}, facility={reading.facility}, message={reading.message}"
+                    f"Received reading for {reading.drf}: ok={reading.ok}, value={reading.value}, "
+                    f"error_code={reading.error_code}, facility={reading.facility}, message={reading.message}"
                 )
                 if len(readings_by_drf) >= 2:
                     got_both.set()
@@ -536,11 +538,11 @@ def _skip_if_not_dpm(backend):
     from pacsys.backends.dpm_http import DPMHTTPBackend
 
     try:
-        from pacsys.backends.grpc_backend import GRPCBackend
+        from pacsys.backends import grpc_backend
     except ImportError:
-        GRPCBackend = None
+        grpc_backend = None
 
-    if not isinstance(backend, DPMHTTPBackend) and not (GRPCBackend and isinstance(backend, GRPCBackend)):
+    if not isinstance(backend, DPMHTTPBackend) and not (grpc_backend and isinstance(backend, grpc_backend.GRPCBackend)):
         pytest.skip(f"Backend {backend.__class__.__name__} does not support <-FTP routing")
 
 
@@ -556,7 +558,8 @@ class TestBackendFTP:
 
         assert reading.ok, f"Failed to read {FTP_DEVICE}: {reading.message}"
         assert reading.value_type == ValueType.TIMED_SCALAR_ARRAY
-        assert "data" in reading.value and "micros" in reading.value
+        assert "data" in reading.value
+        assert "micros" in reading.value
         assert len(reading.value["data"]) > 0
         assert len(reading.value["data"]) == len(reading.value["micros"])
         assert reading.timestamp is not None
@@ -577,7 +580,7 @@ class TestBackendFTP:
 class TestBackendLogger:
     """Logger read tests via DPM's <-LOGGER extra qualifier.
 
-    Window: 2025-01-15 12:00–13:00 UTC (epoch ms 1736942400000–1736946000000).
+    Window: 2025-01-15 12:00-13:00 UTC (epoch ms 1736942400000-1736946000000).
     """
 
     # start/end in microseconds for timestamp validation
@@ -588,7 +591,8 @@ class TestBackendLogger:
     def _assert_logger_reading(self, reading: Reading, drf: str):
         assert reading.ok, f"Failed to read {drf}: {reading.message}"
         assert reading.value_type == ValueType.TIMED_SCALAR_ARRAY
-        assert "data" in reading.value and "micros" in reading.value
+        assert "data" in reading.value
+        assert "micros" in reading.value
         assert len(reading.value["data"]) > 0
         assert len(reading.value["data"]) == len(reading.value["micros"])
         assert reading.timestamp is not None
@@ -637,10 +641,13 @@ class TestBackendLogger:
         # Bogus logger either errors out or returns empty data (never ~3600 pts)
         try:
             reading = read_backend.get(LOGGER_DEVICE_BAD_NODE, timeout=30.0)
-        except Exception:
-            return  # DPM HTTP times out — error proves param was parsed
-        ok_with_data = reading.ok and len(reading.value.get("data", [])) > 0
-        assert not ok_with_data, f"Bogus logger should not return data, got {reading}"
+        except ReadError as error:
+            if not error.readings:
+                pytest.fail("ReadError should include the failed logger reading")
+            reading = error.readings[0]
+        assert not reading.ok or (isinstance(reading.value, dict) and not reading.value.get("data")), (
+            f"Bogus logger should not return data, got {reading}"
+        )
 
 
 # =============================================================================
@@ -682,7 +689,8 @@ class TestBackendWrite:
         """Write a scaled value and verify the .RAW readback changes accordingly."""
         original_scaled = write_backend_cls.read(strip_event(SCALAR_SETPOINT), timeout=TIMEOUT_READ)
         original_raw = write_backend_cls.read(SCALAR_SETPOINT_RAW, timeout=TIMEOUT_READ)
-        assert isinstance(original_raw, bytes) and len(original_raw) > 0
+        assert isinstance(original_raw, bytes)
+        assert len(original_raw) > 0
 
         new_value = original_scaled + 1.0
         result = write_backend_cls.write(SCALAR_SETPOINT, new_value, timeout=TIMEOUT_READ)
@@ -705,7 +713,7 @@ class TestBackendWrite:
     @pytest.mark.write
     @requires_write_enabled
     @pytest.mark.parametrize(
-        "cmd_true,cmd_false,field", CONTROL_PAIRS, ids=lambda x: x if isinstance(x, str) else x.name
+        ("cmd_true", "cmd_false", "field"), CONTROL_PAIRS, ids=lambda x: x if isinstance(x, str) else x.name
     )
     def test_control_pair(self, write_backend_cls: Backend, cmd_true, cmd_false, field):
         """Toggle control pair and verify the corresponding status bit changes."""
@@ -793,9 +801,7 @@ class TestBackendWrite:
         assert all(r.ok for r in readings if r.name == valid_drf)
         assert all(not r.ok for r in readings if r.name == invalid_drf)
 
-        j = 0
-        for r in h1.readings():
-            j += 1
+        for j, r in enumerate(h1.readings(), start=1):
             if j > 3:
                 h1.stop()
 
@@ -822,7 +828,7 @@ class TestBackendUnpairedControls:
     @pytest.mark.write
     @requires_write_enabled
     @pytest.mark.parametrize(
-        "ordinal,cmd_name",
+        ("ordinal", "cmd_name"),
         ACLTST_UNPAIRED_CONTROLS,
         ids=[name for _, name in ACLTST_UNPAIRED_CONTROLS],
     )

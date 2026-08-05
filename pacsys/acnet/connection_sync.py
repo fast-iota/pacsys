@@ -11,7 +11,6 @@ Subclasses just provide a factory for the specific async connection type.
 import asyncio
 import logging
 import threading
-from typing import Optional
 
 from .async_connection import (
     ACSYS_PROXY_HOST,
@@ -96,9 +95,9 @@ class _SyncAcnetConnectionBase:
         self._requested_name = name
         self._trace = trace
 
-        self._async: Optional[AsyncAcnetConnectionBase] = None
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._reactor_thread: Optional[threading.Thread] = None
+        self._async: AsyncAcnetConnectionBase | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._reactor_thread: threading.Thread | None = None
 
     def _create_async(self) -> AsyncAcnetConnectionBase:
         """Factory method - subclasses return the appropriate async connection type."""
@@ -195,8 +194,8 @@ class _SyncAcnetConnectionBase:
         if self._async and self._loop:
             try:
                 self._run_sync(self._core.close(), timeout=5.0)
-            except Exception:
-                pass
+            except Exception:  # noqa: BLE001
+                logger.debug("Async ACNET close failed", exc_info=True)
 
         if self._loop:
             self._loop.call_soon_threadsafe(self._loop.stop)

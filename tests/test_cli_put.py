@@ -201,17 +201,17 @@ class TestVerifyPath:
         backend = mock.MagicMock()
         mock_mb.return_value = backend
 
-        with mock.patch("pacsys.device.Device") as MockDevice:
+        with mock.patch("pacsys.device.Device") as mock_device:
             mock_dev = mock.MagicMock()
             mock_dev.write.return_value = WriteResult(drf="M:OUTTMP", verified=True, readback=72.5)
-            MockDevice.return_value = mock_dev
+            mock_device.return_value = mock_dev
 
             buf = io.StringIO()
             with mock.patch("sys.argv", ["acput", "--verify", "M:OUTTMP", "72.5"]), contextlib.redirect_stdout(buf):
                 rc = main()
 
             assert rc == 0
-            MockDevice.assert_called_once()
+            mock_device.assert_called_once()
             mock_dev.write.assert_called_once()
             call_kwargs = mock_dev.write.call_args
             assert call_kwargs is not None
@@ -232,7 +232,8 @@ class TestVerifyPath:
 
         assert rc == 0
         write_drf, written_value = backend.write.call_args[0][:2]
-        assert ".CONTROL" in write_drf and "@N" in write_drf
+        assert ".CONTROL" in write_drf
+        assert "@N" in write_drf
         assert written_value == BasicControl.RESET
         all_drfs = [c[0][0] for c in backend.write.call_args_list] + [c[0][0] for c in backend.read.call_args_list]
         assert not any("SETTING" in d for d in all_drfs)
@@ -245,10 +246,10 @@ class TestVerifyPath:
         backend = mock.MagicMock()
         mock_mb.return_value = backend
 
-        with mock.patch("pacsys.device.Device") as MockDevice:
+        with mock.patch("pacsys.device.Device") as mock_device:
             mock_dev = mock.MagicMock()
             mock_dev.write.return_value = WriteResult(drf="M:OUTTMP", verified=True, readback=72.5)
-            MockDevice.return_value = mock_dev
+            mock_device.return_value = mock_dev
 
             buf = io.StringIO()
             with (

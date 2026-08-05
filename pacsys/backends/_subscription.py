@@ -4,7 +4,7 @@ import logging
 import threading
 import time
 from collections import deque
-from typing import Iterator, Optional
+from collections.abc import Iterator
 
 from pacsys.types import Reading, SubscriptionHandle
 
@@ -25,7 +25,7 @@ class BufferedSubscriptionHandle(SubscriptionHandle):
         self._buf: deque[Reading] = deque()
         self._maxsize = _DEFAULT_BUFFER_MAXSIZE
         self._stopped = False
-        self._exc: Optional[Exception] = None
+        self._exc: Exception | None = None
         self._ref_ids: list[int] = []
         self._drfs: list[str] = []
         self._drop_count = 0
@@ -42,7 +42,7 @@ class BufferedSubscriptionHandle(SubscriptionHandle):
         return self._stopped
 
     @property
-    def exc(self) -> Optional[Exception]:
+    def exc(self) -> Exception | None:
         return self._exc
 
     # -- Producer API (called from reactor / IO thread) -----------------------
@@ -97,7 +97,7 @@ class BufferedSubscriptionHandle(SubscriptionHandle):
 
     def readings(
         self,
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
     ) -> Iterator[tuple[Reading, SubscriptionHandle]]:
         if getattr(self, "_is_callback_mode", False):
             raise RuntimeError("Cannot iterate subscription with callback; readings are pushed to callback")
@@ -134,11 +134,7 @@ class BufferedSubscriptionHandle(SubscriptionHandle):
                         reading = self._buf.popleft()
                     elif self._exc is not None:
                         raise self._exc
-                    elif self._stopped:
-                        return
-                    elif timeout == 0:
-                        return
-                    elif timeout is not None and time.monotonic() - start >= timeout:
+                    elif self._stopped or timeout == 0 or timeout is not None and time.monotonic() - start >= timeout:
                         return
                     else:
                         continue  # spurious wakeup, loop again

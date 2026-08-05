@@ -1,13 +1,13 @@
 """Tests for pacsys.cli._common — shared CLI infrastructure."""
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest import mock
 
 import numpy as np
 import pytest
 
-from pacsys.types import BasicControl, Reading, WriteResult, ValueType, DeviceMeta
+from pacsys.types import BasicControl, DeviceMeta, Reading, ValueType, WriteResult
 
 
 class TestParseSlice:
@@ -56,13 +56,13 @@ class TestParseSlice:
     def test_invalid_raises(self):
         from pacsys.cli._common import parse_slice
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Invalid slice"):
             parse_slice("abc")
 
     def test_too_many_colons_raises(self):
         from pacsys.cli._common import parse_slice
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Invalid slice"):
             parse_slice("1:2:3:4")
 
 
@@ -104,7 +104,7 @@ class TestParseValue:
         assert parse_value("-3.14") == -3.14
 
     @pytest.mark.parametrize(
-        "name,expected",
+        ("name", "expected"),
         [(m.name.lower(), m) for m in BasicControl],
     )
     def test_control_names(self, name, expected):
@@ -255,7 +255,7 @@ class TestFormatReading:
             value=value,
             error_code=error_code,
             message=msg,
-            timestamp=ts or datetime(2025, 6, 15, 12, 0, 0),
+            timestamp=ts or datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc),
             meta=meta,
         )
 
@@ -340,7 +340,7 @@ class TestFormatReading:
     def test_text_epoch_timestamp(self):
         from pacsys.cli._common import format_reading
 
-        ts = datetime(2025, 6, 15, 12, 0, 0)
+        ts = datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
         r = self._make_reading(ts=ts)
         result = format_reading(r, fmt="text", number_format=None, array_slice=None, timestamp_format="epoch")
         expected = f"{ts.timestamp():.3f}"
@@ -349,8 +349,8 @@ class TestFormatReading:
     def test_text_relative_timestamp(self):
         from pacsys.cli._common import format_reading
 
-        ts = datetime(2025, 6, 15, 12, 0, 5)
-        ref = datetime(2025, 6, 15, 12, 0, 0).timestamp()
+        ts = datetime(2025, 6, 15, 12, 0, 5, tzinfo=timezone.utc)
+        ref = datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc).timestamp()
         r = self._make_reading(ts=ts)
         result = format_reading(
             r, fmt="text", number_format=None, array_slice=None, timestamp_format="relative", reference_time=ref
@@ -360,7 +360,7 @@ class TestFormatReading:
     def test_json_epoch_timestamp(self):
         from pacsys.cli._common import format_reading
 
-        ts = datetime(2025, 6, 15, 12, 0, 0)
+        ts = datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
         r = self._make_reading(ts=ts)
         result = format_reading(r, fmt="json", number_format=None, array_slice=None, timestamp_format="epoch")
         data = json.loads(result)
@@ -370,8 +370,8 @@ class TestFormatReading:
     def test_json_relative_timestamp(self):
         from pacsys.cli._common import format_reading
 
-        ts = datetime(2025, 6, 15, 12, 0, 5)
-        ref = datetime(2025, 6, 15, 12, 0, 0).timestamp()
+        ts = datetime(2025, 6, 15, 12, 0, 5, tzinfo=timezone.utc)
+        ref = datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc).timestamp()
         r = self._make_reading(ts=ts)
         result = format_reading(
             r, fmt="json", number_format=None, array_slice=None, timestamp_format="relative", reference_time=ref
@@ -641,5 +641,5 @@ class TestResolveAuth:
     def test_unknown_raises(self):
         from pacsys.cli._common import _resolve_auth
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Unknown auth type"):
             _resolve_auth("bogus")

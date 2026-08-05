@@ -44,7 +44,7 @@ def main() -> int:
         backend = make_backend(args)
     except KeyboardInterrupt:
         return 130
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"Connection error: {e}", file=sys.stderr)
         return EXIT_USAGE_ERROR
 
@@ -76,7 +76,7 @@ def main() -> int:
                     has_error = True
     except KeyboardInterrupt:
         return 130
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"Error: {e}", file=sys.stderr)
         return EXIT_USAGE_ERROR
     finally:

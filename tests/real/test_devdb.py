@@ -10,7 +10,7 @@ import socket
 
 import pytest
 
-from pacsys.devdb import DevDBClient, DeviceInfoResult, DEVDB_AVAILABLE
+from pacsys.devdb import DEVDB_AVAILABLE, DevDBClient, DeviceInfoResult
 from pacsys.errors import DeviceError
 
 DEVDB_HOST = os.environ.get("PACSYS_DEVDB_HOST", "localhost")
@@ -24,7 +24,7 @@ def devdb_server_available() -> bool:
         sock = socket.create_connection((DEVDB_HOST, DEVDB_PORT), timeout=2.0)
         sock.close()
         return True
-    except (socket.timeout, ConnectionRefusedError, OSError, socket.gaierror):
+    except (TimeoutError, ConnectionRefusedError, OSError, socket.gaierror):
         return False
 
 

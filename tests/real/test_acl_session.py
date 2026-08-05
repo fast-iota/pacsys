@@ -17,7 +17,6 @@ from pacsys.ssh import SSHClient
 
 from .devices import ACL_DEST_HOST, ACL_JUMP_HOST, requires_acl_ssh
 
-
 pytestmark = [requires_acl_ssh]
 
 

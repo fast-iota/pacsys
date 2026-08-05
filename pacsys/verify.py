@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from typing import Optional
+from typing import TYPE_CHECKING
 
 import numpy as np
 
-from pacsys.types import Value
+if TYPE_CHECKING:
+    from pacsys.types import Value
 
 
 @dataclass(frozen=True)
@@ -39,7 +40,7 @@ class Verify:
     initial_delay: float = 0.3
     retry_delay: float = 0.5
     max_attempts: int = 3
-    readback: Optional[str] = None
+    readback: str | None = None
     always: bool = False
 
     def __enter__(self) -> Verify:
@@ -68,13 +69,13 @@ def _pop_verify() -> None:
         stack.pop()
 
 
-def get_active_verify() -> Optional[Verify]:
+def get_active_verify() -> Verify | None:
     """Return the current Verify from the thread-local stack, or None."""
     stack = getattr(_local, "stack", None)
     return stack[-1] if stack else None
 
 
-def resolve_verify(verify: bool | Verify | None) -> Optional[Verify]:
+def resolve_verify(verify: bool | Verify | None) -> Verify | None:
     """Resolve a verify parameter to a Verify instance or None.
 
     Args:

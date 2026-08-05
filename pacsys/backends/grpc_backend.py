@@ -14,7 +14,7 @@ import os
 import threading
 import time
 from datetime import datetime, timezone
-from typing import TypeGuard, cast
+from typing import Any, TypeGuard, cast
 
 import numpy as np
 
@@ -54,13 +54,13 @@ try:
     GRPC_AVAILABLE = True
 except (ImportError, TypeError) as e:
     GRPC_AVAILABLE = False
-    grpc = None  # type: ignore
-    grpc_aio = None  # type: ignore
-    timestamp_pb2 = None  # type: ignore
-    DAQ_pb2 = None  # type: ignore
-    DAQ_pb2_grpc = None  # type: ignore
-    device_pb2 = None  # type: ignore
-    status_pb2 = None  # type: ignore
+    grpc = cast("Any", None)
+    grpc_aio = cast("Any", None)
+    timestamp_pb2 = cast("Any", None)
+    DAQ_pb2 = cast("Any", None)
+    DAQ_pb2_grpc = cast("Any", None)
+    device_pb2 = cast("Any", None)
+    status_pb2 = cast("Any", None)
     _import_error = str(e)
 
 DEFAULT_HOST = os.environ.get("PACSYS_GRPC_HOST", "dce08.fnal.gov")
@@ -131,7 +131,7 @@ def _value_to_proto_value(value: Value, *, for_write: bool = False) -> "device_p
     elif isinstance(value, np.ndarray):
         proto_value.scalarArr.value.extend(value.tolist())
     else:
-        raise ValueError(f"Cannot convert value of type {type(value)} to proto value")
+        raise TypeError(f"Cannot convert value of type {type(value)} to proto value")
 
     return proto_value
 
@@ -183,16 +183,16 @@ def _proto_value_to_python(proto_value: "device_pb2.Value") -> tuple[Value, Valu
 
     if value_type == "scalar":
         return proto_value.scalar, ValueType.SCALAR
-    elif value_type == "scalarArr":
+    if value_type == "scalarArr":
         values = list(proto_value.scalarArr.value)
         return np.array(values, dtype=float), ValueType.SCALAR_ARRAY
-    elif value_type == "raw":
+    if value_type == "raw":
         return proto_value.raw, ValueType.RAW
-    elif value_type == "text":
+    if value_type == "text":
         return proto_value.text, ValueType.TEXT
-    elif value_type == "textArr":
+    if value_type == "textArr":
         return list(proto_value.textArr.value), ValueType.TEXT_ARRAY
-    elif value_type == "anaAlarm":
+    if value_type == "anaAlarm":
         alarm = proto_value.anaAlarm
         return {
             "minimum": alarm.minimum,
@@ -204,7 +204,7 @@ def _proto_value_to_python(proto_value: "device_pb2.Value") -> tuple[Value, Valu
             "tries_needed": alarm.triesNeeded,
             "tries_now": alarm.triesNow,
         }, ValueType.ANALOG_ALARM
-    elif value_type == "digAlarm":
+    if value_type == "digAlarm":
         alarm = proto_value.digAlarm
         return {
             "nominal": alarm.nominal,
@@ -216,12 +216,11 @@ def _proto_value_to_python(proto_value: "device_pb2.Value") -> tuple[Value, Valu
             "tries_needed": alarm.triesNeeded,
             "tries_now": alarm.triesNow,
         }, ValueType.DIGITAL_ALARM
-    elif value_type == "basicStatus":
+    if value_type == "basicStatus":
         return {k: v == "True" for k, v in proto_value.basicStatus.value.items()}, ValueType.BASIC_STATUS
-    elif value_type is None:
+    if value_type is None:
         raise ValueError("Proto Value has no value set (empty oneof)")
-    else:
-        raise ValueError(f"Unknown proto value type: {value_type!r}")
+    raise ValueError(f"Unknown proto value type: {value_type!r}")
 
 
 def _proto_timestamp_to_datetime(ts: "timestamp_pb2.Timestamp") -> datetime | None:
@@ -263,7 +262,7 @@ def _reply_to_readings(reply, drfs: list[str]) -> list[Reading]:
     """
     index = reply.index
     if index < 0 or index >= len(drfs):
-        logger.warning(f"Received reply for unknown index {index}")
+        logger.warning("Received reply for unknown index %s", index)
         return []
 
     drf = drfs[index]
@@ -283,7 +282,7 @@ def _reply_to_readings(reply, drfs: list[str]) -> list[Reading]:
                 timestamp=now,
             )
         ]
-    elif value_field == "readings":
+    if value_field == "readings":
         reading_list = reply.readings.reading
         results = []
         for rd in reading_list:
@@ -438,7 +437,7 @@ class _DaqCore:
         ]
         self._channel = grpc_aio.insecure_channel(target, options=options)
         self._stub = DAQ_pb2_grpc.DAQStub(self._channel)
-        logger.debug(f"Created async gRPC channel to {target}")
+        logger.debug("Created async gRPC channel to %s", target)
 
     async def close(self):
         if self._channel is not None:
@@ -458,14 +457,14 @@ class _DaqCore:
         for drf in drfs:
             request.drf.append(drf)
 
-        logger.debug(f"gRPC async Read request: {len(drfs)} devices")
+        logger.debug("gRPC async Read request: %s devices", len(drfs))
 
         # Logger DRFs arrive in 487-point chunks with a final empty chunk.
         logger_indices = {i for i, drf in enumerate(drfs) if _is_logger_drf(drf)}
         logger_chunks: dict[int, list[Reading]] = {}  # index -> accumulated chunks
         logger_complete: set[int] = set()  # indices that received the terminator
 
-        results = cast(list[Reading | None], [None] * len(drfs))
+        results = cast("list[Reading | None]", [None] * len(drfs))
         received_count = 0
         expected_count = len(drfs)
         now = datetime.now(timezone.utc)
@@ -482,8 +481,10 @@ class _DaqCore:
             async for reply in call:
                 if reply is None:
                     logger.warning(
-                        f"gRPC stream yielded None (received={received_count}/{expected_count}), "
-                        f"missing=[{', '.join(drfs[i] for i in range(len(drfs)) if results[i] is None)}]"
+                        "gRPC stream yielded None (received=%s/%s), missing=[%s]",
+                        received_count,
+                        expected_count,
+                        ", ".join(drfs[i] for i in range(len(drfs)) if results[i] is None),
                     )
                     continue
 
@@ -549,7 +550,13 @@ class _DaqCore:
             target = f"{self._host}:{self._port}"
             error_message = f"gRPC error ({target}): {e.code().name}: {e.details()}"
             missing = [drfs[i] for i in range(len(drfs)) if results[i] is None]
-            logger.error(f"{error_message} (received {received_count}/{expected_count}, missing: {missing})")
+            logger.error(
+                "%s (received %s/%s, missing: %s)",
+                error_message,
+                received_count,
+                expected_count,
+                missing,
+            )
             ec = _grpc_error_code(e)
             fc = _grpc_facility_code(e)
             for i in range(len(drfs)):
@@ -558,20 +565,6 @@ class _DaqCore:
                         drf=drfs[i],
                         facility_code=fc,
                         error_code=ec,
-                        message=error_message,
-                        timestamp=now,
-                    )
-
-        except Exception as e:
-            transport_error = e
-            target = f"{self._host}:{self._port}"
-            error_message = f"gRPC error ({target}): {type(e).__name__}: {e}"
-            logger.error(error_message)
-            for i in range(len(drfs)):
-                if results[i] is None:
-                    results[i] = Reading(
-                        drf=drfs[i],
-                        error_code=ERR_RETRY,
                         message=error_message,
                         timestamp=now,
                     )
@@ -611,8 +604,8 @@ class _DaqCore:
                 setting.device = drf
                 setting.value.CopyFrom(_value_to_proto_value(value, for_write=True))
                 valid_items.append((i, drf, setting))
-            except (ValueError, NotImplementedError) as e:
-                logger.error(f"Failed to convert value for {drf}: {e}")
+            except (TypeError, ValueError, NotImplementedError) as e:
+                logger.error("Failed to convert value for %s: %s", drf, e)
                 validation_errors[i] = str(e)
 
         # Phase 2: RPC
@@ -623,7 +616,7 @@ class _DaqCore:
             for _, _, proto_setting in valid_items:
                 request.setting.append(proto_setting)
 
-            logger.debug(f"gRPC async Set request: {len(valid_items)} devices (of {len(settings)} total)")
+            logger.debug("gRPC async Set request: %s devices (of %s total)", len(valid_items), len(settings))
 
             try:
                 response = await self._stub.Set(
@@ -659,13 +652,6 @@ class _DaqCore:
                 fc = _grpc_facility_code(e)
                 for orig_idx, drf, _ in valid_items:
                     rpc_results[orig_idx] = WriteResult(drf=drf, facility_code=fc, error_code=ec, message=error_message)
-
-            except Exception as e:
-                target = f"{self._host}:{self._port}"
-                error_message = f"gRPC error ({target}): {type(e).__name__}: {e}"
-                logger.error(error_message)
-                for orig_idx, drf, _ in valid_items:
-                    rpc_results[orig_idx] = WriteResult(drf=drf, error_code=ERR_RETRY, message=error_message)
 
         # Phase 3: Merge in original order
         results = []
@@ -750,13 +736,19 @@ class _DaqCore:
                 )
                 if code in _RETRYABLE_STATUS_CODES:
                     error_fn(exc, fatal=False)
-                    logger.warning(f"gRPC stream {code.name} ({target}), retrying in {backoff:.1f}s: {e.details()}")
+                    logger.warning(
+                        "gRPC stream %s (%s), retrying in %.1fs: %s",
+                        code.name,
+                        target,
+                        backoff,
+                        e.details(),
+                    )
                 else:
                     error_fn(exc, fatal=True)
-                    logger.error(f"gRPC stream {code.name} ({target}), non-retryable: {e.details()}")
+                    logger.error("gRPC stream %s (%s), non-retryable: %s", code.name, target, e.details())
                     return
 
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 if stop_check():
                     return
                 target = f"{self._host}:{self._port}"
@@ -767,8 +759,9 @@ class _DaqCore:
                     error_code=ERR_RETRY,
                     message=f"gRPC stream error ({target}): {type(e).__name__}: {e} (devices: {drf_summary})",
                 )
-                error_fn(exc, fatal=False)
-                logger.error(f"gRPC stream error ({target}): {e}")
+                error_fn(exc, fatal=True)
+                logger.error("gRPC stream error (%s): %s", target, e)
+                return
 
             # Backoff before retry
             if stop_check():
@@ -906,7 +899,10 @@ class GRPCBackend(Backend):
         self._handles_lock = threading.Lock()
 
         logger.debug(
-            f"GRPCBackend initialized: host={self._host}, port={self._port}, authenticated={self.authenticated}"
+            "GRPCBackend initialized: host=%s, port=%s, authenticated=%s",
+            self._host,
+            self._port,
+            self.authenticated,
         )
 
     # ── Reactor lifecycle ─────────────────────────────────────────────────
@@ -1143,7 +1139,7 @@ class GRPCBackend(Backend):
             raise
 
         mode_str = "callback" if handle._is_callback_mode else "iterator"
-        logger.info(f"Created {mode_str} subscription for {len(drfs)} devices via gRPC")
+        logger.info("Created %s subscription for %s devices via gRPC", mode_str, len(drfs))
         return handle
 
     def remove(self, handle: SubscriptionHandle) -> None:
@@ -1160,7 +1156,7 @@ class GRPCBackend(Backend):
             if handle in self._handles:
                 self._handles.remove(handle)
 
-        logger.info(f"Removed gRPC subscription for {len(handle._drfs)} devices")
+        logger.info("Removed gRPC subscription for %s devices", len(handle._drfs))
 
     def stop_streaming(self) -> None:
         """Stop all streaming subscriptions."""
@@ -1190,8 +1186,8 @@ class GRPCBackend(Backend):
             try:
                 fut = asyncio.run_coroutine_threadsafe(self._core.close(), self._loop)
                 fut.result(timeout=2.0)
-            except Exception as e:
-                logger.debug(f"Error closing gRPC core: {e}")
+            except Exception as e:  # noqa: BLE001
+                logger.debug("Error closing gRPC core: %s", e)
             self._core = None
 
         # Stop the event loop and join reactor thread

@@ -4,15 +4,16 @@ Low-level tests for DPM/ACNET connection (DPM via ACNET protocol routing).
 Tests the ACNET protocol path: DPMAcnet -> acnetd -> DPM
 """
 
-import pytest
 import time
+
+import pytest
 
 from pacsys.acnet import DPMAcnet
 from tests.real.devices import (
     ACNET_TCP_TEST_HOST,
     ACNET_TCP_TEST_PORT,
-    requires_dpm_acnet,
     TIMEOUT_BATCH,
+    requires_dpm_acnet,
 )
 
 

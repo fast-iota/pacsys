@@ -325,6 +325,7 @@ def compile_java() -> None:
         cwd=str(JAVA_DIR),
         capture_output=True,
         text=True,
+        check=False,
     )
     if proc.returncode != 0:
         print(f"COMPILE ERROR:\n{proc.stderr}")
@@ -341,12 +342,12 @@ def run_java(lines: list[str]) -> list[str]:
         capture_output=True,
         text=True,
         timeout=120,
+        check=False,
     )
     if proc.returncode != 0:
         print(f"JAVA ERROR:\n{proc.stderr}")
         sys.exit(1)
-    results = proc.stdout.strip().split("\n")
-    return results
+    return proc.stdout.strip().split("\n")
 
 
 def parse_result(line: str) -> tuple[bool, str]:
@@ -440,7 +441,7 @@ def run_primary_scale_validation() -> tuple[int, int, list[str], list[tuple[int,
         try:
             result = _primary_scale(raw, p_index, input_len)
             py_results.append((True, str(result)))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             py_results.append((False, str(e)))
 
     # Run Java
@@ -484,7 +485,7 @@ def run_primary_unscale_validation(
         try:
             result = _primary_unscale(value, p_index, input_len)
             py_results.append((True, str(result)))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             py_results.append((False, str(e)))
 
     # Run Java
@@ -520,7 +521,7 @@ def run_common_scale_validation() -> tuple[int, int, list[str], list[tuple[int, 
         try:
             result = _common_scale(x, c_index, constants)
             py_results.append((True, str(result)))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             py_results.append((False, str(e)))
 
     # Run Java
@@ -564,7 +565,7 @@ def run_common_unscale_validation(
         try:
             result = _common_unscale(xx, c_index, constants, p_index)
             py_results.append((True, str(result)))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             py_results.append((False, str(e)))
 
     # Run Java

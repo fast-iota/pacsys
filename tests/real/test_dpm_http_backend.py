@@ -11,8 +11,8 @@ This file contains DPM HTTP-specific tests:
 - Digital status reflects control
 """
 
-import time
 import threading
+import time
 
 import pytest
 
@@ -33,11 +33,11 @@ from .devices import (
     DPM_TEST_PORT,
     SCALAR_SETPOINT_RAW,
     STATUS_CONTROL_DEVICE,
+    TIMEOUT_READ,
+    TIMEOUT_THREAD_JOIN,
     requires_dpm_http,
     requires_kerberos,
     requires_write_enabled,
-    TIMEOUT_READ,
-    TIMEOUT_THREAD_JOIN,
 )
 
 
@@ -76,7 +76,7 @@ class TestDPMHTTPBackendPool:
         def do_read(backend, device):
             try:
                 results.append(backend.read(device, timeout=TIMEOUT_READ))
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 errors.append(e)
 
         with DPMHTTPBackend(host=DPM_TEST_HOST, port=DPM_TEST_PORT, pool_size=4) as backend:
@@ -124,6 +124,7 @@ class TestDPMHTTPBackendWrite:
         converts back to the correct engineering value.
         """
         from pacsys.drf_utils import strip_event
+
         from .devices import SCALAR_SETPOINT
 
         raw_cases = [
@@ -268,7 +269,7 @@ _RAMP_DEVICES = [
 
 
 @requires_dpm_http
-@pytest.mark.parametrize("ramp_cls,device", _RAMP_DEVICES)
+@pytest.mark.parametrize(("ramp_cls", "device"), _RAMP_DEVICES)
 class TestRamp:
     """Read real ramp tables via DPM HTTP across all ramp types."""
 

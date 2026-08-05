@@ -6,12 +6,12 @@ import logging
 import threading
 from typing import TYPE_CHECKING
 
-from pacsys.types import DeviceSpec, Reading, SubscriptionHandle
-from pacsys.exp._resolve import resolve_drf, resolve_backend
+from pacsys.exp._resolve import resolve_backend, resolve_drf
 
 if TYPE_CHECKING:
     from pacsys.backends import Backend
     from pacsys.exp._writers import LogWriter
+    from pacsys.types import DeviceSpec, Reading, SubscriptionHandle
 
 logger = logging.getLogger(__name__)
 

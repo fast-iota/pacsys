@@ -4,16 +4,16 @@ import struct
 
 import pytest
 
-from pacsys.types import ValueType
 from pacsys.alarm_block import (
+    FTD,
     AlarmFlags,
     AnalogAlarm,
     DataLength,
     DataType,
     DigitalAlarm,
-    FTD,
     LimitType,
 )
+from pacsys.types import ValueType
 
 
 def _analog_structured(**overrides):

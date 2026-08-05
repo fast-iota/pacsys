@@ -165,11 +165,11 @@ def prepare_for_write(drf: str) -> str:
     request = parse_request(drf)
 
     # Map read properties to their writable counterparts
-    _WRITE_PROPERTY = {
+    _write_property = {
         DRF_PROPERTY.READING: DRF_PROPERTY.SETTING,
         DRF_PROPERTY.STATUS: DRF_PROPERTY.CONTROL,
     }
-    new_property = _WRITE_PROPERTY.get(request.property, request.property)
+    new_property = _write_property.get(request.property, request.property)
 
     # We must explicitly pass the field if we want to keep it,
     # because to_canonical drops inherited fields when property changes.

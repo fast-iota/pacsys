@@ -3,7 +3,7 @@ from enum import Enum, auto
 from .property import DRF_PROPERTY
 
 
-class DRF_FIELD(Enum):
+class DRF_FIELD(Enum):  # noqa: N801 -- established DRF API
     # reading/setting
     RAW = auto()
     PRIMARY = auto()
@@ -202,8 +202,7 @@ ALLOWED_FIELD_FOR_PROPERTY = {
 def parse_field(raw_string: str) -> DRF_FIELD:
     if raw_string.upper() in DRF_FIELD_ALIASES:
         return DRF_FIELD_ALIASES[raw_string.upper()]
-    else:
-        raise ValueError(f"Unrecognized field {raw_string}")
+    raise ValueError(f"Unrecognized field {raw_string}")
 
 
 def get_default_field(prop: DRF_PROPERTY) -> DRF_FIELD | None:

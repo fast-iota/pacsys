@@ -147,10 +147,10 @@ class AsyncReplyThenError:
 
 def make_reading_reply(
     index: int,
-    scalar_value: float = None,
-    text_value: str = None,
-    error_code: int = None,
-    error_message: str = None,
+    scalar_value: float | None = None,
+    text_value: str | None = None,
+    error_code: int | None = None,
+    error_message: str | None = None,
 ) -> DAQ_pb2.ReadingReply:
     """Create a ReadingReply protobuf message for testing."""
     reply = DAQ_pb2.ReadingReply()
@@ -272,7 +272,7 @@ class TestGRPCBackendInit:
                 backend.close()
 
     @pytest.mark.parametrize(
-        "kwargs,match",
+        ("kwargs", "match"),
         [
             ({"host": ""}, "host cannot be empty"),
             ({"port": 0}, "port must be positive"),
@@ -495,6 +495,22 @@ class TestWriteOperations:
         assert not results[1].success
         assert "No status received" in results[1].message
 
+    def test_write_unsupported_type_returns_error(self, auth_backend_with_mock_stub):
+        backend, mock_stub = auth_backend_with_mock_stub
+
+        result = backend.write("M:OUTTMP", object())
+
+        assert not result.success
+        assert "Cannot convert value of type" in result.message
+        mock_stub.Set.assert_not_called()
+
+    def test_unexpected_write_error_propagates(self, auth_backend_with_mock_stub):
+        backend, mock_stub = auth_backend_with_mock_stub
+        mock_stub.Set = mock.AsyncMock(side_effect=RuntimeError("programming bug"))
+
+        with pytest.raises(RuntimeError, match="programming bug"):
+            backend.write_many([("M:OUTTMP", 72.5)])
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # gRPC Error Tests
@@ -524,6 +540,13 @@ class TestGRPCErrors:
         assert all(r.is_error for r in readings)
         assert all("DEADLINE_EXCEEDED" in r.message for r in readings)
         assert isinstance(exc_info.value.__cause__, grpc.aio.AioRpcError)
+
+    def test_unexpected_read_error_propagates(self, backend_with_mock_stub):
+        backend, mock_stub = backend_with_mock_stub
+        mock_stub.Read.return_value = AsyncReplyThenError([], RuntimeError("programming bug"))
+
+        with pytest.raises(RuntimeError, match="programming bug"):
+            backend.get("M:OUTTMP")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -564,7 +587,7 @@ class TestOperationAfterClose:
     """Tests for operations after close."""
 
     @pytest.mark.parametrize(
-        "method,args",
+        ("method", "args"),
         [
             ("read", ("M:OUTTMP",)),
             ("get", ("M:OUTTMP",)),
@@ -588,7 +611,7 @@ class TestValueConversion:
     """Tests for value type conversion."""
 
     @pytest.mark.parametrize(
-        "input_val,field,expected",
+        ("input_val", "field", "expected"),
         [
             (72.5, "scalar", 72.5),
             (42, "scalar", 42.0),
@@ -609,7 +632,7 @@ class TestValueConversion:
         assert list(proto.textArr.value) == ["a", "b", "c"]
 
     @pytest.mark.parametrize(
-        "field,set_val,expected_val,expected_type",
+        ("field", "set_val", "expected_val", "expected_type"),
         [
             ("scalar", 72.5, 72.5, ValueType.SCALAR),
             ("text", "hello", "hello", ValueType.TEXT),
@@ -707,7 +730,7 @@ class TestValueConversion:
             grpc_backend._value_to_proto_value({"minimum": 1.0, "bogus": 42})
 
     def test_alarm_dict_mixed_keys_raises(self):
-        with pytest.raises(ValueError, match="Cannot mix analog.*and digital"):
+        with pytest.raises(ValueError, match=r"Cannot mix analog.*and digital"):
             grpc_backend._value_to_proto_value({"minimum": 1.0, "nominal": 5})
 
     def test_alarm_dict_shared_only_raises(self):
@@ -724,8 +747,8 @@ class TestValueConversion:
         proto = grpc_backend._value_to_proto_value(original)
         result, vtype = grpc_backend._proto_value_to_python(proto)
         assert vtype == ValueType.ANALOG_ALARM
-        for key in original:
-            assert result[key] == original[key]
+        for key, expected in original.items():
+            assert result[key] == expected
 
     def test_basic_status_round_trip_returns_bools(self):
         """BasicStatus dict → proto → dict preserves bool types, not strings."""
@@ -746,7 +769,7 @@ class TestStatusCodeNormalization:
     """Tests for uint8 -> int8 status code normalization."""
 
     @pytest.mark.parametrize(
-        "input_code,expected",
+        ("input_code", "expected"),
         [
             (0, 0),
             (1, 1),
@@ -1066,10 +1089,10 @@ class TestDaqCoreStream:
         assert count[0] == 2
         assert call.cancelled
 
-    # -- Error callback always fatal=False ---------------------------------
+    # -- Retryable vs fatal errors ------------------------------------------
 
-    def test_error_callback_grpc_and_generic(self):
-        """Both gRPC and generic errors call error_fn with fatal=False."""
+    def test_retryable_grpc_then_generic_error_is_fatal(self):
+        """Retryable RPC errors reconnect, but unexpected errors terminate."""
         stub = mock.MagicMock()
         n = [0]
 
@@ -1078,9 +1101,8 @@ class TestDaqCoreStream:
             if n[0] == 1:
                 return AsyncErrorIterator(grpc.StatusCode.UNAVAILABLE, "srv down")
             if n[0] == 2:
-                # Generic exception (not AioRpcError)
                 return AsyncReplyThenError([], RuntimeError("boom"))
-            return AsyncMockIterator([])
+            raise AssertionError("stream retried after fatal error")
 
         stub.Read.side_effect = make_call
         errors = []
@@ -1099,10 +1121,11 @@ class TestDaqCoreStream:
             )
 
         assert len(errors) == 2
-        assert all(fatal is False for _, fatal in errors)
+        assert [fatal for _, fatal in errors] == [False, True]
         assert all(isinstance(e, DeviceError) for e, _ in errors)
         assert "UNAVAILABLE" in errors[0][0].message
         assert "boom" in errors[1][0].message
+        assert stub.Read.call_count == 2
 
     # -- Retryable vs non-retryable log levels -----------------------------
 

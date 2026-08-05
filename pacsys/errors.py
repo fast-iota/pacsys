@@ -5,7 +5,7 @@ These exceptions are raised by the user-facing API (read, get, write, etc.)
 rather than the low-level ACNET protocol layer.
 """
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from pacsys.types import Reading
@@ -60,7 +60,7 @@ class DeviceError(Exception):
         drf: str,
         facility_code: int,
         error_code: int,
-        message: Optional[str] = None,
+        message: str | None = None,
     ):
         self.drf = drf
         self.facility_code = facility_code

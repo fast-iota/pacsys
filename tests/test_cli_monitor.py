@@ -3,10 +3,10 @@
 import contextlib
 import io
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest import mock
 
-from pacsys.types import Reading, ValueType, DeviceMeta
+from pacsys.types import DeviceMeta, Reading, ValueType
 
 
 def _make_reading(
@@ -25,7 +25,7 @@ def _make_reading(
         value=value,
         error_code=error_code,
         message=msg,
-        timestamp=ts or datetime(2025, 6, 15, 12, 0, 0),
+        timestamp=ts or datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc),
         meta=meta,
     )
 
@@ -226,7 +226,7 @@ class TestEpochTimestampFormat:
     def test_epoch_text(self, mock_mb):
         from pacsys.cli.monitor import main
 
-        ts = datetime(2025, 6, 15, 12, 0, 0)
+        ts = datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
         r1 = _make_reading(value=72.5, ts=ts)
         handle = _make_handle([r1])
 
@@ -249,7 +249,7 @@ class TestEpochTimestampFormat:
     def test_epoch_json(self, mock_mb):
         from pacsys.cli.monitor import main
 
-        ts = datetime(2025, 6, 15, 12, 0, 0)
+        ts = datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
         r1 = _make_reading(value=72.5, ts=ts)
         handle = _make_handle([r1])
 
@@ -275,8 +275,8 @@ class TestRelativeTimestampFormat:
     def test_relative_text(self, mock_mb):
         from pacsys.cli.monitor import main
 
-        ts1 = datetime(2025, 6, 15, 12, 0, 0)
-        ts2 = datetime(2025, 6, 15, 12, 0, 5)
+        ts1 = datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        ts2 = datetime(2025, 6, 15, 12, 0, 5, tzinfo=timezone.utc)
         r1 = _make_reading(value=72.5, ts=ts1)
         r2 = _make_reading(value=73.0, ts=ts2)
         handle = _make_handle([r1, r2])

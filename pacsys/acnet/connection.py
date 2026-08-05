@@ -19,7 +19,6 @@ import time
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Optional
 
 from . import rad50
 from .constants import (
@@ -123,8 +122,8 @@ class AcnetConnection:
         self._pid = os.getpid()
 
         # Sockets
-        self._cmd_socket: Optional[socket.socket] = None
-        self._data_socket: Optional[socket.socket] = None
+        self._cmd_socket: socket.socket | None = None
+        self._data_socket: socket.socket | None = None
         self._cmd_lock = threading.Lock()
 
         # State
@@ -143,13 +142,13 @@ class AcnetConnection:
         self._dead_requests: set[RequestId] = set()
 
         # Handlers
-        self._message_handler: Optional[MessageHandler] = None
-        self._request_handler: Optional[RequestHandler] = None
-        self._cancel_handler: Optional[CancelHandler] = None
+        self._message_handler: MessageHandler | None = None
+        self._request_handler: RequestHandler | None = None
+        self._cancel_handler: CancelHandler | None = None
 
         # Threads
-        self._data_thread: Optional[threading.Thread] = None
-        self._monitor_thread: Optional[threading.Thread] = None
+        self._data_thread: threading.Thread | None = None
+        self._monitor_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
 
     @property
@@ -186,7 +185,7 @@ class AcnetConnection:
             logger.warning("8-bit connect failed, trying 16-bit")
             self._connect_16bit()
 
-        logger.info(f"Connected to ACNET as {self.name} (task_id={self._task_id})")
+        logger.info("Connected to ACNET as %s (task_id=%s)", self.name, self._task_id)
 
         # Start threads
         self._start_data_thread()
@@ -201,21 +200,21 @@ class AcnetConnection:
         if self._connected:
             try:
                 self._disconnect()
-            except Exception:
-                pass
+            except Exception:  # noqa: BLE001
+                logger.debug("Disconnect failed while closing %s", self.name, exc_info=True)
 
         # Close sockets
         if self._cmd_socket:
             try:
                 self._cmd_socket.close()
-            except Exception:
+            except OSError:
                 pass
             self._cmd_socket = None
 
         if self._data_socket:
             try:
                 self._data_socket.close()
-            except Exception:
+            except OSError:
                 pass
             self._data_socket = None
 
@@ -225,7 +224,7 @@ class AcnetConnection:
         if self._monitor_thread and self._monitor_thread.is_alive():
             self._monitor_thread.join(timeout=2.0)
 
-        logger.info(f"Closed ACNET connection {self.name}")
+        logger.info("Closed ACNET connection %s", self.name)
 
     def send(self, node: int, task: str, data: bytes):
         """
@@ -294,8 +293,8 @@ class AcnetConnection:
                     continue  # stale reply from previous use of this req_id
                 try:
                     context.reply_handler(reply)
-                except Exception as e:
-                    logger.warning(f"Reply handler exception (buffered): {e}")
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Reply handler exception (buffered): %s", e)
                 if reply.last:
                     with self._requests_out_lock:
                         self._dead_requests.add(context.request_id)
@@ -401,12 +400,12 @@ class AcnetConnection:
                 if s:
                     try:
                         s.close()
-                    except Exception:
+                    except OSError:
                         pass
             self._cmd_socket = None
             self._data_socket = None
-            logger.error(f"Failed to open ACNET sockets: {e}")
-            raise AcnetUnavailableError()
+            logger.error("Failed to open ACNET sockets: %s", e)
+            raise AcnetUnavailableError from e
 
     def _local_port(self) -> int:
         """Get the local port of the data socket."""
@@ -436,8 +435,8 @@ class AcnetConnection:
         """Disconnect from the daemon."""
         try:
             self._send_command(CMD_DISCONNECT, 0, b"")
-        except Exception:
-            pass
+        except Exception:  # noqa: BLE001
+            logger.debug("Disconnect command failed for %s", self.name, exc_info=True)
 
         # Cancel all outstanding requests
         with self._requests_out_lock:
@@ -520,23 +519,23 @@ class AcnetConnection:
             try:
                 self._cmd_socket.send(packet)
             except OSError as e:
-                logger.error(f"Failed to send command {cmd}: {e}")
-                raise AcnetUnavailableError()
+                logger.error("Failed to send command %s: %s", cmd, e)
+                raise AcnetUnavailableError from e
 
             # Wait for acknowledgement (up to 5 seconds)
             ready, _, _ = select.select([self._cmd_socket], [], [], 5.0)
             if not ready:
-                logger.error(f"Timeout waiting for ack on command {cmd}")
-                raise AcnetUnavailableError()
+                logger.error("Timeout waiting for ack on command %s", cmd)
+                raise AcnetUnavailableError
 
             try:
                 ack_data = self._cmd_socket.recv(256)
             except OSError as e:
-                logger.error(f"Failed to receive ack: {e}")
-                raise AcnetUnavailableError()
+                logger.error("Failed to receive ack: %s", e)
+                raise AcnetUnavailableError from e
 
             if len(ack_data) < 4:
-                raise AcnetUnavailableError()
+                raise AcnetUnavailableError
 
             # Parse acknowledgement
             r_ack, status = struct.unpack_from("<Hh", ack_data, 0)
@@ -556,7 +555,7 @@ class AcnetConnection:
 
     def _data_thread_run(self):
         """Data thread main loop - receives and dispatches packets."""
-        logger.debug(f"Data thread started for {self.name}")
+        logger.debug("Data thread started for %s", self.name)
         assert self._data_socket is not None, "sockets not opened"
 
         while not self._stop_event.is_set():
@@ -574,12 +573,12 @@ class AcnetConnection:
 
             except OSError:
                 if not self._stop_event.is_set():
-                    logger.warning(f"Socket error in data thread for {self.name}")
+                    logger.warning("Socket error in data thread for %s", self.name)
                 break
-            except Exception as e:
-                logger.exception(f"Error in data thread: {e}")
+            except Exception:
+                logger.exception("Error in data thread")
 
-        logger.debug(f"Data thread stopped for {self.name}")
+        logger.debug("Data thread stopped for %s", self.name)
 
     def _handle_packet(self, packet: AcnetPacket):
         """Dispatch a received packet to the appropriate handler."""
@@ -592,8 +591,8 @@ class AcnetConnection:
                 self._handle_message(packet)
             elif isinstance(packet, AcnetCancel):
                 self._handle_cancel(packet)
-        except Exception as e:
-            logger.exception(f"Error handling packet: {e}")
+        except Exception:
+            logger.exception("Error handling packet")
 
     def _handle_reply(self, reply: AcnetReply):
         """Handle an incoming reply."""
@@ -613,8 +612,8 @@ class AcnetConnection:
 
         try:
             context.reply_handler(reply)
-        except Exception as e:
-            logger.warning(f"Reply handler exception: {e}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Reply handler exception: %s", e)
 
         if reply.last:
             with self._requests_out_lock:
@@ -626,8 +625,8 @@ class AcnetConnection:
         """Handle an incoming request."""
         try:
             self._request_ack(request.reply_id)
-        except Exception as e:
-            logger.warning(f"Failed to ack request: {e}")
+        except AcnetError as e:
+            logger.warning("Failed to ack request: %s", e)
             return
 
         with self._requests_in_lock:
@@ -636,34 +635,38 @@ class AcnetConnection:
         if self._request_handler:
             try:
                 self._request_handler(request)
-            except Exception as e:
-                logger.warning(f"Request handler exception: {e}")
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Request handler exception: %s", e)
                 try:
                     self.send_reply(request, b"", 0, last=True)
-                except Exception:
-                    pass
+                except AcnetError as reply_error:
+                    logger.warning(
+                        "Failed to send terminal reply for request %s after handler error: %s",
+                        request.reply_id.value,
+                        reply_error,
+                    )
         else:
             # No handler - send end-mult reply
             try:
                 self.send_reply(request, b"", 0, last=True)
-            except Exception:
-                pass
+            except AcnetError as e:
+                logger.warning("Failed to send terminal reply for unhandled request %s: %s", request.reply_id.value, e)
 
     def _handle_message(self, message: AcnetMessage):
         """Handle an unsolicited message."""
         if self._message_handler:
             try:
                 self._message_handler(message)
-            except Exception as e:
-                logger.warning(f"Message handler exception: {e}")
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Message handler exception: %s", e)
 
     def _handle_cancel(self, cancel: AcnetCancel):
         """Handle a cancel notification."""
         if self._cancel_handler:
             try:
                 self._cancel_handler(cancel)
-            except Exception as e:
-                logger.warning(f"Cancel handler exception: {e}")
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Cancel handler exception: %s", e)
 
     def _start_monitor_thread(self):
         """Start the connection monitor thread."""
@@ -674,7 +677,7 @@ class AcnetConnection:
 
     def _monitor_thread_run(self):
         """Monitor thread main loop - pings daemon and handles reconnection."""
-        logger.debug(f"Monitor thread started for {self.name}")
+        logger.debug("Monitor thread started for %s", self.name)
 
         while not self._stop_event.is_set():
             if self._stop_event.wait(timeout=HEARTBEAT_TIMEOUT / 1000.0):
@@ -684,18 +687,18 @@ class AcnetConnection:
                 if self._connected:
                     self._ping()
                 else:
-                    logger.info(f"Attempting reconnect for {self.name}")
+                    logger.info("Attempting reconnect for %s", self.name)
                     self._connect_8bit()
                     if self._receiving:
                         self._start_receiving()
             except AcnetError:
-                logger.warning(f"Lost connection for {self.name}")
+                logger.warning("Lost connection for %s", self.name)
                 self._disconnect()
                 self._stop_event.wait(timeout=RECONNECT_DELAY / 1000.0)
-            except Exception as e:
-                logger.exception(f"Monitor thread error: {e}")
+            except Exception:
+                logger.exception("Monitor thread error")
 
-        logger.debug(f"Monitor thread stopped for {self.name}")
+        logger.debug("Monitor thread stopped for %s", self.name)
 
     def __enter__(self):
         self.connect()

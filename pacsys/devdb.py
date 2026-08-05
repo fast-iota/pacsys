@@ -22,20 +22,20 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar, cast
 
-
 logger = logging.getLogger(__name__)
 
 _import_error = ""
 try:
     import grpc
+
     from pacsys._proto.controls.service.DevDB.v1 import DevDB_pb2, DevDB_pb2_grpc
 
     DEVDB_AVAILABLE = True
 except (ImportError, TypeError) as e:
     DEVDB_AVAILABLE = False
-    grpc = cast(Any, None)
-    DevDB_pb2 = cast(Any, None)
-    DevDB_pb2_grpc = cast(Any, None)
+    grpc = cast("Any", None)
+    DevDB_pb2 = cast("Any", None)
+    DevDB_pb2_grpc = cast("Any", None)
     _import_error = str(e)
 
 
@@ -436,11 +436,11 @@ class DevDBClient:
                     and info.control is None
                     and info.status_bits is None
                 ):
-                    logger.warning(f"DevDB: Device '{entry.name}' not found")
+                    logger.warning("DevDB: Device '%s' not found", entry.name)
                 else:
                     pending[entry.name] = info
             elif which == "errMsg":
-                logger.warning(f"DevDB: Error for '{entry.name}': {entry.errMsg}")
+                logger.warning("DevDB: Error for '%s': %s", entry.name, entry.errMsg)
 
         for name, info in pending.items():
             result[name] = info

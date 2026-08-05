@@ -16,9 +16,7 @@ def is_oneshot_event(drf: str) -> bool:
     """
     req = parse_request(drf)
     event = req.event
-    if isinstance(event, (ImmediateEvent, NeverEvent)):
-        return True
-    return False
+    return isinstance(event, (ImmediateEvent, NeverEvent))
 
 
 def all_oneshot(drfs: list[str]) -> bool:

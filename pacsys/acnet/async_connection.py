@@ -28,8 +28,9 @@ import socket
 import struct
 import time
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import ClassVar
 
 from .constants import (
     ACNET_TCP_PORT,
@@ -66,7 +67,6 @@ from .errors import (
     AcnetRequestRejectedError,
     AcnetUnavailableError,
 )
-from .rad50 import decode_stripped as _rad50_decode, encode as _rad50_encode
 from .packet import (
     AcnetCancel,
     AcnetMessage,
@@ -76,6 +76,8 @@ from .packet import (
     ReplyId,
     RequestId,
 )
+from .rad50 import decode_stripped as _rad50_decode
+from .rad50 import encode as _rad50_encode
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +167,7 @@ class AsyncAcnetConnectionBase:
     """
 
     # Command code → name for tracing
-    _CMD_NAMES = {
+    _CMD_NAMES: ClassVar[dict[int, str]] = {
         0: "KEEPALIVE",
         1: "CONNECT",
         2: "RENAME",
@@ -187,7 +189,7 @@ class AsyncAcnetConnectionBase:
         20: "BLOCK_REQ",
         22: "DEFAULT_NODE",
     }
-    _MSG_TYPE_NAMES = {0: "PING", 1: "CMD", 2: "ACK", 3: "DATA"}
+    _MSG_TYPE_NAMES: ClassVar[dict[int, str]] = {0: "PING", 1: "CMD", 2: "ACK", 3: "DATA"}
 
     def __init__(
         self,
@@ -209,7 +211,7 @@ class AsyncAcnetConnectionBase:
         # Command serialization - one command at a time
         self._cmd_lock = asyncio.Lock()
         # ACK delivery - only one pending at a time (under _cmd_lock)
-        self._pending_ack: Optional[asyncio.Future] = None
+        self._pending_ack: asyncio.Future | None = None
 
         # State
         self._connected = False
@@ -227,13 +229,14 @@ class AsyncAcnetConnectionBase:
         self._requests_in: dict[ReplyId, AcnetRequest] = {}
 
         # Handlers
-        self._message_handler: Optional[MessageHandler] = None
-        self._request_handler: Optional[RequestHandler] = None
-        self._cancel_handler: Optional[CancelHandler] = None
+        self._message_handler: MessageHandler | None = None
+        self._request_handler: RequestHandler | None = None
+        self._cancel_handler: CancelHandler | None = None
 
         # Tasks
-        self._read_task: Optional[asyncio.Task] = None
-        self._keepalive_task: Optional[asyncio.Task] = None
+        self._read_task: asyncio.Task | None = None
+        self._keepalive_task: asyncio.Task | None = None
+        self._background_tasks: set[asyncio.Task[None]] = set()
 
     @property
     def name(self) -> str:
@@ -292,7 +295,7 @@ class AsyncAcnetConnectionBase:
         self._start_read_loop()
         await self._do_connect()
 
-        logger.info(f"Connected to ACNET via {self._host}:{self._port} as {self._handle_name}")
+        logger.info("Connected to ACNET via %s:%s as %s", self._host, self._port, self._handle_name)
 
         self._start_keepalive_loop()
 
@@ -302,8 +305,8 @@ class AsyncAcnetConnectionBase:
         if self._connected:
             try:
                 await self._do_disconnect()
-            except Exception:
-                pass
+            except Exception:  # noqa: BLE001
+                logger.debug("Disconnect failed while closing %s", self._handle_name, exc_info=True)
 
         self._disposed = True
 
@@ -329,7 +332,7 @@ class AsyncAcnetConnectionBase:
         self._reply_buffer.clear()
         self._dead_requests.clear()
 
-        logger.info(f"Closed async ACNET connection {self._handle_name}")
+        logger.info("Closed async ACNET connection %s", self._handle_name)
 
     async def _do_connect(self):
         """Send CONNECT command and process response."""
@@ -337,9 +340,9 @@ class AsyncAcnetConnectionBase:
         ack = await self._xact(content)
 
         if len(ack) < 9:
-            raise AcnetUnavailableError()
+            raise AcnetUnavailableError
 
-        ack_code, status, task_id, handle = struct.unpack(">HhBI", ack[:9])
+        _ack_code, status, _task_id, handle = struct.unpack(">HhBI", ack[:9])
 
         if status < 0:
             raise AcnetError(status, f"CONNECT failed with status {status}")
@@ -348,15 +351,15 @@ class AsyncAcnetConnectionBase:
         self._handle_name = _rad50_decode(handle)
         self._connected = True
 
-        logger.debug(f"Connected with handle {self._handle_name} ({handle:#x})")
+        logger.debug("Connected with handle %s (%#x)", self._handle_name, handle)
 
     async def _do_disconnect(self):
         """Send DISCONNECT command."""
         content = struct.pack(">2H2I", ACNETD_COMMAND, CMD_DISCONNECT, self._raw_handle, 0)
         try:
             await self._xact(content, timeout=0.5)
-        except Exception:
-            pass
+        except Exception:  # noqa: BLE001
+            logger.debug("Disconnect command failed for %s", self._handle_name, exc_info=True)
 
         for ctx in self._reply_handlers.values():
             ctx._cancelled = True
@@ -382,7 +385,7 @@ class AsyncAcnetConnectionBase:
         self._reply_handlers.clear()
         self._reply_buffer.clear()
 
-        logger.debug(f"Connection lost for {self._handle_name}")
+        logger.debug("Connection lost for %s", self._handle_name)
 
     # ------------------------------------------------------------------
     # Command transaction
@@ -408,18 +411,18 @@ class AsyncAcnetConnectionBase:
             if self._trace:
                 cmd = struct.unpack(">H", content[2:4])[0]
                 cmd_name = self._CMD_NAMES.get(cmd, f"?{cmd}")
-                logger.info(f"TRACE> {cmd_name}({cmd}) len={len(content)} {content[:20].hex()}")
+                logger.info("TRACE> %s(%s) len=%s %s", cmd_name, cmd, len(content), content[:20].hex())
 
             try:
                 await self._send_frame(content)
             except OSError as e:
                 self._pending_ack = None
-                logger.error(f"Failed to send command: {e}")
-                raise AcnetUnavailableError()
+                logger.error("Failed to send command: %s", e)
+                raise AcnetUnavailableError from e
 
             try:
                 ack_data = await asyncio.wait_for(self._pending_ack, timeout=timeout)
-            except asyncio.TimeoutError:
+            except asyncio.TimeoutError as e:
                 self._pending_ack = None
                 # A late ACK could arrive and be consumed by the next
                 # command, permanently desynchronizing the stream.
@@ -427,7 +430,7 @@ class AsyncAcnetConnectionBase:
                 logger.error("Timeout waiting for ack - closing transport to prevent desync")
                 self._connected = False
                 await self._close_transport()
-                raise AcnetUnavailableError()
+                raise AcnetUnavailableError from e
             except asyncio.CancelledError:
                 self._pending_ack = None
                 logger.error("Task cancelled during ack wait - closing transport to prevent desync")
@@ -436,7 +439,7 @@ class AsyncAcnetConnectionBase:
                 raise
 
             if self._trace:
-                logger.info(f"TRACE< ACK len={len(ack_data)} {ack_data.hex()}")
+                logger.info("TRACE< ACK len=%s %s", len(ack_data), ack_data.hex())
 
             return ack_data
 
@@ -453,9 +456,9 @@ class AsyncAcnetConnectionBase:
                 await asyncio.sleep(KEEPALIVE_INTERVAL)
                 try:
                     await self._send_keepalive()
-                except Exception as e:
+                except AcnetError as e:
                     if not self._disposed:
-                        logger.warning(f"Keepalive failed: {e}")
+                        logger.warning("Keepalive failed: %s", e)
         except asyncio.CancelledError:
             pass
 
@@ -470,7 +473,7 @@ class AsyncAcnetConnectionBase:
     def _dispatch_frame(self, msg_type: int, data: bytes):
         if self._trace and msg_type != TCP_CLIENT_PING:
             type_name = self._MSG_TYPE_NAMES.get(msg_type, f"?{msg_type}")
-            logger.info(f"TRACE  RECV {type_name} len={len(data)} {data[:20].hex()}")
+            logger.info("TRACE  RECV %s len=%s %s", type_name, len(data), data[:20].hex())
 
         if msg_type == TCP_CLIENT_PING:
             pass
@@ -484,10 +487,10 @@ class AsyncAcnetConnectionBase:
                 try:
                     packet = AcnetPacket.parse(data)
                     self._handle_packet(packet)
-                except Exception as e:
-                    logger.warning(f"Error parsing ACNET packet: {e}")
+                except (ValueError, struct.error) as e:
+                    logger.warning("Error parsing ACNET packet: %s", e)
         else:
-            logger.warning(f"Unknown message type: {msg_type}")
+            logger.warning("Unknown message type: %s", msg_type)
 
     def _handle_packet(self, packet: AcnetPacket):
         try:
@@ -499,8 +502,8 @@ class AsyncAcnetConnectionBase:
                 self._handle_message(packet)
             elif isinstance(packet, AcnetCancel):
                 self._handle_cancel(packet)
-        except Exception as e:
-            logger.exception(f"Error handling packet: {e}")
+        except Exception:
+            logger.exception("Error handling packet")
 
     def _handle_reply(self, reply: AcnetReply):
         """Handle an incoming reply.
@@ -514,8 +517,8 @@ class AsyncAcnetConnectionBase:
         if context:
             try:
                 context.reply_handler(reply)
-            except Exception as e:
-                logger.warning(f"Reply handler exception: {e}")
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Reply handler exception: %s", e)
 
             if reply.last:
                 self._reply_handlers.pop(reply.request_id, None)
@@ -532,14 +535,16 @@ class AsyncAcnetConnectionBase:
                 self._dead_requests.add(reply.request_id)
 
     def _handle_request(self, request: AcnetRequest):
-        asyncio.ensure_future(self._request_ack(request.reply_id))
+        task = asyncio.create_task(self._request_ack(request.reply_id))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
         self._requests_in[request.reply_id] = request
 
         if self._request_handler:
             try:
                 self._request_handler(request)
-            except Exception as e:
-                logger.warning(f"Request handler exception: {e}")
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Request handler exception: %s", e)
         else:
             logger.debug("No request handler, ignoring incoming request")
 
@@ -547,15 +552,15 @@ class AsyncAcnetConnectionBase:
         if self._message_handler:
             try:
                 self._message_handler(message)
-            except Exception as e:
-                logger.warning(f"Message handler exception: {e}")
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Message handler exception: %s", e)
 
     def _handle_cancel(self, cancel: AcnetCancel):
         if self._cancel_handler:
             try:
                 self._cancel_handler(cancel)
-            except Exception as e:
-                logger.warning(f"Cancel handler exception: {e}")
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Cancel handler exception: %s", e)
 
     # ------------------------------------------------------------------
     # Public commands
@@ -595,7 +600,7 @@ class AsyncAcnetConnectionBase:
         ack = await self._xact(content)
 
         if len(ack) < 4:
-            raise AcnetUnavailableError()
+            raise AcnetUnavailableError
 
         if len(ack) < 6:
             _ack_code, status = struct.unpack(">Hh", ack[:4])
@@ -603,9 +608,9 @@ class AsyncAcnetConnectionBase:
                 raise AcnetRequestRejectedError(task)
             if status < 0:
                 raise AcnetError(status, f"SEND_REQUEST to '{task}' failed")
-            raise AcnetUnavailableError()
+            raise AcnetUnavailableError
 
-        ack_code, status, req_id = struct.unpack(">HhH", ack[:6])
+        _ack_code, status, req_id = struct.unpack(">HhH", ack[:6])
 
         if status < 0:
             raise AcnetError(status, f"SEND_REQUEST to '{task}' failed")
@@ -630,8 +635,8 @@ class AsyncAcnetConnectionBase:
                 continue
             try:
                 context.reply_handler(reply)
-            except Exception as e:
-                logger.warning(f"Reply handler exception (buffered): {e}")
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Reply handler exception (buffered): %s", e)
             if reply.last:
                 self._reply_handlers.pop(context.request_id, None)
                 self._dead_requests.add(context.request_id)
@@ -667,9 +672,9 @@ class AsyncAcnetConnectionBase:
         ack = await self._xact(content)
 
         if len(ack) < 6:
-            raise AcnetUnavailableError()
+            raise AcnetUnavailableError
 
-        ack_code, status, high, low = struct.unpack(">HhBB", ack[:6])
+        _ack_code, status, high, low = struct.unpack(">HhBB", ack[:6])
 
         if status < 0:
             raise AcnetError(status, f"GET_NODE failed for {name}")
@@ -682,9 +687,9 @@ class AsyncAcnetConnectionBase:
         ack = await self._xact(content)
 
         if len(ack) < 8:
-            raise AcnetUnavailableError()
+            raise AcnetUnavailableError
 
-        ack_code, status, name_rad50 = struct.unpack(">HhI", ack[:8])
+        _ack_code, status, name_rad50 = struct.unpack(">HhI", ack[:8])
 
         if status < 0:
             raise AcnetError(status, f"GET_NAME failed for node {node}")
@@ -697,9 +702,9 @@ class AsyncAcnetConnectionBase:
         ack = await self._xact(content)
 
         if len(ack) < 6:
-            raise AcnetUnavailableError()
+            raise AcnetUnavailableError
 
-        ack_code, status, high, low = struct.unpack(">HhBB", ack[:6])
+        _ack_code, status, high, low = struct.unpack(">HhBB", ack[:6])
 
         if status < 0:
             raise AcnetError(status, "GET_LOCAL_NODE failed")
@@ -712,9 +717,9 @@ class AsyncAcnetConnectionBase:
         ack = await self._xact(content)
 
         if len(ack) < 6:
-            raise AcnetUnavailableError()
+            raise AcnetUnavailableError
 
-        ack_code, status, high, low = struct.unpack(">HhBB", ack[:6])
+        _ack_code, status, high, low = struct.unpack(">HhBB", ack[:6])
 
         if status < 0:
             raise AcnetError(status, "GET_DEFAULT_NODE failed")
@@ -731,16 +736,16 @@ class AsyncAcnetConnectionBase:
         ack = await self._xact(content)
 
         if len(ack) < 4:
-            raise AcnetUnavailableError()
+            raise AcnetUnavailableError
 
-        ack_code, status = struct.unpack(">Hh", ack[:4])
+        _ack_code, status = struct.unpack(">Hh", ack[:4])
 
         if status < 0:
             raise AcnetError(status, f"RENAME_TASK failed for '{new_name}'")
 
         self._raw_handle = name_rad50
         self._handle_name = _rad50_decode(name_rad50)
-        logger.info(f"Renamed task to {self._handle_name}")
+        logger.info("Renamed task to %s", self._handle_name)
 
     async def send_message(self, node: int, task: str, data: bytes):
         """Send an unsolicited message (no reply expected)."""
@@ -760,25 +765,31 @@ class AsyncAcnetConnectionBase:
         ack = await self._xact(content)
 
         if len(ack) < 4:
-            raise AcnetUnavailableError()
+            raise AcnetUnavailableError
 
-        ack_code, status = struct.unpack(">Hh", ack[:4])
+        _ack_code, status = struct.unpack(">Hh", ack[:4])
 
         if status < 0:
             raise AcnetError(status, "SEND_MESSAGE failed")
 
     async def ignore_request(self, request: AcnetRequest):
         """Ignore an incoming request without sending a reply."""
+        if request.cancelled:
+            return
+
         self._requests_in.pop(request.reply_id, None)
         request.cancel()
 
         reply_id = request.reply_id.value & 0xFFFF
         content = struct.pack(">2H2IH", ACNETD_COMMAND, CMD_IGNORE_REQUEST, self._raw_handle, 0, reply_id)
+        ack = await self._xact(content)
 
-        try:
-            await self._xact(content)
-        except Exception as e:
-            logger.warning(f"Failed to ignore request: {e}")
+        if len(ack) < 4:
+            raise AcnetUnavailableError
+
+        _ack_code, status = struct.unpack(">Hh", ack[:4])
+        if status < 0:
+            raise AcnetError(status, "IGNORE_REQUEST failed")
 
     async def get_node_stats(self) -> NodeStats:
         """Get ACNET node statistics."""
@@ -786,9 +797,9 @@ class AsyncAcnetConnectionBase:
         ack = await self._xact(content)
 
         if len(ack) < 32:
-            raise AcnetUnavailableError()
+            raise AcnetUnavailableError
 
-        ack_code, status = struct.unpack(">Hh", ack[:4])
+        _ack_code, status = struct.unpack(">Hh", ack[:4])
 
         if status < 0:
             raise AcnetError(status, "GET_NODE_STATS failed")
@@ -803,9 +814,9 @@ class AsyncAcnetConnectionBase:
         ack = await self._xact(content)
 
         if len(ack) < 8:
-            raise AcnetUnavailableError()
+            raise AcnetUnavailableError
 
-        ack_code, status, pid = struct.unpack(">HhI", ack[:8])
+        _ack_code, status, pid = struct.unpack(">HhI", ack[:8])
 
         if status < 0:
             raise AcnetError(status, f"GET_TASK_PID failed for '{task}'")
@@ -815,10 +826,34 @@ class AsyncAcnetConnectionBase:
     async def disconnect_single(self):
         """Disconnect this single task instance."""
         content = struct.pack(">2H2I", ACNETD_COMMAND, CMD_DISCONNECT_SINGLE, self._raw_handle, 0)
-        try:
-            await self._xact(content)
-        except Exception:
-            pass
+        ack = await self._xact(content)
+
+        if len(ack) < 4:
+            raise AcnetUnavailableError
+
+        _ack_code, status = struct.unpack(">Hh", ack[:4])
+        if status < 0:
+            raise AcnetError(status, "DISCONNECT_SINGLE failed")
+
+        for ctx in self._reply_handlers.values():
+            ctx._cancelled = True
+        self._reply_handlers.clear()
+        self._reply_buffer.clear()
+        self._dead_requests.clear()
+
+        for request in self._requests_in.values():
+            request.cancel()
+        self._requests_in.clear()
+
+        self._receiving = False
+        self._connected = False
+
+        if self._keepalive_task and not self._keepalive_task.done():
+            self._keepalive_task.cancel()
+            try:
+                await self._keepalive_task
+            except asyncio.CancelledError:
+                pass
 
     async def handle_messages(self, handler: MessageHandler):
         """Register a handler for unsolicited messages."""
@@ -879,10 +914,10 @@ class AsyncAcnetConnectionBase:
 
         try:
             await self._xact(content)
-        except Exception:
-            pass
+        except Exception:  # noqa: BLE001
+            logger.warning("Failed to cancel ACNET request %s", context.request_id, exc_info=True)
 
-    async def _request_ack(self, reply_id: ReplyId):
+    async def _request_ack(self, reply_id: ReplyId) -> None:
         """Acknowledge receipt of an incoming request."""
         content = struct.pack(
             ">2H2IH",
@@ -895,28 +930,38 @@ class AsyncAcnetConnectionBase:
 
         try:
             await self._xact(content)
-        except Exception as e:
-            logger.warning(f"Failed to send request ack: {e}")
+        except AcnetError as e:
+            logger.warning("Failed to send request ack: %s", e)
 
     async def _start_receiving(self):
         """Start receiving incoming packets."""
         if not self._receiving:
-            self._receiving = True
             content = struct.pack(">2H2I", ACNETD_COMMAND, CMD_RECEIVE_REQUESTS, self._raw_handle, 0)
-            try:
-                await self._xact(content)
-            except Exception as e:
-                logger.warning(f"Failed to start receiving: {e}")
+            ack = await self._xact(content)
+
+            if len(ack) < 4:
+                raise AcnetUnavailableError
+
+            _ack_code, status = struct.unpack(">Hh", ack[:4])
+            if status < 0:
+                raise AcnetError(status, "RECEIVE_REQUESTS failed")
+
+            self._receiving = True
 
     async def _stop_receiving(self):
         """Stop receiving incoming packets."""
         if self._receiving:
-            self._receiving = False
             content = struct.pack(">2H2I", ACNETD_COMMAND, CMD_BLOCK_REQUESTS, self._raw_handle, 0)
-            try:
-                await self._xact(content)
-            except Exception as e:
-                logger.warning(f"Failed to stop receiving: {e}")
+            ack = await self._xact(content)
+
+            if len(ack) < 4:
+                raise AcnetUnavailableError
+
+            _ack_code, status = struct.unpack(">Hh", ack[:4])
+            if status < 0:
+                raise AcnetError(status, "BLOCK_REQUESTS failed")
+
+            self._receiving = False
 
     # ------------------------------------------------------------------
     # Async context manager
@@ -953,8 +998,8 @@ class AsyncAcnetConnectionTCP(AsyncAcnetConnectionBase):
         trace: bool = False,
     ):
         super().__init__(host, port, name, trace=trace)
-        self._reader: Optional[asyncio.StreamReader] = None
-        self._writer: Optional[asyncio.StreamWriter] = None
+        self._reader: asyncio.StreamReader | None = None
+        self._writer: asyncio.StreamWriter | None = None
 
     async def _open_transport(self):
         """Open TCP connection and send handshake."""
@@ -973,11 +1018,11 @@ class AsyncAcnetConnectionTCP(AsyncAcnetConnectionBase):
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, RECV_BUFFER_SIZE)
                 sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
-            logger.debug(f"Opened async TCP channel to {self._host}:{self._port}")
+            logger.debug("Opened async TCP channel to %s:%s", self._host, self._port)
 
         except OSError as e:
-            logger.error(f"Failed to open TCP channel: {e}")
-            raise AcnetUnavailableError()
+            logger.error("Failed to open TCP channel: %s", e)
+            raise AcnetUnavailableError from e
 
     async def _close_transport(self):
         """Close the TCP writer."""
@@ -985,7 +1030,7 @@ class AsyncAcnetConnectionTCP(AsyncAcnetConnectionBase):
             try:
                 self._writer.close()
                 await self._writer.wait_closed()
-            except Exception:
+            except OSError:
                 pass
             self._writer = None
             self._reader = None
@@ -1017,7 +1062,7 @@ class AsyncAcnetConnectionTCP(AsyncAcnetConnectionBase):
                     pkt_len = struct.unpack(">I", buffer[:4])[0]
 
                     if pkt_len < 2 or pkt_len > 65535:
-                        logger.error(f"Invalid packet length: {pkt_len}, stream desynchronized")
+                        logger.error("Invalid packet length: %s, stream desynchronized", pkt_len)
                         self._disposed = True
                         break
 
@@ -1036,9 +1081,9 @@ class AsyncAcnetConnectionTCP(AsyncAcnetConnectionBase):
             raise
         except OSError as e:
             if not self._disposed:
-                logger.warning(f"Socket error in read loop: {e}")
-        except Exception as e:
-            logger.exception(f"Error in read loop: {e}")
+                logger.warning("Socket error in read loop: %s", e)
+        except Exception:
+            logger.exception("Error in read loop")
 
         self._on_connection_lost()
 
@@ -1076,8 +1121,8 @@ class AsyncAcnetConnectionUDP(AsyncAcnetConnectionBase):
         trace: bool = False,
     ):
         super().__init__(host, port, name, trace=trace)
-        self._udp_transport: Optional[asyncio.DatagramTransport] = None
-        self._udp_protocol: Optional[_AcnetUDPProtocol] = None
+        self._udp_transport: asyncio.DatagramTransport | None = None
+        self._udp_protocol: _AcnetUDPProtocol | None = None
 
     async def _open_transport(self):
         """Open UDP socket via create_datagram_endpoint."""
@@ -1092,10 +1137,10 @@ class AsyncAcnetConnectionUDP(AsyncAcnetConnectionBase):
             )
             self._udp_transport = transport
             self._udp_protocol = protocol
-            logger.debug(f"Opened async UDP channel to {self._host}:{self._port}")
+            logger.debug("Opened async UDP channel to %s:%s", self._host, self._port)
         except OSError as e:
-            logger.error(f"Failed to open UDP channel: {e}")
-            raise AcnetUnavailableError()
+            logger.error("Failed to open UDP channel: %s", e)
+            raise AcnetUnavailableError from e
 
     async def _close_transport(self):
         """Close the UDP transport."""

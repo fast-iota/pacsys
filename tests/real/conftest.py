@@ -14,6 +14,7 @@ Run:
 """
 
 import functools
+import logging
 import os
 
 import pytest
@@ -29,22 +30,24 @@ from .devices import (
     ALLOWED_WRITE_DEVICES,
     DPM_TEST_HOST,
     DPM_TEST_PORT,
+    SSH_DEST_HOST,
+    SSH_JUMP_HOST,
+    acl_server_available,
     acnet_tcp_server_available,
+    dmq_server_available,
     dpm_server_available,
     grpc_server_available,
-    acl_server_available,
-    dmq_server_available,
     kerberos_available,
-    requires_acnet_tcp,
-    requires_dpm_http,
-    requires_dpm_acnet,
-    requires_grpc,
     requires_acl,
+    requires_acnet_tcp,
     requires_dmq,
+    requires_dpm_acnet,
+    requires_dpm_http,
+    requires_grpc,
     requires_ssh,
-    SSH_JUMP_HOST,
-    SSH_DEST_HOST,
 )
+
+logger = logging.getLogger(__name__)
 
 # Re-export for backward compatibility
 __all__ = [
@@ -222,8 +225,8 @@ async def async_write_backend_cls(request):
     if request.param == "dpm_http":
         if not dpm_server_available():
             pytest.skip("DPM server not available")
-        from pacsys.auth import KerberosAuth
         from pacsys.aio._dpm_http import AsyncDPMHTTPBackend
+        from pacsys.auth import KerberosAuth
 
         backend = AsyncDPMHTTPBackend(host=DPM_TEST_HOST, port=DPM_TEST_PORT, auth=KerberosAuth(), role="testing")
     else:
@@ -241,8 +244,8 @@ async def async_write_backend(request):
     if request.param == "dpm_http":
         if not dpm_server_available():
             pytest.skip("DPM server not available")
-        from pacsys.auth import KerberosAuth
         from pacsys.aio._dpm_http import AsyncDPMHTTPBackend
+        from pacsys.auth import KerberosAuth
 
         backend = AsyncDPMHTTPBackend(host=DPM_TEST_HOST, port=DPM_TEST_PORT, auth=KerberosAuth(), role="testing")
     else:
@@ -446,7 +449,7 @@ def reset_async_global_backend():
 
     Configures the async global backend to use the test tunnel.
     """
-    import pacsys.aio as aio
+    from pacsys import aio
 
     _reset_aio_state(aio)
     aio._config_host = DPM_TEST_HOST
@@ -463,11 +466,11 @@ def _reset_aio_state(aio):
 
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                loop.create_task(aio._global_async_backend.close())
+                aio._retain_background_task(loop.create_task(aio._global_async_backend.close()))
             else:
                 loop.run_until_complete(aio._global_async_backend.close())
-        except Exception:
-            pass  # best-effort cleanup from sync context
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to reset async backend", exc_info=True)
     aio._global_async_backend = None
     aio._async_backend_initialized = False
     aio._config_backend = None
@@ -524,8 +527,8 @@ def _enforce_write_allowlist(monkeypatch):
     Patches at the class level so it covers backends created via fixtures
     AND manually-created backends (e.g., _create_dmq_backend()).
     """
-    from pacsys.backends.dpm_http import DPMHTTPBackend
     from pacsys.backends.dmq import DMQBackend
+    from pacsys.backends.dpm_http import DPMHTTPBackend
 
     for cls in (DPMHTTPBackend, DMQBackend):
         if hasattr(cls, "write"):

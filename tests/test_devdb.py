@@ -6,23 +6,22 @@ from unittest import mock
 import pytest
 
 from pacsys.devdb import (
+    ControlCommandDef,
     DevDBClient,
     DeviceInfoResult,
+    ExtStatusBitDef,
     PropertyInfo,
     StatusBitDef,
-    ExtStatusBitDef,
-    ControlCommandDef,
-    _TTLCache,
+    _convert_control_cmd,
     _convert_device_info,
+    _convert_ext_status_bit,
     _convert_property,
     _convert_status_bit,
-    _convert_ext_status_bit,
-    _convert_control_cmd,
+    _TTLCache,
 )
 from pacsys.digital_status import DigitalStatus
 from pacsys.errors import DeviceError
 from pacsys.types import Reading, ValueType
-
 
 # ─── Test data (matches Z:ACLTST from real DevDB) ────────────────────────────
 

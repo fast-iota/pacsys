@@ -14,11 +14,14 @@ Tag identifies the message type so the file is self-describing.
 """
 
 import json
+import logging
 import threading
 from datetime import datetime, timezone
-from typing import Optional
+from pathlib import Path
 
 from ._policies import PolicyDecision, RequestContext
+
+logger = logging.getLogger(__name__)
 
 TAG_READ_REQUEST = 0x00
 TAG_READ_REPLY = 0x01
@@ -55,14 +58,14 @@ class AuditLog:
     def __init__(
         self,
         path: str,
-        proto_path: Optional[str] = None,
+        proto_path: str | None = None,
         log_responses: bool = False,
         flush_interval: int = 1,
     ):
         if flush_interval < 1:
             raise ValueError(f"flush_interval must be >= 1, got {flush_interval}")
-        self._path = path
-        self._proto_path = proto_path
+        self._path = Path(path)
+        self._proto_path = Path(proto_path) if proto_path is not None else None
         self._log_responses = log_responses
         self._flush_interval = flush_interval
         self._lock = threading.Lock()
@@ -129,14 +132,14 @@ class AuditLog:
 
     def _write_json(self, entry: dict):
         if self._json_file is None:
-            self._json_file = open(self._path, "a")  # noqa: SIM115
+            self._json_file = self._path.open("a")  # noqa: SIM115
         self._json_file.write(json.dumps(entry, separators=(",", ":")) + "\n")
         self._writes_since_flush += 1
 
     def _write_proto(self, tag: int, data: bytes):
         if self._proto_file is None:
             assert self._proto_path is not None
-            self._proto_file = open(self._proto_path, "ab")  # noqa: SIM115
+            self._proto_file = self._proto_path.open("ab")  # noqa: SIM115
         self._proto_file.write(bytes((tag,)))
         _encode_varint(self._proto_file.write, len(data))
         self._proto_file.write(data)
@@ -152,16 +155,16 @@ class AuditLog:
     def close(self):
         """Flush and close both files."""
         with self._lock:
-            for f in (self._json_file, self._proto_file):
+            for label, f in (("JSON", self._json_file), ("protobuf", self._proto_file)):
                 if f is not None:
                     try:
                         f.flush()
-                    except Exception:
-                        pass
+                    except (OSError, ValueError):
+                        logger.exception("Failed to flush %s audit file", label)
                     try:
                         f.close()
-                    except Exception:
-                        pass
+                    except (OSError, ValueError):
+                        logger.exception("Failed to close %s audit file", label)
             self._json_file = None
             self._proto_file = None
             self._writes_since_flush = 0

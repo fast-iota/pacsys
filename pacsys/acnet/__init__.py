@@ -54,14 +54,13 @@ Example (TCP - async via acsys-proxy):
         )
 """
 
-from .connection import AcnetConnection
-from .dpm_acnet import DPMAcnet, DPMError, DPMReading
 from .async_connection import (
     AsyncAcnetConnectionBase,
     AsyncAcnetConnectionTCP,
     AsyncAcnetConnectionUDP,
     AsyncRequestContext,
 )
+from .connection import AcnetConnection
 from .connection_sync import ACSYS_PROXY_HOST, AcnetConnectionTCP, AcnetConnectionUDP, AcnetRequestContext, NodeStats
 from .constants import (
     ACNET_HEADER_SIZE,
@@ -69,6 +68,7 @@ from .constants import (
     ACNET_TCP_PORT,
     DEFAULT_TIMEOUT,
 )
+from .dpm_acnet import DPMAcnet, DPMError, DPMReading
 from .errors import (
     ACNET_CANCELLED,
     ACNET_DISCONNECTED,
@@ -85,17 +85,6 @@ from .errors import (
     AcnetTaskError,
     AcnetTimeoutError,
     AcnetUnavailableError,
-)
-from .packet import (
-    AcnetCancel,
-    AcnetMessage,
-    AcnetPacket,
-    AcnetReply,
-    AcnetRequest,
-    ReplyId,
-    RequestId,
-    node_parts,
-    node_value,
 )
 from .ftp import (
     FTPClassCode,
@@ -122,6 +111,17 @@ from .ftp_spec import (
     SnapshotSpec,
     StateTrigger,
     parse_ftp_event,
+)
+from .packet import (
+    AcnetCancel,
+    AcnetMessage,
+    AcnetPacket,
+    AcnetReply,
+    AcnetRequest,
+    ReplyId,
+    RequestId,
+    node_parts,
+    node_value,
 )
 from .rad50 import decode, decode_stripped, encode
 

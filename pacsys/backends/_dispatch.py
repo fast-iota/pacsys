@@ -10,7 +10,7 @@ import queue
 import threading
 import time
 
-from pacsys.types import DispatchMode, Reading, SubscriptionHandle, ReadingCallback, ErrorCallback
+from pacsys.types import DispatchMode, ErrorCallback, Reading, ReadingCallback, SubscriptionHandle
 
 logger = logging.getLogger(__name__)
 
@@ -135,9 +135,9 @@ class CallbackDispatcher:
             fn, arg, handle, is_error = item
             try:
                 fn(arg, handle)
-            except Exception as e:
+            except Exception:
                 kind = "on_error" if is_error else "reading"
-                logger.error("Error in %s callback: %s", kind, e, exc_info=True)
+                logger.exception("Error in %s callback", kind)
 
     def _call_direct(
         self,
@@ -148,8 +148,8 @@ class CallbackDispatcher:
         t0 = time.monotonic()
         try:
             callback(reading, handle)
-        except Exception as e:
-            logger.error("Error in reading callback: %s", e, exc_info=True)
+        except Exception:
+            logger.exception("Error in reading callback")
             return
         elapsed = time.monotonic() - t0
         if elapsed > _SLOW_THRESHOLD:
@@ -164,8 +164,8 @@ class CallbackDispatcher:
         t0 = time.monotonic()
         try:
             on_error(exc, handle)
-        except Exception as e:
-            logger.error("Error in on_error callback: %s", e, exc_info=True)
+        except Exception:
+            logger.exception("Error in on_error callback")
             return
         elapsed = time.monotonic() - t0
         if elapsed > _SLOW_THRESHOLD:

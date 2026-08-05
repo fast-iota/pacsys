@@ -11,16 +11,15 @@ import asyncio
 from pacsys.backends.dpm_http import _DpmStreamCore
 from pacsys.dpm_connection import DPMConnectionError
 from pacsys.types import ValueType
-
 from tests.devices import (
+    AMANDA_VALUE,
     ARRAY_VALUES,
+    RAW_BYTES,
     TEMP_DEVICE,
     TEMP_DEVICE_2,
     TEMP_VALUE,
-    AMANDA_VALUE,
-    TEXT_VALUE,
     TEXT_ARRAY_VALUES,
-    RAW_BYTES,
+    TEXT_VALUE,
     MockAsyncDPMConnection,
     make_add_to_list_reply,
     make_analog_alarm_reply,

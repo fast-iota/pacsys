@@ -17,6 +17,10 @@ from pacsys.acnet import (
     AcnetPacket,
     AcnetReply,
     AcnetRequest,
+    AcnetUnavailableError,
+    DPMAcnet,
+    DPMError,
+    DPMReading,
     NodeStats,
     ReplyId,
     RequestId,
@@ -45,6 +49,7 @@ from pacsys.acnet.errors import (
     normalize_error_code,
     parse_error,
 )
+from pacsys.dpm_protocol import ListStatus_reply, Status_reply
 
 
 class TestRad50:
@@ -138,7 +143,8 @@ class TestNodeAddressing:
             for node in [0, 1, 128, 255]:
                 value = node_value(trunk, node)
                 t, n = node_parts(value)
-                assert t == trunk and n == node
+                assert t == trunk
+                assert n == node
 
 
 class TestErrorCodes:
@@ -170,7 +176,7 @@ class TestNormalizeErrorCode:
     """Tests for unsigned -> signed error code normalization."""
 
     @pytest.mark.parametrize(
-        "input_code,expected",
+        ("input_code", "expected"),
         [
             (0, 0),
             (1, 1),
@@ -433,11 +439,11 @@ class TestTCPRenameTask:
         assert decode_stripped(name_rad50) == "NEWNAM"
 
     def test_empty_name_raises(self, conn):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Task name must be 1-6 characters"):
             conn.rename_task("")
 
     def test_long_name_raises(self, conn):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Task name must be 1-6 characters"):
             conn.rename_task("TOOLONGNAME")
 
     def test_error_raises(self, conn):
@@ -486,6 +492,191 @@ class TestTCPIgnoreRequest:
         buf = mock.call_args[0][0]
         cmd = struct.unpack(">H", buf[2:4])[0]
         assert cmd == CMD_IGNORE_REQUEST
+
+    def test_error_propagates_after_local_cleanup(self, conn):
+        raw = struct.pack("<HhHHIHHH", ACNET_FLG_REQ, 0, 0, 0, 0, 0, 42, 18)
+        request = AcnetPacket.parse(raw)
+        conn._async._requests_in[request.reply_id] = request
+
+        with patch.object(conn._async, "_xact", new=AsyncMock(side_effect=AcnetUnavailableError)):
+            with pytest.raises(AcnetUnavailableError):
+                conn.ignore_request(request)
+
+        assert request.cancelled
+        assert request.reply_id not in conn._async._requests_in
+
+    def test_negative_ack_raises(self, conn):
+        raw = struct.pack("<HhHHIHHH", ACNET_FLG_REQ, 0, 0, 0, 0, 0, 42, 18)
+        request = AcnetPacket.parse(raw)
+        ack = struct.pack(">Hh", 0, -1)
+
+        with patch.object(conn._async, "_xact", new=AsyncMock(return_value=ack)):
+            with pytest.raises(AcnetError, match="IGNORE_REQUEST failed"):
+                conn.ignore_request(request)
+
+    def test_cancelled_request_is_idempotent(self, conn):
+        raw = struct.pack("<HhHHIHHH", ACNET_FLG_REQ, 0, 0, 0, 0, 0, 42, 18)
+        request = AcnetPacket.parse(raw)
+        request.cancel()
+
+        with patch.object(conn._async, "_xact", new=AsyncMock()) as mock:
+            conn.ignore_request(request)
+
+        mock.assert_not_awaited()
+
+
+class TestLegacyRequestTermination:
+    @pytest.fixture
+    def acnet_request(self):
+        raw = struct.pack("<HhHHIHHH", ACNET_FLG_REQ, 0, 0, 0, 0, 0, 42, 18)
+        return AcnetPacket.parse(raw)
+
+    def test_logs_terminal_reply_failure_after_handler_error(self, acnet_request, caplog):
+        conn = AcnetConnection("TEST")
+        conn._request_ack = MagicMock()
+        conn._request_handler = MagicMock(side_effect=RuntimeError("handler failed"))
+        conn.send_reply = MagicMock(side_effect=AcnetError(-1, "send failed"))
+
+        conn._handle_request(acnet_request)
+
+        assert "Failed to send terminal reply" in caplog.text
+        assert str(acnet_request.reply_id.value) in caplog.text
+
+    def test_logs_terminal_reply_failure_without_handler(self, acnet_request, caplog):
+        conn = AcnetConnection("TEST")
+        conn._request_ack = MagicMock()
+        conn.send_reply = MagicMock(side_effect=AcnetError(-1, "send failed"))
+
+        conn._handle_request(acnet_request)
+
+        assert "Failed to send terminal reply for unhandled request" in caplog.text
+        assert str(acnet_request.reply_id.value) in caplog.text
+
+    def test_unexpected_terminal_reply_error_propagates(self, acnet_request):
+        conn = AcnetConnection("TEST")
+        conn._request_ack = MagicMock()
+        conn.send_reply = MagicMock(side_effect=RuntimeError("programming bug"))
+
+        with pytest.raises(RuntimeError, match="programming bug"):
+            conn._handle_request(acnet_request)
+
+
+class TestDPMAcnetListState:
+    @pytest.fixture
+    def dpm(self):
+        dpm = DPMAcnet()
+        dpm._list_id = 123
+        dpm._active = True
+        dpm._dev_list = {1: "M:OUTTMP@I"}
+        dpm._meta = {1: {"name": "M:OUTTMP"}}
+        return dpm
+
+    def test_stop_commits_after_success(self, dpm):
+        reply = Status_reply()
+        reply.status = 0
+        dpm._send_request = MagicMock(return_value=reply)
+
+        dpm.stop()
+
+        assert not dpm._active
+
+    @pytest.mark.parametrize("reply", [object(), pytest.param(None, id="no-reply")])
+    def test_stop_rejects_unexpected_reply(self, dpm, reply):
+        dpm._send_request = MagicMock(return_value=reply)
+
+        with pytest.raises(DPMError, match="Expected Status_reply"):
+            dpm.stop()
+
+        assert dpm._active
+
+    def test_stop_failure_preserves_active_state(self, dpm):
+        reply = Status_reply()
+        reply.status = -1
+        dpm._send_request = MagicMock(return_value=reply)
+
+        with pytest.raises(DPMError, match="StopList failed"):
+            dpm.stop()
+
+        assert dpm._active
+
+    def test_stop_transport_failure_preserves_active_state(self, dpm):
+        dpm._send_request = MagicMock(side_effect=DPMError(-1, "timeout"))
+
+        with pytest.raises(DPMError, match="timeout"):
+            dpm.stop()
+
+        assert dpm._active
+
+    def test_read_preserves_primary_error_when_stop_fails(self, dpm, caplog):
+        dpm._active = False
+        dpm._dev_list = {}
+        dpm.add_entry = MagicMock()
+        dpm.start = MagicMock(side_effect=lambda: setattr(dpm, "_active", True))
+        dpm.readings = MagicMock(return_value=iter(()))
+        dpm.stop = MagicMock(side_effect=DPMError(-1, "stop timeout"))
+        dpm.close = MagicMock()
+
+        with pytest.raises(TimeoutError, match="Timeout reading M:OUTTMP@I"):
+            dpm.read("M:OUTTMP", timeout=0)
+
+        dpm.close.assert_called_once_with()
+        assert "Failed to stop DPM acquisition after reading M:OUTTMP@I" in caplog.text
+
+    def test_read_propagates_stop_failure_after_success(self, dpm, caplog):
+        drf = "M:OUTTMP@I"
+        tag = hash(drf) & 0x7FFFFFFF
+        dpm._active = False
+        dpm._dev_list = {}
+        dpm.add_entry = MagicMock()
+        dpm.start = MagicMock(side_effect=lambda: setattr(dpm, "_active", True))
+        dpm.readings = MagicMock(return_value=iter([DPMReading(ref_id=tag, data=1.0)]))
+        dpm.stop = MagicMock(side_effect=DPMError(-1, "stop timeout"))
+        dpm.close = MagicMock()
+
+        with pytest.raises(DPMError, match="stop timeout"):
+            dpm.read(drf)
+
+        dpm.close.assert_called_once_with()
+        assert "Failed to stop DPM acquisition after reading M:OUTTMP@I" in caplog.text
+
+    def test_clear_list_commits_after_success(self, dpm):
+        reply = ListStatus_reply()
+        reply.status = 0
+        dpm._send_request = MagicMock(return_value=reply)
+
+        dpm.clear_list()
+
+        assert not dpm._dev_list
+        assert not dpm._meta
+
+    def test_clear_list_rejects_unexpected_reply(self, dpm):
+        dpm._send_request = MagicMock(return_value=object())
+
+        with pytest.raises(DPMError, match="Expected ListStatus_reply"):
+            dpm.clear_list()
+
+        assert dpm._dev_list == {1: "M:OUTTMP@I"}
+        assert dpm._meta == {1: {"name": "M:OUTTMP"}}
+
+    def test_clear_list_failure_preserves_maps(self, dpm):
+        reply = ListStatus_reply()
+        reply.status = -1
+        dpm._send_request = MagicMock(return_value=reply)
+
+        with pytest.raises(DPMError, match="ClearList failed"):
+            dpm.clear_list()
+
+        assert dpm._dev_list == {1: "M:OUTTMP@I"}
+        assert dpm._meta == {1: {"name": "M:OUTTMP"}}
+
+    def test_clear_list_transport_failure_preserves_maps(self, dpm):
+        dpm._send_request = MagicMock(side_effect=DPMError(-1, "timeout"))
+
+        with pytest.raises(DPMError, match="timeout"):
+            dpm.clear_list()
+
+        assert dpm._dev_list == {1: "M:OUTTMP@I"}
+        assert dpm._meta == {1: {"name": "M:OUTTMP"}}
 
 
 class TestTCPGetNodeStats:

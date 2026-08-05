@@ -7,15 +7,16 @@ For integration tests that actually connect to DPM, see test_dpm_connection.py.
 
 import socket
 import struct
-import pytest
 from unittest import mock
 
-import pacsys.dpm_connection as dpm_connection
+import pytest
+
+from pacsys import dpm_connection
 from pacsys.dpm_connection import (
-    DPMConnection,
-    DPMConnectionError,
     DPM_HANDSHAKE,
     MAX_MESSAGE_SIZE,
+    DPMConnection,
+    DPMConnectionError,
 )
 from pacsys.dpm_protocol import (
     AddToList_request,
@@ -30,7 +31,7 @@ class TestDPMConnectionInit:
     """Tests for DPMConnection input validation."""
 
     @pytest.mark.parametrize(
-        "kwargs,match",
+        ("kwargs", "match"),
         [
             ({"host": ""}, "host cannot be empty"),
             ({"port": 0}, "port must be between"),
@@ -175,7 +176,7 @@ class TestHTTPErrorDetection:
         mock_socket.recv.side_effect = [
             b"HTTP",  # First 4 bytes read by _recv_exact(4)
             b"/1.1 500 Internal Server Error\r\n\r\n",  # Read by _handle_http_error
-            socket.timeout("recv timeout"),  # Stop reading more
+            TimeoutError("recv timeout"),  # Stop reading more
         ]
 
         with mock.patch("socket.socket", return_value=mock_socket):
@@ -310,7 +311,7 @@ class TestTimeoutHandling:
     def test_socket_timeout_on_connect(self):
         """Test socket timeout during connection."""
         mock_socket = mock.Mock(spec=socket.socket)
-        mock_socket.connect.side_effect = socket.timeout("Connection timed out")
+        mock_socket.connect.side_effect = TimeoutError("Connection timed out")
 
         with mock.patch("socket.socket", return_value=mock_socket):
             conn = DPMConnection(timeout=1.0)
@@ -327,7 +328,7 @@ class TestTimeoutHandling:
         mock_socket = mock.Mock(spec=socket.socket)
         mock_socket.recv.side_effect = [
             reply_frame,  # For connect()
-            socket.timeout("recv timeout"),  # For recv_message()
+            TimeoutError("recv timeout"),  # For recv_message()
         ]
 
         with mock.patch("socket.socket", return_value=mock_socket):
@@ -360,7 +361,7 @@ class TestTimeoutHandling:
         mock_socket = mock.Mock(spec=socket.socket)
         mock_socket.recv.side_effect = [
             handshake_frame,  # connect()
-            socket.timeout("no data yet"),  # 1st recv_message() — times out
+            TimeoutError("no data yet"),  # 1st recv_message() — times out
             reply_frame,  # 2nd recv_message() — data arrives
         ]
 
@@ -397,7 +398,7 @@ class TestTimeoutHandling:
         mock_socket.recv.side_effect = [
             handshake_frame,  # connect()
             length_prefix,  # recv_message reads 4-byte length...
-            socket.timeout("body timeout"),  # ...but body times out
+            TimeoutError("body timeout"),  # ...but body times out
         ]
 
         with mock.patch("socket.socket", return_value=mock_socket):

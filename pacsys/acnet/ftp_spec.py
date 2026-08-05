@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Union
 
 # ---------------------------------------------------------------------------
 # Sample modes (snapshot only)
@@ -38,7 +37,7 @@ class ExternalSample:
     modifier: int
 
 
-SampleMode = Union[PeriodicSample, ClockSample, ExternalSample]
+SampleMode = PeriodicSample | ClockSample | ExternalSample
 
 # ---------------------------------------------------------------------------
 # Triggers
@@ -80,7 +79,7 @@ class StateTrigger:
     flag: str = "="
 
 
-TriggerSpec = Union[ClockTrigger, DeviceTrigger, ExternalTrigger, StateTrigger]
+TriggerSpec = ClockTrigger | DeviceTrigger | ExternalTrigger | StateTrigger
 
 # ---------------------------------------------------------------------------
 # ReArm
@@ -301,10 +300,9 @@ def parse_ftp_event(s: str) -> FTPSpec | SnapshotSpec:
     prefix = s[:11].lower()
     if prefix == "f,type=ftp,":
         return _parse_ftp(s[11:])
-    elif prefix == "f,type=snp,":
+    if prefix == "f,type=snp,":
         return _parse_snapshot(s[11:])
-    else:
-        raise ValueError(f"Unknown event type prefix: {s[:11]!r}")
+    raise ValueError(f"Unknown event type prefix: {s[:11]!r}")
 
 
 def _parse_ftp(remainder: str) -> FTPSpec:

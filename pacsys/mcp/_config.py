@@ -2,6 +2,7 @@
 
 import logging
 import sys
+from pathlib import Path
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -56,7 +57,7 @@ def load_config(path: str | None) -> MCPConfig:
     """Load config from TOML file, or return defaults if path is None."""
     if path is None:
         return MCPConfig()
-    with open(path, "rb") as f:
+    with Path(path).open("rb") as f:
         data = tomllib.load(f)
     return MCPConfig.from_dict(data)
 

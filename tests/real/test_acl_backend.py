@@ -19,10 +19,9 @@ from .devices import (
     SCALAR_DEVICE,
     SCALAR_DEVICE_2,
     SCALAR_DEVICE_3,
-    TIMEOUT_READ,
     TIMEOUT_BATCH,
+    TIMEOUT_READ,
 )
-
 
 # =============================================================================
 # URL format verification (offline - no server needed)

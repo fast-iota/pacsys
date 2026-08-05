@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from datetime import datetime
-from typing import TYPE_CHECKING, Iterator
+from typing import TYPE_CHECKING
 
-from pacsys.types import DeviceSpec, Reading, Value
 from pacsys.drf_utils import has_event, replace_event
-from pacsys.exp._resolve import resolve_drf, resolve_backend
+from pacsys.exp._resolve import resolve_backend, resolve_drf
 from pacsys.exp._values import numeric_value
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from datetime import datetime
+
     from pacsys.backends import Backend
+    from pacsys.types import DeviceSpec, Reading, Value
 
 # Alias builtins to avoid shadowing by methods
 builtins_min = min
@@ -81,7 +83,7 @@ class FreshResult:
             try:
                 nums.append(numeric_value(v))
             except (TypeError, ValueError):
-                raise TypeError(f"Cannot compute stats on {type(v).__name__}")
+                raise TypeError(f"Cannot compute stats on {type(v).__name__}") from None
         return nums
 
     def mean(self, n: int | None = None) -> float:

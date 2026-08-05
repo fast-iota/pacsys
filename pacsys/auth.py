@@ -4,12 +4,12 @@ Authentication - KerberosAuth (DPM) and JWTAuth (gRPC).
 Auth objects validate at construction (fail fast) and are reusable.
 """
 
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
 import base64
 import json
 import logging
 import os
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -62,7 +62,7 @@ class KerberosAuth(Auth):
         Credentials are validated at construction time (fail fast).
     """
 
-    name: Optional[str] = None
+    name: str | None = None
     _lazy: bool = field(default=False, repr=False, compare=False)
 
     def __post_init__(self):
@@ -95,7 +95,7 @@ class KerberosAuth(Auth):
         except ImportError:
             raise ImportError(
                 "gssapi library required for Kerberos authentication. Install with: pip install pacsys[kerberos]"
-            )
+            ) from None
 
         from pacsys.errors import AuthenticationError
 
@@ -185,7 +185,7 @@ class JWTAuth(Auth):
             decoded = base64.urlsafe_b64decode(payload_b64)
             return json.loads(decoded)
         except Exception as e:
-            raise ValueError(f"Failed to decode JWT payload: {e}")
+            raise ValueError(f"Failed to decode JWT payload: {e}") from e
 
     @classmethod
     def from_env(cls, var: str = "PACSYS_JWT_TOKEN") -> Optional["JWTAuth"]:

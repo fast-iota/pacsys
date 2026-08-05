@@ -16,7 +16,6 @@ from pacsys.ssh import SSHClient, SSHTimeoutError
 
 from .devices import SSH_DEST_HOST, SSH_JUMP_HOST, requires_ssh
 
-
 pytestmark = [requires_ssh]
 
 

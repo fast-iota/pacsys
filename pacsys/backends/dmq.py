@@ -13,52 +13,54 @@ import time
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Optional, cast
+from typing import Any, cast
 
 import numpy as np
 import pika
 import pika.spec
 from pika.adapters.select_connection import SelectConnection
 from pika.channel import Channel
+from pika.exceptions import AMQPError
 
 from pacsys.acnet.errors import ERR_OK, ERR_RETRY, ERR_TIMEOUT, FACILITY_ACNET, FACILITY_DMQ
 from pacsys.auth import Auth, KerberosAuth
 from pacsys.backends import Backend, timestamp_from_millis, validate_alarm_dict
 from pacsys.backends._dispatch import CallbackDispatcher
 from pacsys.backends._subscription import BufferedSubscriptionHandle
-from pacsys.errors import AuthenticationError, DeviceError, ReadError
 from pacsys.backends.dmq_protocol import (
+    AnalogAlarm_struct,
+    AnalogAlarmSample_reply,
+    BasicControl_DC,
+    BasicControl_Negative,
+    BasicControl_Off,
+    BasicControl_On,
+    BasicControl_Positive,
+    BasicControl_Ramp,
+    BasicControl_Reset,
+    BasicControlSample_reply,
+    BasicStatusSample_reply,
+    BinarySample_reply,
+    BooleanArraySample_reply,
+    BooleanSample_reply,
+    DigitalAlarm_struct,
+    DigitalAlarmSample_reply,
+    DoubleArraySample_reply,
+    DoubleSample_reply,
+    ErrorSample_reply,
+    IntegerArraySample_reply,
+    IntegerSample_reply,
+    LongArraySample_reply,
+    LongSample_reply,
     ReadingRequest_request,
     SettingRequest_request,
-    unmarshal_reply,
-    DoubleSample_reply,
-    DoubleArraySample_reply,
-    StringSample_reply,
-    StringArraySample_reply,
-    ErrorSample_reply,
-    BasicStatusSample_reply,
-    BasicControlSample_reply,
-    AnalogAlarmSample_reply,
-    AnalogAlarm_struct,
-    DigitalAlarmSample_reply,
-    DigitalAlarm_struct,
-    BinarySample_reply,
-    IntegerSample_reply,
-    IntegerArraySample_reply,
-    ShortSample_reply,
     ShortArraySample_reply,
-    LongSample_reply,
-    LongArraySample_reply,
-    BooleanSample_reply,
-    BooleanArraySample_reply,
-    BasicControl_Reset,
-    BasicControl_On,
-    BasicControl_Off,
-    BasicControl_Positive,
-    BasicControl_Negative,
-    BasicControl_Ramp,
-    BasicControl_DC,
+    ShortSample_reply,
+    StringArraySample_reply,
+    StringSample_reply,
+    unmarshal_reply,
 )
+from pacsys.drf_utils import ensure_immediate_event, get_device_name, prepare_for_write
+from pacsys.errors import AuthenticationError, DeviceError, ReadError
 from pacsys.types import (
     BackendCapability,
     BasicControl,
@@ -71,7 +73,6 @@ from pacsys.types import (
     ValueType,
     WriteResult,
 )
-from pacsys.drf_utils import ensure_immediate_event, get_device_name, prepare_for_write
 
 logger = logging.getLogger(__name__)
 
@@ -143,23 +144,22 @@ def _dict_to_alarm_sample(d: dict, ref_id: int, timestamp_ms: int):
         sample.time = timestamp_ms
         _set_sample_ref_id(sample, ref_id)
         return sample
-    else:
-        alarm = DigitalAlarm_struct()
-        if "nominal" in d:
-            alarm.nominal = int(d["nominal"])
-        if "mask" in d:
-            alarm.mask = int(d["mask"])
-        if "alarm_enable" in d:
-            alarm.alarm_enable = bool(d["alarm_enable"])
-        if "abort_inhibit" in d:
-            alarm.abort_inhibit = bool(d["abort_inhibit"])
-        if "tries_needed" in d:
-            alarm.tries_needed = int(d["tries_needed"])
-        sample = DigitalAlarmSample_reply()
-        sample.value = alarm
-        sample.time = timestamp_ms
-        _set_sample_ref_id(sample, ref_id)
-        return sample
+    alarm = DigitalAlarm_struct()
+    if "nominal" in d:
+        alarm.nominal = int(d["nominal"])
+    if "mask" in d:
+        alarm.mask = int(d["mask"])
+    if "alarm_enable" in d:
+        alarm.alarm_enable = bool(d["alarm_enable"])
+    if "abort_inhibit" in d:
+        alarm.abort_inhibit = bool(d["abort_inhibit"])
+    if "tries_needed" in d:
+        alarm.tries_needed = int(d["tries_needed"])
+    sample = DigitalAlarmSample_reply()
+    sample.value = alarm
+    sample.time = timestamp_ms
+    _set_sample_ref_id(sample, ref_id)
+    return sample
 
 
 @dataclass
@@ -173,11 +173,11 @@ class _ReadJob:
     drf_to_all_indices: dict[str, list[int]] = field(default_factory=dict)
     readings: dict[int, Reading] = field(default_factory=dict)
     done_event: threading.Event = field(default_factory=threading.Event)
-    error: Optional[Exception] = None  # GSS or setup error
-    channel: Optional[Channel] = None
+    error: Exception | None = None  # GSS or setup error
+    channel: Channel | None = None
     exchange_name: str = ""
     queue_name: str = ""
-    consumer_tag: Optional[str] = None
+    consumer_tag: str | None = None
 
 
 @dataclass
@@ -195,9 +195,9 @@ class _WriteSession:
     queue_name: str
     gss_context: Any  # gssapi.SecurityContext
     last_used: float  # time.monotonic()
-    consumer_tag: Optional[str] = None
-    heartbeat_handle: Optional[object] = None
-    cleanup_handle: Optional[object] = None  # idle TTL timer
+    consumer_tag: str | None = None
+    heartbeat_handle: object | None = None
+    cleanup_handle: object | None = None  # idle TTL timer
     # Pending writes: correlation_id -> (index, drf, results_list, completion_tracker)
     pending: dict[str, tuple[int, str, list, "_WriteCompletionTracker"]] = field(default_factory=dict)
     # Writes queued until server confirms INIT via PENDING response (S.# binding ready)
@@ -205,7 +205,7 @@ class _WriteSession:
     queued_sends: list[tuple[list[tuple[int, str, Value]], list, "_WriteCompletionTracker"]] = field(
         default_factory=list
     )
-    init_timer: Optional[object] = None  # safety timer if PENDING never arrives
+    init_timer: object | None = None  # safety timer if PENDING never arrives
 
 
 @dataclass
@@ -215,7 +215,7 @@ class _WriteCompletionTracker:
     total_devices: int
     completed_devices: int = 0
     done_event: threading.Event = field(default_factory=threading.Event)
-    exception: Optional[Exception] = None
+    exception: Exception | None = None
 
     def device_complete(self) -> None:
         """Called when all writes for one device are done."""
@@ -368,7 +368,7 @@ def _reply_to_reading(reply, drf: str) -> Reading:
             cycle=getattr(reply, "cycle_time", 0),
         )
 
-    logger.warning(f"Unknown reply type: {type(reply).__name__}")
+    logger.warning("Unknown reply type: %s", type(reply).__name__)
     return Reading(
         drf=drf,
         facility_code=FACILITY_ACNET,
@@ -392,8 +392,8 @@ def _resolve_reply(
         return None
     try:
         reply = unmarshal_reply(iter(body))
-    except Exception as e:
-        logger.warning(f"Failed to unmarshal reply: {e}")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Failed to unmarshal reply: %s", e)
         # Try to resolve index via routing key so callers get an immediate
         # error instead of waiting for a timeout.
         if routing_key.startswith("R."):
@@ -430,7 +430,7 @@ class _DMQSubscriptionHandle(BufferedSubscriptionHandle):
         sub_id: str,
         drfs: list[str],
         is_callback_mode: bool,
-        on_error: Optional[ErrorCallback] = None,
+        on_error: ErrorCallback | None = None,
     ):
         super().__init__()
         self._backend = backend
@@ -455,14 +455,14 @@ class _SelectSubscription:
     drf_to_idx: dict[str, int]  # device_name -> index for O(1) routing key lookup
     drf_to_all_indices: dict[str, list[int]]  # drf -> all indices (handles duplicates)
     handle: "_DMQSubscriptionHandle"
-    callback: Optional[ReadingCallback]
+    callback: ReadingCallback | None
     exchange_name: str
     queue_name: str = ""
-    channel: Optional[Channel] = None
-    consumer_tag: Optional[str] = None
-    heartbeat_handle: Optional[object] = None  # ioloop timer handle
+    channel: Channel | None = None
+    consumer_tag: str | None = None
+    heartbeat_handle: object | None = None  # ioloop timer handle
     setup_complete: threading.Event = field(default_factory=threading.Event)
-    setup_error: Optional[Exception] = None
+    setup_error: Exception | None = None
 
 
 class DMQBackend(Backend):
@@ -488,7 +488,7 @@ class DMQBackend(Backend):
         port: int = DEFAULT_PORT,
         vhost: str = DEFAULT_VHOST,
         timeout: float = DEFAULT_TIMEOUT,
-        auth: Optional[Auth] = None,
+        auth: Auth | None = None,
         write_session_ttl: float = DEFAULT_WRITE_SESSION_TTL,
         dispatch_mode: DispatchMode = DispatchMode.WORKER,
     ):
@@ -521,7 +521,7 @@ class DMQBackend(Backend):
         self._port = port
         self._vhost = vhost
         self._timeout = timeout
-        self._auth: Optional[KerberosAuth] = auth
+        self._auth: KerberosAuth | None = auth
         self._write_session_ttl = write_session_ttl
         self._closed = False
 
@@ -532,10 +532,10 @@ class DMQBackend(Backend):
         # Streaming state (SelectConnection model)
         self._stream_lock = threading.Lock()
         self._subscriptions: dict[str, _SelectSubscription] = {}
-        self._select_connection: Optional[SelectConnection] = None
-        self._io_thread: Optional[threading.Thread] = None
+        self._select_connection: SelectConnection | None = None
+        self._io_thread: threading.Thread | None = None
         self._connection_ready = threading.Event()
-        self._connection_error: Optional[Exception] = None
+        self._connection_error: Exception | None = None
 
         # Write state (unified with SelectConnection)
         self._write_sessions: dict[str, _WriteSession] = {}  # init_drf -> active session
@@ -552,8 +552,12 @@ class DMQBackend(Backend):
             _ = self._auth.principal  # This validates credentials
 
         logger.debug(
-            f"DMQBackend initialized: host={host}, port={port}, vhost={vhost}, "
-            f"timeout={timeout}, auth={type(auth).__name__ if auth else None}"
+            "DMQBackend initialized: host=%s, port=%s, vhost=%s, timeout=%s, auth=%s",
+            host,
+            port,
+            vhost,
+            timeout,
+            type(auth).__name__ if auth else None,
         )
 
     @property
@@ -582,7 +586,7 @@ class DMQBackend(Backend):
         return self._auth is not None
 
     @property
-    def principal(self) -> Optional[str]:
+    def principal(self) -> str | None:
         return self._auth.principal if self._auth is not None else None
 
     def _check_not_io_thread(self) -> None:
@@ -599,7 +603,7 @@ class DMQBackend(Backend):
         ctx,
         binary: bytes,
         message_id: str,
-        correlation_id: Optional[str] = None,
+        correlation_id: str | None = None,
         reply_to: str = "",
         app_id: str = "",
     ) -> bytes:
@@ -669,7 +673,7 @@ class DMQBackend(Backend):
             ),
         )
 
-        logger.debug(f"Sent INIT for {len(drfs)} devices, message_id={message_id}")
+        logger.debug("Sent INIT for %s devices, message_id=%s", len(drfs), message_id)
         return message_id
 
     def _send_drop(
@@ -684,9 +688,9 @@ class DMQBackend(Backend):
                 routing_key="D",
                 body=b"",
             )
-            logger.debug(f"Sent DROP to exchange={exchange_name}")
-        except Exception as e:
-            logger.debug(f"Error sending DROP: {e}")
+            logger.debug("Sent DROP to exchange=%s", exchange_name)
+        except AMQPError as e:
+            logger.debug("Error sending DROP: %s", e)
 
     def _do_oneshot_read(self, drfs: list[str], timeout: float) -> list[Reading]:
         """Perform one-shot read via the shared SelectConnection."""
@@ -780,7 +784,7 @@ class DMQBackend(Backend):
                 try:
                     if channel.is_open:
                         channel.close()
-                except Exception:
+                except AMQPError:
                     pass
                 return
             job.channel = channel
@@ -792,8 +796,8 @@ class DMQBackend(Backend):
             try:
                 ctx = self._create_gss_context()
                 token = ctx.step()
-            except Exception as exc:
-                logger.error(f"GSS context creation failed for read: {exc} (devices: {drf_summary})")
+            except Exception as exc:  # noqa: BLE001
+                logger.error("GSS context creation failed for read: %s (devices: %s)", exc, drf_summary)
                 job.error = exc
                 self._complete_read(job)
                 return
@@ -803,7 +807,7 @@ class DMQBackend(Backend):
                 try:
                     if channel.is_open:
                         channel.close()
-                except Exception:
+                except AMQPError:
                     pass
                 return
 
@@ -814,14 +818,14 @@ class DMQBackend(Backend):
                     on_message_callback=lambda ch, method, props, body: self._on_read_message(job, ch, method, body),
                     auto_ack=False,
                 )
-            except Exception as exc:
-                logger.error(f"Read setup failed after INIT: {exc} (devices: {drf_summary})")
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Read setup failed after INIT: %s (devices: %s)", exc, drf_summary)
                 job.error = exc
                 self._complete_read(job)
                 try:
                     if channel.is_open:
                         channel.close()
-                except Exception:
+                except AMQPError:
                     pass
 
         self._setup_channel_async(on_ready=on_ready)
@@ -832,7 +836,7 @@ class DMQBackend(Backend):
         channel.basic_ack(method.delivery_tag)
         if result is None:
             return
-        reply, idx, ref_id = result
+        reply, idx, _ref_id = result
         # Fill this index and any unfilled duplicates with the same prepared DRF.
         # The server deduplicates requests, so only one reply arrives per unique device.
         # Uses pre-built reverse index for O(K) lookup (K = duplicates) instead of O(N).
@@ -851,17 +855,24 @@ class DMQBackend(Backend):
             return
         try:
             if job.channel and job.exchange_name:
-                self._send_drop(job.channel, job.exchange_name)
+                try:
+                    self._send_drop(job.channel, job.exchange_name)
+                except (AMQPError, ValueError) as e:
+                    logger.debug("Error sending DROP for read: %s", e)
             if job.channel and job.consumer_tag:
-                job.channel.basic_cancel(job.consumer_tag)
+                try:
+                    job.channel.basic_cancel(job.consumer_tag)
+                except (AMQPError, ValueError) as e:
+                    logger.debug("Error cancelling read consumer: %s", e)
             if job.channel and job.channel.is_open:
-                job.channel.close()
-        except Exception as e:
-            logger.debug(f"Error cleaning up read channel: {e}")
+                try:
+                    job.channel.close()
+                except AMQPError as e:
+                    logger.debug("Error closing read channel: %s", e)
         finally:
             job.done_event.set()
 
-    def read(self, drf: str, timeout: Optional[float] = None) -> Value:
+    def read(self, drf: str, timeout: float | None = None) -> Value:
         """Read a single device value."""
         reading = self.get(drf, timeout=timeout)
 
@@ -876,12 +887,12 @@ class DMQBackend(Backend):
         assert reading.value is not None  # ok implies value is set
         return reading.value
 
-    def get(self, drf: str, timeout: Optional[float] = None) -> Reading:
+    def get(self, drf: str, timeout: float | None = None) -> Reading:
         """Read a single device with full metadata."""
         readings = self.get_many([drf], timeout=timeout)
         return readings[0]
 
-    def get_many(self, drfs: list[str], timeout: Optional[float] = None) -> list[Reading]:
+    def get_many(self, drfs: list[str], timeout: float | None = None) -> list[Reading]:
         """Read multiple devices in a single batch."""
         self._check_not_io_thread()
         if self._closed:
@@ -916,13 +927,13 @@ class DMQBackend(Backend):
         except ImportError:
             raise ImportError(
                 "gssapi library required for Kerberos authentication. Install with: pip install pacsys[kerberos]"
-            )
+            ) from None
 
         try:
             name = gssapi.Name(DMQ_SERVICE_PRINCIPAL, gssapi.NameType.kerberos_principal)
             assert self._auth is not None
             creds = self._auth._get_credentials()
-            ctx = gssapi.SecurityContext(
+            return gssapi.SecurityContext(
                 name=name,
                 usage="initiate",
                 creds=creds,
@@ -932,9 +943,8 @@ class DMQBackend(Backend):
                     | gssapi.RequirementFlag.out_of_sequence_detection
                 ),
             )
-            return ctx
         except Exception as e:
-            raise AuthenticationError(f"Failed to create GSS context: {e}")
+            raise AuthenticationError(f"Failed to create GSS context: {e}") from e
 
     # ─────────────────────────────────────────────────────────────────────────
     # Shared AMQP Channel Setup (runs on IO thread)
@@ -1008,9 +1018,9 @@ class DMQBackend(Backend):
                 return
             try:
                 session.channel.basic_publish(exchange=session.exchange_name, routing_key="H", body=b"")
-                logger.debug(f"Sent write session heartbeat for {session.device}")
-            except Exception as e:
-                logger.warning(f"Write session heartbeat failed for {session.device}: {e}")
+                logger.debug("Sent write session heartbeat for %s", session.device)
+            except AMQPError as e:
+                logger.warning("Write session heartbeat failed for %s: %s", session.device, e)
             self._schedule_write_session_heartbeat(session)
 
         session.heartbeat_handle = self._select_connection.ioloop.call_later(5.0, send_heartbeat)
@@ -1026,10 +1036,7 @@ class DMQBackend(Backend):
 
         # Cancel existing cleanup timer
         if session.cleanup_handle is not None:
-            try:
-                self._select_connection.ioloop.remove_timeout(session.cleanup_handle)
-            except Exception:
-                pass
+            self._select_connection.ioloop.remove_timeout(session.cleanup_handle)
             session.cleanup_handle = None
 
         def do_cleanup():
@@ -1049,16 +1056,21 @@ class DMQBackend(Backend):
         if session is None:
             return
 
-        logger.debug(f"Closing write session for {session.device} ({init_drf}): {reason}")
+        logger.debug("Closing write session for %s (%s): %s", session.device, init_drf, reason)
 
         # Cancel timers
         conn = self._select_connection
-        for handle in (session.heartbeat_handle, session.cleanup_handle, session.init_timer):
+        timers = (
+            ("heartbeat", session.heartbeat_handle),
+            ("cleanup", session.cleanup_handle),
+            ("INIT", session.init_timer),
+        )
+        for timer_name, handle in timers:
             if handle is not None and conn is not None:
                 try:
                     conn.ioloop.remove_timeout(handle)
-                except Exception:
-                    pass
+                except Exception:  # noqa: BLE001
+                    logger.exception("Failed to cancel %s timer while closing write session %s", timer_name, init_drf)
 
         # Fail any queued and pending writes - signal each tracker exactly once
         trackers: dict[int, _WriteCompletionTracker] = {}
@@ -1087,16 +1099,16 @@ class DMQBackend(Backend):
         if session.channel is not None and session.channel.is_open:
             try:
                 session.channel.basic_publish(exchange=session.exchange_name, routing_key="D", body=b"")
-            except Exception:
+            except AMQPError:
                 pass
             if session.consumer_tag:
                 try:
                     session.channel.basic_cancel(session.consumer_tag)
-                except Exception:
+                except (AMQPError, ValueError):
                     pass
             try:
                 session.channel.close()
-            except Exception:
+            except AMQPError:
                 pass
 
     def _evict_lru_write_session(self) -> bool:
@@ -1145,8 +1157,8 @@ class DMQBackend(Backend):
             # Process each init_drf (parallel on IO thread - all non-blocking)
             for init_drf, drf_settings in by_init_drf.items():
                 self._write_to_device_async(init_drf, drf_settings, results, tracker)
-        except Exception as e:
-            logger.error(f"Failed to prepare write batch: {e}")
+        except Exception as e:  # noqa: BLE001
+            logger.error("Failed to prepare write batch: %s", e)
             tracker.abort(e)
 
     def _write_to_device_async(
@@ -1169,9 +1181,8 @@ class DMQBackend(Backend):
                     # S.# not yet bound - queue until PENDING arrives
                     session.queued_sends.append((drf_settings, results, tracker))
                 return
-            else:
-                # Session dead, clean up properly
-                self._close_write_session(init_drf, reason="channel dead")
+            # Session dead, clean up properly
+            self._close_write_session(init_drf, reason="channel dead")
 
         # Queue if channel setup already in progress for this device
         if init_drf in self._pending_session_setups:
@@ -1228,7 +1239,7 @@ class DMQBackend(Backend):
             try:
                 if channel.is_open:
                     channel.close()
-            except Exception:
+            except AMQPError:
                 pass
             return
 
@@ -1238,21 +1249,21 @@ class DMQBackend(Backend):
             token = ctx.step()
         except (AuthenticationError, ImportError) as exc:
             # Auth/import errors propagate to caller via tracker.abort()
-            logger.error(f"GSS auth failed for {device}: {exc}")
+            logger.error("GSS auth failed for %s: %s", device, exc)
             try:
                 if channel.is_open:
                     channel.close()
-            except Exception:
+            except AMQPError:
                 pass
             for _, _, q_tracker in queued_writes:
                 q_tracker.abort(exc)
             return
-        except Exception as exc:
-            logger.error(f"GSS context creation failed for {device}: {exc}")
+        except Exception as exc:  # noqa: BLE001
+            logger.error("GSS context creation failed for %s: %s", device, exc)
             try:
                 if channel.is_open:
                     channel.close()
-            except Exception:
+            except AMQPError:
                 pass
             msg = f"GSS context creation failed: {exc}"
             for q_settings, q_results, q_tracker in queued_writes:
@@ -1333,7 +1344,7 @@ class DMQBackend(Backend):
         self._schedule_write_session_heartbeat(session)
         self._schedule_write_session_cleanup(session)
 
-        logger.debug(f"Write session created for {device} ({init_drf}), exchange={exchange_name[:8]}")
+        logger.debug("Write session created for %s (%s), exchange=%s", device, init_drf, exchange_name[:8])
 
     def _flush_queued_writes(self, session: _WriteSession) -> None:
         """Send queued writes after server INIT confirmation (IO thread).
@@ -1343,8 +1354,8 @@ class DMQBackend(Backend):
         if session.init_timer is not None and self._select_connection is not None:
             try:
                 self._select_connection.ioloop.remove_timeout(session.init_timer)
-            except Exception:
-                pass
+            except Exception:  # noqa: BLE001
+                logger.exception("Failed to cancel INIT timer for write session %s", session.init_drf)
             session.init_timer = None
         queued = session.queued_sends
         session.queued_sends = []
@@ -1358,8 +1369,9 @@ class DMQBackend(Backend):
             return
         session.init_timer = None
         logger.error(
-            f"Write session for {session.device} ({session.init_drf}): "
-            "server did not confirm INIT (no PENDING received)"
+            "Write session for %s (%s): server did not confirm INIT (no PENDING received)",
+            session.device,
+            session.init_drf,
         )
         self._close_write_session(session.init_drf, reason="no INIT confirmation from server")
 
@@ -1369,12 +1381,19 @@ class DMQBackend(Backend):
         if session is not None:
             # Cancel timers
             conn = self._select_connection
-            for handle in (session.heartbeat_handle, session.cleanup_handle, session.init_timer):
+            timers = (
+                ("heartbeat", session.heartbeat_handle),
+                ("cleanup", session.cleanup_handle),
+                ("INIT", session.init_timer),
+            )
+            for timer_name, handle in timers:
                 if handle is not None and conn is not None:
                     try:
                         conn.ioloop.remove_timeout(handle)
-                    except Exception:
-                        pass
+                    except Exception:  # noqa: BLE001
+                        logger.exception(
+                            "Failed to cancel %s timer after write channel closed for %s", timer_name, init_drf
+                        )
             # Fail any pending and queued writes - signal each tracker exactly once
             trackers: dict[int, _WriteCompletionTracker] = {}
             for q_settings, q_results, q_tracker in session.queued_sends:
@@ -1397,7 +1416,7 @@ class DMQBackend(Backend):
             session.pending.clear()
             for tracker in trackers.values():
                 tracker.device_complete()
-        logger.debug(f"Write session closed for {init_drf}: {reason}")
+        logger.debug("Write session closed for %s: %s", init_drf, reason)
 
     def _send_settings_async(
         self,
@@ -1440,10 +1459,15 @@ class DMQBackend(Backend):
                 # Register pending AFTER successful publish to avoid orphaned entries
                 session.pending[message_id] = (i, drf, results, tracker)
                 pending_for_device += 1
-                logger.debug(f"Sent SETTING for {session.device} (rk=S.{session.init_drf}), msg_id={message_id[:8]}")
+                logger.debug(
+                    "Sent SETTING for %s (rk=S.%s), msg_id=%s",
+                    session.device,
+                    session.init_drf,
+                    message_id[:8],
+                )
 
-            except Exception as e:
-                logger.error(f"Failed to send setting for {drf}: {e}")
+            except Exception as e:  # noqa: BLE001
+                logger.error("Failed to send setting for %s: %s", drf, e)
                 results[i] = WriteResult(drf=drf, facility_code=FACILITY_ACNET, error_code=ERR_RETRY, message=str(e))
                 # Fail remaining unsent settings and close poisoned session
                 for i2, drf2, _ in device_settings[idx + 1 :]:
@@ -1488,8 +1512,8 @@ class DMQBackend(Backend):
         # Parse reply
         try:
             reply = unmarshal_reply(iter(body))
-        except Exception as e:
-            logger.warning(f"Failed to unmarshal write response: {e}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to unmarshal write response: %s", e)
             # Fail the specific pending request instead of silently dropping
             if corr_id and corr_id in session.pending:
                 i, drf, results, tracker = session.pending.pop(corr_id)
@@ -1502,7 +1526,7 @@ class DMQBackend(Backend):
             results[i] = WriteResult(
                 drf=drf, facility_code=FACILITY_ACNET, error_code=ERR_RETRY, message=f"Unmarshal error: {e}"
             )
-            logger.warning(f"Write result[{i}] set to error=-1 for {drf}")
+            logger.warning("Write result[%s] set to error=-1 for %s", i, drf)
             device_still_has_pending = any(t is tracker for _, _, _, t in session.pending.values())
             if not device_still_has_pending:
                 tracker.device_complete()
@@ -1514,13 +1538,22 @@ class DMQBackend(Backend):
             in_pending = corr_id in session.pending if corr_id else False
             if isinstance(reply, ErrorSample_reply):
                 logger.debug(
-                    f"Write msg: rk={rk} type={rtype} facility={reply.facilityCode} "
-                    f"error={reply.errorNumber} corr={corr_id and corr_id[:8]} pending={in_pending}"
+                    "Write msg: rk=%s type=%s facility=%s error=%s corr=%s pending=%s",
+                    rk,
+                    rtype,
+                    reply.facilityCode,
+                    reply.errorNumber,
+                    corr_id and corr_id[:8],
+                    in_pending,
                 )
             else:
                 logger.debug(
-                    f"Write msg: rk={rk} type={rtype} value={getattr(reply, 'value', '?')} "
-                    f"corr={corr_id and corr_id[:8]} pending={in_pending}"
+                    "Write msg: rk=%s type=%s value=%s corr=%s pending=%s",
+                    rk,
+                    rtype,
+                    getattr(reply, "value", "?"),
+                    corr_id and corr_id[:8],
+                    in_pending,
                 )
 
         # PENDING confirms S.# binding is in place - flush queued writes
@@ -1543,7 +1576,7 @@ class DMQBackend(Backend):
             oldest_key = next(iter(session.pending))
             i, drf, results, tracker = session.pending.pop(oldest_key)
             if TRACE:
-                logger.debug(f"Write response matched via FIFO fallback (corr_id={corr_id!r})")
+                logger.debug("Write response matched via FIFO fallback (corr_id=%r)", corr_id)
         else:
             return
 
@@ -1658,13 +1691,13 @@ class DMQBackend(Backend):
             sample.time = timestamp_ms
             _set_sample_ref_id(sample, ref_id)
             return sample
-        elif isinstance(value, float):
+        if isinstance(value, float):
             sample = DoubleSample_reply()
             sample.value = value
             sample.time = timestamp_ms
             _set_sample_ref_id(sample, ref_id)
             return sample
-        elif isinstance(value, (list, np.ndarray)):
+        if isinstance(value, (list, np.ndarray)):
             if len(value) > 0 and isinstance(value[0], str):
                 sample = StringArraySample_reply()
                 sample.value = list(value)
@@ -1674,29 +1707,28 @@ class DMQBackend(Backend):
             sample.time = timestamp_ms
             _set_sample_ref_id(sample, ref_id)
             return sample
-        elif isinstance(value, str):
+        if isinstance(value, str):
             sample = StringSample_reply()
             sample.value = value
             sample.time = timestamp_ms
             _set_sample_ref_id(sample, ref_id)
             return sample
-        elif isinstance(value, bytes):
-            raise ValueError(
+        if isinstance(value, bytes):
+            raise TypeError(
                 "DMQ backend does not support writing bytes values. "
                 "The DMQ server rejects BinarySample messages. "
                 "For .RAW writes, pass an integer that the server will "
                 "inverse-transform into the desired raw value (the server "
                 "applies primary and common inverse transforms to the integer)."
             )
-        else:
-            # Unsupported type - raise error
-            raise ValueError(f"Unsupported value type for DMQ write: {type(value).__name__}")
+        # Unsupported type - raise error
+        raise TypeError(f"Unsupported value type for DMQ write: {type(value).__name__}")
 
     def write(
         self,
         drf: str,
         value: Value,
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
     ) -> WriteResult:
         """Write a single device value.
 
@@ -1717,7 +1749,7 @@ class DMQBackend(Backend):
     def write_many(
         self,
         settings: list[tuple[str, Value]],
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
     ) -> list[WriteResult]:
         """Write multiple device values.
 
@@ -1748,7 +1780,7 @@ class DMQBackend(Backend):
         self._ensure_io_thread()
 
         # Prepare results container (shared with IO thread)
-        results = cast(list[WriteResult | None], [None] * len(settings))
+        results = cast("list[WriteResult | None]", [None] * len(settings))
         tracker = _WriteCompletionTracker(total_devices=0)
 
         # Schedule async execution on IO thread
@@ -1863,8 +1895,8 @@ class DMQBackend(Backend):
             )
             logger.debug("Starting SelectConnection ioloop")
             self._select_connection.ioloop.start()
-        except Exception as e:
-            logger.error(f"IO loop thread error: {e}")
+        except Exception as e:  # noqa: BLE001
+            logger.error("IO loop thread error: %s", e)
             self._connection_error = e
             self._connection_ready.set()
         finally:
@@ -1874,25 +1906,25 @@ class DMQBackend(Backend):
 
     def _on_connection_open(self, connection: SelectConnection) -> None:
         """Called when SelectConnection is established."""
-        logger.info(f"SelectConnection opened to {self._host}:{self._port}")
+        logger.info("SelectConnection opened to %s:%s", self._host, self._port)
         self._connection_ready.set()
 
     def _on_connection_open_error(self, connection: SelectConnection, error: Exception) -> None:
         """Called when SelectConnection fails to open."""
-        logger.error(f"SelectConnection open error: {error}")
+        logger.error("SelectConnection open error: %s", error)
         self._connection_error = error
         self._connection_ready.set()
 
     def _on_connection_closed(self, connection: SelectConnection, reason: Exception) -> None:
         """Called when SelectConnection is closed."""
-        logger.info(f"SelectConnection closed: {reason}")
+        logger.info("SelectConnection closed: %s", reason)
         self._connection_ready.clear()
 
         # Fail all pending writes - signal each tracker exactly once
         trackers: dict[int, _WriteCompletionTracker] = {}
 
         # Fail writes queued during channel setup
-        for init_drf, queued in self._pending_session_setups.items():
+        for queued in self._pending_session_setups.values():
             for q_settings, q_results, q_tracker in queued:
                 for i, drf, _ in q_settings:
                     if q_results[i] is None:
@@ -1910,8 +1942,8 @@ class DMQBackend(Backend):
             if session.init_timer is not None:
                 try:
                     connection.ioloop.remove_timeout(session.init_timer)
-                except Exception:
-                    pass
+                except Exception:  # noqa: BLE001
+                    logger.exception("Failed to cancel INIT timer after connection loss for %s", session.init_drf)
             # Fail queued sends
             for q_settings, q_results, q_tracker in session.queued_sends:
                 for i, drf, _ in q_settings:
@@ -1956,7 +1988,7 @@ class DMQBackend(Backend):
         # Stop the ioloop (will exit the thread)
         try:
             connection.ioloop.stop()
-        except Exception:
+        except OSError:
             pass
 
     def _start_subscription_async(
@@ -1985,7 +2017,7 @@ class DMQBackend(Backend):
             if sub.handle._stopped:
                 try:
                     channel.close()
-                except Exception:
+                except AMQPError:
                     pass
                 return
             sub.channel = channel
@@ -1995,7 +2027,7 @@ class DMQBackend(Backend):
             if sub.handle._stopped:
                 try:
                     channel.close()
-                except Exception:
+                except AMQPError:
                     pass
                 return
             sub.queue_name = queue_name
@@ -2012,7 +2044,7 @@ class DMQBackend(Backend):
                     headers=init_headers,
                 ),
             )
-            logger.debug(f"Sent INIT for sub {sub.sub_id[:8]}, {len(sub.drfs)} devices")
+            logger.debug("Sent INIT for sub %s, %s devices", sub.sub_id[:8], len(sub.drfs))
 
             # Start consuming
             sub.consumer_tag = channel.basic_consume(
@@ -2023,7 +2055,7 @@ class DMQBackend(Backend):
 
             self._schedule_heartbeat(sub)
             sub.setup_complete.set()
-            logger.info(f"Subscription {sub.sub_id[:8]} setup complete")
+            logger.info("Subscription %s setup complete", sub.sub_id[:8])
 
         self._setup_channel_async(
             on_ready=on_ready,
@@ -2043,9 +2075,9 @@ class DMQBackend(Backend):
                 return
             try:
                 sub.channel.basic_publish(exchange=sub.exchange_name, routing_key="H", body=b"")
-                logger.debug(f"Sent heartbeat for sub {sub.sub_id[:8]}")
-            except Exception as e:
-                logger.warning(f"Failed to send heartbeat: {e}")
+                logger.debug("Sent heartbeat for sub %s", sub.sub_id[:8])
+            except AMQPError as e:
+                logger.warning("Failed to send heartbeat: %s", e)
             # Schedule next heartbeat
             self._schedule_heartbeat(sub)
 
@@ -2053,7 +2085,7 @@ class DMQBackend(Backend):
 
     def _on_channel_closed(self, channel: Channel, reason: Exception, sub: _SelectSubscription) -> None:
         """Channel closed callback (runs in IO thread)."""
-        logger.debug(f"Channel closed for sub {sub.sub_id[:8]}: {reason}")
+        logger.debug("Channel closed for sub %s: %s", sub.sub_id[:8], reason)
         with self._stream_lock:
             was_active = self._subscriptions.pop(sub.sub_id, None) is not None
         if not was_active:
@@ -2075,7 +2107,7 @@ class DMQBackend(Backend):
         channel.basic_ack(method.delivery_tag)
         if result is None:
             return
-        reply, idx, ref_id = result
+        reply, idx, _ref_id = result
         drf = sub.drfs[idx]
         handle = sub.handle
 
@@ -2089,48 +2121,49 @@ class DMQBackend(Backend):
 
     def _cancel_subscription_async(self, sub: _SelectSubscription) -> None:
         """Schedule subscription cancellation on the IO loop."""
-        if self._select_connection is None or not self._select_connection.is_open:
+        connection = self._select_connection
+        if connection is None or not connection.is_open:
             return
 
         def do_cancel():
             # Cancel heartbeat timer
             if sub.heartbeat_handle is not None:
                 try:
-                    self._select_connection.ioloop.remove_timeout(sub.heartbeat_handle)  # type: ignore
-                except Exception:
-                    pass
+                    connection.ioloop.remove_timeout(sub.heartbeat_handle)
+                except Exception:  # noqa: BLE001
+                    logger.exception("Failed to cancel heartbeat timer for subscription %s", sub.sub_id)
                 sub.heartbeat_handle = None
 
             # Send DROP
             if sub.channel is not None and sub.channel.is_open:
                 try:
                     sub.channel.basic_publish(exchange=sub.exchange_name, routing_key="D", body=b"")
-                    logger.debug(f"Sent DROP for sub {sub.sub_id[:8]}")
-                except Exception:
+                    logger.debug("Sent DROP for sub %s", sub.sub_id[:8])
+                except AMQPError:
                     pass
 
                 # Cancel consumer
                 if sub.consumer_tag is not None:
                     try:
                         sub.channel.basic_cancel(sub.consumer_tag)
-                    except Exception:
+                    except (AMQPError, ValueError):
                         pass
 
                 # Close channel
                 try:
                     sub.channel.close()
-                except Exception:
+                except AMQPError:
                     pass
 
             sub.handle._signal_stop()
 
-        self._select_connection.ioloop.add_callback_threadsafe(do_cancel)
+        connection.ioloop.add_callback_threadsafe(do_cancel)
 
     def subscribe(
         self,
         drfs: list[str],
-        callback: Optional[ReadingCallback] = None,
-        on_error: Optional[ErrorCallback] = None,
+        callback: ReadingCallback | None = None,
+        on_error: ErrorCallback | None = None,
     ) -> SubscriptionHandle:
         """Subscribe to devices for streaming data.
 
@@ -2213,7 +2246,7 @@ class DMQBackend(Backend):
             raise sub.setup_error
 
         mode_str = "callback" if is_callback_mode else "iterator"
-        logger.info(f"Created {mode_str} subscription sub_id={sub_id[:8]} for {len(drfs)} devices")
+        logger.info("Created %s subscription sub_id=%s for %s devices", mode_str, sub_id[:8], len(drfs))
 
         return handle
 
@@ -2235,7 +2268,7 @@ class DMQBackend(Backend):
 
         self._cancel_subscription_async(sub)
         handle._signal_stop()
-        logger.info(f"Removed subscription sub_id={sub_id[:8]}")
+        logger.info("Removed subscription sub_id=%s", sub_id[:8])
 
     def stop_streaming(self) -> None:
         """Stop all streaming subscriptions.
@@ -2261,7 +2294,7 @@ class DMQBackend(Backend):
 
             try:
                 self._select_connection.ioloop.add_callback_threadsafe(close_connection)
-            except Exception:
+            except OSError:
                 pass
 
         if self._io_thread is not None:

@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     import numpy as np
 
     from pacsys.backends import Backend
+    from pacsys.devdb import DeviceInfoResult
     from pacsys.digital_status import DigitalStatus
     from pacsys.verify import Verify
 
@@ -125,7 +126,6 @@ class Device(_DeviceBase):
 
     def info(self, timeout: float | None = None):
         """Fetch device metadata from DevDB (cached)."""
-        from pacsys.devdb import DeviceInfoResult
 
         devdb = self._get_devdb()
         if devdb is None:
@@ -155,7 +155,7 @@ class Device(_DeviceBase):
         if devdb is not None:
             try:
                 info = devdb.get_device_info([name])[name]
-            except Exception:
+            except Exception:  # noqa: BLE001
                 info = None
             if info is not None and info.status_bits is not None:
                 reading = backend.get(f"{name}.STATUS.BIT_VALUE@I{extra}", timeout)

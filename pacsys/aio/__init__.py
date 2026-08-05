@@ -11,7 +11,6 @@ for use in async code. Uses lazy-initialized global async backend.
 """
 
 import asyncio
-from typing import Optional
 
 from pacsys.aio._backends import AsyncBackend
 from pacsys.aio._device import AsyncDevice
@@ -48,9 +47,8 @@ def grpc(host=None, port=None, auth=None, timeout=5.0):
 
 def dpm(host=None, port=None, pool_size=None, timeout=None, auth=None, role=None):
     """Create an async DPM HTTP backend."""
-    from pacsys.aio._dpm_http import AsyncDPMHTTPBackend
-
     from pacsys import _env_dpm_host, _env_dpm_port, _env_pool_size, _env_timeout
+    from pacsys.aio._dpm_http import AsyncDPMHTTPBackend
 
     return AsyncDPMHTTPBackend(
         host=host if host is not None else (_env_dpm_host if _env_dpm_host is not None else "acsys-proxy.fnal.gov"),
@@ -72,27 +70,33 @@ class _Unset:
 _UNSET = _Unset()
 _VALID_ASYNC_BACKENDS = {"dpm", "grpc"}
 
-_config_backend: Optional[str] = None
+_config_backend: str | None = None
 _config_auth: Auth | None = None
-_config_role: Optional[str] = None
-_config_host: Optional[str] = None
-_config_port: Optional[int] = None
-_config_pool_size: Optional[int] = None
-_config_timeout: Optional[float] = None
+_config_role: str | None = None
+_config_host: str | None = None
+_config_port: int | None = None
+_config_pool_size: int | None = None
+_config_timeout: float | None = None
 
 _global_async_backend: AsyncBackend | None = None
 _async_backend_initialized: bool = False
+_background_tasks: set[asyncio.Task[None]] = set()
+
+
+def _retain_background_task(task: asyncio.Task[None]) -> None:
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 def configure(
     *,
-    backend: str | None | _Unset = _UNSET,
-    host: str | None | _Unset = _UNSET,
-    port: int | None | _Unset = _UNSET,
-    pool_size: int | None | _Unset = _UNSET,
-    timeout: float | None | _Unset = _UNSET,
-    auth: Auth | str | None | _Unset = _UNSET,
-    role: str | None | _Unset = _UNSET,
+    backend: str | _Unset | None = _UNSET,
+    host: str | _Unset | None = _UNSET,
+    port: int | _Unset | None = _UNSET,
+    pool_size: int | _Unset | None = _UNSET,
+    timeout: float | _Unset | None = _UNSET,
+    auth: Auth | str | _Unset | None = _UNSET,
+    role: str | _Unset | None = _UNSET,
 ) -> None:
     """Configure async backend settings.
 
@@ -129,7 +133,7 @@ def configure(
             # Schedule proper cleanup if event loop is running
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(old_backend.close())
+                _retain_background_task(loop.create_task(old_backend.close()))
             except RuntimeError:
                 # No running loop -- force close synchronously
                 old_backend._closed = True
@@ -226,28 +230,28 @@ def _resolve_drf(device) -> str:
 # ── Simple API Functions ──────────────────────────────────────────────────
 
 
-async def read(device, timeout: Optional[float] = None):
+async def read(device, timeout: float | None = None):
     """Read a single device value using the global async backend."""
     drf = _resolve_drf(device)
     backend = _get_global_async_backend()
     return await backend.read(drf, timeout=timeout)
 
 
-async def get(device, timeout: Optional[float] = None):
+async def get(device, timeout: float | None = None):
     """Read a single device with full metadata."""
     drf = _resolve_drf(device)
     backend = _get_global_async_backend()
     return await backend.get(drf, timeout=timeout)
 
 
-async def get_many(devices: list, timeout: Optional[float] = None):
+async def get_many(devices: list, timeout: float | None = None):
     """Read multiple devices in a single batch."""
     drfs = [_resolve_drf(d) for d in devices]
     backend = _get_global_async_backend()
     return await backend.get_many(drfs, timeout=timeout)
 
 
-async def read_many(devices: list, timeout: Optional[float] = None):
+async def read_many(devices: list, timeout: float | None = None):
     """Read multiple device values in a single batch.
 
     Returns bare values. Raises ReadError if any device fails.
@@ -264,14 +268,14 @@ async def read_many(devices: list, timeout: Optional[float] = None):
     return [r.value for r in readings]
 
 
-async def write(device, value, timeout: Optional[float] = None):
+async def write(device, value, timeout: float | None = None):
     """Write a single device value."""
     drf = _resolve_drf(device)
     backend = _get_global_async_backend()
     return await backend.write(drf, value, timeout=timeout)
 
 
-async def write_many(settings, timeout: Optional[float] = None):
+async def write_many(settings, timeout: float | None = None):
     """Write multiple device values in a single batch."""
     items = settings.items() if isinstance(settings, dict) else settings
     resolved = [(_resolve_drf(d), v) for d, v in items]

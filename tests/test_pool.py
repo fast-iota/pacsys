@@ -13,19 +13,20 @@ import socket
 import struct
 import threading
 import time
-import pytest
 from unittest import mock
 
-from pacsys.pool import (
-    ConnectionPool,
-    PoolClosedError,
-    PoolExhaustedError,
-)
+import pytest
+
 from pacsys.dpm_connection import (
     DPMConnection,
     DPMConnectionError,
 )
 from pacsys.dpm_protocol import OpenList_reply
+from pacsys.pool import (
+    ConnectionPool,
+    PoolClosedError,
+    PoolExhaustedError,
+)
 
 
 def create_openlist_frame(list_id: int = 1) -> bytes:
@@ -52,7 +53,7 @@ class TestConnectionPoolInit:
     """Tests for ConnectionPool initialization."""
 
     @pytest.mark.parametrize(
-        "kwargs,match",
+        ("kwargs", "match"),
         [
             ({"host": ""}, "host cannot be empty"),
             ({"port": 0}, "port must be between"),
@@ -271,7 +272,7 @@ class TestConcurrentAccess:
                     time.sleep(0.01)  # Simulate work
                     pool.release(conn)
                     operations.append((worker_id, i, "release"))
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     errors.append((worker_id, i, e))
 
         with mock.patch("socket.socket", side_effect=mock_socket_factory):
@@ -307,7 +308,7 @@ class TestConcurrentAccess:
                     pool.release(conn)
                 except PoolClosedError:
                     pass  # Expected if pool closes
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     errors.append((worker_id, "borrow_release", e))
 
         def borrow_discard_worker(worker_id: int):
@@ -318,7 +319,7 @@ class TestConcurrentAccess:
                     pool.discard(conn)  # Discard instead of release
                 except PoolClosedError:
                     pass
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     errors.append((worker_id, "borrow_discard", e))
 
         with mock.patch("socket.socket", side_effect=mock_socket_factory):
@@ -387,7 +388,7 @@ class TestPoolClose:
                     pool.borrow(wait_timeout=10.0)
                 except PoolClosedError:
                     errors.append("PoolClosedError")
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     errors.append(f"Unexpected: {e}")
 
             thread = threading.Thread(target=waiting_borrow)
@@ -497,7 +498,7 @@ class TestContextManager:
         pool = ConnectionPool()
 
         with mock.patch("socket.socket", return_value=create_mock_socket()):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="test error"):  # noqa: PT012 -- exercises context cleanup
                 with pool.connection() as _:
                     assert pool.in_use_count == 1
                     raise ValueError("test error")
@@ -513,7 +514,7 @@ class TestContextManager:
         pool = ConnectionPool()
 
         with mock.patch("socket.socket", return_value=create_mock_socket()):
-            with pytest.raises(BrokenPipeError):
+            with pytest.raises(BrokenPipeError):  # noqa: PT012 -- exercises context cleanup
                 with pool.connection() as _:
                     assert pool.in_use_count == 1
                     raise BrokenPipeError("pipe broke")
@@ -542,7 +543,7 @@ class TestContextManager:
         pool = ConnectionPool()
 
         with mock.patch("socket.socket", return_value=create_mock_socket()):
-            with pytest.raises(OSError):
+            with pytest.raises(OSError, match="socket gone"):
                 with pool.connection() as _:
                     raise OSError("socket gone")
 
@@ -643,7 +644,7 @@ class TestEdgeCases:
         pool = ConnectionPool(pool_size=2)
 
         with mock.patch("socket.socket") as mock_socket_cls:
-            mock_socket_cls.return_value.connect.side_effect = socket.error("Connection refused")
+            mock_socket_cls.return_value.connect.side_effect = OSError("Connection refused")
 
             with pytest.raises(DPMConnectionError, match="Failed to connect"):
                 pool.borrow()

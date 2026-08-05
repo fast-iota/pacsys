@@ -22,7 +22,7 @@ def tool_read_device(backend: Backend, drf: str) -> dict:
         reading = backend.get(drf)
         return reading_to_dict(reading)
     except Exception as e:
-        logger.error("read_device drf=%s error=%s", drf, e, exc_info=True)
+        logger.exception("read_device failed for drf=%s", drf)
         return {"ok": False, "name": get_device_name(drf), "drf": drf, "value": None, "error": str(e)}
 
 
@@ -75,7 +75,7 @@ def tool_write_device(
         result = backend.write(write_drf, value)
         return write_result_to_dict(result)
     except Exception as e:
-        logger.error("write_device drf=%s error=%s", write_drf, e, exc_info=True)
+        logger.exception("write_device failed for drf=%s", write_drf)
         return {"ok": False, "drf": write_drf, "error": str(e)}
 
 
@@ -120,5 +120,5 @@ def tool_device_info(devdb, name: str) -> dict:
 
         return d
     except Exception as e:
-        logger.error("device_info name=%s error=%s", name, e, exc_info=True)
+        logger.exception("device_info failed for name=%s", name)
         return {"ok": False, "name": name, "error": str(e)}

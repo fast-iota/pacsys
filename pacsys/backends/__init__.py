@@ -4,18 +4,18 @@ Backend abstract base class. See SPECIFICATION.md for backend comparison.
 
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import Optional, cast
+from typing import cast
 
 from pacsys.errors import ReadError
 from pacsys.types import (
-    Value,
-    Reading,
-    WriteResult,
     BackendCapability,
     DispatchMode,
-    SubscriptionHandle,
-    ReadingCallback,
     ErrorCallback,
+    Reading,
+    ReadingCallback,
+    SubscriptionHandle,
+    Value,
+    WriteResult,
 )
 
 
@@ -90,7 +90,7 @@ class Backend(ABC):
         return False
 
     @property
-    def principal(self) -> Optional[str]:
+    def principal(self) -> str | None:
         """
         Kerberos principal or JWT subject if authenticated, else None.
 
@@ -109,7 +109,7 @@ class Backend(ABC):
         return getattr(self, "_dispatch_mode", DispatchMode.WORKER)
 
     @abstractmethod
-    def read(self, drf: str, timeout: Optional[float] = None) -> Value:
+    def read(self, drf: str, timeout: float | None = None) -> Value:
         """
         Read a single device value.
 
@@ -126,7 +126,7 @@ class Backend(ABC):
         """
 
     @abstractmethod
-    def get(self, drf: str, timeout: Optional[float] = None) -> Reading:
+    def get(self, drf: str, timeout: float | None = None) -> Reading:
         """
         Read a single device with full metadata.
 
@@ -143,7 +143,7 @@ class Backend(ABC):
         """
 
     @abstractmethod
-    def get_many(self, drfs: list[str], timeout: Optional[float] = None) -> list[Reading]:
+    def get_many(self, drfs: list[str], timeout: float | None = None) -> list[Reading]:
         """
         Read multiple devices in a single batch.
 
@@ -160,7 +160,7 @@ class Backend(ABC):
             ReadError: On transport-level failures (connection refused, timeout, etc.)
         """
 
-    def read_many(self, drfs: list[str], timeout: Optional[float] = None) -> list[Value]:
+    def read_many(self, drfs: list[str], timeout: float | None = None) -> list[Value]:
         """Read multiple device values in a single batch.
 
         Convenience wrapper around get_many() that extracts bare values
@@ -182,13 +182,13 @@ class Backend(ABC):
         if errors:
             failed = ", ".join(r.drf for r in errors)
             raise ReadError(readings, f"Device errors: {failed}")
-        return [cast(Value, r.value) for r in readings]
+        return [cast("Value", r.value) for r in readings]
 
     def write(
         self,
         drf: str,
         value: Value,
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
     ) -> WriteResult:
         """
         Write a single device value.
@@ -210,7 +210,7 @@ class Backend(ABC):
     def write_many(
         self,
         settings: list[tuple[str, Value]],
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
     ) -> list[WriteResult]:
         """
         Write multiple device values.
@@ -235,8 +235,8 @@ class Backend(ABC):
     def subscribe(
         self,
         drfs: list[str],
-        callback: Optional[ReadingCallback] = None,
-        on_error: Optional[ErrorCallback] = None,
+        callback: ReadingCallback | None = None,
+        on_error: ErrorCallback | None = None,
     ) -> SubscriptionHandle:
         """
         Subscribe to devices for streaming data.

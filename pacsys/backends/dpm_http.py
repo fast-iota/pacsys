@@ -12,7 +12,7 @@ import socket
 import struct
 import threading
 import time
-from typing import Any, SupportsFloat, SupportsIndex, cast
+from typing import Any, ClassVar, SupportsFloat, SupportsIndex, cast
 
 import numpy as np
 
@@ -63,7 +63,7 @@ from pacsys.dpm_protocol import (
 from pacsys.drf3.extra import HISTORICAL_EXTRAS
 from pacsys.drf_utils import ensure_immediate_event, is_immediate_only, prepare_for_write
 from pacsys.errors import AuthenticationError, DeviceError, ReadError
-from pacsys.pool import ConnectionPool
+from pacsys.pool import ConnectionPool, PoolClosedError, PoolExhaustedError
 from pacsys.types import (
     BackendCapability,
     DeviceMeta,
@@ -124,7 +124,7 @@ def _value_to_setting(
     if isinstance(value, np.ndarray):
         if value.ndim != 1:
             raise TypeError("DPM array settings must be one-dimensional")
-        items = cast(list[object], cast(Any, value).tolist())
+        items = cast("list[object]", cast("Any", value).tolist())
     elif isinstance(value, (list, tuple)):
         items = list(value)
     else:
@@ -135,7 +135,7 @@ def _value_to_setting(
         if all(text_items):
             setting = TextSetting_struct()
             setting.ref_id = ref_id
-            setting.data = cast(list[str], items)
+            setting.data = cast("list[str]", items)
             return None, None, setting
         if any(text_items):
             raise TypeError("DPM text array settings must contain only strings")
@@ -214,21 +214,21 @@ def _reply_to_value_and_type(reply) -> tuple[Value | None, ValueType | None]:
     """Extract value and type from a DPM data reply."""
     if isinstance(reply, Scalar_reply):
         return reply.data, ValueType.SCALAR
-    elif isinstance(reply, ScalarArray_reply):
+    if isinstance(reply, ScalarArray_reply):
         return np.array(reply.data), ValueType.SCALAR_ARRAY
-    elif isinstance(reply, TimedScalarArray_reply):
+    if isinstance(reply, TimedScalarArray_reply):
         data = np.array(reply.data)
         if hasattr(reply, "micros") and reply.micros:
             micros = np.array(reply.micros, dtype=np.int64)
             return {"data": data, "micros": micros}, ValueType.TIMED_SCALAR_ARRAY
         return data, ValueType.SCALAR_ARRAY
-    elif isinstance(reply, Raw_reply):
+    if isinstance(reply, Raw_reply):
         return bytes(reply.data), ValueType.RAW
-    elif isinstance(reply, Text_reply):
+    if isinstance(reply, Text_reply):
         return reply.data, ValueType.TEXT
-    elif isinstance(reply, TextArray_reply):
+    if isinstance(reply, TextArray_reply):
         return list(reply.data), ValueType.TEXT_ARRAY
-    elif isinstance(reply, AnalogAlarm_reply):
+    if isinstance(reply, AnalogAlarm_reply):
         return {
             "minimum": reply.minimum,
             "maximum": reply.maximum,
@@ -239,7 +239,7 @@ def _reply_to_value_and_type(reply) -> tuple[Value | None, ValueType | None]:
             "tries_needed": reply.tries_needed,
             "tries_now": reply.tries_now,
         }, ValueType.ANALOG_ALARM
-    elif isinstance(reply, DigitalAlarm_reply):
+    if isinstance(reply, DigitalAlarm_reply):
         return {
             "nominal": reply.nominal,
             "mask": reply.mask,
@@ -250,7 +250,7 @@ def _reply_to_value_and_type(reply) -> tuple[Value | None, ValueType | None]:
             "tries_needed": reply.tries_needed,
             "tries_now": reply.tries_now,
         }, ValueType.DIGITAL_ALARM
-    elif isinstance(reply, BasicStatus_reply):
+    if isinstance(reply, BasicStatus_reply):
         status_dict = {}
         if hasattr(reply, "on"):
             status_dict["on"] = reply.on
@@ -263,10 +263,10 @@ def _reply_to_value_and_type(reply) -> tuple[Value | None, ValueType | None]:
         if hasattr(reply, "ramp"):
             status_dict["ramp"] = reply.ramp
         return status_dict, ValueType.BASIC_STATUS
-    elif isinstance(reply, Status_reply):
+    if isinstance(reply, Status_reply):
         return None, ValueType.SCALAR
 
-    logger.error(f"Unknown reply type: {type(reply).__name__}, cannot extract value")
+    logger.error("Unknown reply type: %s, cannot extract value", type(reply).__name__)
     return None, None
 
 
@@ -368,8 +368,8 @@ class _AsyncDPMConnection:
                 asyncio.open_connection(self._host, self._port, limit=MAX_MESSAGE_SIZE),
                 timeout=self._timeout,
             )
-        except asyncio.TimeoutError:
-            raise DPMConnectionError(f"Connection to {self._host}:{self._port} timed out")
+        except asyncio.TimeoutError as e:
+            raise DPMConnectionError(f"Connection to {self._host}:{self._port} timed out") from e
 
         try:
             # Set TCP_NODELAY and SO_KEEPALIVE on the underlying socket
@@ -384,14 +384,14 @@ class _AsyncDPMConnection:
             # Read OpenList reply (same detection as sync: first 4 bytes)
             try:
                 first_bytes = await asyncio.wait_for(self._reader.readexactly(4), timeout=self._timeout)
-            except asyncio.TimeoutError:
-                raise DPMConnectionError("Handshake timed out reading initial reply")
+            except asyncio.TimeoutError as e:
+                raise DPMConnectionError("Handshake timed out reading initial reply") from e
             if first_bytes == b"HTTP":
                 # Read rest of HTTP status line for useful error message
                 try:
                     rest = await asyncio.wait_for(self._reader.readline(), timeout=2.0)
                     status_line = "HTTP" + rest.decode("utf-8", errors="replace").rstrip()
-                except Exception:
+                except Exception:  # noqa: BLE001
                     status_line = "HTTP error (could not read status)"
                 raise DPMConnectionError(f"DPM server at {self._host}:{self._port} returned HTTP error: {status_line}")
 
@@ -401,12 +401,12 @@ class _AsyncDPMConnection:
 
             try:
                 data = await asyncio.wait_for(self._reader.readexactly(length), timeout=self._timeout)
-            except asyncio.TimeoutError:
-                raise DPMConnectionError("Handshake timed out reading message body")
+            except asyncio.TimeoutError as e:
+                raise DPMConnectionError("Handshake timed out reading message body") from e
             try:
                 reply = unmarshal_reply(iter(data))
             except (ProtocolError, StopIteration) as e:
-                raise DPMConnectionError(f"Protocol error during handshake: {e}")
+                raise DPMConnectionError(f"Protocol error during handshake: {e}") from e
 
             if not isinstance(reply, OpenList_reply):
                 raise DPMConnectionError(f"Expected OpenList reply, got {type(reply).__name__}")
@@ -447,23 +447,23 @@ class _AsyncDPMConnection:
         effective_timeout = timeout if timeout is not None else self._RECV_TIMEOUT
         try:
             len_bytes = await asyncio.wait_for(self._reader.readexactly(4), timeout=effective_timeout)
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as e:
             if timeout is not None:
-                raise asyncio.TimeoutError("Receive timeout")
+                raise asyncio.TimeoutError("Receive timeout") from e
             raise DPMConnectionError(
                 f"No data received for {self._RECV_TIMEOUT}s (missed heartbeats), connection presumed dead"
-            )
+            ) from e
         length = struct.unpack(">I", len_bytes)[0]
         if length == 0 or length > MAX_MESSAGE_SIZE:
             raise DPMConnectionError(f"Invalid message length: {length}")
         try:
             data = await asyncio.wait_for(self._reader.readexactly(length), timeout=self._RECV_TIMEOUT)
-        except asyncio.TimeoutError:
-            raise DPMConnectionError(f"Timed out reading {length}-byte message body")
+        except asyncio.TimeoutError as e:
+            raise DPMConnectionError(f"Timed out reading {length}-byte message body") from e
         try:
             return unmarshal_reply(iter(data))
         except (ProtocolError, StopIteration) as e:
-            raise DPMConnectionError(f"Protocol error: {e}")
+            raise DPMConnectionError(f"Protocol error: {e}") from e
 
     async def close(self) -> None:
         writer = self._writer
@@ -474,8 +474,8 @@ class _AsyncDPMConnection:
             try:
                 writer.close()
                 await writer.wait_closed()
-            except Exception:
-                pass
+            except Exception:  # noqa: BLE001
+                logger.debug("Failed to close async DPM connection", exc_info=True)
 
 
 class _WriteConnection:
@@ -503,8 +503,8 @@ class _WriteConnection:
         """Close the underlying connection."""
         try:
             self.conn.close()
-        except Exception:
-            pass
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to close DPM write connection", exc_info=True)
 
 
 class _DPMHTTPSubscriptionHandle(BufferedSubscriptionHandle):
@@ -642,7 +642,7 @@ class _DpmStreamCore:
                     ref_id = reply.ref_id
                     drf = drf_map.get(ref_id)
                     if drf is None:
-                        logger.warning(f"Data for unknown ref_id={ref_id}")
+                        logger.warning("Data for unknown ref_id=%s", ref_id)
                         continue
                     meta = metas.get(ref_id)
                     reading = _reply_to_reading(reply, drf, meta)
@@ -656,10 +656,10 @@ class _DpmStreamCore:
                 wrapped = DPMConnectionError(f"{e} (devices: {drf_summary})")
                 wrapped.__cause__ = e
                 error_fn(wrapped)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             if not stop_check():
                 drf_summary = ", ".join(drfs) if len(drfs) <= 5 else f"{', '.join(drfs[:5])} and {len(drfs) - 5} more"
-                logger.error(f"Unexpected streaming error: {e} (devices: {drf_summary})")
+                logger.error("Unexpected streaming error: %s (devices: %s)", e, drf_summary)
                 error_fn(e)
 
 
@@ -750,8 +750,13 @@ class DPMHTTPBackend(Backend):
             _ = self._auth.principal  # This validates credentials
 
         logger.debug(
-            f"DPMHTTPBackend initialized: host={host}, port={port}, "
-            f"pool_size={pool_size}, timeout={timeout}, auth={type(auth).__name__ if auth else None}, role={role}"
+            "DPMHTTPBackend initialized: host=%s, port=%s, pool_size=%s, timeout=%s, auth=%s, role=%s",
+            host,
+            port,
+            pool_size,
+            timeout,
+            type(auth).__name__ if auth else None,
+            role,
         )
 
     @property
@@ -955,7 +960,7 @@ class DPMHTTPBackend(Backend):
                                 if is_empty:
                                     if ref_id not in logger_complete:
                                         if hasattr(reply, "status") and reply.status != 0:
-                                            # Error terminator — accumulate so _aggregate_logger_chunks surfaces the error
+                                            # Accumulate error terminators so aggregation surfaces the error.
                                             logger_chunks.setdefault(ref_id, []).append(reply)
                                         logger_complete.add(ref_id)
                                         received_count += 1
@@ -978,13 +983,15 @@ class DPMHTTPBackend(Backend):
                                 clear_req = ClearList_request()
                                 clear_req.list_id = list_id
                                 conn.send_messages_batch([stop_req, clear_req])
+                            except DPMConnectionError:
+                                conn.close()
                             except Exception:
                                 conn.close()
+                                raise
                             else:
                                 if not reuse_safe:
                                     conn.close()
-        except Exception as e:
-            # Pool borrow failure, connection error, or re-raised inner exception
+        except (PoolClosedError, PoolExhaustedError, DPMConnectionError, OSError) as e:
             transport_error = e
 
         readings: list[Reading] = []
@@ -1104,10 +1111,11 @@ class DPMHTTPBackend(Backend):
         """
         try:
             import gssapi
+            from gssapi import exceptions as gssapi_exceptions
         except ImportError:
             raise ImportError(
                 "gssapi library required for Kerberos authentication. Install with: pip install pacsys[kerberos]"
-            )
+            ) from None
 
         # Phase 1: request service name with empty token
         auth_req = Authenticate_request()
@@ -1126,26 +1134,29 @@ class DPMHTTPBackend(Backend):
         # Server sends Java GSS-API format: "daeset/bd@host" (with possible \ escaping)
         # Translate @ → /, strip \, append explicit realm
         gss_name = raw_service_name.translate({ord("@"): "/", ord("\\"): None}) + "@FNAL.GOV"
-        logger.debug(f"DPM service name: {gss_name}")
+        logger.debug("DPM service name: %s", gss_name)
 
         # Phase 2: create GSSAPI context with server's actual service name
-        service_name = gssapi.Name(gss_name, gssapi.NameType.kerberos_principal)
+        try:
+            service_name = gssapi.Name(gss_name, gssapi.NameType.kerberos_principal)
 
-        assert self._auth is not None
-        creds = self._auth._get_credentials()
-        ctx = gssapi.SecurityContext(
-            name=service_name,
-            usage="initiate",
-            creds=creds,
-            flags=(
-                gssapi.RequirementFlag.replay_detection
-                | gssapi.RequirementFlag.integrity
-                | gssapi.RequirementFlag.out_of_sequence_detection
-            ),
-            mech=gssapi.MechType.kerberos,
-        )
+            assert self._auth is not None
+            creds = self._auth._get_credentials()
+            ctx = gssapi.SecurityContext(
+                name=service_name,
+                usage="initiate",
+                creds=creds,
+                flags=(
+                    gssapi.RequirementFlag.replay_detection
+                    | gssapi.RequirementFlag.integrity
+                    | gssapi.RequirementFlag.out_of_sequence_detection
+                ),
+                mech=gssapi.MechType.kerberos,
+            )
 
-        token = ctx.step()
+            token = ctx.step()
+        except gssapi_exceptions.GSSError as e:
+            raise AuthenticationError(f"Kerberos authentication failed for {gss_name}: {e}") from e
 
         auth_req = Authenticate_request()
         auth_req.list_id = conn.list_id
@@ -1157,7 +1168,10 @@ class DPMHTTPBackend(Backend):
             raise AuthenticationError(f"Expected Authenticate_reply, got {type(reply).__name__}")
 
         if hasattr(reply, "token") and reply.token and not ctx.complete:
-            token = ctx.step(reply.token)
+            try:
+                token = ctx.step(reply.token)
+            except gssapi_exceptions.GSSError as e:
+                raise AuthenticationError(f"Kerberos authentication failed for {gss_name}: {e}") from e
             if token:
                 auth_req = Authenticate_request()
                 auth_req.list_id = conn.list_id
@@ -1173,9 +1187,12 @@ class DPMHTTPBackend(Backend):
 
         # MIC signs an arbitrary message (server just verifies the signature)
         message = b"1234"
-        mic = ctx.get_signature(message)
+        try:
+            mic = ctx.get_signature(message)
+        except gssapi_exceptions.GSSError as e:
+            raise AuthenticationError(f"Kerberos authentication failed for {gss_name}: {e}") from e
 
-        logger.debug(f"Kerberos authentication complete for {self._auth.principal if self._auth else 'unknown'}")
+        logger.debug("Kerberos authentication complete for %s", self._auth.principal if self._auth else "unknown")
         return bytes(mic), message
 
     def _enable_settings(self, conn, mic: bytes, message: bytes) -> None:
@@ -1240,24 +1257,26 @@ class DPMHTTPBackend(Backend):
             while self._write_connections:
                 wc = self._write_connections.pop()
                 if not wc.conn.connected:
-                    logger.debug(f"Discarding dead write connection (list_id={wc.conn.list_id})")
+                    logger.debug("Discarding dead write connection (list_id=%s)", wc.conn.list_id)
                     wc.close()
                     continue
                 if wc.principal != current_principal or wc.role != current_role:
                     logger.debug(
-                        "Discarding write connection with stale auth context "
-                        f"(list_id={wc.conn.list_id}, principal={wc.principal}, role={wc.role})"
+                        "Discarding write connection with stale auth context (list_id=%s, principal=%s, role=%s)",
+                        wc.conn.list_id,
+                        wc.principal,
+                        wc.role,
                     )
                     wc.close()
                     continue
                 wc.last_used = time.monotonic()
                 self._write_in_flight += 1
-                logger.debug(f"Reusing authenticated write connection (list_id={wc.conn.list_id})")
+                logger.debug("Reusing authenticated write connection (list_id=%s)", wc.conn.list_id)
                 return wc
 
             # Pool exhausted - check concurrent limit before creating new
             if self._write_in_flight >= _MAX_WRITE_CONNECTIONS:
-                raise RuntimeError(f"Too many concurrent write connections ({_MAX_WRITE_CONNECTIONS})")
+                raise PoolExhaustedError(f"Too many concurrent write connections ({_MAX_WRITE_CONNECTIONS})")
             self._write_in_flight += 1
 
         # Create new connection outside the lock
@@ -1268,7 +1287,7 @@ class DPMHTTPBackend(Backend):
             mic, message = self._authenticate_connection(conn)
             self._enable_settings(conn, mic, message)
             wc.authenticated = True
-            logger.debug(f"Created new authenticated write connection (list_id={conn.list_id})")
+            logger.debug("Created new authenticated write connection (list_id=%s)", conn.list_id)
         except Exception:
             with self._write_lock:
                 self._write_in_flight -= 1
@@ -1291,18 +1310,18 @@ class DPMHTTPBackend(Backend):
                 return
             if len(self._write_connections) < self._write_pool_size:
                 self._write_connections.append(wc)
-                logger.debug(f"Returned write connection to pool (list_id={wc.conn.list_id})")
+                logger.debug("Returned write connection to pool (list_id=%s)", wc.conn.list_id)
             else:
                 # Pool full, close this one
                 wc.close()
-                logger.debug(f"Write pool full, closed connection (list_id={wc.conn.list_id})")
+                logger.debug("Write pool full, closed connection (list_id=%s)", wc.conn.list_id)
 
     def _discard_write_connection(self, wc: _WriteConnection) -> None:
         """Discard a broken write connection without returning to pool."""
         with self._write_lock:
             self._write_in_flight -= 1
         wc.close()
-        logger.debug(f"Discarded broken write connection (list_id={wc.conn.list_id})")
+        logger.debug("Discarded broken write connection (list_id=%s)", wc.conn.list_id)
 
     def _close_write_connections(self) -> None:
         """Close all write connections."""
@@ -1314,14 +1333,14 @@ class DPMHTTPBackend(Backend):
 
     # Writable alarm dict keys → DRF field names, keyed by DRF property.
     # "abort" and "alarm_status" are read-only status bits, not settable.
-    _ANALOG_ALARM_FIELDS: dict[str, str] = {
+    _ANALOG_ALARM_FIELDS: ClassVar[dict[str, str]] = {
         "minimum": "MIN",
         "maximum": "MAX",
         "alarm_enable": "ALARM_ENABLE",
         "abort_inhibit": "ABORT_INHIBIT",
         "tries_needed": "TRIES_NEEDED",
     }
-    _DIGITAL_ALARM_FIELDS: dict[str, str] = {
+    _DIGITAL_ALARM_FIELDS: ClassVar[dict[str, str]] = {
         "nominal": "NOM",
         "mask": "MASK",
         "alarm_enable": "ALARM_ENABLE",
@@ -1556,7 +1575,7 @@ class DPMHTTPBackend(Backend):
 
             if isinstance(reply, ApplySettings_reply):
                 return reply, add_errors
-            elif isinstance(reply, ListStatus_reply):
+            if isinstance(reply, ListStatus_reply):
                 pass
 
         return None, add_errors
@@ -1596,7 +1615,7 @@ class DPMHTTPBackend(Backend):
                 wc = self._get_write_connection()
             except (AuthenticationError, ImportError):
                 raise
-            except Exception as e:
+            except (DPMConnectionError, OSError, PoolExhaustedError) as e:
                 error_msg = f"Failed to get write connection: {e}"
                 return [
                     WriteResult(drf=drf, facility_code=FACILITY_ACNET, error_code=ERR_RETRY, message=error_msg)
@@ -1629,13 +1648,13 @@ class DPMHTTPBackend(Backend):
                 break  # Success
 
             except (BrokenPipeError, ConnectionResetError, OSError, DPMConnectionError) as e:
-                logger.warning(f"Write connection error (attempt {attempt + 1}): {e}")
+                logger.warning("Write connection error (attempt %s): %s", attempt + 1, e)
                 self._discard_write_connection(wc)
                 last_error = e
                 if attempt == 0:
                     continue  # Retry with fresh connection
-            except Exception as e:
-                logger.warning(f"Unexpected write error: {e}")
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Unexpected write error: %s", e)
                 self._discard_write_connection(wc)
                 raise
 
@@ -1865,7 +1884,7 @@ class DPMHTTPBackend(Backend):
             raise
 
         mode_str = "callback" if handle._is_callback_mode else "iterator"
-        logger.info(f"Created {mode_str} subscription for {len(drfs)} devices")
+        logger.info("Created %s subscription for %s devices", mode_str, len(drfs))
         return handle
 
     def remove(self, handle: SubscriptionHandle) -> None:
@@ -1882,7 +1901,7 @@ class DPMHTTPBackend(Backend):
             if handle in self._handles:
                 self._handles.remove(handle)
 
-        logger.info(f"Removed DPM subscription for {len(handle._drfs)} devices")
+        logger.info("Removed DPM subscription for %s devices", len(handle._drfs))
 
     def stop_streaming(self) -> None:
         """Stop all streaming subscriptions."""
@@ -1938,7 +1957,10 @@ class DPMHTTPBackend(Backend):
         auth_info = f", auth={self._auth.auth_type}" if self._auth else ""
         with self._handles_lock:
             n_subs = len(self._handles)
-        return f"DPMHTTPBackend({self._host}:{self._port}, pool_size={self._pool_size}{auth_info}, subs={n_subs}, {status})"
+        return (
+            f"DPMHTTPBackend({self._host}:{self._port}, pool_size={self._pool_size}{auth_info}, "
+            f"subs={n_subs}, {status})"
+        )
 
 
 __all__ = ["DPMHTTPBackend"]

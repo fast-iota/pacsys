@@ -26,14 +26,14 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass, field
 from enum import IntEnum, IntFlag
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from pacsys.backends import Backend
     from pacsys.types import WriteResult
 
 
-def _get_backend(backend: Optional["Backend"]) -> "Backend":
+def _get_backend(backend: Backend | None) -> Backend:
     """Get backend, using global default if none specified."""
     if backend is not None:
         return backend
@@ -127,8 +127,7 @@ class FTD:
                 clock_event=value & 0xFF,
                 delay_10ms=(value >> 8) & 0x7F,
             )
-        else:
-            return cls(is_periodic=True, period_ticks=value & 0x7FFF)
+        return cls(is_periodic=True, period_ticks=value & 0x7FFF)
 
     def to_word(self) -> int:
         """Convert to 16-bit FTD value."""
@@ -191,8 +190,8 @@ class AlarmBlock:
     fe_data: bytes = field(default_factory=lambda: b"\x00" * 6)
 
     # Structured data from DPM (engineering units) - populated by modify() context
-    _structured: Optional[dict] = field(default=None, repr=False, compare=False)
-    _initial_structured: Optional[dict] = field(default=None, repr=False, compare=False)
+    _structured: dict | None = field(default=None, repr=False, compare=False)
+    _initial_structured: dict | None = field(default=None, repr=False, compare=False)
 
     _STRUCT = struct.Struct("<H4s4sBBH6s")  # 20 bytes, little-endian
 
@@ -368,22 +367,21 @@ class AnalogAlarm(AlarmBlock):
         dt = self.data_type
         if dt == DataType.FLOAT:
             return struct.unpack("<f", raw)[0]
-        elif dt == DataType.UNSIGNED_INT:
+        if dt == DataType.UNSIGNED_INT:
             return int.from_bytes(raw[:n], "little", signed=False)
-        else:  # SIGNED_INT or UNKNOWN
-            return int.from_bytes(raw[:n], "little", signed=True)
+        # SIGNED_INT or UNKNOWN
+        return int.from_bytes(raw[:n], "little", signed=True)
 
-    def _pack_value(self, value: int | float) -> bytes:
+    def _pack_value(self, value: float) -> bytes:
         """Pack value to 4 bytes based on data_type and data_length."""
         dt = self.data_type
         if dt == DataType.FLOAT:
             return struct.pack("<f", float(value))
-        else:
-            n = self.data_bytes
-            signed = dt != DataType.UNSIGNED_INT
-            v = int(value)
-            packed = v.to_bytes(n, "little", signed=signed)
-            return packed.ljust(4, b"\x00" if v >= 0 else b"\xff")
+        n = self.data_bytes
+        signed = dt != DataType.UNSIGNED_INT
+        v = int(value)
+        packed = v.to_bytes(n, "little", signed=signed)
+        return packed.ljust(4, b"\x00" if v >= 0 else b"\xff")
 
     @property
     def value1(self) -> int | float:
@@ -391,7 +389,7 @@ class AnalogAlarm(AlarmBlock):
         return self._unpack_value(self.value1_raw)
 
     @value1.setter
-    def value1(self, value: int | float) -> None:
+    def value1(self, value: float) -> None:
         self.value1_raw = self._pack_value(value)
 
     @property
@@ -400,7 +398,7 @@ class AnalogAlarm(AlarmBlock):
         return self._unpack_value(self.value2_raw)
 
     @value2.setter
-    def value2(self, value: int | float) -> None:
+    def value2(self, value: float) -> None:
         self.value2_raw = self._pack_value(value)
 
     # Raw value aliases (internal - use minimum/maximum for engineering units)
@@ -410,7 +408,7 @@ class AnalogAlarm(AlarmBlock):
         return self.value1
 
     @_min_value_raw.setter
-    def _min_value_raw(self, value: int | float) -> None:
+    def _min_value_raw(self, value: float) -> None:
         self.value1 = value
 
     @property
@@ -419,7 +417,7 @@ class AnalogAlarm(AlarmBlock):
         return self.value2
 
     @_max_value_raw.setter
-    def _max_value_raw(self, value: int | float) -> None:
+    def _max_value_raw(self, value: float) -> None:
         self.value2 = value
 
     # --- Engineering unit accessors (from structured DPM response) ---
@@ -475,7 +473,7 @@ class AnalogAlarm(AlarmBlock):
         )
 
     @classmethod
-    def read(cls, device: str, backend: Optional["Backend"] = None, segment: int = 0) -> AnalogAlarm:
+    def read(cls, device: str, backend: Backend | None = None, segment: int = 0) -> AnalogAlarm:
         """Read analog alarm block from device.
 
         Fetches both raw bytes and structured data to provide engineering unit
@@ -519,7 +517,7 @@ class AnalogAlarm(AlarmBlock):
 
         return alarm
 
-    def write(self, device: str, backend: Optional["Backend"] = None, segment: int = 0) -> WriteResult:
+    def write(self, device: str, backend: Backend | None = None, segment: int = 0) -> WriteResult:
         """Write analog alarm block to device.
 
         Args:
@@ -541,7 +539,7 @@ class AnalogAlarm(AlarmBlock):
         return result
 
     @classmethod
-    def modify(cls, device: str, backend: Optional["Backend"] = None, segment: int = 0):
+    def modify(cls, device: str, backend: Backend | None = None, segment: int = 0):
         """Context manager for read-modify-write.
 
         Args:
@@ -607,7 +605,7 @@ class DigitalAlarm(AlarmBlock):
         )
 
     @classmethod
-    def read(cls, device: str, backend: Optional["Backend"] = None, segment: int = 0) -> DigitalAlarm:
+    def read(cls, device: str, backend: Backend | None = None, segment: int = 0) -> DigitalAlarm:
         """Read digital alarm block from device.
 
         Fetches both raw bytes and structured data for consistent behavior
@@ -651,7 +649,7 @@ class DigitalAlarm(AlarmBlock):
 
         return alarm
 
-    def write(self, device: str, backend: Optional["Backend"] = None, segment: int = 0) -> WriteResult:
+    def write(self, device: str, backend: Backend | None = None, segment: int = 0) -> WriteResult:
         """Write digital alarm block to device.
 
         Args:
@@ -673,7 +671,7 @@ class DigitalAlarm(AlarmBlock):
         return result
 
     @classmethod
-    def modify(cls, device: str, backend: Optional["Backend"] = None, segment: int = 0):
+    def modify(cls, device: str, backend: Backend | None = None, segment: int = 0):
         """Context manager for read-modify-write.
 
         Args:
@@ -722,7 +720,7 @@ class _AlarmModifyContext:
         }
     )
 
-    def __init__(self, cls, device: str, backend: Optional["Backend"], segment: int):
+    def __init__(self, cls, device: str, backend: Backend | None, segment: int):
         self._cls = cls
         self._device = device
         self._backend = backend

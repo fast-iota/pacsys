@@ -10,13 +10,13 @@ Usage:
 
 import argparse
 
-import pacsys
-from pacsys import JWTAuth
-
 # Must match the token configured on the supervised proxy (--token flag).
 # The proxy validates this bearer token on every RPC; the real backend
 # auth (Kerberos) is handled server-side.
 from supervised_proxy import PROXY_TOKEN
+
+import pacsys
+from pacsys import JWTAuth
 
 
 def parse_args():
@@ -48,53 +48,37 @@ def main():
 
         # -- Write (only allowed for devices in the proxy's allowlist) ---------
         print("\n=== Write (allowlisted device) ===")
-        try:
-            result = backend.write("Z:ACLTST", 42.0)
-            print(f"Z:ACLTST write: {result}")
-        except Exception as e:
-            print(f"Z:ACLTST write failed: {e}")
+        result = backend.write("Z:ACLTST", 42.0)
+        print(f"Z:ACLTST write: {result}")
 
         # -- Write beyond allowed range ---------
         print("\n=== Write (beyond allowed range, expect denied) ===")
-        try:
-            result = backend.write("Z:ACLTST", 101.0)
-            print(f"Z:ACLTST write: {result}")
-        except Exception as e:
-            print(f"Z:ACLTST write failed: {e}")
+        result = backend.write("Z:ACLTST", 101.0)
+        print(f"Z:ACLTST write: {result}")
 
         # -- Write to non-allowlisted device ----------------
         print("\n=== Write (non-allowlisted device, expect denied) ===")
-        try:
-            result = backend.write("Z:ACLTS2", 99.0)
-            print(f"Z:ACLTS2 write: {result}")
-        except Exception as e:
-            print(f"Z:ACLTS2 write denied: {e}")
+        result = backend.write("Z:ACLTS2", 99.0)
+        print(f"Z:ACLTS2 write: {result}")
 
         # -- Write to allowed and forbidden devices ----------------
         print("\n=== Write to allowed and forbidden devices ===")
-        try:
-            result = backend.write_many([("Z:ACLTS2", 99.0), ("Z:CUBE_Z", 99.0)])
-            print(f"Z:ACLTS2 write: {result}")
-        except Exception as e:
-            print(f"Z:ACLTS2 write denied: {e}")
+        result = backend.write_many([("Z:ACLTS2", 99.0), ("Z:CUBE_Z", 99.0)])
+        print(f"Z:ACLTS2 write: {result}")
 
         # -- Streaming ---------------------------------------------------------
         print("\n=== Streaming (10 readings) ===")
         with backend.subscribe(["M:OUTTMP@p,1000"]) as sub:
-            count = 0
-            for reading, _handle in sub.readings(timeout=20):
+            for count, (reading, _handle) in enumerate(sub.readings(timeout=20)):
                 print(f"  [{count}] {reading.drf} = {reading.value}")
-                count += 1
-                if count >= 10:
+                if count >= 9:
                     break
 
         print("\n=== Streaming mixed (10 readings) ===")
         with backend.subscribe(["M:OUTTMP@p,1000", "M:OUTTMP@p,500", "Z:ACLTST@p,1000"]) as sub:
-            count = 0
-            for reading, _handle in sub.readings(timeout=20):
+            for count, (reading, _handle) in enumerate(sub.readings(timeout=20)):
                 print(f"  [{count}] {reading.drf} = {reading.value}")
-                count += 1
-                if count >= 10:
+                if count >= 9:
                     break
 
 

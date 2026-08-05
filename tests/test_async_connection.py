@@ -17,9 +17,13 @@ from pacsys.acnet.async_connection import (
 )
 from pacsys.acnet.constants import (
     ACNET_FLG_MLT,
+    ACNET_FLG_REQ,
     ACNET_FLG_RPY,
     ACNET_HEADER_SIZE,
+    CMD_BLOCK_REQUESTS,
     CMD_CONNECT,
+    CMD_DISCONNECT_SINGLE,
+    CMD_RECEIVE_REQUESTS,
 )
 from pacsys.acnet.errors import AcnetError, AcnetUnavailableError
 from pacsys.acnet.packet import AcnetPacket, AcnetReply, RequestId
@@ -40,6 +44,7 @@ def _make_tcp_conn() -> AsyncAcnetConnectionTCP:
     conn._writer = MagicMock()
     conn._writer.write = MagicMock()
     conn._writer.drain = AsyncMock()
+    conn._writer.wait_closed = AsyncMock()
     conn._reader = MagicMock()
     return conn
 
@@ -63,6 +68,134 @@ def _make_reply_packet(req_id: int, status: int = 0, last: bool = True, data: by
     raw = struct.pack("<HhHHIHHH", flags, status, 0, 0, 0, 0, req_id, ACNET_HEADER_SIZE + len(data))
     raw += data
     return AcnetPacket.parse(raw)
+
+
+class TestReceivingCommands:
+    def test_start_commits_after_success_and_is_idempotent(self):
+        async def run_test():
+            conn = _make_tcp_conn()
+            conn._xact = AsyncMock(return_value=struct.pack(">Hh", 0, 0))
+
+            await conn._start_receiving()
+            await conn._start_receiving()
+
+            assert conn._receiving
+            conn._xact.assert_awaited_once()
+            command = struct.unpack_from(">H", conn._xact.call_args.args[0], 2)[0]
+            assert command == CMD_RECEIVE_REQUESTS
+
+        _run(run_test())
+
+
+class TestDisconnectSingle:
+    def test_success_clears_task_state(self):
+        async def run_test():
+            conn = _make_tcp_conn()
+            conn._receiving = True
+            outgoing = MagicMock()
+            outgoing._cancelled = False
+            conn._reply_handlers[RequestId(1)] = outgoing
+            conn._reply_buffer[RequestId(2)].append((MagicMock(), 0.0))
+            conn._dead_requests.add(RequestId(3))
+            raw = struct.pack("<HhHHIHHH", ACNET_FLG_REQ, 0, 0, 0, 0, 0, 42, 18)
+            incoming = AcnetPacket.parse(raw)
+            conn._requests_in[incoming.reply_id] = incoming
+            keepalive = asyncio.create_task(asyncio.sleep(60))
+            conn._keepalive_task = keepalive
+            conn._xact = AsyncMock(return_value=struct.pack(">Hh", 0, 0))
+
+            await conn.disconnect_single()
+
+            assert not conn.connected
+            assert not conn._receiving
+            assert outgoing._cancelled
+            assert not conn._reply_handlers
+            assert not conn._reply_buffer
+            assert not conn._dead_requests
+            assert incoming.cancelled
+            assert not conn._requests_in
+            assert keepalive.cancelled()
+            command = struct.unpack_from(">H", conn._xact.call_args.args[0], 2)[0]
+            assert command == CMD_DISCONNECT_SINGLE
+
+        _run(run_test())
+
+    @pytest.mark.parametrize("ack", [b"", struct.pack(">Hh", 0, -1)])
+    def test_ack_failure_preserves_state(self, ack):
+        async def run_test():
+            conn = _make_tcp_conn()
+            conn._receiving = True
+            outgoing = MagicMock()
+            outgoing._cancelled = False
+            conn._reply_handlers[RequestId(1)] = outgoing
+            conn._xact = AsyncMock(return_value=ack)
+
+            with pytest.raises(AcnetError):
+                await conn.disconnect_single()
+
+            assert conn.connected
+            assert conn._receiving
+            assert conn._reply_handlers[RequestId(1)] is outgoing
+            assert not outgoing._cancelled
+
+        _run(run_test())
+
+    def test_transport_failure_preserves_state(self):
+        async def run_test():
+            conn = _make_tcp_conn()
+            conn._receiving = True
+            conn._xact = AsyncMock(side_effect=AcnetUnavailableError)
+
+            with pytest.raises(AcnetUnavailableError):
+                await conn.disconnect_single()
+
+            assert conn.connected
+            assert conn._receiving
+
+        _run(run_test())
+
+
+class TestReceivingFailures:
+    @pytest.mark.parametrize("ack", [b"", struct.pack(">Hh", 0, -1)])
+    def test_start_failure_preserves_retry_state(self, ack):
+        async def run_test():
+            conn = _make_tcp_conn()
+            conn._xact = AsyncMock(return_value=ack)
+
+            with pytest.raises(AcnetError):
+                await conn._start_receiving()
+
+            assert not conn._receiving
+
+        _run(run_test())
+
+    def test_stop_commits_after_success(self):
+        async def run_test():
+            conn = _make_tcp_conn()
+            conn._receiving = True
+            conn._xact = AsyncMock(return_value=struct.pack(">Hh", 0, 0))
+
+            await conn._stop_receiving()
+
+            assert not conn._receiving
+            command = struct.unpack_from(">H", conn._xact.call_args.args[0], 2)[0]
+            assert command == CMD_BLOCK_REQUESTS
+
+        _run(run_test())
+
+    @pytest.mark.parametrize("ack", [b"", struct.pack(">Hh", 0, -1)])
+    def test_stop_failure_preserves_retry_state(self, ack):
+        async def run_test():
+            conn = _make_tcp_conn()
+            conn._receiving = True
+            conn._xact = AsyncMock(return_value=ack)
+
+            with pytest.raises(AcnetError):
+                await conn._stop_receiving()
+
+            assert conn._receiving
+
+        _run(run_test())
 
 
 class TestReplyBuffering:
@@ -241,8 +374,9 @@ class TestAsyncXact:
                 conn._dispatch_frame(ACNETD_ACK, ack_data)
 
             content = struct.pack(">2H2I", ACNETD_COMMAND, CMD_CONNECT, 0, 0)
-            asyncio.ensure_future(_deliver_ack())
+            ack_task = asyncio.create_task(_deliver_ack())
             result = await conn._xact(content)
+            await ack_task
             assert result == ack_data
 
         _run(_test())

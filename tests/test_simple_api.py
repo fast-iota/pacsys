@@ -12,21 +12,21 @@ Tests cover:
 """
 
 import os
-import pytest
 from unittest import mock
+
+import pytest
 
 import pacsys
 from pacsys import (
     Device,
-    ScalarDevice,
     DeviceError,
     KerberosAuth,
-    Reading,
     ReadError,
+    Reading,
+    ScalarDevice,
 )
 from pacsys.backends.dpm_http import DPMHTTPBackend
 from pacsys.testing import FakeBackend
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixtures
@@ -69,8 +69,7 @@ def fake():
 @pytest.fixture
 def mock_backend():
     """MagicMock - only for backend factory/init tests."""
-    backend = mock.MagicMock(spec=DPMHTTPBackend)
-    return backend
+    return mock.MagicMock(spec=DPMHTTPBackend)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -430,10 +429,8 @@ class TestEnvironmentVariables:
         with mock.patch.dict(os.environ, {"PACSYS_DPM_PORT": "not-a-number"}):
             import importlib
 
-            with pytest.raises(ValueError) as exc_info:
+            with pytest.raises(ValueError, match="must be an integer"):
                 importlib.reload(pacsys)
-
-            assert "must be an integer" in str(exc_info.value)
 
         # Restore (need to remove the bad env var first)
         with mock.patch.dict(os.environ, clear=True):
@@ -475,9 +472,9 @@ class TestGlobalBackendInitialization:
 
     def test_backend_initialized_on_first_use(self):
         """Backend is initialized on first use."""
-        with mock.patch("pacsys.backends.dpm_http.DPMHTTPBackend") as MockBackend:
+        with mock.patch("pacsys.backends.dpm_http.DPMHTTPBackend") as mock_backend:
             mock_instance = mock.MagicMock(spec=DPMHTTPBackend)
-            MockBackend.return_value = mock_instance
+            mock_backend.return_value = mock_instance
 
             backend = pacsys._get_global_backend()
 
@@ -493,14 +490,14 @@ class TestGlobalBackendInitialization:
             default_timeout=30.0,
         )
 
-        with mock.patch("pacsys.backends.dpm_http.DPMHTTPBackend") as MockBackend:
+        with mock.patch("pacsys.backends.dpm_http.DPMHTTPBackend") as mock_backend:
             mock_instance = mock.MagicMock(spec=DPMHTTPBackend)
-            MockBackend.return_value = mock_instance
+            mock_backend.return_value = mock_instance
 
             pacsys._get_global_backend()
 
-        MockBackend.assert_called_once()
-        call_kwargs = MockBackend.call_args[1]
+        mock_backend.assert_called_once()
+        call_kwargs = mock_backend.call_args[1]
         assert call_kwargs["host"] == "custom.fnal.gov"
         assert call_kwargs["port"] == 7000
         assert call_kwargs["pool_size"] == 8
@@ -509,68 +506,68 @@ class TestGlobalBackendInitialization:
 
     def test_backend_reused_on_subsequent_calls(self):
         """Backend is reused on subsequent calls."""
-        with mock.patch("pacsys.backends.dpm_http.DPMHTTPBackend") as MockBackend:
+        with mock.patch("pacsys.backends.dpm_http.DPMHTTPBackend") as mock_backend:
             mock_instance = mock.MagicMock(spec=DPMHTTPBackend)
-            MockBackend.return_value = mock_instance
+            mock_backend.return_value = mock_instance
 
             backend1 = pacsys._get_global_backend()
             backend2 = pacsys._get_global_backend()
 
         assert backend1 is backend2
-        assert MockBackend.call_count == 1
+        assert mock_backend.call_count == 1
 
     def test_global_backend_grpc(self):
         """configure(backend='grpc') creates GRPCBackend."""
         pacsys.configure(backend="grpc")
 
-        with mock.patch("pacsys.backends.grpc_backend.GRPCBackend") as MockGRPC:
+        with mock.patch("pacsys.backends.grpc_backend.GRPCBackend") as mock_grpc:
             mock_instance = mock.MagicMock()
-            MockGRPC.return_value = mock_instance
+            mock_grpc.return_value = mock_instance
 
             backend = pacsys._get_global_backend()
 
         assert backend is mock_instance
-        MockGRPC.assert_called_once_with(timeout=5.0)
+        mock_grpc.assert_called_once_with(timeout=5.0)
 
     def test_global_backend_dmq(self):
         """configure(backend='dmq') creates DMQBackend."""
         auth = mock.MagicMock(spec=pacsys.Auth)
         pacsys.configure(backend="dmq", auth=auth)
 
-        with mock.patch("pacsys.backends.dmq.DMQBackend") as MockDMQ:
+        with mock.patch("pacsys.backends.dmq.DMQBackend") as mock_dmq:
             mock_instance = mock.MagicMock()
-            MockDMQ.return_value = mock_instance
+            mock_dmq.return_value = mock_instance
 
             backend = pacsys._get_global_backend()
 
         assert backend is mock_instance
-        MockDMQ.assert_called_once_with(timeout=5.0, auth=auth)
+        mock_dmq.assert_called_once_with(timeout=5.0, auth=auth)
 
     def test_global_backend_acl(self):
         """configure(backend='acl') creates ACLBackend."""
         pacsys.configure(backend="acl")
 
-        with mock.patch("pacsys.backends.acl.ACLBackend") as MockACL:
+        with mock.patch("pacsys.backends.acl.ACLBackend") as mock_acl:
             mock_instance = mock.MagicMock()
-            MockACL.return_value = mock_instance
+            mock_acl.return_value = mock_instance
 
             backend = pacsys._get_global_backend()
 
         assert backend is mock_instance
-        MockACL.assert_called_once_with(timeout=5.0)
+        mock_acl.assert_called_once_with(timeout=5.0)
 
     def test_global_backend_dpm_with_auth(self):
         """configure(auth=..., role=...) passes auth/role to DPM backend."""
         auth = mock.MagicMock(spec=pacsys.Auth)
         pacsys.configure(auth=auth, role="testing")
 
-        with mock.patch("pacsys.backends.dpm_http.DPMHTTPBackend") as MockDPM:
+        with mock.patch("pacsys.backends.dpm_http.DPMHTTPBackend") as mock_dpm:
             mock_instance = mock.MagicMock(spec=DPMHTTPBackend)
-            MockDPM.return_value = mock_instance
+            mock_dpm.return_value = mock_instance
 
             pacsys._get_global_backend()
 
-        MockDPM.assert_called_once_with(
+        mock_dpm.assert_called_once_with(
             host="acsys-proxy.fnal.gov",
             port=6802,
             pool_size=4,
@@ -623,12 +620,12 @@ class TestThreadSafety:
             try:
                 backend = pacsys._get_global_backend()
                 results.append(backend)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 errors.append(e)
 
-        with mock.patch("pacsys.backends.dpm_http.DPMHTTPBackend") as MockBackend:
+        with mock.patch("pacsys.backends.dpm_http.DPMHTTPBackend") as mock_backend:
             mock_instance = mock.MagicMock(spec=DPMHTTPBackend)
-            MockBackend.return_value = mock_instance
+            mock_backend.return_value = mock_instance
 
             threads = [threading.Thread(target=get_backend) for _ in range(10)]
             for t in threads:
@@ -641,4 +638,4 @@ class TestThreadSafety:
         # All threads should get the same backend instance
         assert all(r is results[0] for r in results)
         # Backend should only be created once
-        assert MockBackend.call_count == 1
+        assert mock_backend.call_count == 1

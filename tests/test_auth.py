@@ -12,9 +12,9 @@ from unittest import mock
 
 import pytest
 
-from pacsys.auth import KerberosAuth, JWTAuth
+from pacsys.auth import JWTAuth, KerberosAuth
 from pacsys.errors import AuthenticationError
-from tests.devices import make_jwt_token, MockGSSAPIModule
+from tests.devices import MockGSSAPIModule, make_jwt_token
 
 
 class TestJWTAuth:
@@ -90,16 +90,16 @@ class TestKerberosAuth:
             lifetime = 3600
 
         class MockGSSAPI:
-            class exceptions:
+            class exceptions:  # noqa: N801 -- GSSAPI namespace
                 class GSSError(Exception):
                     pass
 
             @staticmethod
-            def Credentials(usage=None):
+            def Credentials(usage=None):  # noqa: N802 -- GSSAPI method name
                 return MockCreds()
 
         with mock.patch.dict("sys.modules", {"gssapi": MockGSSAPI()}):
-            with pytest.raises(AuthenticationError, match="not from FNAL.GOV realm"):
+            with pytest.raises(AuthenticationError, match=r"not from FNAL\.GOV realm"):
                 KerberosAuth()
 
     def test_validates_ticket_not_expired(self):
@@ -110,12 +110,12 @@ class TestKerberosAuth:
             lifetime = 0  # Expired
 
         class MockGSSAPI:
-            class exceptions:
+            class exceptions:  # noqa: N801 -- GSSAPI namespace
                 class GSSError(Exception):
                     pass
 
             @staticmethod
-            def Credentials(usage=None):
+            def Credentials(usage=None):  # noqa: N802 -- GSSAPI method name
                 return MockCreds()
 
         with mock.patch.dict("sys.modules", {"gssapi": MockGSSAPI()}):
@@ -129,11 +129,11 @@ class TestKerberosAuth:
             pass
 
         class MockGSSAPI:
-            class exceptions:
+            class exceptions:  # noqa: N801 -- GSSAPI namespace
                 GSSError = MockGSSError
 
             @staticmethod
-            def Credentials(usage=None):
+            def Credentials(usage=None):  # noqa: N802 -- GSSAPI method name
                 raise MockGSSError("No credentials")
 
         with mock.patch.dict("sys.modules", {"gssapi": MockGSSAPI()}):

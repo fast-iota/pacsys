@@ -7,8 +7,8 @@ Requires:
   (set in tests/real/.env.ssh)
 """
 
-import os
 import socket
+from pathlib import Path
 
 import pytest
 
@@ -16,13 +16,13 @@ from pacsys.ssh import (
     SSHClient,
     SSHTimeoutError,
 )
-from .devices import (
-    SSH_JUMP_HOST,
-    SSH_DEST_HOST,
-    requires_ssh,
-    kerberos_available,
-)
 
+from .devices import (
+    SSH_DEST_HOST,
+    SSH_JUMP_HOST,
+    kerberos_available,
+    requires_ssh,
+)
 
 pytestmark = [requires_ssh]
 
@@ -102,7 +102,7 @@ class TestSingleHop:
                 assert b"SSH" in data
                 sock.close()
                 print(f"  tunnel port {tunnel.local_port} -> SSH banner OK")
-            except (socket.timeout, ConnectionRefusedError, OSError) as e:
+            except (TimeoutError, ConnectionRefusedError, OSError) as e:
                 pytest.fail(f"Tunnel connection failed: {e}")
 
 
@@ -179,24 +179,22 @@ class TestMultiHop:
         tag = uuid.uuid4().hex[:8]
         remote_path = f"/tmp/pacsys_test_{tag}.txt"
         content = f"pacsys ssh test {tag}\n"
-        local_write = f"/tmp/pacsys_ssh_test_put_{tag}.txt"
-        local_read = f"/tmp/pacsys_ssh_test_get_{tag}.txt"
+        local_write = Path(f"/tmp/pacsys_ssh_test_put_{tag}.txt")
+        local_read = Path(f"/tmp/pacsys_ssh_test_get_{tag}.txt")
 
-        with open(local_write, "w") as f:
-            f.write(content)
+        local_write.write_text(content)
 
         try:
             with self.ssh.sftp() as sftp:
-                sftp.put(local_write, remote_path)
-                sftp.get(remote_path, local_read)
+                sftp.put(str(local_write), remote_path)
+                sftp.get(remote_path, str(local_read))
                 sftp.remove(remote_path)
 
-            with open(local_read) as f:
-                assert f.read() == content
+            assert local_read.read_text() == content
         finally:
             for p in (local_write, local_read):
                 try:
-                    os.remove(p)
+                    p.unlink()
                 except OSError:
                     pass
 
@@ -218,7 +216,7 @@ def test_tunnel_to_dest():
                 assert b"SSH" in data
                 sock.close()
                 print(f"  tunnel to {SSH_DEST_HOST}:22 OK (port {tunnel.local_port})")
-            except (socket.timeout, ConnectionRefusedError, OSError) as e:
+            except (TimeoutError, ConnectionRefusedError, OSError) as e:
                 pytest.fail(f"Tunnel to dest failed: {e}")
 
 
@@ -273,7 +271,9 @@ class TestEdgeCases:
             r1 = ssh.exec("echo first")
             r2 = ssh.exec("echo second")
             r3 = ssh.exec("echo third")
-            assert r1.ok and r2.ok and r3.ok
+            assert r1.ok
+            assert r2.ok
+            assert r3.ok
             assert r1.stdout.strip() == "first"
             assert r3.stdout.strip() == "third"
 

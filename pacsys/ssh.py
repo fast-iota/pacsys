@@ -27,17 +27,20 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterator, Optional, Union, cast
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     import paramiko
+
     from pacsys.acl_session import ACLSession
 
 _paramiko_import_error = ""
 try:
     import paramiko
 except ImportError as _e:
-    paramiko = cast(Any, None)
+    paramiko = cast("Any", None)
     _paramiko_import_error = str(_e)
 
 
@@ -66,7 +69,7 @@ class SSHError(Exception):
 class SSHConnectionError(SSHError):
     """Connection or authentication failure."""
 
-    def __init__(self, message: str, hop: Optional[SSHHop] = None):
+    def __init__(self, message: str, hop: SSHHop | None = None):
         self.hop = hop
         hop_info = f" (hop: {hop.hostname}:{hop.port})" if hop else ""
         super().__init__(f"{message}{hop_info}")
@@ -96,7 +99,9 @@ def _gssapi_username() -> str:
     try:
         import gssapi
     except ImportError:
-        raise ImportError("gssapi library required for GSSAPI SSH auth. Install with: pip install pacsys[kerberos]")
+        raise ImportError(
+            "gssapi library required for GSSAPI SSH auth. Install with: pip install pacsys[kerberos]"
+        ) from None
 
     creds = gssapi.Credentials(usage="initiate")
     principal = str(creds.name)
@@ -118,10 +123,10 @@ class SSHHop:
 
     hostname: str
     port: int = 22
-    username: Optional[str] = None
+    username: str | None = None
     auth_method: str = "gssapi"
-    key_filename: Optional[str] = None
-    password: Optional[str] = field(default=None, repr=False)
+    key_filename: str | None = None
+    password: str | None = field(default=None, repr=False)
 
     def __post_init__(self):
         if not self.hostname or not self.hostname.strip():
@@ -186,8 +191,8 @@ class Tunnel:
         self.remote_port = remote_port
         self._transport = transport
         self._stop_event = threading.Event()
-        self._server: Optional[socketserver.TCPServer] = None
-        self._acceptor_thread: Optional[threading.Thread] = None
+        self._server: socketserver.TCPServer | None = None
+        self._acceptor_thread: threading.Thread | None = None
 
         self._start()
 
@@ -206,7 +211,7 @@ class Tunnel:
                         (tunnel.remote_host, tunnel.remote_port),
                         self.request.getpeername(),
                     )
-                except Exception as e:
+                except (paramiko.SSHException, OSError) as e:
                     logger.error("Tunnel channel open failed: %s", e)
                     return
 
@@ -235,11 +240,22 @@ class Tunnel:
         if self._stop_event.is_set():
             return
         self._stop_event.set()
-        if self._server:
-            self._server.shutdown()
-            self._server.server_close()
-        if self._acceptor_thread:
-            self._acceptor_thread.join(timeout=3.0)
+        server = self._server
+        acceptor_thread = self._acceptor_thread
+        try:
+            if server:
+                server.shutdown()
+        finally:
+            try:
+                if server:
+                    server.server_close()
+            finally:
+                try:
+                    if acceptor_thread:
+                        acceptor_thread.join(timeout=3.0)
+                finally:
+                    self._server = None
+                    self._acceptor_thread = None
         logger.info("Tunnel on port %d stopped", self.local_port)
 
     def __enter__(self):
@@ -432,8 +448,8 @@ class RemoteProcess:
         self._closed = True
         try:
             self._channel.close()
-        except Exception:
-            pass
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to close remote process channel", exc_info=True)
 
     def __enter__(self) -> RemoteProcess:
         return self
@@ -451,10 +467,10 @@ class RemoteProcess:
 # ---------------------------------------------------------------------------
 
 
-HopSpec = Union[str, SSHHop]
+HopSpec = str | SSHHop
 
 
-def _normalize_hops(hops: Union[HopSpec, list[HopSpec]]) -> list[SSHHop]:
+def _normalize_hops(hops: HopSpec | list[HopSpec]) -> list[SSHHop]:
     """Normalize hop specifications into a list of SSHHop objects."""
     if isinstance(hops, (str, SSHHop)):
         hops = [hops]
@@ -492,8 +508,8 @@ class SSHClient:
 
     def __init__(
         self,
-        hops: Union[HopSpec, list[HopSpec]],
-        auth: Optional[object] = None,
+        hops: HopSpec | list[HopSpec],
+        auth: object | None = None,
         connect_timeout: float = 10.0,
     ):
         _require_paramiko()
@@ -579,17 +595,17 @@ class SSHClient:
             if current_transport:
                 try:
                     current_transport.close()
-                except Exception:
-                    pass
+                except Exception:  # noqa: BLE001
+                    logger.debug("Failed to close transport after authentication error", exc_info=True)
             self._cleanup_transports()
             hop = self._hops[min(len(self._transports), len(self._hops) - 1)]
             raise SSHConnectionError(f"Authentication failed: {e}", hop=hop) from e
-        except (socket.error, paramiko.SSHException, OSError) as e:
+        except (paramiko.SSHException, OSError) as e:
             if current_transport:
                 try:
                     current_transport.close()
-                except Exception:
-                    pass
+                except Exception:  # noqa: BLE001
+                    logger.debug("Failed to close transport after connection error", exc_info=True)
             self._cleanup_transports()
             hop = self._hops[min(len(self._transports), len(self._hops) - 1)]
             raise SSHConnectionError(f"Connection failed: {e}", hop=hop) from e
@@ -617,13 +633,13 @@ class SSHClient:
         for t in reversed(self._transports):
             try:
                 t.close()
-            except Exception:
-                pass
+            except Exception:  # noqa: BLE001
+                logger.debug("Failed to close SSH transport", exc_info=True)
         for c in reversed(self._channels):
             try:
                 c.close()
-            except Exception:
-                pass
+            except Exception:  # noqa: BLE001
+                logger.debug("Failed to close SSH channel", exc_info=True)
         self._transports.clear()
         self._channels.clear()
         self._connected = False
@@ -634,7 +650,7 @@ class SSHClient:
         self._ensure_connected()
         return self._transports[-1]
 
-    def exec(self, command: str, timeout: Optional[float] = None, input: Optional[str] = None) -> CommandResult:
+    def exec(self, command: str, timeout: float | None = None, input: str | None = None) -> CommandResult:
         """Execute a command on the remote host.
 
         Args:
@@ -685,7 +701,7 @@ class SSHClient:
                     # Small sleep to avoid busy loop
                     if not chan.recv_ready() and not chan.recv_stderr_ready() and not chan.exit_status_ready():
                         chan.status_event.wait(0.1)
-                except socket.timeout as e:
+                except TimeoutError as e:
                     raise SSHTimeoutError(str(e)) from e
 
             exit_code = chan.recv_exit_status()
@@ -697,7 +713,7 @@ class SSHClient:
         finally:
             chan.close()
 
-    def exec_stream(self, command: str, timeout: Optional[float] = None) -> Iterator[str]:
+    def exec_stream(self, command: str, timeout: float | None = None) -> Iterator[str]:
         """Execute a command and yield stdout lines as they arrive.
 
         Args:
@@ -744,7 +760,7 @@ class SSHClient:
 
                     if not chan.recv_ready() and not chan.recv_stderr_ready() and not chan.exit_status_ready():
                         chan.status_event.wait(0.1)
-                except socket.timeout as e:
+                except TimeoutError as e:
                     raise SSHTimeoutError(str(e)) from e
 
             # Yield remaining buffer
@@ -759,7 +775,7 @@ class SSHClient:
         finally:
             chan.close()
 
-    def exec_many(self, commands: list[str], timeout: Optional[float] = None) -> list[CommandResult]:
+    def exec_many(self, commands: list[str], timeout: float | None = None) -> list[CommandResult]:
         """Execute multiple commands sequentially.
 
         Args:
@@ -911,7 +927,7 @@ class SSHClient:
             try:
                 tunnel.stop()
             except Exception:
-                pass
+                logger.exception("Failed to stop SSH tunnel on port %s", tunnel.local_port)
         self._tunnels.clear()
 
         self._cleanup_transports()

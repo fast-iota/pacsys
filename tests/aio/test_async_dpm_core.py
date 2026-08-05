@@ -120,7 +120,7 @@ class FakeAsyncConn:
                 await asyncio.sleep(timeout)
             else:
                 await asyncio.sleep(100)
-            raise asyncio.TimeoutError()
+            raise asyncio.TimeoutError
         reply = self._replies[self._idx]
         self._idx += 1
         return reply
@@ -760,6 +760,25 @@ class TestAuthenticate:
             core, conn = make_core(replies, auth=auth)
             with pytest.raises(AuthenticationError, match="incomplete"):
                 await core.authenticate()
+
+    @pytest.mark.asyncio
+    async def test_signature_failure_raises_authentication_error(self, make_core, mock_kerberos_auth):
+        mock_gssapi = MockGSSAPIModule()
+
+        class FailingSignatureContext(MockGSSAPIContextForAuth):
+            def get_signature(self, message):
+                raise mock_gssapi.exceptions.GSSError("signature failed")
+
+        mock_gssapi.SecurityContext = FailingSignatureContext
+        with mock.patch.dict("sys.modules", {"gssapi": mock_gssapi}):
+            auth = mock_kerberos_auth(mock_gssapi)
+            replies = [make_auth_reply("dpm"), make_auth_reply()]
+            core, _ = make_core(replies, auth=auth)
+
+            with pytest.raises(AuthenticationError, match="Kerberos authentication failed") as exc_info:
+                await core.authenticate()
+
+        assert isinstance(exc_info.value.__cause__, mock_gssapi.exceptions.GSSError)
 
     @pytest.mark.asyncio
     async def test_service_name_transformation(self, make_core, mock_kerberos_auth):

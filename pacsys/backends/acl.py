@@ -18,7 +18,6 @@ import os
 import re
 import urllib.parse
 from datetime import datetime, timezone
-from typing import Optional
 
 import httpx
 
@@ -60,13 +59,13 @@ _ACL_NATIVE_PROPERTIES = frozenset({DRF_PROPERTY.READING})
 # ACNET basic status and digital status share the same raw status integer
 # but interpret it through different lenses:
 #
-#   Basic status  – 5 semantic attributes (on/ready/remote/positive/ramp),
+#   Basic status  - 5 semantic attributes (on/ready/remote/positive/ramp),
 #                   each with a per-device bit mask stored in the ACNET
 #                   database (accdb.basic_status_scaling).  The masks are
 #                   NOT fixed across devices (e.g. "ramp" is often 0x200
 #                   but this is device-dependent).
 #
-#   Digital status – per-bit descriptions from a separate DB table
+#   Digital status - per-bit descriptions from a separate DB table
 #                    (accdb.digital_status), giving device-specific names
 #                    like "Shutter Status" or "Beam Switch".
 #
@@ -249,7 +248,7 @@ def _parse_acl_line(text: str) -> tuple[Value, ValueType]:
     return raw, ValueType.TEXT
 
 
-def _is_error_response(text: str) -> tuple[bool, Optional[str]]:
+def _is_error_response(text: str) -> tuple[bool, str | None]:
     """Check if an ACL response line indicates an error.
 
     ACL errors look like::
@@ -297,8 +296,8 @@ class ACLBackend(Backend):
 
     def __init__(
         self,
-        base_url: Optional[str] = None,
-        timeout: Optional[float] = None,
+        base_url: str | None = None,
+        timeout: float | None = None,
         verify_ssl: bool = True,
     ):
         """
@@ -325,7 +324,7 @@ class ACLBackend(Backend):
         self._closed = False
         self._client = httpx.Client(verify=verify_ssl, timeout=effective_timeout)
 
-        logger.debug(f"ACLBackend initialized: base_url={effective_url}, timeout={effective_timeout}")
+        logger.debug("ACLBackend initialized: base_url=%s, timeout=%s", effective_url, effective_timeout)
 
     @property
     def capabilities(self) -> BackendCapability:
@@ -364,7 +363,7 @@ class ACLBackend(Backend):
             commands.append(f"{cmd}+{quoted}{qualifiers}")
         return f"{self._base_url}?acl={_ACL_CMD_SEP.join(commands)}"
 
-    def execute(self, acl_command: str, timeout: Optional[float] = None) -> str:
+    def execute(self, acl_command: str, timeout: float | None = None) -> str:
         """Execute a raw ACL command string and return the text output.
 
         The *acl_command* is placed verbatim after ``?acl=`` in the CGI URL.
@@ -416,7 +415,7 @@ class ACLBackend(Backend):
                 message=f"ACL request failed ({self._base_url}): {e}",
             ) from e
 
-    def read(self, drf: str, timeout: Optional[float] = None) -> Value:
+    def read(self, drf: str, timeout: float | None = None) -> Value:
         """Read a single device value via HTTP.
 
         Raises:
@@ -436,12 +435,12 @@ class ACLBackend(Backend):
         assert reading.value is not None
         return reading.value
 
-    def get(self, drf: str, timeout: Optional[float] = None) -> Reading:
+    def get(self, drf: str, timeout: float | None = None) -> Reading:
         """Read a single device with metadata via HTTP."""
         readings = self.get_many([drf], timeout=timeout)
         return readings[0]
 
-    def get_many(self, drfs: list[str], timeout: Optional[float] = None) -> list[Reading]:
+    def get_many(self, drfs: list[str], timeout: float | None = None) -> list[Reading]:
         """Read multiple devices via HTTP.
 
         Sends all reads in a single request using semicolon-separated ACL
@@ -477,7 +476,7 @@ class ACLBackend(Backend):
             ]
 
         url = self._build_url(drfs)
-        logger.debug(f"ACL batch request: {url}")
+        logger.debug("ACL batch request: %s", url)
 
         try:
             response_text = self._fetch(url, effective_timeout, drf=drfs[0])
@@ -500,7 +499,7 @@ class ACLBackend(Backend):
             logger.debug("ACL batch HTTP error, falling back to individual reads: %s", e.message)
             return self._get_many_individual(drfs, effective_timeout)
 
-        logger.debug(f"ACL batch response: {response_text[:200]}")
+        logger.debug("ACL batch response: %s", response_text[:200])
 
         lines = response_text.strip().splitlines()
 
@@ -518,7 +517,7 @@ class ACLBackend(Backend):
         # Happy path: one line per device, in order
         readings: list[Reading] = []
         now = datetime.now(timezone.utc)
-        for drf, line in zip(drfs, lines):
+        for drf, line in zip(drfs, lines, strict=True):
             try:
                 value, value_type = _parse_response_line(drf, line)
             except ValueError as exc:
@@ -598,7 +597,7 @@ class ACLBackend(Backend):
         now = datetime.now(timezone.utc)
         status: dict[str, bool] = {}
 
-        for key, field in zip(_BASIC_STATUS_KEYS, _BASIC_STATUS_FIELDS):
+        for key, field in zip(_BASIC_STATUS_KEYS, _BASIC_STATUS_FIELDS, strict=True):
             url = self._build_url([f"{device}.STATUS.{field}"])
             try:
                 lines = self._fetch(url, timeout, drf=drf).strip().splitlines()

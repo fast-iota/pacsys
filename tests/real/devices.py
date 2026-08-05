@@ -18,7 +18,6 @@ import pytest
 from pacsys.acnet.errors import ERR_TIMEOUT
 from pacsys.types import BasicControl, Reading, ValueType
 
-
 # =============================================================================
 # DPM Test Server
 # =============================================================================
@@ -45,7 +44,7 @@ def dpm_server_available() -> bool:
         sock = socket.create_connection((DPM_TEST_HOST, DPM_TEST_PORT), timeout=2.0)
         sock.close()
         return True
-    except (socket.timeout, ConnectionRefusedError, OSError, socket.gaierror):
+    except (TimeoutError, ConnectionRefusedError, OSError, socket.gaierror):
         return False
 
 
@@ -55,7 +54,7 @@ def grpc_server_available() -> bool:
         sock = socket.create_connection(("localhost", 23456), timeout=2.0)
         sock.close()
         return True
-    except (socket.timeout, ConnectionRefusedError, OSError):
+    except (TimeoutError, ConnectionRefusedError, OSError):
         return False
 
 
@@ -77,7 +76,7 @@ def acl_server_available() -> bool:
         )
         with urllib.request.urlopen(req, timeout=3.0, context=ctx):
             return True
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
 
 
@@ -87,7 +86,7 @@ def dmq_server_available() -> bool:
         sock = socket.create_connection(("localhost", 5672), timeout=2.0)
         sock.close()
         return True
-    except (socket.timeout, ConnectionRefusedError, OSError, socket.gaierror):
+    except (TimeoutError, ConnectionRefusedError, OSError, socket.gaierror):
         return False
 
 
@@ -98,7 +97,7 @@ def acnet_tcp_server_available() -> bool:
         sock.sendall(b"RAW\r\n\r\n")
         sock.close()
         return True
-    except (socket.timeout, ConnectionRefusedError, OSError, socket.gaierror):
+    except (TimeoutError, ConnectionRefusedError, OSError, socket.gaierror):
         return False
 
 
@@ -303,7 +302,7 @@ SLOW_PERIODIC = "M:OUTTMP@p,1000"
 FTP_DEVICE = "M:OUTTMP@p,100H<-FTP"
 
 # Logger - historical data via DPM's <-LOGGER extra qualifier
-# 1 hour window: 2025-01-15 12:00–13:00 UTC (epoch ms)
+# 1 hour window: 2025-01-15 12:00-13:00 UTC (epoch ms)
 LOGGER_DEVICE = "M:OUTTMP<-LOGGER:1736942400000:1736946000000"
 LOGGER_DEVICE_WITH_EVENT = "M:OUTTMP@P,1000,true<-LOGGER:1736942400000:1736946000000"
 # Explicit logger node: 4th colon-delimited param selects specific logger
@@ -337,7 +336,7 @@ LOGGER_DEVICE_BAD_NODE = "M:OUTTMP<-LOGGER:1736942400000:1736946000000:BOGUSLOGG
 #   (transformation unknown - skip value comparison)
 
 
-def alarm_raw_to_engineering(device: str, raw_value: int | float) -> float | None:
+def alarm_raw_to_engineering(device: str, raw_value: float) -> float | None:
     """Convert raw alarm block value to engineering units for known devices.
 
     Args:
@@ -422,7 +421,7 @@ def kerberos_available() -> bool:
         auth = KerberosAuth()
         _ = auth.principal
         return True
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
 
 
@@ -448,7 +447,7 @@ def ssh_jump_available() -> bool:
         sock = socket.create_connection((SSH_JUMP_HOST, 22), timeout=3.0)
         sock.close()
         return True
-    except (socket.timeout, ConnectionRefusedError, OSError, socket.gaierror):
+    except (TimeoutError, ConnectionRefusedError, OSError, socket.gaierror):
         return False
 
 
@@ -456,7 +455,10 @@ _ssh_ok = bool(SSH_JUMP_HOST and SSH_DEST_HOST) and kerberos_available() and ssh
 
 requires_ssh = pytest.mark.skipif(
     not _ssh_ok,
-    reason="SSH tests require env vars (PACSYS_TEST_SSH_JUMP, PACSYS_TEST_SSH_DEST), valid Kerberos tickets, and a reachable jump host",
+    reason=(
+        "SSH tests require env vars (PACSYS_TEST_SSH_JUMP, PACSYS_TEST_SSH_DEST), "
+        "valid Kerberos tickets, and a reachable jump host"
+    ),
 )
 
 ACL_JUMP_HOST = os.environ.get("PACSYS_TEST_ACL_JUMP", "")
@@ -466,7 +468,10 @@ _acl_ssh_ok = bool(ACL_JUMP_HOST and ACL_DEST_HOST) and kerberos_available() and
 
 requires_acl_ssh = pytest.mark.skipif(
     not _acl_ssh_ok,
-    reason="ACL-over-SSH tests require env vars (PACSYS_TEST_ACL_JUMP, PACSYS_TEST_ACL_DEST), valid Kerberos tickets, and a reachable jump host",
+    reason=(
+        "ACL-over-SSH tests require env vars (PACSYS_TEST_ACL_JUMP, PACSYS_TEST_ACL_DEST), "
+        "valid Kerberos tickets, and a reachable jump host"
+    ),
 )
 
 requires_write_enabled = pytest.mark.skipif(

@@ -28,16 +28,16 @@ from .devices import (
     SCALAR_DEVICE_3,
     SCALAR_ELEMENT,
     STATUS_DEVICE,
+    TIMEOUT_READ,
     requires_dpm_http,
     requires_kerberos,
     requires_write_enabled,
-    TIMEOUT_READ,
 )
 
 
 async def _create_async_dpm_write_backend():
-    from pacsys.auth import KerberosAuth
     from pacsys.aio._dpm_http import AsyncDPMHTTPBackend
+    from pacsys.auth import KerberosAuth
 
     return AsyncDPMHTTPBackend(host=DPM_TEST_HOST, port=DPM_TEST_PORT, auth=KerberosAuth(), role="testing")
 

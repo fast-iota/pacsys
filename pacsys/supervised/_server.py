@@ -6,7 +6,6 @@ import logging
 import signal
 import threading
 import time
-from typing import Optional
 
 import grpc
 from grpc import aio as grpc_aio
@@ -60,8 +59,8 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
         self,
         backend: Backend | AsyncBackend,
         policies: list[Policy],
-        token: Optional[str] = None,
-        audit_log: Optional[AuditLog] = None,
+        token: str | None = None,
+        audit_log: AuditLog | None = None,
     ):
         self._backend = backend
         self._policies = policies
@@ -83,24 +82,24 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
         context.set_details("Invalid or missing bearer token")
         return False
 
-    def _audit_request(self, ctx: RequestContext, decision: PolicyDecision) -> Optional[int]:
+    def _audit_request(self, ctx: RequestContext, decision: PolicyDecision) -> int | None:
         """Best-effort audit log of incoming request. Returns seq or None."""
         if self._audit is None:
             return None
         try:
             return self._audit.log_request(ctx, decision)
         except Exception:
-            logger.error("audit log_request failed", exc_info=True)
+            logger.exception("audit log_request failed")
             return None
 
-    def _audit_response(self, seq: Optional[int], peer: str, method: str, proto) -> None:
+    def _audit_response(self, seq: int | None, peer: str, method: str, proto) -> None:
         """Best-effort audit log of outgoing response."""
         if seq is None or self._audit is None:
             return
         try:
             self._audit.log_response(seq, peer, method, proto)
         except Exception:
-            logger.error("audit log_response failed", exc_info=True)
+            logger.exception("audit log_response failed")
 
     def _check_policies(
         self,
@@ -116,7 +115,7 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
         metadata = {}
         invocation_metadata = context.invocation_metadata()
         if invocation_metadata:
-            metadata = {k: v for k, v in invocation_metadata}
+            metadata = dict(invocation_metadata)
         n = len(drfs)
         initial_allowed = frozenset(range(n)) if rpc_method == "Read" else frozenset()
         ctx = RequestContext(
@@ -148,7 +147,7 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
         context.set_details(reason)
         return True
 
-    async def Read(self, request, context):
+    async def Read(self, request, context):  # noqa: N802 -- gRPC method name
         drfs = list(request.drf)
         if not drfs:
             context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
@@ -163,7 +162,7 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
         try:
             req_ctx, decision = self._check_policies(drfs, "Read", context, raw_request=request)
         except Exception as e:
-            logger.error("rpc=Read peer=%s policy error=%s", peer, e, exc_info=True)
+            logger.exception("rpc=Read peer=%s policy check failed", peer)
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(f"Policy error: {e}")
             return
@@ -283,11 +282,11 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
             context.set_code(grpc.StatusCode.UNAUTHENTICATED)
             context.set_details(str(e))
         except Exception as e:
-            logger.error("rpc=Read peer=%s error=%s", peer, e, exc_info=True)
+            logger.exception("rpc=Read peer=%s backend error", peer)
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(f"Backend error: {e}")
 
-    async def Set(self, request, context):
+    async def Set(self, request, context):  # noqa: N802 -- gRPC method name
         from pacsys._proto.controls.service.DAQ.v1 import DAQ_pb2
 
         if not self._check_token(context):
@@ -318,7 +317,7 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
         try:
             req_ctx, decision = self._check_policies(drfs, "Set", context, values=values, raw_request=request)
         except Exception as e:
-            logger.error("rpc=Set peer=%s policy error=%s", peer, e, exc_info=True)
+            logger.exception("rpc=Set peer=%s policy check failed", peer)
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(f"Policy error: {e}")
             return DAQ_pb2.SettingReply()
@@ -344,7 +343,9 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
                     f"Policy produced mismatched drfs/values: "
                     f"{len(decision.ctx.drfs)} drfs vs {len(decision.ctx.values)} values"
                 )
-            backend_settings = [(drf, val) for drf, (_, val) in zip(decision.ctx.drfs, decision.ctx.values)]
+            backend_settings = [
+                (drf, val) for drf, (_, val) in zip(decision.ctx.drfs, decision.ctx.values, strict=True)
+            ]
 
             if isinstance(self._backend, AsyncBackend):
                 results = await self._backend.write_many(backend_settings)
@@ -379,7 +380,7 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
             self._audit_response(seq, peer, "Set", reply)
             return reply
         except Exception as e:
-            logger.error("rpc=Set peer=%s error=%s", peer, e, exc_info=True)
+            logger.exception("rpc=Set peer=%s backend error", peer)
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(f"Backend error: {e}")
             reply = DAQ_pb2.SettingReply()
@@ -420,9 +421,9 @@ class SupervisedServer:
         backend: Backend | AsyncBackend,
         port: int = 50051,
         host: str = "[::]",
-        policies: Optional[list[Policy]] = None,
-        token: Optional[str] = None,
-        audit_log: Optional[AuditLog] = None,
+        policies: list[Policy] | None = None,
+        token: str | None = None,
+        audit_log: AuditLog | None = None,
     ):
         if not isinstance(backend, (Backend, AsyncBackend)):
             raise TypeError(f"backend must be a Backend or AsyncBackend instance, got {type(backend).__name__}")
@@ -435,11 +436,11 @@ class SupervisedServer:
         self._policies = list(policies) if policies else []
         self._token = token
         self._audit_log = audit_log
-        self._server: Optional[grpc_aio.Server] = None
-        self._thread: Optional[threading.Thread] = None
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._server: grpc_aio.Server | None = None
+        self._thread: threading.Thread | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._started = threading.Event()
-        self._start_error: Optional[BaseException] = None
+        self._start_error: BaseException | None = None
 
     @property
     def port(self) -> int:
@@ -482,7 +483,7 @@ class SupervisedServer:
 
         try:
             loop.run_until_complete(_run())
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             self._start_error = e
             self._started.set()
             logger.error("Server loop error: %s", e)
@@ -533,7 +534,7 @@ class SupervisedServer:
 
         logger.info("SupervisedServer stopped")
 
-    def wait(self, timeout: Optional[float] = None) -> None:
+    def wait(self, timeout: float | None = None) -> None:
         """Block until the server stops or timeout."""
         if self._thread is not None:
             self._thread.join(timeout=timeout)

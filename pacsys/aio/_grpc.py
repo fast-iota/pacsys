@@ -2,28 +2,28 @@
 
 import asyncio
 import logging
-from typing import Any, Optional, cast
+from typing import Any, cast
 
 from pacsys.aio._backends import AsyncBackend
 from pacsys.aio._subscription import AsyncSubscriptionHandle, _callback_feeder
 from pacsys.drf_utils import prepare_for_write
 from pacsys.errors import AuthenticationError, DeviceError
 from pacsys.types import (
-    Value,
-    Reading,
-    WriteResult,
     BackendCapability,
-    ReadingCallback,
     ErrorCallback,
+    Reading,
+    ReadingCallback,
+    Value,
+    WriteResult,
 )
 
 logger = logging.getLogger(__name__)
 
 try:
-    from pacsys.backends.grpc_backend import _DaqCore, GRPC_AVAILABLE
+    from pacsys.backends.grpc_backend import GRPC_AVAILABLE, _DaqCore
 except ImportError:
     GRPC_AVAILABLE = False
-    _DaqCore = cast(Any, None)
+    _DaqCore = cast("Any", None)
 
 
 class AsyncGRPCBackend(AsyncBackend):
@@ -31,8 +31,8 @@ class AsyncGRPCBackend(AsyncBackend):
 
     def __init__(
         self,
-        host: Optional[str] = None,
-        port: Optional[int] = None,
+        host: str | None = None,
+        port: int | None = None,
         auth=None,
         timeout: float = 5.0,
     ):
@@ -49,7 +49,7 @@ class AsyncGRPCBackend(AsyncBackend):
 
             self._auth = JWTAuth.from_env()
         self._timeout = timeout
-        self._core: Optional[_DaqCore] = None
+        self._core: _DaqCore | None = None
         self._connected = False
         self._closed = False
         self._connect_lock = asyncio.Lock()
@@ -81,10 +81,10 @@ class AsyncGRPCBackend(AsyncBackend):
         return self._auth is not None
 
     @property
-    def principal(self) -> Optional[str]:
+    def principal(self) -> str | None:
         return self._auth.principal if self._auth else None
 
-    async def read(self, drf: str, timeout: Optional[float] = None) -> Value:
+    async def read(self, drf: str, timeout: float | None = None) -> Value:
         reading = await self.get(drf, timeout=timeout)
         if not reading.ok:
             raise DeviceError(
@@ -96,11 +96,11 @@ class AsyncGRPCBackend(AsyncBackend):
         assert reading.value is not None
         return reading.value
 
-    async def get(self, drf: str, timeout: Optional[float] = None) -> Reading:
+    async def get(self, drf: str, timeout: float | None = None) -> Reading:
         readings = await self.get_many([drf], timeout=timeout)
         return readings[0]
 
-    async def get_many(self, drfs: list[str], timeout: Optional[float] = None) -> list[Reading]:
+    async def get_many(self, drfs: list[str], timeout: float | None = None) -> list[Reading]:
         if not drfs:
             return []
         await self._ensure_connected()
@@ -108,14 +108,14 @@ class AsyncGRPCBackend(AsyncBackend):
         effective_timeout = timeout if timeout is not None else self._timeout
         return await self._core.read_many(drfs, effective_timeout)
 
-    async def write(self, drf: str, value: Value, timeout: Optional[float] = None) -> WriteResult:
+    async def write(self, drf: str, value: Value, timeout: float | None = None) -> WriteResult:
         results = await self.write_many([(drf, value)], timeout=timeout)
         return results[0]
 
     async def write_many(
         self,
         settings: list[tuple[str, Value]],
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
     ) -> list[WriteResult]:
         if not settings:
             return []
@@ -132,8 +132,8 @@ class AsyncGRPCBackend(AsyncBackend):
     async def subscribe(
         self,
         drfs: list[str],
-        callback: Optional[ReadingCallback] = None,
-        on_error: Optional[ErrorCallback] = None,
+        callback: ReadingCallback | None = None,
+        on_error: ErrorCallback | None = None,
     ) -> AsyncSubscriptionHandle:
         if not drfs:
             raise ValueError("drfs cannot be empty")

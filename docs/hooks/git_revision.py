@@ -9,7 +9,7 @@ def _git_short_hash() -> str:
             ["git", "rev-parse", "--short", "HEAD"],
             text=True,
         ).strip()
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         return "unknown"
 
 

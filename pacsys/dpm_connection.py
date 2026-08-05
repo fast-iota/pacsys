@@ -23,7 +23,6 @@ import os
 import socket
 import struct
 from collections.abc import Sized
-from typing import Optional, Union
 
 from pacsys.dpm_protocol import (
     OpenList_reply,
@@ -46,10 +45,10 @@ DPM_HANDSHAKE = b"GET /dpm HTTP/1.1\r\nContent-Type: application/pc\r\n\r\n"
 MAX_MESSAGE_SIZE = 1024 * 1024
 
 
-def _safe_len(value: object) -> Optional[int]:
+def _safe_len(value: object) -> int | None:
     try:
         return len(value) if isinstance(value, Sized) else None
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.debug("Could not determine protocol field length: %s", e)
         return None
 
@@ -62,7 +61,7 @@ def _parse_status(code: int) -> tuple[int, int]:
     return facility, error
 
 
-def _summarize_setting_statuses(value: object) -> Optional[str]:
+def _summarize_setting_statuses(value: object) -> str | None:
     if not isinstance(value, list):
         return None
     if not value:
@@ -184,13 +183,13 @@ class DPMConnection:
         self._port = port
         self._timeout = timeout
 
-        self._socket: Optional[socket.socket] = None
-        self._list_id: Optional[int] = None
+        self._socket: socket.socket | None = None
+        self._list_id: int | None = None
         self._recv_buffer = bytearray()
         self._connected = False
 
     @property
-    def list_id(self) -> Optional[int]:
+    def list_id(self) -> int | None:
         """The DPM list ID from OpenList reply, or None if not connected."""
         return self._list_id
 
@@ -219,7 +218,7 @@ class DPMConnection:
             self._socket.settimeout(self._timeout)
             self._socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
-            logger.debug(f"Connecting to {self._host}:{self._port}")
+            logger.debug("Connecting to %s:%s", self._host, self._port)
             self._socket.connect((self._host, self._port))
 
             # Send HTTP-style handshake
@@ -247,11 +246,11 @@ class DPMConnection:
             self._list_id = reply.list_id
             self._connected = True
 
-            logger.info(f"Connected to DPM at {self._host}:{self._port}, list_id={self._list_id}")
+            logger.info("Connected to DPM at %s:%s, list_id=%s", self._host, self._port, self._list_id)
 
-        except socket.error as e:
+        except OSError as e:
             self._cleanup_socket()
-            raise DPMConnectionError(f"Failed to connect to {self._host}:{self._port}: {e}")
+            raise DPMConnectionError(f"Failed to connect to {self._host}:{self._port}: {e}") from e
         except Exception:
             self._cleanup_socket()
             raise
@@ -269,9 +268,9 @@ class DPMConnection:
                 if not chunk:
                     break
                 response_data += chunk
-        except socket.timeout:
+        except TimeoutError:
             pass
-        except socket.error:
+        except OSError:
             pass
 
         # Extract HTTP status from response
@@ -280,7 +279,7 @@ class DPMConnection:
             # Parse first line: "HTTP/1.1 404 Not Found"
             lines = response_str.split("\r\n")
             status_line = lines[0] if lines else "HTTP error (unknown status)"
-        except Exception:
+        except Exception:  # noqa: BLE001
             status_line = "HTTP error (could not parse response)"
 
         raise DPMConnectionError(f"DPM server at {self._host}:{self._port} returned HTTP error: {status_line}")
@@ -303,11 +302,11 @@ class DPMConnection:
         if self._socket is not None:
             try:
                 self._socket.close()
-            except Exception:
+            except OSError:
                 pass
             self._socket = None
 
-    def send_message(self, msg: Union[object, bytes]) -> None:
+    def send_message(self, msg: object | bytes) -> None:
         """
         Send a PC-encoded message with length prefix.
 
@@ -335,12 +334,12 @@ class DPMConnection:
         try:
             self._socket.sendall(length_prefix + data)
             if _TRACE_DPM:
-                logger.debug(f"DPM TX: {_summarize_message(msg)} ({len(data)} bytes)")
+                logger.debug("DPM TX: %s (%s bytes)", _summarize_message(msg), len(data))
             else:
-                logger.debug(f"Sent message: {len(data)} bytes")
-        except socket.error as e:
+                logger.debug("Sent message: %s bytes", len(data))
+        except OSError as e:
             self._connected = False
-            raise DPMConnectionError(f"Send failed: {e}")
+            raise DPMConnectionError(f"Send failed: {e}") from e
 
     def send_messages_batch(self, messages: list) -> None:
         """Send multiple messages in a single TCP packet.
@@ -374,16 +373,16 @@ class DPMConnection:
         try:
             self._socket.sendall(buf)
             if _TRACE_DPM:
-                logger.debug(f"DPM TX BATCH: {len(messages)} messages, {len(buf)} bytes")
+                logger.debug("DPM TX BATCH: %s messages, %s bytes", len(messages), len(buf))
                 for i, msg in enumerate(messages):
-                    logger.debug(f"DPM TX[{i}]: {_summarize_message(msg)}")
+                    logger.debug("DPM TX[%s]: %s", i, _summarize_message(msg))
             else:
-                logger.debug(f"Sent batch: {len(messages)} messages, {len(buf)} bytes")
-        except socket.error as e:
+                logger.debug("Sent batch: %s messages, %s bytes", len(messages), len(buf))
+        except OSError as e:
             self._connected = False
-            raise DPMConnectionError(f"Send failed: {e}")
+            raise DPMConnectionError(f"Send failed: {e}") from e
 
-    def recv_message(self, timeout: Optional[float] = None) -> object:
+    def recv_message(self, timeout: float | None = None) -> object:
         """
         Receive and unmarshal a single reply message.
 
@@ -428,22 +427,22 @@ class DPMConnection:
             mid_message = False
             reply = self._unmarshal_reply(data)
             if _TRACE_DPM:
-                logger.debug(f"DPM RX: {_summarize_message(reply)}")
+                logger.debug("DPM RX: %s", _summarize_message(reply))
             else:
-                logger.debug(f"Received message: {type(reply).__name__}")
+                logger.debug("Received message: %s", type(reply).__name__)
             return reply
 
-        except socket.timeout:
+        except TimeoutError as e:
             if mid_message:
                 # Timed out mid-message body: stream position is lost
                 self._connected = False
                 self._recv_buffer.clear()
             # Timed out waiting for next message (or during length prefix):
             # connection is still usable, partial prefix bytes stay in buffer
-            raise TimeoutError("Receive timeout")
-        except socket.error as e:
+            raise TimeoutError("Receive timeout") from e
+        except OSError as e:
             self._connected = False
-            raise DPMConnectionError(f"Receive failed: {e}")
+            raise DPMConnectionError(f"Receive failed: {e}") from e
         finally:
             # Restore original timeout
             if timeout is not None and self._socket is not None:
@@ -497,9 +496,9 @@ class DPMConnection:
         try:
             return unmarshal_reply(iter(data))
         except ProtocolError as e:
-            raise DPMConnectionError(f"Protocol error: {e}")
-        except StopIteration:
-            raise DPMConnectionError("Unexpected end of message data")
+            raise DPMConnectionError(f"Protocol error: {e}") from e
+        except StopIteration as e:
+            raise DPMConnectionError("Unexpected end of message data") from e
 
     def __enter__(self) -> "DPMConnection":
         """Enter context manager - establishes connection."""

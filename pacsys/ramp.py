@@ -75,18 +75,18 @@ Example usage:
 from __future__ import annotations
 
 import struct
+from typing import TYPE_CHECKING, ClassVar, NoReturn
 
 import numpy as np
-from typing import TYPE_CHECKING, ClassVar, NoReturn, Optional
 
-from pacsys.scaling import Scaler
+from pacsys.scaling import Scaler, ScalingError
 
 if TYPE_CHECKING:
     from pacsys.backends import Backend
     from pacsys.types import Value, WriteResult
 
 
-def _get_backend(backend: Optional["Backend"]) -> "Backend":
+def _get_backend(backend: Backend | None) -> Backend:
     """Get backend, using global default if none specified."""
     if backend is not None:
         return backend
@@ -300,7 +300,7 @@ class Ramp:
                 )
 
     @classmethod
-    def from_bytes(cls, data: bytes) -> "Ramp":
+    def from_bytes(cls, data: bytes) -> Ramp:
         """Parse raw ramp table bytes.
 
         Wire format per 4-byte point (little-endian, same as Java RampDevice):
@@ -352,14 +352,14 @@ class Ramp:
             for idx, v in enumerate(self.values):
                 try:
                     scaler.unscale(float(v))
-                except Exception:
+                except ScalingError:
                     bad.append(idx)
             bad = np.array(bad)
 
         device_info = f" for {self.device}" if self.device else ""
         if len(bad) > 0:
             worst = self.values[bad[0]]
-            points = bad.tolist() if len(bad) <= 5 else bad[:5].tolist() + ["..."]
+            points = bad.tolist() if len(bad) <= 5 else [*bad[:5].tolist(), "..."]
             raise ValueError(
                 f"Ramp value overflow{device_info}: "
                 f"value {worst:.6g} at point {bad[0]} exceeds "
@@ -369,8 +369,6 @@ class Ramp:
 
     def to_bytes(self) -> bytes:
         """Serialize ramp table to raw bytes (value-first wire order)."""
-        from pacsys.scaling import ScalingError
-
         for name, arr in [("values", self.values), ("times", self.times)]:
             if arr.ndim != 1:
                 raise ValueError(f"{name} must be 1-D, got {arr.ndim}-D array")
@@ -416,7 +414,7 @@ class Ramp:
 
         fmt = f"<{self.POINTS_PER_SLOT * 2}h"
         pairs = []
-        for v, t in zip(raw_values, raw_times):
+        for v, t in zip(raw_values, raw_times, strict=True):
             pairs.append(int(v))  # value first (matches Java setFtTable)
             pairs.append(int(t))  # time second
         return struct.pack(fmt, *pairs)
@@ -426,8 +424,8 @@ class Ramp:
         cls,
         device: str,
         slot: int = 0,
-        backend: Optional["Backend"] = None,
-    ) -> "Ramp":
+        backend: Backend | None = None,
+    ) -> Ramp:
         """Read a ramp table from a corrector magnet.
 
         Args:
@@ -463,8 +461,8 @@ class Ramp:
         self,
         device: str | None = None,
         slot: int | None = None,
-        backend: Optional["Backend"] = None,
-    ) -> "WriteResult":
+        backend: Backend | None = None,
+    ) -> WriteResult:
         """Write ramp table to a corrector magnet.
 
         Args:
@@ -504,8 +502,8 @@ class Ramp:
         cls,
         devices: list[str],
         slot: int = 0,
-        backend: Optional["Backend"] = None,
-    ) -> list["Ramp"]:
+        backend: Backend | None = None,
+    ) -> list[Ramp]:
         """Batched read of ramp tables from multiple devices.
 
         Args:
@@ -523,7 +521,7 @@ class Ramp:
         cls,
         device: str,
         slot: int = 0,
-        backend: Optional["Backend"] = None,
+        backend: Backend | None = None,
     ):
         """Context manager for read-modify-write.
 
@@ -543,7 +541,7 @@ class Ramp:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "Ramp":
+    def from_dict(cls, d: dict) -> Ramp:
         """Deserialize from a dict produced by ``to_dict()``.
 
         When called on the ``Ramp`` base class, dispatches to the correct
@@ -585,7 +583,7 @@ class Ramp:
 
     def __str__(self) -> str:
         lines = [f"{type(self).__name__} ({self.POINTS_PER_SLOT} points):"]
-        for i, (v, t) in enumerate(zip(self.values, self.times)):
+        for i, (v, t) in enumerate(zip(self.values, self.times, strict=True)):
             if v != 0.0 or t != 0.0:
                 lines.append(f"  [{i:2d}] t={t:8.1f}us  value={v:.4f}")
         if len(lines) == 1:
@@ -672,7 +670,7 @@ class BoosterQRamp(Ramp):
 class _RampModifyContext:
     """Context manager for ramp read-modify-write."""
 
-    def __init__(self, cls, device: str, slot: int, backend: Optional["Backend"]):
+    def __init__(self, cls, device: str, slot: int, backend: Backend | None):
         self._cls = cls
         self._device = device
         self._slot = slot
@@ -723,7 +721,7 @@ def read_ramps(
     cls: type[Ramp],
     devices: list[str],
     slot: int = 0,
-    backend: Optional["Backend"] = None,
+    backend: Backend | None = None,
 ) -> list[Ramp]:
     """Batched read of ramp tables from multiple devices.
 
@@ -755,7 +753,7 @@ def read_ramps(
 
     readings = be.get_many(drfs)
     ramps: list[Ramp] = []
-    for reading, name in zip(readings, names):
+    for reading, name in zip(readings, names, strict=True):
         if reading.is_error:
             raise DeviceError(reading.drf, reading.facility_code, reading.error_code, reading.message)
         if not isinstance(reading.value, bytes):
@@ -768,11 +766,11 @@ def read_ramps(
 
 
 def write_ramps(
-    ramps: "Ramp | list[Ramp] | RampGroup | list[Ramp | RampGroup]",
+    ramps: Ramp | list[Ramp] | RampGroup | list[Ramp | RampGroup],
     *,
     slot: int | None = None,
-    backend: Optional["Backend"] = None,
-) -> list["WriteResult"]:
+    backend: Backend | None = None,
+) -> list[WriteResult]:
     """Batched write of ramp tables.
 
     Accepts a single Ramp, a list of Ramps, a RampGroup, or a mixed list.
@@ -922,7 +920,7 @@ class RampGroup:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "RampGroup":
+    def from_dict(cls, d: dict) -> RampGroup:
         """Deserialize from a dict produced by ``to_dict()``.
 
         When called on the ``RampGroup`` base class, dispatches to the correct
@@ -961,8 +959,8 @@ class RampGroup:
         cls,
         devices: list[str],
         slot: int = 0,
-        backend: Optional["Backend"] = None,
-    ) -> "RampGroup":
+        backend: Backend | None = None,
+    ) -> RampGroup:
         """Batched read into a RampGroup.
 
         Args:
@@ -990,8 +988,8 @@ class RampGroup:
         *,
         devices: list[str] | None = None,
         slot: int | None = None,
-        backend: Optional["Backend"] = None,
-    ) -> list["WriteResult"]:
+        backend: Backend | None = None,
+    ) -> list[WriteResult]:
         """Write group to devices.
 
         Args:
@@ -1013,7 +1011,7 @@ class RampGroup:
         cls,
         devices: list[str],
         slot: int = 0,
-        backend: Optional["Backend"] = None,
+        backend: Backend | None = None,
     ):
         """Context manager for batched read-modify-write.
 
@@ -1030,7 +1028,7 @@ class _RampGroupModifyContext:
         cls: type[RampGroup],
         devices: list[str],
         slot: int,
-        backend: Optional["Backend"],
+        backend: Backend | None,
     ):
         self._cls = cls
         self._devices = devices
@@ -1071,7 +1069,7 @@ class _RampGroupModifyContext:
 
         if settings:
             results = be.write_many(settings)
-            failures = [(drf, r.message) for (drf, _), r in zip(settings, results) if not r.success]
+            failures = [(drf, r.message) for (drf, _), r in zip(settings, results, strict=True) if not r.success]
             if failures:
                 raise RuntimeError(
                     f"Partial write failure: {len(failures)}/{len(settings)} failed: "

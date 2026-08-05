@@ -11,17 +11,16 @@ Tests cover:
 """
 
 import threading
+from datetime import datetime, timedelta, timezone
 
-import pytest
-from datetime import datetime, timedelta
 import numpy as np
+import pytest
 
 from pacsys.acnet.errors import ERR_NOPROP, ERR_RETRY, FACILITY_DBM
+from pacsys.device import ArrayDevice, Device, ScalarDevice
+from pacsys.errors import DeviceError
 from pacsys.testing import FakeBackend
 from pacsys.types import DispatchMode, ValueType
-from pacsys.errors import DeviceError
-from pacsys.device import Device, ScalarDevice, ArrayDevice
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration Tests
@@ -525,7 +524,8 @@ class TestReset:
         # Now returns "no reading configured" error, not the specific error
         reading = fake.get("M:OUTTMP")
         assert reading.is_error
-        assert reading.message and "No reading configured" in reading.message
+        assert reading.message
+        assert "No reading configured" in reading.message
 
     def test_reset_clears_read_history(self):
         """reset clears read history."""
@@ -613,7 +613,8 @@ class TestGetMethod:
 
         assert reading.is_error
         assert reading.error_code == ERR_RETRY
-        assert reading.message and "No reading configured" in reading.message
+        assert reading.message
+        assert "No reading configured" in reading.message
 
     def test_get_known_device_wrong_property_returns_noprop(self):
         """get() returns DBM_NOPROP when device is known but property isn't configured."""
@@ -625,7 +626,8 @@ class TestGetMethod:
         assert reading.is_error
         assert reading.facility_code == FACILITY_DBM
         assert reading.error_code == ERR_NOPROP
-        assert reading.message and "No such property" in reading.message
+        assert reading.message
+        assert "No such property" in reading.message
 
     def test_get_configured_reading(self):
         """get() returns configured Reading."""
@@ -1109,7 +1111,7 @@ class TestEmitReading:
     def test_emit_reading_with_metadata(self):
         """emit_reading includes metadata in reading."""
         fake = FakeBackend()
-        ts = datetime(2025, 1, 15, 12, 0, 0)
+        ts = datetime(2025, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
 
         with fake.subscribe(["M:OUTTMP"]) as handle:
             fake.emit_reading(
@@ -1381,7 +1383,7 @@ class TestEventPerturbation:
     def test_exact_match_get_unperturbed(self):
         """Exact event match via get() returns unperturbed value and timestamp."""
         fake = FakeBackend()
-        ts = datetime(2025, 6, 1, 12, 0, 0)
+        ts = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
         fake.set_reading("M:OUTTMP@p,1000", 72.5, timestamp=ts)
         reading = fake.get("M:OUTTMP@p,1000")
         assert reading.value == 72.5
@@ -1509,7 +1511,7 @@ class TestEventPerturbation:
     def test_timestamp_offset_on_fallback(self):
         """Timestamp gets an offset equal to abs(value_offset) in milliseconds."""
         fake = FakeBackend()
-        ts = datetime(2025, 6, 1, 12, 0, 0)
+        ts = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
         fake.set_reading("M:OUTTMP", 72.5, timestamp=ts)
         # @p,1000 → offset 1.0 → timestamp +1.0ms
         reading = fake.get("M:OUTTMP@p,1000")
@@ -1518,7 +1520,7 @@ class TestEventPerturbation:
     def test_timestamp_not_offset_for_immediate(self):
         """@I fallback does not shift timestamp (zero offset)."""
         fake = FakeBackend()
-        ts = datetime(2025, 6, 1, 12, 0, 0)
+        ts = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
         fake.set_reading("M:OUTTMP", 72.5, timestamp=ts)
         reading = fake.get("M:OUTTMP@I")
         assert reading.timestamp == ts

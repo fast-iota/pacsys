@@ -7,8 +7,8 @@ import pytest
 
 from pacsys.exp._logger import DataLogger
 from pacsys.exp._writers import CsvWriter
-from pacsys.types import Reading
 from pacsys.testing import FakeBackend
+from pacsys.types import Reading
 
 
 @pytest.fixture
@@ -29,7 +29,8 @@ class TestDataLogger:
             fake.emit_reading("M:OUTTMP@p,1000", 73.0)
             time.sleep(0.15)  # wait for flush
 
-        rows = list(csv.reader(open(path)))
+        with path.open(newline="") as f:
+            rows = list(csv.reader(f))
         assert len(rows) >= 3  # header + 2 readings
 
     def test_context_manager_stops(self, fake, tmp_path):
@@ -74,7 +75,8 @@ class TestDataLogger:
         time.sleep(0.05)
         dl.stop()
 
-        rows = list(csv.reader(open(path)))
+        with path.open(newline="") as f:
+            rows = list(csv.reader(f))
         assert len(rows) == 2  # header + 1 reading
 
     def test_drops_batch_after_max_retries(self, fake):

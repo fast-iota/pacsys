@@ -11,7 +11,7 @@ import asyncio
 import pytest
 import pytest_asyncio
 
-import pacsys.aio as aio
+from pacsys import aio
 from pacsys.aio import AsyncDevice
 from pacsys.errors import DeviceError
 from pacsys.types import Reading
@@ -25,12 +25,12 @@ from .devices import (
     SCALAR_DEVICE,
     SCALAR_DEVICE_2,
     SCALAR_ELEMENT,
-    requires_dpm_http,
-    requires_grpc,
     TIMEOUT_BATCH,
     TIMEOUT_READ,
     TIMEOUT_STREAM_EVENT,
     TIMEOUT_STREAM_ITER,
+    requires_dpm_http,
+    requires_grpc,
 )
 
 

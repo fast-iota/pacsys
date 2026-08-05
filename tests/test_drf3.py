@@ -20,7 +20,7 @@ _NO_RANGE = parse_range(None)
 
 
 @pytest.mark.parametrize(
-    "drf,expected_parts,expected_canonical,expected_qualified",
+    ("drf", "expected_parts", "expected_canonical", "expected_qualified"),
     [
         (
             "N:I2B1RI",
@@ -172,7 +172,7 @@ def test_drf_parse(drf, expected_parts, expected_canonical, expected_qualified):
 
 
 @pytest.mark.parametrize(
-    "drf,expected_canonical",
+    ("drf", "expected_canonical"),
     [
         ("N:I2B1RI", "N:I2B1RI"),
         ("N_I2B1RI", "N:I2B1RI"),
@@ -193,7 +193,7 @@ def test_get_qualified_device():
 
 
 @pytest.mark.parametrize(
-    "drf,expected",
+    ("drf", "expected"),
     [
         ("M:OUTTMP", "M:OUTTMP.READING@I"),
         ("B:HS23T[0:10]", "B:HS23T.READING[0:10]@I"),
@@ -214,7 +214,7 @@ def test_ensure_immediate_event(drf, expected):
 
 
 @pytest.mark.parametrize(
-    "event,event_type",
+    ("event", "event_type"),
     [
         ("u", DefaultEvent),
         ("i", ImmediateEvent),
@@ -231,7 +231,7 @@ def test_parse_simple_event_rejects_trailing_text(event):
 
 
 @pytest.mark.parametrize(
-    "raw,expected_ms",
+    ("raw", "expected_ms"),
     [
         ("500", 500),  # default = ms
         ("1000M", 1000),  # explicit ms
@@ -254,7 +254,7 @@ def test_parse_time_freq(raw, expected_ms):
 
 
 @pytest.mark.parametrize(
-    "drf,expected",
+    ("drf", "expected"),
     [
         ("M:OUTTMP", "M:OUTTMP.SETTING@N"),
         ("M:OUTTMP.READING.RAW", "M:OUTTMP.SETTING.RAW@N"),
@@ -268,7 +268,7 @@ def test_prepare_for_write(drf, expected):
 
 
 @pytest.mark.parametrize(
-    "drf,expected",
+    ("drf", "expected"),
     [
         ("M:OUTTMP", False),  # parser default-fills SCALED
         ("M:OUTTMP.READING", False),  # explicit property, no field
