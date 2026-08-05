@@ -66,7 +66,7 @@ async def _lifespan(server: FastMCP, *, config: MCPConfig):
         if DEVDB_AVAILABLE:
             devdb = DevDBClient()
             logger.info("DevDB client connected")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning("DevDB unavailable: %s", e)
 
     try:

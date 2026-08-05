@@ -1,6 +1,7 @@
 import pytest
-from pacsys.exp._resolve import resolve_drf, resolve_backend
+
 from pacsys.device import Device
+from pacsys.exp._resolve import resolve_backend, resolve_drf
 from pacsys.testing import FakeBackend
 
 

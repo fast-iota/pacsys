@@ -21,7 +21,7 @@ class _FakeProto:
     def __init__(self, data: bytes):
         self._data = data
 
-    def SerializeToString(self):
+    def SerializeToString(self):  # noqa: N802 -- protobuf method name
         return self._data
 
 

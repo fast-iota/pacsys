@@ -3,7 +3,7 @@
 import contextlib
 import io
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest import mock
 
 from pacsys.digital_status import DigitalStatus, StatusBit
@@ -24,7 +24,7 @@ def _make_reading(
         value_type=value_type,
         value=value,
         error_code=error_code,
-        timestamp=datetime(2025, 6, 15, 12, 0, 0),
+        timestamp=datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc),
         meta=meta,
     )
 
@@ -121,7 +121,7 @@ def _run(args, mock_device_cls, *, devdb_return=None):
         mb.return_value = backend
         with mock.patch("pacsys.cli.info.Device", mock_device_cls):
             with mock.patch("pacsys.cli.info._get_devdb", return_value=devdb_return):
-                with mock.patch("sys.argv", ["acinfo"] + args):
+                with mock.patch("sys.argv", ["acinfo", *args]):
                     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                         try:
                             rc = main()

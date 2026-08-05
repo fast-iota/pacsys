@@ -15,10 +15,9 @@ import queue
 import struct
 import threading
 from dataclasses import dataclass
-
-from . import rad50
 from enum import IntEnum
 
+from . import rad50
 from .connection_sync import AcnetConnectionTCP, AcnetRequestContext
 from .errors import (
     FACILITY_FTP,
@@ -829,7 +828,7 @@ class FTPStream:
             status, data, is_last = reply
 
             if status < 0:
-                logger.warning(f"FTP data reply error: status={status}")
+                logger.warning("FTP data reply error: status=%s", status)
                 if is_last:
                     self._stopped = True
                     return
@@ -849,8 +848,8 @@ class FTPStream:
             self._stopped = True
             try:
                 self._ctx.cancel()
-            except Exception as e:
-                logger.debug(f"Error cancelling FTP stream: {e}")
+            except Exception as e:  # noqa: BLE001
+                logger.debug("Error cancelling FTP stream: %s", e)
 
     def __enter__(self) -> "FTPStream":
         return self
@@ -1098,7 +1097,7 @@ class SnapshotHandle:
         try:
             status, data, _ = result_q.get(timeout=timeout)
         except queue.Empty:
-            raise AcnetTimeoutError(int(timeout * 1000))
+            raise AcnetTimeoutError(int(timeout * 1000)) from None
 
         if status < 0:
             raise AcnetError(status, "Snapshot retrieve failed")
@@ -1148,7 +1147,7 @@ class SnapshotHandle:
         try:
             status, _ = result_q.get(timeout=timeout)
         except queue.Empty:
-            raise AcnetTimeoutError(int(timeout * 1000))
+            raise AcnetTimeoutError(int(timeout * 1000)) from None
 
         if status < 0:
             raise AcnetError(status, "Snapshot restart failed")
@@ -1178,7 +1177,7 @@ class SnapshotHandle:
         try:
             status, _ = result_q.get(timeout=timeout)
         except queue.Empty:
-            raise AcnetTimeoutError(int(timeout * 1000))
+            raise AcnetTimeoutError(int(timeout * 1000)) from None
 
         if status < 0:
             raise AcnetError(status, "Snapshot reset pointers failed")
@@ -1193,8 +1192,8 @@ class SnapshotHandle:
             self._reply_queue.put(None)
             try:
                 self._ctx.cancel()
-            except Exception as e:
-                logger.debug(f"Error cancelling snapshot: {e}")
+            except Exception as e:  # noqa: BLE001
+                logger.debug("Error cancelling snapshot: %s", e)
             # Wait for monitor thread to finish
             self._monitor_thread.join(timeout=5.0)
             if self._monitor_thread.is_alive():
@@ -1270,7 +1269,7 @@ class FTPClient:
         try:
             status, data, _ = result_q.get(timeout=timeout)
         except queue.Empty:
-            raise AcnetTimeoutError(int(timeout * 1000))
+            raise AcnetTimeoutError(int(timeout * 1000)) from None
 
         if status < 0:
             raise AcnetError(status, "Class code query failed")
@@ -1303,7 +1302,7 @@ class FTPClient:
         try:
             status, data, _ = result_q.get(timeout=timeout)
         except queue.Empty:
-            raise AcnetTimeoutError(int(timeout * 1000))
+            raise AcnetTimeoutError(int(timeout * 1000)) from None
 
         if status < 0:
             raise AcnetError(status, "Class code query failed")
@@ -1390,11 +1389,11 @@ class FTPClient:
             if s < 0:
                 fac, err = parse_error(s)
                 msg = ftp_status_message(s) if fac == FACILITY_FTP else f"facility={fac}, error={err}"
-                logger.error(f"Device {i} (di={devices[i].di}) setup error: {msg} [{fac} {err}]")
+                logger.error("Device %s (di=%s) setup error: %s [%s %s]", i, devices[i].di, msg, fac, err)
             elif s > 0:
                 fac, err = parse_error(s)
                 msg = ftp_status_message(s) if fac == FACILITY_FTP else f"facility={fac}, error={err}"
-                logger.info(f"Device {i} (di={devices[i].di}) setup status: {msg} [{fac} {err}]")
+                logger.info("Device %s (di=%s) setup status: %s [%s %s]", i, devices[i].di, msg, fac, err)
 
         return FTPStream(
             ctx=ctx,
@@ -1517,11 +1516,11 @@ class FTPClient:
             if s < 0:
                 fac, err = parse_error(s)
                 msg = ftp_status_message(s) if fac == FACILITY_FTP else f"facility={fac}, error={err}"
-                logger.error(f"Snapshot device {i} (di={devices[i].di}) error: {msg} [{fac} {err}]")
+                logger.error("Snapshot device %s (di=%s) error: %s [%s %s]", i, devices[i].di, msg, fac, err)
             elif s > 0:
                 fac, err = parse_error(s)
                 msg = ftp_status_message(s) if fac == FACILITY_FTP else f"facility={fac}, error={err}"
-                logger.info(f"Snapshot device {i} (di={devices[i].di}) status: {msg} [{fac} {err}]")
+                logger.info("Snapshot device %s (di=%s) status: %s [%s %s]", i, devices[i].di, msg, fac, err)
 
         return SnapshotHandle(
             connection=self._connection,

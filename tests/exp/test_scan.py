@@ -5,7 +5,7 @@ from unittest import mock
 import numpy as np
 import pytest
 
-from pacsys.exp._scan import scan, ScanResult, _build_values, _read_step
+from pacsys.exp._scan import ScanResult, _build_values, _read_step, scan
 from pacsys.testing import FakeBackend
 from pacsys.types import Reading, ValueType
 

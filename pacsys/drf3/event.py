@@ -1,6 +1,5 @@
 import math
 import re
-from typing import Optional
 
 # DRF2 time-freq: dec-number [ S | M | U | H | K ]
 _TIME_FREQ_RE = re.compile(r"^(\d+)([SMUHK])?$", re.IGNORECASE)
@@ -33,7 +32,7 @@ def _parse_time_freq(raw: str) -> int:
     raise ValueError(f"Bad time-freq unit: {unit}")
 
 
-def parse_event(parse_str: Optional[str]):
+def parse_event(parse_str: str | None):
     if parse_str is None:
         return None
     if not parse_str:
@@ -42,21 +41,20 @@ def parse_event(parse_str: Optional[str]):
     char = normalized[0]
     if normalized == "U":
         return DefaultEvent()
-    elif normalized == "I":
+    if normalized == "I":
         return ImmediateEvent()
-    elif char in ["P", "Q"]:
+    if char in ["P", "Q"]:
         return PeriodicEvent(parse_str, char)
-    elif char == "E":
+    if char == "E":
         return ClockEvent(parse_str, char)
-    elif char == "S":
+    if char == "S":
         return StateEvent(parse_str, char)
-    elif char == "N":
+    if char == "N":
         return NeverEvent(parse_str, char)
-    else:
-        raise ValueError(f"Invalid event: {parse_str}")
+    raise ValueError(f"Invalid event: {parse_str}")
 
 
-class DRF_EVENT:
+class DRF_EVENT:  # noqa: N801 -- established DRF API
     def __init__(self, raw_string: str, mode):
         self.raw_string = raw_string
         self.mode = mode

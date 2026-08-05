@@ -59,12 +59,12 @@ def clean_output():
 
 def generate():
     """Run protoc to generate Python files."""
-    from grpc_tools import protoc
-
     # protoc outputs mirror the import path structure, creating a proto/ subdir.
     # We generate into a temp location then move controls/ up one level.
     import shutil
     import tempfile
+
+    from grpc_tools import protoc
 
     with tempfile.TemporaryDirectory() as tmpdir:
         args = [

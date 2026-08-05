@@ -43,7 +43,10 @@ Example usage:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterator, Optional, overload
+from typing import TYPE_CHECKING, overload
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 __all__ = ["StatusBit", "DigitalStatus"]
 
@@ -91,11 +94,11 @@ class DigitalStatus:
     device: str
     raw_value: int
     bits: tuple[StatusBit, ...]
-    on: Optional[bool] = None
-    ready: Optional[bool] = None
-    remote: Optional[bool] = None
-    positive: Optional[bool] = None
-    ramp: Optional[bool] = None
+    on: bool | None = None
+    ready: bool | None = None
+    remote: bool | None = None
+    positive: bool | None = None
+    ramp: bool | None = None
 
     @classmethod
     def from_bit_arrays(
@@ -137,7 +140,7 @@ class DigitalStatus:
         cls,
         device: str,
         status_dict: dict,
-        raw_value: Optional[int] = None,
+        raw_value: int | None = None,
     ) -> DigitalStatus:
         """Construct from a BasicStatus reading dict.
 
@@ -150,15 +153,14 @@ class DigitalStatus:
         # Detect format: bool values = PC/DMQ, string values = gRPC
         if status_dict and isinstance(next(iter(status_dict.values())), bool):
             return cls._from_legacy_dict(device, status_dict, raw_value)
-        else:
-            return cls._from_grpc_dict(device, status_dict, raw_value)
+        return cls._from_grpc_dict(device, status_dict, raw_value)
 
     @classmethod
     def _from_legacy_dict(
         cls,
         device: str,
         d: dict,
-        raw_value: Optional[int],
+        raw_value: int | None,
     ) -> DigitalStatus:
         """Construct from PC/DMQ format: {"on": True, ...}."""
         legacy = {k: d.get(k) for k in _LEGACY_KEYS}
@@ -190,7 +192,7 @@ class DigitalStatus:
         cls,
         device: str,
         d: dict,
-        raw_value: Optional[int],
+        raw_value: int | None,
     ) -> DigitalStatus:
         """Construct from gRPC format: {"On": "No", "Ready": "Yes", ...}."""
         bits = []
@@ -340,8 +342,7 @@ class DigitalStatus:
         width = max((len(b.name) for b in self.bits), default=0)
         hex_digits = max(2, (self.raw_value.bit_length() + 3) // 4)
         lines = [f"{self.device} status=0x{self.raw_value:0{hex_digits}X}"]
-        for bit in self.bits:
-            lines.append(f"  {bit.name + ':':<{width + 1}} {bit.value}")
+        lines.extend(f"  {bit.name + ':':<{width + 1}} {bit.value}" for bit in self.bits)
         return "\n".join(lines)
 
     def to_dict(self) -> dict[str, str]:
@@ -373,7 +374,7 @@ def _text_is_true(text: str) -> bool:
 
 def _infer_legacy_from_bits(bits: list[StatusBit]) -> dict:
     """Try to match bits to legacy attribute slots by name."""
-    result: dict[str, Optional[bool]] = {k: None for k in _LEGACY_KEYS}
+    result: dict[str, bool | None] = dict.fromkeys(_LEGACY_KEYS)
     for bit in bits:
         name_lower = bit.name.strip().lower()
         for legacy_key, patterns in _LEGACY_DISPLAY_NAMES.items():

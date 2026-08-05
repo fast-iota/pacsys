@@ -1,8 +1,9 @@
-import numpy as np
 from datetime import datetime, timezone
 
-from pacsys.types import Reading, WriteResult, ValueType, DeviceMeta
+import numpy as np
+
 from pacsys.mcp._serialization import reading_to_dict, write_result_to_dict
+from pacsys.types import DeviceMeta, Reading, ValueType, WriteResult
 
 
 def test_scalar_reading():

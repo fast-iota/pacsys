@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from pacsys.types import DeviceSpec
-
 if TYPE_CHECKING:
     from pacsys.backends import Backend
+    from pacsys.types import DeviceSpec
 
 from pacsys.device import Device
 

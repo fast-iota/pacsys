@@ -10,6 +10,7 @@ Requires:
 """
 
 import subprocess
+
 import pytest
 
 
@@ -30,6 +31,7 @@ def has_valid_ticket():
             ["klist", "-s"],  # -s = silent, exit code only
             capture_output=True,
             timeout=5,
+            check=False,
         )
         return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -44,6 +46,7 @@ def get_principal_from_klist():
             capture_output=True,
             text=True,
             timeout=5,
+            check=False,
         )
         if result.returncode != 0:
             return None

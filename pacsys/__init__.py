@@ -11,35 +11,35 @@ import sys
 import threading
 import types as _stdlib_types
 import weakref
-from typing import TYPE_CHECKING, Optional, Union, cast
+from typing import TYPE_CHECKING, Optional, cast
 
-from pacsys.auth import Auth, KerberosAuth, JWTAuth
+from pacsys.auth import Auth, JWTAuth, KerberosAuth
+from pacsys.device import ArrayDevice, Device, ScalarDevice, TextDevice
 from pacsys.drf3 import DataRequest
+from pacsys.errors import ACLError, AuthenticationError, DeviceError, ReadError
 from pacsys.types import (
-    Value,
-    DeviceSpec,
-    WriteSettings,
-    ValueType,
     BackendCapability,
-    DispatchMode,
-    DeviceMeta,
-    Reading,
-    WriteResult,
-    SubscriptionHandle,
-    CombinedStream,
-    ReadingCallback,
-    ErrorCallback,
     BasicControl,
+    CombinedStream,
+    DeviceMeta,
+    DeviceSpec,
+    DispatchMode,
+    ErrorCallback,
+    Reading,
+    ReadingCallback,
+    SubscriptionHandle,
+    Value,
+    ValueType,
+    WriteResult,
+    WriteSettings,
 )
-from pacsys.errors import DeviceError, AuthenticationError, ACLError, ReadError
-from pacsys.device import Device, ScalarDevice, ArrayDevice, TextDevice
 
 if TYPE_CHECKING:
     from pacsys.backends import Backend
-    from pacsys.backends.dpm_http import DPMHTTPBackend
-    from pacsys.backends.grpc_backend import GRPCBackend
     from pacsys.backends.acl import ACLBackend
     from pacsys.backends.dmq import DMQBackend
+    from pacsys.backends.dpm_http import DPMHTTPBackend
+    from pacsys.backends.grpc_backend import GRPCBackend
     from pacsys.devdb import DevDBClient
     from pacsys.ssh import SSHClient, SSHHop
     from pacsys.supervised import SupervisedServer
@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _get_env_int(name: str, default: Optional[int] = None) -> Optional[int]:
+def _get_env_int(name: str, default: int | None = None) -> int | None:
     """Get environment variable as int."""
     val = os.environ.get(name)
     if val is None:
@@ -62,10 +62,10 @@ def _get_env_int(name: str, default: Optional[int] = None) -> Optional[int]:
     try:
         return int(val)
     except ValueError:
-        raise ValueError(f"Environment variable {name} must be an integer, got {val!r}")
+        raise ValueError(f"Environment variable {name} must be an integer, got {val!r}") from None
 
 
-def _get_env_float(name: str, default: Optional[float] = None) -> Optional[float]:
+def _get_env_float(name: str, default: float | None = None) -> float | None:
     """Get environment variable as float."""
     val = os.environ.get(name)
     if val is None:
@@ -73,7 +73,7 @@ def _get_env_float(name: str, default: Optional[float] = None) -> Optional[float
     try:
         return float(val)
     except ValueError:
-        raise ValueError(f"Environment variable {name} must be a number, got {val!r}")
+        raise ValueError(f"Environment variable {name} must be a number, got {val!r}") from None
 
 
 # Read environment variables at import time
@@ -102,15 +102,15 @@ _backend_initialized = False
 _VALID_BACKENDS = {"dpm", "grpc", "dmq", "acl"}
 
 # User-configured settings (set via configure())
-_config_backend: Optional[str] = None
-_config_auth: Optional[Auth] = None
-_config_role: Optional[str] = None
-_config_dpm_host: Optional[str] = None
-_config_dpm_port: Optional[int] = None
-_config_pool_size: Optional[int] = None
-_config_timeout: Optional[float] = None
-_config_devdb_host: Optional[str] = None
-_config_devdb_port: Optional[int] = None
+_config_backend: str | None = None
+_config_auth: Auth | None = None
+_config_role: str | None = None
+_config_dpm_host: str | None = None
+_config_dpm_port: int | None = None
+_config_pool_size: int | None = None
+_config_timeout: float | None = None
+_config_devdb_host: str | None = None
+_config_devdb_port: int | None = None
 
 # Global lazy-initialized DevDB client (None until first use)
 _global_devdb: Optional["DevDBClient"] = None
@@ -152,15 +152,15 @@ _UNSET = _Unset()
 
 def configure(
     *,
-    dpm_host: Optional[str] | _Unset = _UNSET,
-    dpm_port: Optional[int] | _Unset = _UNSET,
-    pool_size: Optional[int] | _Unset = _UNSET,
-    default_timeout: Optional[float] | _Unset = _UNSET,
-    devdb_host: Optional[str] | _Unset = _UNSET,
-    devdb_port: Optional[int] | _Unset = _UNSET,
-    backend: Optional[str] | _Unset = _UNSET,
-    auth: Optional[Auth] | str | _Unset = _UNSET,
-    role: Optional[str] | _Unset = _UNSET,
+    dpm_host: str | _Unset | None = _UNSET,
+    dpm_port: int | _Unset | None = _UNSET,
+    pool_size: int | _Unset | None = _UNSET,
+    default_timeout: float | _Unset | None = _UNSET,
+    devdb_host: str | _Unset | None = _UNSET,
+    devdb_port: int | _Unset | None = _UNSET,
+    backend: str | _Unset | None = _UNSET,
+    auth: Auth | str | _Unset | None = _UNSET,
+    role: str | _Unset | None = _UNSET,
 ) -> None:
     """Configure pacsys global settings.
 
@@ -355,7 +355,7 @@ def _get_global_devdb() -> Optional["DevDBClient"]:
         if _devdb_initialized:
             return _global_devdb
 
-        from pacsys.devdb import DevDBClient, DEVDB_AVAILABLE
+        from pacsys.devdb import DEVDB_AVAILABLE, DevDBClient
 
         if not DEVDB_AVAILABLE:
             _devdb_initialized = True
@@ -400,7 +400,7 @@ def _resolve_drf(device: DeviceSpec) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def read(device: DeviceSpec, timeout: Optional[float] = None) -> Value:
+def read(device: DeviceSpec, timeout: float | None = None) -> Value:
     """Read a single device value using the global DPM backend.
 
     Args:
@@ -427,7 +427,7 @@ def read(device: DeviceSpec, timeout: Optional[float] = None) -> Value:
     return backend.read(drf, timeout=timeout)
 
 
-def get(device: DeviceSpec, timeout: Optional[float] = None) -> Reading:
+def get(device: DeviceSpec, timeout: float | None = None) -> Reading:
     """Read a single device with full metadata using the global DPM backend.
 
     Args:
@@ -451,7 +451,7 @@ def get(device: DeviceSpec, timeout: Optional[float] = None) -> Reading:
 
 def get_many(
     devices: list[DeviceSpec],
-    timeout: Optional[float] = None,
+    timeout: float | None = None,
 ) -> list[Reading]:
     """Read multiple devices in a single batch using the global DPM backend.
 
@@ -477,7 +477,7 @@ def get_many(
 
 def read_many(
     devices: list[DeviceSpec],
-    timeout: Optional[float] = None,
+    timeout: float | None = None,
 ) -> list[Value]:
     """Read multiple device values in a single batch using the global backend.
 
@@ -503,10 +503,10 @@ def read_many(
     if errors:
         failed = ", ".join(r.drf for r in errors)
         raise ReadError(readings, f"Device errors: {failed}")
-    return [cast(Value, r.value) for r in readings]
+    return [cast("Value", r.value) for r in readings]
 
 
-def write(device: DeviceSpec, value: Value, timeout: Optional[float] = None) -> WriteResult:
+def write(device: DeviceSpec, value: Value, timeout: float | None = None) -> WriteResult:
     """Write a single device value using the global backend.
 
     Args:
@@ -531,7 +531,7 @@ def write(device: DeviceSpec, value: Value, timeout: Optional[float] = None) -> 
 
 def write_many(
     settings: WriteSettings,
-    timeout: Optional[float] = None,
+    timeout: float | None = None,
 ) -> list[WriteResult]:
     """Write multiple device values in a single batch using the global backend.
 
@@ -561,8 +561,8 @@ def write_many(
 
 def subscribe(
     drfs: list[DeviceSpec],
-    callback: Optional[ReadingCallback] = None,
-    on_error: Optional[ErrorCallback] = None,
+    callback: ReadingCallback | None = None,
+    on_error: ErrorCallback | None = None,
 ) -> SubscriptionHandle:
     """Subscribe to devices for streaming using the global DPM backend.
 
@@ -621,12 +621,12 @@ def subscribe(
 
 
 def dpm(
-    host: Optional[str] = None,
-    port: Optional[int] = None,
-    pool_size: Optional[int] = None,
-    timeout: Optional[float] = None,
-    auth: Optional[Auth] = None,
-    role: Optional[str] = None,
+    host: str | None = None,
+    port: int | None = None,
+    pool_size: int | None = None,
+    timeout: float | None = None,
+    auth: Auth | None = None,
+    role: str | None = None,
     dispatch_mode: DispatchMode = DispatchMode.WORKER,
 ) -> "DPMHTTPBackend":
     """Create a DPM backend instance with its own connection pool.
@@ -663,12 +663,12 @@ def dpm(
 
 
 def dpm_http(
-    host: Optional[str] = None,
-    port: Optional[int] = None,
-    pool_size: Optional[int] = None,
-    timeout: Optional[float] = None,
-    auth: Optional[Auth] = None,
-    role: Optional[str] = None,
+    host: str | None = None,
+    port: int | None = None,
+    pool_size: int | None = None,
+    timeout: float | None = None,
+    auth: Auth | None = None,
+    role: str | None = None,
     dispatch_mode: DispatchMode = DispatchMode.WORKER,
 ) -> "DPMHTTPBackend":
     """Create a DPM HTTP backend with independent streaming subscriptions.
@@ -722,10 +722,10 @@ def dpm_http(
 
 
 def grpc(
-    host: Optional[str] = None,
-    port: Optional[int] = None,
-    auth: Optional[Auth] = None,
-    timeout: Optional[float] = None,
+    host: str | None = None,
+    port: int | None = None,
+    auth: Auth | None = None,
+    timeout: float | None = None,
     dispatch_mode: DispatchMode = DispatchMode.WORKER,
 ) -> "GRPCBackend":
     """Create a gRPC backend instance.
@@ -767,8 +767,8 @@ def grpc(
 
 
 def acl(
-    base_url: Optional[str] = None,
-    timeout: Optional[float] = None,
+    base_url: str | None = None,
+    timeout: float | None = None,
 ) -> "ACLBackend":
     """Create an ACL backend instance (read-only, no streaming, no auth).
 
@@ -791,11 +791,11 @@ def acl(
 
 
 def dmq(
-    host: Optional[str] = None,
-    port: Optional[int] = None,
-    timeout: Optional[float] = None,
-    auth: Optional[Auth] = None,
-    write_session_ttl: Optional[float] = None,
+    host: str | None = None,
+    port: int | None = None,
+    timeout: float | None = None,
+    auth: Auth | None = None,
+    write_session_ttl: float | None = None,
     dispatch_mode: DispatchMode = DispatchMode.WORKER,
 ) -> "DMQBackend":
     """Create a DMQ backend instance (RabbitMQ/AMQP).
@@ -842,9 +842,9 @@ def dmq(
 
 
 def devdb(
-    host: Optional[str] = None,
-    port: Optional[int] = None,
-    timeout: Optional[float] = None,
+    host: str | None = None,
+    port: int | None = None,
+    timeout: float | None = None,
     cache_ttl: float = 3600.0,
 ) -> "DevDBClient":
     """Create a DevDB client for device metadata queries.
@@ -875,8 +875,8 @@ def devdb(
 
 
 def ssh(
-    hops: "Union[str, SSHHop, list[str | SSHHop]]",
-    auth: Optional[Auth] = None,
+    hops: "str | SSHHop | list[str | SSHHop]",
+    auth: Auth | None = None,
     connect_timeout: float = 10.0,
 ) -> "SSHClient":
     """Create an SSH client for remote command execution, tunneling, and SFTP.
@@ -920,7 +920,7 @@ def supervised(
     backend: "Backend",
     port: int = 50051,
     host: str = "[::]",
-    policies: Optional[list] = None,
+    policies: list | None = None,
 ) -> "SupervisedServer":
     """Create a supervised gRPC proxy server with logging and policy enforcement.
 
@@ -958,7 +958,7 @@ def supervised(
 
 
 class _PacsysModule(_stdlib_types.ModuleType):
-    _PROTECTED = {"ssh", "devdb", "supervised"}
+    _PROTECTED = frozenset({"ssh", "devdb", "supervised"})
 
     def __setattr__(self, name: str, value: object) -> None:
         if name in self._PROTECTED and isinstance(value, _stdlib_types.ModuleType):

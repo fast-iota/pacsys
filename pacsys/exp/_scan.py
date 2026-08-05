@@ -5,14 +5,16 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, replace
-from typing import Callable, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
-from pacsys.types import DeviceSpec, Reading, Value, WriteResult
-from pacsys.exp._resolve import resolve_drf, resolve_backend
+from pacsys.exp._resolve import resolve_backend, resolve_drf
 from pacsys.exp._values import numeric_value
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from pacsys.backends import Backend
+    from pacsys.types import DeviceSpec, Reading, Value, WriteResult
     from pacsys.verify import Verify
 
 logger = logging.getLogger(__name__)
@@ -35,7 +37,7 @@ class ScanResult:
         try:
             import pandas as pd
         except ImportError:
-            raise ImportError("pandas is required for to_dataframe(). Install with: pip install pandas")
+            raise ImportError("pandas is required for to_dataframe(). Install with: pip install pandas") from None
 
         rows = []
         for i, sv in enumerate(self.set_values):
@@ -130,7 +132,7 @@ def scan(
     return ScanResult(
         write_device=write_drf,
         read_devices=read_drfs,
-        set_values=[sv for sv, _ in zip(scan_values, all_write_results)],
+        set_values=[sv for sv, _ in zip(scan_values, all_write_results, strict=False)],
         readings=all_readings,
         write_results=all_write_results,
         aborted=aborted,
@@ -175,12 +177,12 @@ def _read_step(
     """Read all devices, optionally multiple times and average."""
     if readings_per_step == 1:
         readings = backend.get_many(read_drfs, timeout=timeout)
-        return dict(zip(read_drfs, readings))
+        return dict(zip(read_drfs, readings, strict=True))
 
     accumulated: dict[str, list[Reading]] = {drf: [] for drf in read_drfs}
     for _ in range(readings_per_step):
         readings = backend.get_many(read_drfs, timeout=timeout)
-        for drf, r in zip(read_drfs, readings):
+        for drf, r in zip(read_drfs, readings, strict=True):
             accumulated[drf].append(r)
 
     result: dict[str, Reading] = {}

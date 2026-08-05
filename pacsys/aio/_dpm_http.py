@@ -139,7 +139,7 @@ class AsyncDPMHTTPBackend(AsyncBackend):
         try:
             return await asyncio.wait_for(self._pool.get(), timeout=self._timeout)
         except asyncio.TimeoutError:
-            raise RuntimeError("Connection pool exhausted (all cores busy)")
+            raise RuntimeError("Connection pool exhausted (all cores busy)") from None
 
     async def _release_core(self, core: _AsyncDpmCore) -> None:
         """Return a core to the pool."""
@@ -152,8 +152,8 @@ class AsyncDPMHTTPBackend(AsyncBackend):
         """Close and discard a core (on error), freeing a pool slot."""
         try:
             await core.close()
-        except Exception:
-            pass
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to close discarded DPM core", exc_info=True)
         async with self._pool_lock:
             self._pool_count = max(0, self._pool_count - 1)
 
@@ -262,8 +262,8 @@ class AsyncDPMHTTPBackend(AsyncBackend):
         except BaseException:
             try:
                 await core.close()
-            except Exception:
-                pass
+            except Exception:  # noqa: BLE001
+                logger.debug("Failed to close DPM write core after error", exc_info=True)
             raise
 
     # ── Streaming ─────────────────────────────────────────────────────────
@@ -295,8 +295,8 @@ class AsyncDPMHTTPBackend(AsyncBackend):
             if handle._core is not None:
                 try:
                     await handle._core.close()
-                except Exception:
-                    pass
+                except Exception:  # noqa: BLE001
+                    logger.debug("Failed to close removed DPM subscription core", exc_info=True)
             if handle in self._handles:
                 self._handles.remove(handle)
 
@@ -306,8 +306,8 @@ class AsyncDPMHTTPBackend(AsyncBackend):
             if hasattr(h, "_core") and hasattr(h._core, "close"):
                 try:
                     await h._core.close()
-                except Exception:
-                    pass
+                except Exception:  # noqa: BLE001
+                    logger.debug("Failed to close stopped DPM subscription core", exc_info=True)
         self._handles.clear()
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
@@ -325,6 +325,6 @@ class AsyncDPMHTTPBackend(AsyncBackend):
             try:
                 if core is not None:
                     await core.close()
-            except Exception:
-                pass
+            except Exception:  # noqa: BLE001
+                logger.debug("Failed to close pooled DPM core", exc_info=True)
         self._pool_count = 0

@@ -1,5 +1,6 @@
-import os
 import logging
+import os
+
 import pacsys
 from pacsys import KerberosAuth
 

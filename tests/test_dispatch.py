@@ -4,8 +4,7 @@ import logging
 import threading
 import time
 
-
-from pacsys.backends._dispatch import CallbackDispatcher, _SLOW_THRESHOLD
+from pacsys.backends._dispatch import _SLOW_THRESHOLD, CallbackDispatcher
 from pacsys.types import DispatchMode, Reading, ValueType
 
 
@@ -45,18 +44,18 @@ class TestWorkerMode:
         d = CallbackDispatcher(DispatchMode.WORKER)
         results = []
         done = threading.Event()
-        N = 50
+        count = 50
 
         def cb(reading, handle):
             results.append(reading.value)
-            if len(results) == N:
+            if len(results) == count:
                 done.set()
 
         try:
-            for i in range(N):
+            for i in range(count):
                 d.dispatch_reading(cb, _make_reading(value=float(i)), _FakeHandle())
             assert done.wait(5.0)
-            assert results == [float(i) for i in range(N)]
+            assert results == [float(i) for i in range(count)]
         finally:
             d.close()
 
@@ -87,7 +86,8 @@ class TestWorkerMode:
         d.dispatch_reading(cb, _make_reading(), _FakeHandle())
         event.wait(2.0)
         thread = d._thread
-        assert thread is not None and thread.is_alive()
+        assert thread is not None
+        assert thread.is_alive()
         d.close()
         assert not thread.is_alive()
 
@@ -208,7 +208,8 @@ class TestDirectMode:
         with caplog.at_level(logging.ERROR, logger="pacsys.backends._dispatch"):
             d.dispatch_reading(bad_cb, _make_reading(), _FakeHandle())
 
-        assert any("boom" in r.message for r in caplog.records)
+        assert "Error in reading callback" in caplog.text
+        assert "ValueError: boom" in caplog.text
 
     def test_close_is_noop(self):
         """close() on DIRECT dispatcher with no worker is safe."""

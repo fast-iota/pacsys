@@ -40,7 +40,6 @@ from pacsys.dpm_protocol import (
 )
 from pacsys.types import ValueType
 
-
 # =============================================================================
 # Test Device Names
 # =============================================================================
@@ -181,7 +180,7 @@ class MockSocketWithReplies:
             reading = backend.get("M:OUTTMP")
     """
 
-    def __init__(self, list_id: int = 1, replies: list = None):
+    def __init__(self, list_id: int = 1, replies: list | None = None):
         """Initialize mock socket.
 
         Args:
@@ -219,7 +218,6 @@ class MockSocketWithReplies:
 
     def setsockopt(self, level, optname, value):
         """Set socket option (no-op)."""
-        pass
 
     def sendall(self, data):
         """Capture sent data for later assertion."""
@@ -246,7 +244,7 @@ class MockSocketWithReplies:
             self._recv_buffer.extend(create_reply_frame(reply))
 
         if not self._recv_buffer:
-            raise socket.timeout("No more replies")
+            raise TimeoutError("No more replies")
 
         # Return up to bufsize bytes
         chunk = bytes(self._recv_buffer[:bufsize])
@@ -353,7 +351,7 @@ class MockGSSAPIModule:
     class MechType:
         kerberos = "kerberos"
 
-    class exceptions:
+    class exceptions:  # noqa: N801 -- GSSAPI namespace
         class GSSError(Exception):
             pass
 

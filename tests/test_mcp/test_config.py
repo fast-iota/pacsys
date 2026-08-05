@@ -2,8 +2,8 @@ import sys
 
 import pytest
 
-from pacsys.mcp._config import load_config, build_policies, MCPConfig
-from pacsys.supervised._policies import DeviceAccessPolicy, ValueRangePolicy, SlewRatePolicy
+from pacsys.mcp._config import MCPConfig, build_policies, load_config
+from pacsys.supervised._policies import DeviceAccessPolicy, SlewRatePolicy, ValueRangePolicy
 
 
 def test_default_config():

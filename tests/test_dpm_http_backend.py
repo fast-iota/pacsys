@@ -21,6 +21,7 @@ from pacsys.acnet.errors import make_error
 from pacsys.backends.dpm_http import DPMHTTPBackend, _value_to_setting
 from pacsys.dpm_protocol import ListStatus_reply, Raw_reply, StartList_reply
 from pacsys.errors import AuthenticationError, DeviceError, ReadError
+from pacsys.pool import PoolExhaustedError
 from pacsys.types import Reading, ValueType
 
 # Shared test helpers
@@ -49,7 +50,7 @@ class TestDPMHTTPBackendInit:
     """Tests for DPMHTTPBackend input validation."""
 
     @pytest.mark.parametrize(
-        "kwargs,match",
+        ("kwargs", "match"),
         [
             ({"host": ""}, "host cannot be empty"),
             ({"port": 0}, "port must be between"),
@@ -368,14 +369,10 @@ class TestBatchEdgeCases:
     def test_get_many_large_batch(self):
         """get_many() handles larger batches."""
         num_devices = 10
-        replies = []
-        for i in range(num_devices):
-            replies.append(make_add_to_list_reply(ref_id=i + 1, status=0))
-        for i in range(num_devices):
-            replies.append(make_device_info(name=f"D:DEV{i:02d}", ref_id=i + 1, di=12345 + i))
+        replies = [make_add_to_list_reply(ref_id=i + 1, status=0) for i in range(num_devices)]
+        replies.extend(make_device_info(name=f"D:DEV{i:02d}", ref_id=i + 1, di=12345 + i) for i in range(num_devices))
         replies.append(make_start_list())
-        for i in range(num_devices):
-            replies.append(make_scalar_reply(value=float(i * 10), ref_id=i + 1))
+        replies.extend(make_scalar_reply(value=float(i * 10), ref_id=i + 1) for i in range(num_devices))
 
         mock_socket = MockSocketWithReplies(list_id=1, replies=replies)
 
@@ -586,6 +583,39 @@ class TestWriteConnectionAuthContext:
                 backend._release_write_connection(acquired)
             backend.close()
 
+    def test_capacity_failure_returns_retry_results(self):
+        backend = DPMHTTPBackend(auth=create_mock_kerberos_auth())
+        try:
+            with mock.patch.object(
+                backend, "_get_write_connection", side_effect=PoolExhaustedError("too many connections")
+            ):
+                results = backend.write_many([(TEMP_DEVICE, 1.0)])
+
+            assert len(results) == 1
+            assert not results[0].success
+            assert "too many connections" in results[0].message
+        finally:
+            backend.close()
+
+    def test_write_pool_uses_typed_capacity_error(self):
+        backend = DPMHTTPBackend(auth=create_mock_kerberos_auth())
+        backend._write_in_flight = 4
+        try:
+            with pytest.raises(PoolExhaustedError, match="Too many concurrent write connections"):
+                backend._get_write_connection()
+        finally:
+            backend.close()
+
+    @pytest.mark.parametrize("error", [TypeError("programming bug"), RuntimeError("programming bug")])
+    def test_unexpected_acquisition_error_propagates(self, error):
+        backend = DPMHTTPBackend(auth=create_mock_kerberos_auth())
+        try:
+            with mock.patch.object(backend, "_get_write_connection", side_effect=error):
+                with pytest.raises(type(error), match="programming bug"):
+                    backend.write_many([(TEMP_DEVICE, 1.0)])
+        finally:
+            backend.close()
+
 
 # =============================================================================
 # Error Handling Tests
@@ -602,6 +632,29 @@ class TestErrorHandling:
 
         with pytest.raises(RuntimeError, match="Backend is closed"):
             backend.get("M:OUTTMP")
+
+    def test_pool_exhaustion_is_normalized(self):
+        backend = DPMHTTPBackend()
+        pool = MagicMock()
+        pool.connection.return_value.__enter__.side_effect = PoolExhaustedError("pool exhausted")
+        backend._pool = pool
+        try:
+            with pytest.raises(ReadError) as exc_info:
+                backend.get(TEMP_DEVICE)
+            assert isinstance(exc_info.value.__cause__, PoolExhaustedError)
+        finally:
+            backend.close()
+
+    def test_unexpected_pool_error_propagates(self):
+        backend = DPMHTTPBackend()
+        pool = MagicMock()
+        pool.connection.return_value.__enter__.side_effect = TypeError("programming bug")
+        backend._pool = pool
+        try:
+            with pytest.raises(TypeError, match="programming bug"):
+                backend.get(TEMP_DEVICE)
+        finally:
+            backend.close()
 
     def test_heartbeat_ignored(self):
         """ListStatus heartbeat is ignored."""
@@ -913,7 +966,7 @@ class TestGetManyTimeoutConnectionCleanup:
             if call_count[0] == 5:
                 return make_scalar_reply(ref_id=1)
             # Device 2 never replies — always timeout
-            raise TimeoutError()
+            raise TimeoutError
 
         mock_conn.recv_message = mock_recv
         mock_conn.send_messages_batch = MagicMock()

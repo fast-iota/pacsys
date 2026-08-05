@@ -7,18 +7,18 @@ by reading .ANALOG and .DIGITAL properties directly.
 
 import pytest
 
-from pacsys.alarm_block import AnalogAlarm, DigitalAlarm, AlarmFlags
+from pacsys.alarm_block import AlarmFlags, AnalogAlarm, DigitalAlarm
 from pacsys.drf_utils import get_device_name
 from pacsys.errors import DeviceError
 from pacsys.types import ValueType
 
 from .devices import (
-    requires_dpm_http,
-    TIMEOUT_READ,
     ANALOG_ALARM_DEVICE,
     DIGITAL_ALARM_DEVICE,
     SCALAR_DEVICE,
     SCALAR_DEVICE_2,
+    TIMEOUT_READ,
+    requires_dpm_http,
 )
 
 # Devices to test - use DRF strings, extract device name with parser
@@ -223,7 +223,8 @@ class TestFTD:
 
         if ftd_word == 0x0000:
             print("  -> Use device default")
-            assert ftd.is_periodic and ftd.period_ticks == 0
+            assert ftd.is_periodic
+            assert ftd.period_ticks == 0
         elif ftd_word & 0x8000:
             print(f"  -> Event ${ftd.clock_event:02X} + {ftd.delay_10ms * 10}ms delay")
             assert not ftd.is_periodic

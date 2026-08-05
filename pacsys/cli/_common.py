@@ -4,7 +4,8 @@ import argparse
 import json
 import signal
 import sys
-from typing import Any, Callable, Optional, Union
+from collections.abc import Callable
+from typing import Any
 
 import pacsys
 from pacsys.drf_utils import get_device_name
@@ -50,23 +51,22 @@ def make_backend(args):
     backend_type = args.backend
     if backend_type == "dpm":
         return pacsys.dpm(**kwargs)
-    elif backend_type == "grpc":
+    if backend_type == "grpc":
         kwargs.pop("role", None)
         return pacsys.grpc(**kwargs)
-    elif backend_type == "dmq":
+    if backend_type == "dmq":
         kwargs.pop("role", None)
         if "auth" not in kwargs:
             kwargs["auth"] = pacsys.KerberosAuth()
         return pacsys.dmq(**kwargs)
-    elif backend_type == "acl":
+    if backend_type == "acl":
         # ACL only accepts timeout (and optionally base_url)
         acl_kwargs: dict[str, Any] = {"timeout": args.timeout}
         return pacsys.acl(**acl_kwargs)
-    else:
-        raise ValueError(f"Unknown backend: {backend_type!r}")
+    raise ValueError(f"Unknown backend: {backend_type!r}")
 
 
-def _resolve_auth(auth_str: Optional[str]):
+def _resolve_auth(auth_str: str | None):
     """Resolve auth string to Auth object."""
     if auth_str is None:
         return None
@@ -92,21 +92,21 @@ def parse_slice(s: str) -> slice:
         try:
             idx = int(s)
         except ValueError:
-            raise ValueError(f"Invalid slice: {s!r}")
+            raise ValueError(f"Invalid slice: {s!r}") from None
         if idx < 0:
             return slice(idx, None)
         return slice(idx, idx + 1)
     if len(parts) > 3:
         raise ValueError(f"Invalid slice: {s!r}")
 
-    def _parse_part(p: str) -> Optional[int]:
+    def _parse_part(p: str) -> int | None:
         p = p.strip()
         if p == "":
             return None
         try:
             return int(p)
         except ValueError:
-            raise ValueError(f"Invalid slice: {s!r}")
+            raise ValueError(f"Invalid slice: {s!r}") from None
 
     parsed = [_parse_part(p) for p in parts]
     if len(parsed) == 2:
@@ -117,7 +117,7 @@ def parse_slice(s: str) -> slice:
 _BASIC_CONTROL_NAMES = {m.name.lower(): m for m in BasicControl}
 
 
-def parse_value(s: str) -> Union[float, str, list, BasicControl]:
+def parse_value(s: str) -> float | str | list | BasicControl:
     """Parse CLI value string.
 
     Control names (on/off/reset/...) -> BasicControl enum (case-insensitive).
@@ -139,7 +139,7 @@ def parse_value(s: str) -> Union[float, str, list, BasicControl]:
         return s
 
 
-def format_value(value: Any, number_format: Optional[str]) -> str:
+def format_value(value: Any, number_format: str | None) -> str:
     """Format a value for display.
 
     numpy arrays and lists: space-joined elements, each formatted if spec given.
@@ -184,7 +184,7 @@ def format_value(value: Any, number_format: Optional[str]) -> str:
     return str(value)
 
 
-def _format_timestamp(ts, timestamp_format: str, reference_time: Optional[float]) -> str:
+def _format_timestamp(ts, timestamp_format: str, reference_time: float | None) -> str:
     """Format a timestamp according to the given format."""
     if ts is None:
         return ""
@@ -200,10 +200,10 @@ def format_reading(
     reading: Reading,
     *,
     fmt: str,
-    number_format: Optional[str],
-    array_slice: Optional[slice],
+    number_format: str | None,
+    array_slice: slice | None,
     timestamp_format: str = "iso",
-    reference_time: Optional[float] = None,
+    reference_time: float | None = None,
 ) -> str:
     """Format a Reading for output.
 

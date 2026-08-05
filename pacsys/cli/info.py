@@ -54,7 +54,7 @@ def _section(label: str, fn) -> tuple[Exception | None, Any]:
     try:
         result = fn()
         return None, result
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return e, None
 
 
@@ -126,9 +126,7 @@ def _format_digital_status_verbose(ds) -> str:
     """Format digital status with per-bit detail."""
     w = max((b.position for b in ds.bits), default=0)
     w = len(str(w))  # digit width for alignment
-    lines = []
-    for b in ds.bits:
-        lines.append(f"    Bit {b.position:>{w}}:  {'1' if b.is_set else '0'}  {b.name}: {b.value}")
+    lines = [f"    Bit {b.position:>{w}}:  {'1' if b.is_set else '0'}  {b.name}: {b.value}" for b in ds.bits]
     return "\n".join(lines)
 
 
@@ -376,7 +374,7 @@ def _get_devdb():
     try:
         devdb.get_device_info(["Z:NO_OP"], timeout=2.0)
         return devdb
-    except Exception:
+    except Exception:  # noqa: BLE001
         print(
             f"Warning: DevDB unreachable at {devdb._host}:{devdb._port} — some metadata will be unavailable",
             file=sys.stderr,
@@ -396,7 +394,7 @@ def _query_device_props(devdb, name: str) -> _DeviceProps:
     try:
         info_map = devdb.get_device_info([name], timeout=2.0)
         info = info_map.get(name)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return _DeviceProps()
 
     if info is None:
@@ -421,7 +419,7 @@ def main() -> int:
         backend = make_backend(args)
     except KeyboardInterrupt:
         return 130
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"Connection error: {e}", file=sys.stderr)
         return EXIT_USAGE_ERROR
 
@@ -452,7 +450,7 @@ def main() -> int:
             first = False
     except KeyboardInterrupt:
         return 130
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"Error: {e}", file=sys.stderr)
         return EXIT_USAGE_ERROR
     finally:

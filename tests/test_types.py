@@ -4,18 +4,17 @@ Tests for pacsys.types module.
 
 import threading
 import time
-from datetime import datetime
-
-import pytest
+from datetime import datetime, timezone
 
 import numpy as np
+import pytest
 
 from pacsys.testing import FakeBackend
 from pacsys.types import (
     CombinedStream,
     DeviceMeta,
-    ValueType,
     Reading,
+    ValueType,
     WriteResult,
 )
 
@@ -24,7 +23,7 @@ class TestReading:
     """Tests for Reading dataclass."""
 
     @pytest.mark.parametrize(
-        "error_code,is_success,is_warning,is_error",
+        ("error_code", "is_success", "is_warning", "is_error"),
         [
             (0, True, False, False),  # success
             (1, False, True, False),  # warning
@@ -41,7 +40,7 @@ class TestReading:
         assert reading.is_error is is_error
 
     @pytest.mark.parametrize(
-        "error_code,value,expected_ok",
+        ("error_code", "value", "expected_ok"),
         [
             (0, 72.5, True),  # success + value = ok
             (0, None, False),  # success + no value = not ok
@@ -57,7 +56,7 @@ class TestReading:
         assert reading.ok is expected_ok
 
     @pytest.mark.parametrize(
-        "drf,expected_name",
+        ("drf", "expected_name"),
         [
             ("M:OUTTMP", "M:OUTTMP"),  # simple
             ("M:OUTTMP@p,1000", "M:OUTTMP"),  # with event
@@ -184,8 +183,8 @@ class TestCombinedStream:
         h1 = fake.subscribe(["M:OUTTMP"])
         h2 = fake.subscribe(["G:AMANDA"])
 
-        t_early = datetime(2025, 1, 1, 0, 0, 0)
-        t_late = datetime(2025, 1, 1, 0, 0, 1)
+        t_early = datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        t_late = datetime(2025, 1, 1, 0, 0, 1, tzinfo=timezone.utc)
 
         fake.emit_reading("G:AMANDA", 10.0, timestamp=t_late)
         fake.emit_reading("M:OUTTMP", 20.0, timestamp=t_early)
@@ -273,8 +272,8 @@ class TestCombinedStream:
         h1 = fake.subscribe(["M:OUTTMP"])
         h2 = fake.subscribe(["G:AMANDA"])
 
-        t_early = datetime(2025, 1, 1, 0, 0, 0)
-        t_late = datetime(2025, 1, 1, 0, 0, 1)
+        t_early = datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        t_late = datetime(2025, 1, 1, 0, 0, 1, tzinfo=timezone.utc)
 
         # Emit both readings first so they're buffered in the queues,
         # then stop - this avoids timing-dependent batch boundaries.
@@ -356,7 +355,7 @@ class TestReadingToDict:
             drf="M:OUTTMP",
             value_type=ValueType.SCALAR,
             value=72.5,
-            timestamp=datetime(2026, 3, 3, 14, 0, 0),
+            timestamp=datetime(2026, 3, 3, 14, 0, 0, tzinfo=timezone.utc),
             cycle=5,
             meta=DeviceMeta(device_index=123, name="M:OUTTMP", description="Outside temp", units="deg F"),
         )

@@ -12,13 +12,13 @@ Requires:
 - grpcio package installed
 """
 
-import time
 import threading
+import time
 
 import pytest
 
 try:
-    from pacsys.backends.grpc_backend import GRPCBackend, GRPC_AVAILABLE
+    from pacsys.backends.grpc_backend import GRPC_AVAILABLE, GRPCBackend
 except ImportError:
     GRPC_AVAILABLE = False
 
@@ -26,12 +26,11 @@ if not GRPC_AVAILABLE:
     pytest.skip("grpc not available", allow_module_level=True)
 
 from .devices import (
-    requires_grpc,
-    assert_fast_response,
     TIMEOUT_READ,
     TIMEOUT_THREAD_JOIN,
+    assert_fast_response,
+    requires_grpc,
 )
-
 
 # =============================================================================
 # Multiple Reads Tests
@@ -65,7 +64,7 @@ class TestGRPCBackendMultipleReads:
                 start = time.time()
                 results.append(backend.read(device, timeout=TIMEOUT_READ))
                 timings.append(time.time() - start)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 errors.append(e)
 
         start = time.time()

@@ -11,28 +11,28 @@ Covers:
 - Thread safety
 """
 
-import pytest
-import time
 import threading
+import time
+
+import pytest
 
 import pacsys
-from pacsys import Device, ScalarDevice, ArrayDevice
-from pacsys import Reading, DeviceError, SubscriptionHandle
+from pacsys import ArrayDevice, Device, DeviceError, Reading, ScalarDevice, SubscriptionHandle
 
 from .devices import (
+    ARRAY_DEVICE,
     DPM_TEST_HOST,
     DPM_TEST_PORT,
+    NONEXISTENT_DEVICE,
+    PERIODIC_DEVICE,
     SCALAR_DEVICE,
     SCALAR_DEVICE_2,
     SCALAR_ELEMENT,
-    ARRAY_DEVICE,
-    NONEXISTENT_DEVICE,
-    PERIODIC_DEVICE,
-    requires_dpm_http,
-    TIMEOUT_READ,
     TIMEOUT_BATCH,
+    TIMEOUT_READ,
     TIMEOUT_STREAM_ITER,
     TIMEOUT_THREAD_JOIN,
+    requires_dpm_http,
 )
 
 
@@ -386,7 +386,7 @@ class TestThreadSafety:
             try:
                 value = pacsys.read(SCALAR_DEVICE, timeout=TIMEOUT_READ)
                 results.append(value)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 errors.append(e)
 
         threads = [threading.Thread(target=do_read) for _ in range(5)]

@@ -24,7 +24,7 @@ class TestDPMHTTPBackendStreaming:
 
     def test_subscription_handle_context_manager(self):
         """Test SubscriptionHandle can be used as context manager."""
-        from pacsys.backends.dpm_http import _DPMHTTPSubscriptionHandle, DPMHTTPBackend
+        from pacsys.backends.dpm_http import DPMHTTPBackend, _DPMHTTPSubscriptionHandle
 
         backend = DPMHTTPBackend()
         try:
@@ -45,7 +45,7 @@ class TestDPMHTTPBackendStreaming:
 
     def test_callback_mode_handle_cannot_iterate(self):
         """Handle created with callback cannot be iterated via readings()."""
-        from pacsys.backends.dpm_http import _DPMHTTPSubscriptionHandle, DPMHTTPBackend
+        from pacsys.backends.dpm_http import DPMHTTPBackend, _DPMHTTPSubscriptionHandle
 
         backend = DPMHTTPBackend()
         try:

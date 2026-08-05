@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import inspect
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from pacsys.drf3 import DataRequest, parse_event, parse_extra
 from pacsys.drf3.event import DefaultEvent, PeriodicEvent
@@ -13,9 +13,11 @@ from pacsys.drf3.field import (
     DRF_FIELD,
     parse_field,
 )
-from pacsys.drf3.property import DRF_PROPERTY
 from pacsys.drf3.range import ARRAY_RANGE
 from pacsys.types import BasicControl
+
+if TYPE_CHECKING:
+    from pacsys.drf3.property import DRF_PROPERTY
 
 CONTROL_STATUS_MAP: dict[BasicControl, tuple[str, bool]] = {
     BasicControl.ON: ("on", True),
@@ -70,7 +72,7 @@ def _require_str_list(value: object, field: str) -> list[str]:
         raise TypeError(f"Expected list for {field}, got {type(value).__name__}")
     if not all(isinstance(item, str) for item in value):
         raise TypeError(f"Expected list[str] for {field}")
-    return cast(list[str], value)
+    return cast("list[str]", value)
 
 
 class _DeviceBase:

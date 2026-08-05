@@ -1,8 +1,9 @@
 """Tests for MonitorResult and ChannelData."""
 
-import pytest
-import numpy as np
 from datetime import datetime, timezone
+
+import numpy as np
+import pytest
 
 from pacsys.exp._monitor import ChannelData, MonitorResult
 from pacsys.types import Reading, ValueType
@@ -415,7 +416,7 @@ class TestMonitorResultToNumpyGuard:
             ),
         )
         r = MonitorResult(channels={"A:DEV": ch})
-        with pytest.raises(TypeError, match="to_numpy.*text"):
+        with pytest.raises(TypeError, match=r"to_numpy.*text"):
             r.to_numpy("A:DEV")
 
     def test_to_numpy_rejects_basic_status(self):
@@ -432,7 +433,7 @@ class TestMonitorResultToNumpyGuard:
             ),
         )
         r = MonitorResult(channels={"A:DEV": ch})
-        with pytest.raises(TypeError, match="to_numpy.*basicStatus"):
+        with pytest.raises(TypeError, match=r"to_numpy.*basicStatus"):
             r.to_numpy("A:DEV")
 
 

@@ -1,16 +1,16 @@
 """Async backend abstract base class."""
 
 from abc import ABC, abstractmethod
-from typing import Optional, cast
+from typing import cast
 
 from pacsys.errors import ReadError
 from pacsys.types import (
-    Value,
-    Reading,
-    WriteResult,
     BackendCapability,
-    ReadingCallback,
     ErrorCallback,
+    Reading,
+    ReadingCallback,
+    Value,
+    WriteResult,
 )
 
 
@@ -24,15 +24,15 @@ class AsyncBackend(ABC):
     def capabilities(self) -> BackendCapability: ...
 
     @abstractmethod
-    async def read(self, drf: str, timeout: Optional[float] = None) -> Value: ...
+    async def read(self, drf: str, timeout: float | None = None) -> Value: ...
 
     @abstractmethod
-    async def get(self, drf: str, timeout: Optional[float] = None) -> Reading: ...
+    async def get(self, drf: str, timeout: float | None = None) -> Reading: ...
 
     @abstractmethod
-    async def get_many(self, drfs: list[str], timeout: Optional[float] = None) -> list[Reading]: ...
+    async def get_many(self, drfs: list[str], timeout: float | None = None) -> list[Reading]: ...
 
-    async def read_many(self, drfs: list[str], timeout: Optional[float] = None) -> list[Value]:
+    async def read_many(self, drfs: list[str], timeout: float | None = None) -> list[Value]:
         """Read multiple device values in a single batch.
 
         Convenience wrapper around get_many() that extracts bare values
@@ -43,19 +43,19 @@ class AsyncBackend(ABC):
         if errors:
             failed = ", ".join(r.drf for r in errors)
             raise ReadError(readings, f"Device errors: {failed}")
-        return [cast(Value, r.value) for r in readings]
+        return [cast("Value", r.value) for r in readings]
 
-    async def write(self, drf: str, value: Value, timeout: Optional[float] = None) -> WriteResult:
+    async def write(self, drf: str, value: Value, timeout: float | None = None) -> WriteResult:
         raise NotImplementedError("This backend does not support writes")
 
-    async def write_many(self, settings: list[tuple[str, Value]], timeout: Optional[float] = None) -> list[WriteResult]:
+    async def write_many(self, settings: list[tuple[str, Value]], timeout: float | None = None) -> list[WriteResult]:
         raise NotImplementedError("This backend does not support writes")
 
     async def subscribe(
         self,
         drfs: list[str],
-        callback: Optional[ReadingCallback] = None,
-        on_error: Optional[ErrorCallback] = None,
+        callback: ReadingCallback | None = None,
+        on_error: ErrorCallback | None = None,
     ):
         raise NotImplementedError("This backend does not support streaming")
 
@@ -70,7 +70,7 @@ class AsyncBackend(ABC):
         return False
 
     @property
-    def principal(self) -> Optional[str]:
+    def principal(self) -> str | None:
         return None
 
     @abstractmethod

@@ -56,11 +56,11 @@ class TestDeviceCreation:
     """Tests for Device creation and DRF validation."""
 
     def test_create_invalid_drf_raises_valueerror(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="not a valid DRF2 device"):
             Device("X")  # Too short
 
     def test_create_device_with_invalid_event_raises_valueerror(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Invalid event"):
             Device("M:OUTTMP@Z")  # Invalid event type
 
 
@@ -226,7 +226,7 @@ class TestScalarDevice:
         assert result == 42.0
 
     @pytest.mark.parametrize(
-        "bad_value,vtype",
+        ("bad_value", "vtype"),
         [
             (np.array([1, 2, 3]), ValueType.SCALAR_ARRAY),
             ("text", ValueType.TEXT),
@@ -267,7 +267,7 @@ class TestArrayDevice:
         assert list(result) == [1.0, 2.0, 3.0]
 
     @pytest.mark.parametrize(
-        "bad_value,vtype",
+        ("bad_value", "vtype"),
         [
             (72.5, ValueType.SCALAR),
             ("text", ValueType.TEXT),
@@ -294,7 +294,7 @@ class TestTextDevice:
         assert result == "some text"
 
     @pytest.mark.parametrize(
-        "bad_value,vtype",
+        ("bad_value", "vtype"),
         [
             (72.5, ValueType.SCALAR),
             (np.array([1, 2, 3]), ValueType.SCALAR_ARRAY),
@@ -609,7 +609,7 @@ class TestDeviceFieldValidation:
 
     def test_unknown_field_name(self, fake):
         dev = Device("M:OUTTMP", backend=fake)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Unrecognized field"):
             dev.read(field="nonexistent")
 
 
@@ -683,7 +683,7 @@ class TestDeviceWriteMethods:
         assert value == BasicControl.ON
 
     @pytest.mark.parametrize(
-        "method,expected",
+        ("method", "expected"),
         [
             ("on", BasicControl.ON),
             ("off", BasicControl.OFF),
@@ -1086,7 +1086,7 @@ class TestDeviceSubscribe:
     def test_subscribe_invalid_event_raises(self, fake):
         """subscribe(event=...) with invalid event string raises ValueError."""
         dev = Device("M:OUTTMP", backend=fake)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Invalid event"):
             dev.subscribe(event="Z")
 
     def test_subscribe_never_event_kwarg_raises(self, fake):
@@ -1108,7 +1108,7 @@ class TestDeviceSubscribe:
         handle = dev.subscribe(event="E,0F")
         handle.stop()
         # Malformed event should fail at parse time
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Invalid event"):
             dev.subscribe(event="@p,1000")  # leading @ is invalid
 
     def test_subscribe_non_callable_callback_raises(self, fake):

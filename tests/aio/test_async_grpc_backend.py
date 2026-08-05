@@ -6,7 +6,7 @@ from unittest import mock
 import pytest
 
 from pacsys.errors import AuthenticationError, DeviceError
-from pacsys.types import Reading, ValueType, WriteResult, BackendCapability
+from pacsys.types import BackendCapability, Reading, ValueType, WriteResult
 
 try:
     from pacsys.backends import grpc_backend
@@ -105,7 +105,6 @@ class TestAsyncGRPCSubscribe:
 
         async def fake_stream(drfs, dispatch_fn, stop_check, error_fn):
             dispatch_fn(_make_reading())
-            return
 
         backend._core.stream = fake_stream
         handle = await backend.subscribe(["M:OUTTMP@p,1000"])
@@ -121,7 +120,6 @@ class TestAsyncGRPCSubscribe:
         async def fake_stream(drfs, dispatch_fn, stop_check, error_fn):
             dispatch_fn(_make_reading(val=10.0))
             dispatch_fn(_make_reading(val=20.0))
-            return
 
         backend._core.stream = fake_stream
 

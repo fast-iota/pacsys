@@ -18,7 +18,6 @@ Offset  Size  Byte Order     Field             Description
 
 import struct
 from dataclasses import dataclass
-from typing import Optional
 
 from . import rad50
 from .constants import (
@@ -161,14 +160,13 @@ class AcnetPacket:
 
         if msg_type == ACNET_FLG_RPY:
             return AcnetReply(flags, status, server, client, server_task, client_task_id, msg_id, length, payload)
-        elif msg_type == ACNET_FLG_USM:
+        if msg_type == ACNET_FLG_USM:
             return AcnetMessage(flags, status, server, client, server_task, client_task_id, msg_id, length, payload)
-        elif msg_type == ACNET_FLG_REQ:
+        if msg_type == ACNET_FLG_REQ:
             return AcnetRequest(flags, status, server, client, server_task, client_task_id, msg_id, length, payload)
-        elif msg_type == ACNET_FLG_CAN:
+        if msg_type == ACNET_FLG_CAN:
             return AcnetCancel(flags, status, server, client, server_task, client_task_id, msg_id, length, payload)
-        else:
-            return AcnetPacket(flags, status, server, client, server_task, client_task_id, msg_id, length, payload)
+        return AcnetPacket(flags, status, server, client, server_task, client_task_id, msg_id, length, payload)
 
 
 class AcnetReply(AcnetPacket):
@@ -213,7 +211,7 @@ class AcnetRequest(AcnetPacket):
             self._reply_id = ReplyId(self.status)
         self._multiple_reply = (self.flags & ACNET_FLG_MLT) > 0
         self._cancelled = False
-        self.user_object: Optional[object] = None
+        self.user_object: object | None = None
 
     @property
     def reply_id(self) -> ReplyId:

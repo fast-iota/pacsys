@@ -18,12 +18,12 @@ from pacsys.auth import KerberosAuth
 
 # Reuse pure helpers from sync backend
 from pacsys.backends.dpm_http import (
-    _SettingPayload,
     _aggregate_logger_chunks,
     _AsyncDPMConnection,
     _device_info_to_meta,
     _is_logger_drf,
     _reply_to_reading,
+    _SettingPayload,
     _value_to_setting,
 )
 from pacsys.dpm_connection import DPMConnectionError
@@ -108,10 +108,11 @@ class _AsyncDpmCore:
         """Kerberos GSSAPI authentication over the DPM connection."""
         try:
             import gssapi
+            from gssapi import exceptions as gssapi_exceptions
         except ImportError:
             raise ImportError(
                 "gssapi library required for Kerberos authentication. Install with: pip install pacsys[kerberos]"
-            )
+            ) from None
 
         assert self._conn is not None
         if self._auth is None:
@@ -132,24 +133,27 @@ class _AsyncDpmCore:
             raise AuthenticationError("Server did not provide a service name")
 
         gss_name = raw_service_name.translate({ord("@"): "/", ord("\\"): None}) + "@FNAL.GOV"
-        logger.debug(f"DPM service name: {gss_name}")
+        logger.debug("DPM service name: %s", gss_name)
 
         # Phase 2: GSSAPI context
-        service_name = gssapi.Name(gss_name, gssapi.NameType.kerberos_principal)
-        creds = self._auth._get_credentials()
-        ctx = gssapi.SecurityContext(
-            name=service_name,
-            usage="initiate",
-            creds=creds,
-            flags=(
-                gssapi.RequirementFlag.replay_detection
-                | gssapi.RequirementFlag.integrity
-                | gssapi.RequirementFlag.out_of_sequence_detection
-            ),
-            mech=gssapi.MechType.kerberos,
-        )
+        try:
+            service_name = gssapi.Name(gss_name, gssapi.NameType.kerberos_principal)
+            creds = self._auth._get_credentials()
+            ctx = gssapi.SecurityContext(
+                name=service_name,
+                usage="initiate",
+                creds=creds,
+                flags=(
+                    gssapi.RequirementFlag.replay_detection
+                    | gssapi.RequirementFlag.integrity
+                    | gssapi.RequirementFlag.out_of_sequence_detection
+                ),
+                mech=gssapi.MechType.kerberos,
+            )
 
-        token = ctx.step()
+            token = ctx.step()
+        except gssapi_exceptions.GSSError as e:
+            raise AuthenticationError(f"Kerberos authentication failed for {gss_name}: {e}") from e
 
         auth_req = Authenticate_request()
         auth_req.list_id = self.list_id
@@ -161,7 +165,10 @@ class _AsyncDpmCore:
             raise AuthenticationError(f"Expected Authenticate_reply, got {type(reply).__name__}")
 
         if hasattr(reply, "token") and reply.token and not ctx.complete:
-            token = ctx.step(reply.token)
+            try:
+                token = ctx.step(reply.token)
+            except gssapi_exceptions.GSSError as e:
+                raise AuthenticationError(f"Kerberos authentication failed for {gss_name}: {e}") from e
             if token:
                 auth_req = Authenticate_request()
                 auth_req.list_id = self.list_id
@@ -176,10 +183,13 @@ class _AsyncDpmCore:
             raise AuthenticationError("Kerberos authentication incomplete")
 
         message = b"1234"
-        mic = ctx.get_signature(message)
+        try:
+            mic = ctx.get_signature(message)
+        except gssapi_exceptions.GSSError as e:
+            raise AuthenticationError(f"Kerberos authentication failed for {gss_name}: {e}") from e
         self._mic = bytes(mic)
         self._mic_message = message
-        logger.debug(f"Kerberos authentication complete for {self._auth.principal}")
+        logger.debug("Kerberos authentication complete for %s", self._auth.principal)
 
     async def enable_settings(self) -> None:
         """Enable settings on the connection after authentication."""
@@ -333,10 +343,13 @@ class _AsyncDpmCore:
                         clear_req = ClearList_request()
                         clear_req.list_id = list_id
                         await self._conn.send_messages_batch([stop_req, clear_req])
-                    except Exception:
+                    except OSError:
                         # Match sync: a failed StopList send means unknown connection
                         # state — close so the core is not re-pooled dirty.
                         await self.close()
+                    except Exception:
+                        await self.close()
+                        raise
                     else:
                         if not reuse_safe:
                             await self.close()
@@ -603,7 +616,7 @@ class _AsyncDpmCore:
             if isinstance(reply, ApplySettings_reply):
                 apply_reply = reply
                 break
-            elif isinstance(reply, ListStatus_reply):
+            if isinstance(reply, ListStatus_reply):
                 pass
 
         return self._build_write_results(settings, apply_reply, add_errors)
@@ -754,7 +767,7 @@ class _AsyncDpmCore:
                     ref_id = reply.ref_id
                     drf = drf_map.get(ref_id)
                     if drf is None:
-                        logger.warning(f"Data for unknown ref_id={ref_id}")
+                        logger.warning("Data for unknown ref_id=%s", ref_id)
                         continue
                     meta = metas.get(ref_id)
                     reading = _reply_to_reading(reply, drf, meta)
@@ -768,8 +781,8 @@ class _AsyncDpmCore:
                 wrapped = DPMConnectionError(f"{e} (devices: {drf_summary})")
                 wrapped.__cause__ = e
                 error_fn(wrapped)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             if not stop_check():
                 drf_summary = ", ".join(drfs) if len(drfs) <= 5 else f"{', '.join(drfs[:5])} and {len(drfs) - 5} more"
-                logger.error(f"Unexpected streaming error: {e} (devices: {drf_summary})")
+                logger.error("Unexpected streaming error: %s (devices: %s)", e, drf_summary)
                 error_fn(e)

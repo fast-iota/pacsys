@@ -1,9 +1,10 @@
 """Integration tests: full tool flow with FakeBackend and policies."""
 
 import pytest
-from pacsys.testing import FakeBackend
-from pacsys.supervised._policies import DeviceAccessPolicy, ValueRangePolicy, SlewRatePolicy, SlewLimit
+
 from pacsys.mcp._tools import tool_read_device, tool_write_device
+from pacsys.supervised._policies import DeviceAccessPolicy, SlewLimit, SlewRatePolicy, ValueRangePolicy
+from pacsys.testing import FakeBackend
 
 
 @pytest.fixture

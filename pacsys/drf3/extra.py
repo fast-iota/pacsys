@@ -1,7 +1,7 @@
 from enum import Enum, auto
 
 
-class DRF_EXTRA(Enum):
+class DRF_EXTRA(Enum):  # noqa: N801 -- established DRF API
     FTP = auto()
     LIVEDATA = auto()
     LOGGER = auto()

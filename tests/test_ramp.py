@@ -6,7 +6,6 @@ import numpy as np
 import pytest
 
 from pacsys.errors import DeviceError
-from pacsys.types import ValueType
 from pacsys.ramp import (
     BoosterHVRamp,
     BoosterHVRampGroup,
@@ -20,6 +19,7 @@ from pacsys.ramp import (
     read_ramps,
     write_ramps,
 )
+from pacsys.types import ValueType
 
 
 class _TestRamp(Ramp):
@@ -260,7 +260,7 @@ class TestValidation:
         """Inf time is caught - by max_time if set, by finite check otherwise."""
         ramp = BoosterHVRamp(values=np.zeros(64), times=np.zeros(64))
         ramp.times[0] = float("inf")
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match=r"(cumulative times exceed max|Raw times contain NaN or Inf)"):
             ramp.to_bytes()
 
     def test_value_overflow_int16_raises(self):
@@ -525,7 +525,7 @@ class TestModifyContext:
 
     def test_modify_no_write_on_exception(self, fake_backend):
         _setup_devices(fake_backend, ["B:HS23T"])
-        with pytest.raises(RuntimeError):
+        with pytest.raises(RuntimeError):  # noqa: PT012 -- exercises rollback during an exception
             with _TestRamp.modify("B:HS23T", slot=0, backend=fake_backend) as ramp:
                 ramp.values[0] = 20.0
                 raise RuntimeError("abort")
@@ -824,7 +824,7 @@ class TestReadRamps:
         ramps = read_ramps(_TestRamp, ["B:HS23T", "B:HS24T", "B:HS25T"], backend=fake_backend)
 
         assert len(ramps) == 3
-        for ramp, (dev, (val, time)) in zip(ramps, _DEV_DATA.items()):
+        for ramp, (dev, (val, time)) in zip(ramps, _DEV_DATA.items(), strict=True):
             assert ramp.device == dev
             assert ramp.slot == 0
             assert ramp.values[0] == val
@@ -873,7 +873,7 @@ class TestReadRamps:
         """Batched read uses the correct slot offset in each DRF."""
         _setup_devices(fake_backend, slot=2)
         ramps = read_ramps(_TestRamp, list(_DEV_DATA), slot=2, backend=fake_backend)
-        for ramp, dev in zip(ramps, _DEV_DATA):
+        for ramp, dev in zip(ramps, _DEV_DATA, strict=True):
             assert ramp.slot == 2
             val, _ = _DEV_DATA[dev]
             assert ramp.values[0] == val
@@ -929,7 +929,7 @@ class TestWriteRamps:
         write_ramps(ramps, backend=fake_backend)
 
         writes = fake_backend.writes[-3:]
-        for (drf, written_bytes), dev in zip(writes, _DEV_DATA):
+        for (drf, written_bytes), dev in zip(writes, _DEV_DATA, strict=True):
             assert dev in drf, f"Expected {dev} in DRF {drf}"
             val, time = _DEV_DATA[dev]
             expected = _make_ramp_bytes([(val, time)])
@@ -952,7 +952,7 @@ class TestWriteRamps:
 
         writes = fake_backend.writes[-3:]
         devs = ["B:HS23T", "B:HS24T", "B:HS25T"]
-        for (drf, written_bytes), dev in zip(writes, devs):
+        for (drf, written_bytes), dev in zip(writes, devs, strict=True):
             assert dev in drf
             val, time = _DEV_DATA[dev]
             assert written_bytes == _make_ramp_bytes([(val, time)])
@@ -1028,7 +1028,7 @@ class TestRampGroup:
         group.write(backend=fake_backend)
 
         writes = fake_backend.writes[-3:]
-        for (drf, written_bytes), dev in zip(writes, _DEV_DATA):
+        for (drf, written_bytes), dev in zip(writes, _DEV_DATA, strict=True):
             assert dev in drf
             val, time = _DEV_DATA[dev]
             assert written_bytes == _make_ramp_bytes([(val, time)])
@@ -1039,7 +1039,7 @@ class TestRampGroup:
         new_devs = ["B:X1", "B:X2", "B:X3"]
         group.write(devices=new_devs, backend=fake_backend)
         written_drfs = [drf for drf, _ in fake_backend.writes[-3:]]
-        for drf, dev in zip(written_drfs, new_devs):
+        for drf, dev in zip(written_drfs, new_devs, strict=True):
             assert dev in drf
 
     def test_write_slot_override(self, fake_backend):
@@ -1107,7 +1107,7 @@ class TestRampGroupModify:
             group.values[0, 2] = -20.0  # B:HS25T
 
         assert len(fake_backend.writes) == 2
-        write_map = {drf: data for drf, data in fake_backend.writes}
+        write_map = dict(fake_backend.writes)
 
         hs23_drf = next(d for d in write_map if "B:HS23T" in d)
         v, _ = struct.unpack_from("<hh", write_map[hs23_drf], 0)
@@ -1125,7 +1125,7 @@ class TestRampGroupModify:
 
     def test_no_write_on_exception(self, fake_backend):
         _setup_devices(fake_backend)
-        with pytest.raises(RuntimeError):
+        with pytest.raises(RuntimeError):  # noqa: PT012 -- exercises rollback during an exception
             with _TestRampGroup.modify(list(_DEV_DATA), backend=fake_backend) as group:
                 group.values[0, 0] = 20.0
                 raise RuntimeError("abort")

@@ -1,9 +1,10 @@
 """Tests for pacsys.aio module-level convenience API."""
 
-import pytest
 from unittest import mock
 
-import pacsys.aio as aio
+import pytest
+
+from pacsys import aio
 from pacsys.errors import ReadError
 from pacsys.types import Reading, ValueType, WriteResult
 
@@ -175,24 +176,24 @@ class TestModuleAPI:
 class TestLazyInit:
     @pytest.mark.asyncio
     async def test_lazy_creates_dpm_by_default(self):
-        with mock.patch("pacsys.aio._dpm_http.AsyncDPMHTTPBackend") as MockDPM:
+        with mock.patch("pacsys.aio._dpm_http.AsyncDPMHTTPBackend") as mock_dpm:
             mock_instance = mock.AsyncMock()
             mock_instance.read = mock.AsyncMock(return_value=72.5)
-            MockDPM.return_value = mock_instance
+            mock_dpm.return_value = mock_instance
 
             val = await aio.read("M:OUTTMP")
 
         assert val == 72.5
-        MockDPM.assert_called_once()
+        mock_dpm.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_lazy_creates_grpc_when_configured(self):
         aio.configure(backend="grpc")
 
-        with mock.patch("pacsys.aio._grpc.AsyncGRPCBackend") as MockGRPC:
+        with mock.patch("pacsys.aio._grpc.AsyncGRPCBackend") as mock_grpc:
             mock_instance = mock.AsyncMock()
             mock_instance.read = mock.AsyncMock(return_value=42.0)
-            MockGRPC.return_value = mock_instance
+            mock_grpc.return_value = mock_instance
 
             val = await aio.read("M:OUTTMP")
 
@@ -200,12 +201,12 @@ class TestLazyInit:
 
     @pytest.mark.asyncio
     async def test_backend_reused_on_subsequent_calls(self):
-        with mock.patch("pacsys.aio._dpm_http.AsyncDPMHTTPBackend") as MockDPM:
+        with mock.patch("pacsys.aio._dpm_http.AsyncDPMHTTPBackend") as mock_dpm:
             mock_instance = mock.AsyncMock()
             mock_instance.read = mock.AsyncMock(return_value=1.0)
-            MockDPM.return_value = mock_instance
+            mock_dpm.return_value = mock_instance
 
             await aio.read("M:OUTTMP")
             await aio.read("G:AMANDA")
 
-        assert MockDPM.call_count == 1
+        assert mock_dpm.call_count == 1

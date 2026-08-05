@@ -1,7 +1,9 @@
 """Tests for AsyncFakeBackend."""
 
 import asyncio
+
 import pytest
+
 from pacsys.testing import AsyncFakeBackend
 
 
@@ -61,10 +63,11 @@ class TestAsyncFakeBackendStreaming:
                 await asyncio.sleep(0.05)
                 await handle.stop()
 
-            asyncio.ensure_future(_emit())
+            emit_task = asyncio.create_task(_emit())
             readings = []
             async for reading, _ in handle.readings(timeout=2.0):
                 readings.append(reading)
+            await emit_task
             assert len(readings) == 2
             assert readings[0].value == pytest.approx(73.0)
             assert readings[1].value == pytest.approx(74.0)

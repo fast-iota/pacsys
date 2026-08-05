@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import threading
-from typing import Callable, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
-from pacsys.types import DeviceSpec, Reading
-from pacsys.exp._resolve import resolve_drf, resolve_backend
+from pacsys.exp._resolve import resolve_backend, resolve_drf
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from pacsys.backends import Backend
+    from pacsys.types import DeviceSpec, Reading
 
 
 def watch(
@@ -45,7 +47,7 @@ def watch(
             if condition(reading):
                 result_box.append(reading)
                 done.set()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             error_box.append(exc)
             done.set()
 

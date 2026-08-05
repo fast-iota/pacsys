@@ -11,7 +11,7 @@ import time
 import numpy as np
 import pytest
 
-from pacsys.device import Device, ScalarDevice, ArrayDevice, TextDevice
+from pacsys.device import ArrayDevice, Device, ScalarDevice, TextDevice
 from pacsys.digital_status import DigitalStatus, StatusBit
 from pacsys.errors import DeviceError
 from pacsys.types import Reading, ValueType
@@ -29,10 +29,10 @@ from .devices import (
     SCALAR_DEVICE_3,
     SCALAR_ELEMENT,
     STATUS_DEVICE,
+    TIMEOUT_READ,
     requires_dpm_http,
     requires_kerberos,
     requires_write_enabled,
-    TIMEOUT_READ,
 )
 
 
@@ -542,7 +542,7 @@ class TestDeviceControl:
     @pytest.mark.write
     @requires_write_enabled
     @pytest.mark.parametrize(
-        "cmd_true,cmd_false,field",
+        ("cmd_true", "cmd_false", "field"),
         CONTROL_PAIRS,
         ids=lambda x: x if isinstance(x, str) else x.name,
     )

@@ -27,7 +27,6 @@ import logging
 import threading
 import time
 from contextlib import contextmanager
-from typing import Optional
 
 from pacsys.dpm_connection import DPMConnection, DPMConnectionError
 
@@ -121,7 +120,13 @@ class ConnectionPool:
         self._lock = threading.Lock()
         self._condition = threading.Condition(self._lock)
 
-        logger.debug(f"ConnectionPool created: host={host}, port={port}, pool_size={pool_size}, timeout={timeout}")
+        logger.debug(
+            "ConnectionPool created: host=%s, port=%s, pool_size=%s, timeout=%s",
+            host,
+            port,
+            pool_size,
+            timeout,
+        )
 
     @property
     def host(self) -> str:
@@ -167,7 +172,7 @@ class ConnectionPool:
         with self._lock:
             return self._closed
 
-    def borrow(self, wait_timeout: Optional[float] = DEFAULT_WAIT_TIMEOUT) -> DPMConnection:
+    def borrow(self, wait_timeout: float | None = DEFAULT_WAIT_TIMEOUT) -> DPMConnection:
         """
         Borrow a connection from the pool.
 
@@ -193,7 +198,7 @@ class ConnectionPool:
 
         with self._condition:
             if self._closed:
-                raise PoolClosedError()
+                raise PoolClosedError
 
             # Try to get an available connection or reserve a slot for creation
             while not self._available:
@@ -224,13 +229,17 @@ class ConnectionPool:
 
                 # Check if pool was closed while waiting
                 if self._closed:
-                    raise PoolClosedError()
+                    raise PoolClosedError
 
             if not need_create:
                 # Get connection from available pool
                 conn = self._available.pop()
                 self._in_use.add(conn)
-                logger.debug(f"Borrowed connection, available={len(self._available)}, in_use={len(self._in_use)}")
+                logger.debug(
+                    "Borrowed connection, available=%s, in_use=%s",
+                    len(self._available),
+                    len(self._in_use),
+                )
                 return conn
 
         # Create connection OUTSIDE the lock to avoid blocking other threads
@@ -249,12 +258,12 @@ class ConnectionPool:
                 # Pool was closed while we were creating the connection
                 self._pending_creates -= 1
                 self._close_connection(conn)
-                raise PoolClosedError()
+                raise PoolClosedError
 
             self._pending_creates -= 1
             self._in_use.add(conn)
             total = len(self._available) + len(self._in_use)
-            logger.debug(f"Created new connection, total={total}")
+            logger.debug("Created new connection, total=%s", total)
             return conn
 
     def _create_connection(self) -> DPMConnection:
@@ -306,7 +315,11 @@ class ConnectionPool:
             elif conn.connected:
                 # Return to available pool
                 self._available.append(conn)
-                logger.debug(f"Released connection, available={len(self._available)}, in_use={len(self._in_use)}")
+                logger.debug(
+                    "Released connection, available=%s, in_use=%s",
+                    len(self._available),
+                    len(self._in_use),
+                )
             else:
                 # Connection is dead, don't return to pool
                 self._close_connection(conn)
@@ -329,7 +342,7 @@ class ConnectionPool:
             if conn in self._in_use:
                 self._in_use.discard(conn)
                 self._close_connection(conn)
-                logger.debug(f"Discarded connection, in_use={len(self._in_use)}")
+                logger.debug("Discarded connection, in_use=%s", len(self._in_use))
                 # Notify waiters - a slot is now available for new connection
                 self._condition.notify()
             elif conn in self._available:
@@ -341,11 +354,11 @@ class ConnectionPool:
         """Close a connection safely."""
         try:
             conn.close()
-        except Exception as e:
-            logger.debug(f"Error closing connection: {e}")
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Error closing connection: %s", e)
 
     @contextmanager
-    def connection(self, wait_timeout: Optional[float] = DEFAULT_WAIT_TIMEOUT):
+    def connection(self, wait_timeout: float | None = DEFAULT_WAIT_TIMEOUT):
         """
         Context manager for borrowing a connection.
 

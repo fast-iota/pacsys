@@ -21,7 +21,6 @@ from pacsys.scaling import (
     _sign_extend,
 )
 
-
 # ---- Helpers -----------------------------------------------------------------
 
 
@@ -360,7 +359,7 @@ class TestPrimaryRoundTrip:
     """Verify unscale(scale(x)) ≈ x for primary transforms."""
 
     @pytest.mark.parametrize(
-        "p_index,raw,input_len",
+        ("p_index", "raw", "input_len"),
         [
             (0, 1000, 2),
             (2, 1000, 2),
@@ -640,7 +639,7 @@ class TestCommonRoundTrip:
     """Test common transform round-trips: unscale(scale(x)) ≈ x."""
 
     @pytest.mark.parametrize(
-        "c_index,constants,primary",
+        ("c_index", "constants", "primary"),
         [
             (0, (), 42.0),
             (2, (10.0, 2.0, 1.0), 3.0),
@@ -862,7 +861,7 @@ class TestFullPipeline:
     """End-to-end round-trip: raw -> scale -> unscale -> raw."""
 
     @pytest.mark.parametrize(
-        "p_index,c_index,constants,raw,input_len",
+        ("p_index", "c_index", "constants", "raw", "input_len"),
         [
             # Identity primary + identity common
             (10, 0, (), 42, 2),

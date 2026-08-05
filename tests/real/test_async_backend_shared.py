@@ -9,15 +9,10 @@ import asyncio
 import pytest
 
 from pacsys.aio._backends import AsyncBackend
-from pacsys.errors import DeviceError
-from pacsys.types import BackendCapability, ValueType
-
 from pacsys.aio._subscription import AsyncSubscriptionHandle
-from pacsys.types import Reading
-
 from pacsys.drf_utils import strip_event
-
-from pacsys.types import BasicControl
+from pacsys.errors import DeviceError
+from pacsys.types import BackendCapability, BasicControl, Reading, ValueType
 
 from .devices import (
     ACLTST_NONEXISTENT_ORDINAL,
@@ -45,7 +40,6 @@ from .devices import (
     requires_kerberos,
     requires_write_enabled,
 )
-
 
 # =============================================================================
 # Connection Tests
@@ -158,7 +152,7 @@ class TestAsyncBackendValueTypes:
 
         return isinstance(backend, AsyncGRPCBackend)
 
-    @pytest.mark.parametrize("drf,expected_type,python_type,desc", DEVICE_TYPES)
+    @pytest.mark.parametrize(("drf", "expected_type", "python_type", "desc"), DEVICE_TYPES)
     async def test_get_value_type(self, async_read_backend_cls: AsyncBackend, drf, expected_type, python_type, desc):
         """get() returns correct value_type for {desc}."""
         reading = await async_read_backend_cls.get(drf, timeout=TIMEOUT_READ)
@@ -466,9 +460,7 @@ class TestAsyncBackendCloseStopsAll:
         """Backend.close() stops all subscriptions."""
         _skip_if_no_stream(async_read_backend)
 
-        handles = []
-        for _ in range(2):
-            handles.append(await async_read_backend.subscribe([PERIODIC_DEVICE], callback=lambda r, h: None))
+        handles = [await async_read_backend.subscribe([PERIODIC_DEVICE], callback=lambda r, h: None) for _ in range(2)]
         await asyncio.sleep(0.1)
 
         await async_read_backend.close()
@@ -517,7 +509,8 @@ class TestAsyncBackendWrite:
         """Write a scaled value and verify the .RAW readback changes."""
         original_scaled = await async_write_backend_cls.read(strip_event(SCALAR_SETPOINT), timeout=TIMEOUT_READ)
         original_raw = await async_write_backend_cls.read(SCALAR_SETPOINT_RAW, timeout=TIMEOUT_READ)
-        assert isinstance(original_raw, bytes) and len(original_raw) > 0
+        assert isinstance(original_raw, bytes)
+        assert len(original_raw) > 0
 
         new_value = original_scaled + 1.0
         result = await async_write_backend_cls.write(SCALAR_SETPOINT, new_value, timeout=TIMEOUT_READ)
@@ -540,7 +533,7 @@ class TestAsyncBackendWrite:
     @pytest.mark.write
     @requires_write_enabled
     @pytest.mark.parametrize(
-        "cmd_true,cmd_false,field", CONTROL_PAIRS, ids=lambda x: x if isinstance(x, str) else x.name
+        ("cmd_true", "cmd_false", "field"), CONTROL_PAIRS, ids=lambda x: x if isinstance(x, str) else x.name
     )
     async def test_control_pair(self, async_write_backend_cls: AsyncBackend, cmd_true, cmd_false, field):
         """Toggle control pair and verify the corresponding status bit changes."""
@@ -661,7 +654,7 @@ class TestAsyncBackendUnpairedControls:
     @pytest.mark.write
     @requires_write_enabled
     @pytest.mark.parametrize(
-        "ordinal,cmd_name",
+        ("ordinal", "cmd_name"),
         ACLTST_UNPAIRED_CONTROLS,
         ids=[name for _, name in ACLTST_UNPAIRED_CONTROLS],
     )

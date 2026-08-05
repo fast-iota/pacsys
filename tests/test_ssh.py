@@ -1,6 +1,5 @@
 """Tests for pacsys.ssh - SSH client with multi-hop support."""
 
-import socket
 import sys
 import threading
 from unittest.mock import MagicMock, patch
@@ -9,12 +8,12 @@ import paramiko
 import pytest
 
 from pacsys.ssh import (
+    SFTPSession,
     SSHClient,
-    SSHConnectionError,
     SSHCommandError,
+    SSHConnectionError,
     SSHHop,
     SSHTimeoutError,
-    SFTPSession,
     Tunnel,
     _normalize_hops,
 )
@@ -116,7 +115,7 @@ class TestNormalizeHops:
 
     def test_bad_type_raises(self):
         with pytest.raises(TypeError, match="Expected str or SSHHop"):
-            _normalize_hops([123])  # type: ignore
+            _normalize_hops([123])  # ty: ignore[invalid-argument-type]
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +155,7 @@ class TestSSHClientInit:
     def test_non_kerberos_auth_with_gssapi_hop_raises(self):
         """Passing non-KerberosAuth for gssapi hop should raise."""
         with pytest.raises(ValueError, match="KerberosAuth"):
-            SSHClient("host", auth="not-kerberos-auth")  # type: ignore
+            SSHClient("host", auth="not-kerberos-auth")  # ty: ignore[invalid-argument-type]
 
     def test_key_hop_no_gssapi_check(self):
         """Key-based hop should not require gssapi validation."""
@@ -219,7 +218,7 @@ class TestSSHClientConnect:
     @patch("paramiko.Transport")
     @patch("socket.create_connection")
     def test_connection_failure_cleans_up(self, mock_connect, mock_transport_cls):
-        mock_connect.side_effect = socket.error("Connection refused")
+        mock_connect.side_effect = OSError("Connection refused")
 
         ssh = SSHClient(SSHHop("host", auth_method="password", password="pw"))
         with pytest.raises(SSHConnectionError, match="Connection refused"):
@@ -295,7 +294,7 @@ class TestSSHClientExec:
 
         chan = MagicMock()
         chan.status_event = threading.Event()
-        chan.recv_ready.side_effect = socket.timeout("timed out")
+        chan.recv_ready.side_effect = TimeoutError("timed out")
         mock_transport.open_session.return_value = chan
 
         ssh = SSHClient(SSHHop("host", auth_method="password", password="pw"))
@@ -352,9 +351,7 @@ def _make_stream_channel(chunks, stderr=b"", exit_code=0):
         return data
 
     def recv_stderr_ready():
-        if not stderr_returned[0] and stderr and not remaining and pending[0] is None:
-            return True
-        return False
+        return bool(not stderr_returned[0] and stderr and not remaining and pending[0] is None)
 
     def recv_stderr(size):
         stderr_returned[0] = True
@@ -580,6 +577,22 @@ class TestSSHClientClose:
         ssh = SSHClient(SSHHop("host", auth_method="password", password="pw"))
         ssh.close()  # should not raise
 
+    def test_close_logs_tunnel_failure_and_continues(self, caplog):
+        ssh = SSHClient(SSHHop("host", auth_method="password", password="pw"))
+        failed_tunnel = MagicMock(local_port=10001)
+        failed_tunnel.stop.side_effect = RuntimeError("shutdown failed")
+        healthy_tunnel = MagicMock(local_port=10002)
+        ssh._tunnels = [failed_tunnel, healthy_tunnel]
+        ssh._cleanup_transports = MagicMock()
+
+        ssh.close()
+
+        failed_tunnel.stop.assert_called_once_with()
+        healthy_tunnel.stop.assert_called_once_with()
+        ssh._cleanup_transports.assert_called_once_with()
+        assert not ssh._tunnels
+        assert "Failed to stop SSH tunnel on port 10001" in caplog.text
+
 
 # ---------------------------------------------------------------------------
 # SSHClient context manager
@@ -617,6 +630,45 @@ class TestTunnel:
         with Tunnel(0, "remote", 5432, mock_transport) as t:
             assert t.active
         assert not t.active
+
+    def test_shutdown_error_still_closes_server_and_joins_thread(self):
+        mock_transport = _make_mock_transport()
+        tunnel = Tunnel(0, "remote", 5432, mock_transport)
+        server = tunnel._server
+        acceptor_thread = tunnel._acceptor_thread
+        assert server is not None
+        assert acceptor_thread is not None
+        original_shutdown = server.shutdown
+
+        def shutdown_then_fail():
+            original_shutdown()
+            raise RuntimeError("shutdown failed")
+
+        server.shutdown = shutdown_then_fail
+
+        with pytest.raises(RuntimeError, match="shutdown failed"):
+            tunnel.stop()
+
+        assert tunnel._server is None
+        assert tunnel._acceptor_thread is None
+        assert not acceptor_thread.is_alive()
+        assert server.socket.fileno() == -1
+
+    def test_join_error_still_reconciles_state(self):
+        tunnel = Tunnel.__new__(Tunnel)
+        tunnel.local_port = 10001
+        tunnel._stop_event = threading.Event()
+        server = MagicMock()
+        tunnel._server = server
+        tunnel._acceptor_thread = MagicMock()
+        tunnel._acceptor_thread.join.side_effect = RuntimeError("join failed")
+
+        with pytest.raises(RuntimeError, match="join failed"):
+            tunnel.stop()
+
+        server.server_close.assert_called_once_with()
+        assert tunnel._server is None
+        assert tunnel._acceptor_thread is None
 
 
 # ---------------------------------------------------------------------------

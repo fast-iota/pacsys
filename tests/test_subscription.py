@@ -72,7 +72,7 @@ class TestErrorPropagation:
         handle._signal_error(RuntimeError("boom"))
 
         results = []
-        with pytest.raises(RuntimeError, match="boom"):
+        with pytest.raises(RuntimeError, match="boom"):  # noqa: PT012 -- verifies buffered values first
             for reading, _ in handle.readings():
                 results.append(reading.value)
         assert results == [1.0]
@@ -99,7 +99,7 @@ class TestErrorPropagation:
         handle._signal_error(ValueError("late"))
 
         results = []
-        with pytest.raises(ValueError, match="late"):
+        with pytest.raises(ValueError, match="late"):  # noqa: PT012 -- verifies buffered values first
             for reading, _ in handle.readings():
                 results.append(reading.value)
         assert results == [1.0, 2.0]

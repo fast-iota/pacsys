@@ -29,7 +29,7 @@ _JSON_TYPES = frozenset({ValueType.TEXT_ARRAY, ValueType.ANALOG_ALARM, ValueType
 def _ndarray_to_list(value: np.ndarray) -> list[Any]:
     if value.ndim != 1:
         raise TypeError("Logged arrays must be one-dimensional")
-    result = cast(Any, value).tolist()
+    result = cast("Any", value).tolist()
     if not isinstance(result, list):
         raise TypeError("NumPy array conversion did not produce a list")
     return result
@@ -95,7 +95,7 @@ class CsvWriter:
 
     def __init__(self, path: str | Path):
         self._path = Path(path)
-        self._file = open(self._path, "w", newline="")
+        self._file = self._path.open("w", newline="")
         self._writer = csv.writer(self._file)
         self._writer.writerow(["timestamp", "drf", "value", "units"])
 
@@ -170,7 +170,7 @@ class ParquetWriter:
             import pyarrow as pa
             import pyarrow.parquet as pq
         except ImportError:
-            raise ImportError("pyarrow is required for ParquetWriter. Install with: pip install pyarrow")
+            raise ImportError("pyarrow is required for ParquetWriter. Install with: pip install pyarrow") from None
         self._path = Path(path)
         self._pa = pa
         self._pq = pq

@@ -1,8 +1,8 @@
 """Tests for CsvWriter and ParquetWriter."""
 
+import base64
 import csv
 import json
-import base64
 from datetime import datetime, timezone
 
 import numpy as np
@@ -31,7 +31,8 @@ class TestCsvWriter:
         writer.write_readings([_reading(), _reading(value=73.0)])
         writer.close()
 
-        rows = list(csv.reader(open(path)))
+        with path.open(newline="") as f:
+            rows = list(csv.reader(f))
         assert rows[0] == ["timestamp", "drf", "value", "units"]
         assert len(rows) == 3
         assert rows[1][1] == "M:OUTTMP"
@@ -47,12 +48,13 @@ class TestCsvWriter:
         writer.write_readings([r])
         writer.close()
 
-        rows = list(csv.reader(open(path)))
+        with path.open(newline="") as f:
+            rows = list(csv.reader(f))
         assert json.loads(rows[1][2]) == [1.0, 2.0, 3.0]
 
     @pytest.mark.parametrize(
         "value",
-        ([True, False], np.array([True, False], dtype=np.bool_)),
+        [[True, False], np.array([True, False], dtype=np.bool_)],
         ids=("list", "ndarray"),
     )
     def test_csv_boolean_array_as_json(self, tmp_path, value):
@@ -62,7 +64,8 @@ class TestCsvWriter:
         writer.write_readings([r])
         writer.close()
 
-        rows = list(csv.reader(open(path)))
+        with path.open(newline="") as f:
+            rows = list(csv.reader(f))
         assert json.loads(rows[1][2]) == [True, False]
 
     def test_csv_basic_status_as_json(self, tmp_path):
@@ -74,7 +77,8 @@ class TestCsvWriter:
         writer.write_readings([r])
         writer.close()
 
-        rows = list(csv.reader(open(path)))
+        with path.open(newline="") as f:
+            rows = list(csv.reader(f))
         assert json.loads(rows[1][2]) == status
 
     def test_csv_raw_bytes_as_base64(self, tmp_path):
@@ -86,7 +90,8 @@ class TestCsvWriter:
         writer.write_readings([r])
         writer.close()
 
-        rows = list(csv.reader(open(path)))
+        with path.open(newline="") as f:
+            rows = list(csv.reader(f))
         assert base64.b64decode(rows[1][2]) == raw
 
     def test_implements_protocol(self):
@@ -100,7 +105,8 @@ class TestCsvWriter:
         writer = CsvWriter(path)
         writer.write_readings([r])
         writer.close()
-        rows = list(csv.reader(open(path)))
+        with path.open(newline="") as f:
+            rows = list(csv.reader(f))
         assert rows[1][0] == ""  # empty timestamp
 
 
@@ -201,7 +207,7 @@ class TestParquetWriter:
 
     @pytest.mark.parametrize(
         "value",
-        ([True, False], np.array([True, False], dtype=np.bool_)),
+        [[True, False], np.array([True, False], dtype=np.bool_)],
         ids=("list", "ndarray"),
     )
     def test_scalar_array_boolean(self, tmp_path, value):
@@ -464,6 +470,7 @@ class TestParquetWriter:
         """Parquet file uses ZSTD compression."""
         pytest.importorskip("pyarrow")
         import pyarrow.parquet as pq
+
         from pacsys.exp._writers import ParquetWriter
 
         path = tmp_path / "test.parquet"

@@ -5,11 +5,10 @@ from unittest import mock
 
 import pytest
 
+from pacsys.aio._dpm_http import AsyncDPMHTTPBackend
 from pacsys.auth import KerberosAuth
 from pacsys.errors import AuthenticationError, DeviceError
-from pacsys.types import Reading, ValueType, WriteResult, BackendCapability
-
-from pacsys.aio._dpm_http import AsyncDPMHTTPBackend
+from pacsys.types import BackendCapability, Reading, ValueType, WriteResult
 
 
 def _make_reading(drf="M:OUTTMP", val=72.5, error_code=0):
@@ -150,7 +149,6 @@ class TestAsyncDPMSubscribe:
 
         async def fake_stream(drfs, dispatch, stop, error):
             dispatch(_make_reading())
-            return
 
         async def fake_create():
             core = _mock_core()

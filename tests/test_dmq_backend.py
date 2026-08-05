@@ -17,44 +17,45 @@ import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime
+from functools import partial
 from unittest import mock
 
 import numpy as np
 import pytest
 from pika.adapters.select_connection import SelectConnection
+from pika.exceptions import ChannelWrongStateError
 
+from pacsys.acnet.errors import FACILITY_DMQ
 from pacsys.backends.dmq import (
     DMQBackend,
     _reply_to_reading,
 )
-from pacsys.drf_utils import prepare_for_write
-from pacsys.errors import AuthenticationError, DeviceError, ReadError
 from pacsys.backends.dmq_protocol import (
     AnalogAlarmSample_reply,
     BasicControlSample_reply,
     BasicStatusSample_reply,
     BinarySample_reply,
     DigitalAlarmSample_reply,
-    DoubleSample_reply,
     DoubleArraySample_reply,
+    DoubleSample_reply,
     ErrorSample_reply,
     IntegerSample_reply,
     StringArraySample_reply,
     StringSample_reply,
 )
-from pacsys.acnet.errors import FACILITY_DMQ
+from pacsys.drf_utils import prepare_for_write
+from pacsys.errors import AuthenticationError, DeviceError, ReadError
 from pacsys.types import Reading, ValueType
 from tests.devices import (
+    ARRAY_DEVICE,
+    ARRAY_VALUES,
+    ERROR_NOT_FOUND,
     TEMP_DEVICE,
     TEMP_DEVICE_2,
     TEMP_VALUE,
-    ARRAY_DEVICE,
-    ARRAY_VALUES,
     TIMESTAMP_MILLIS,
-    ERROR_NOT_FOUND,
     MockGSSAPIModule,
 )
-
 
 _MOCK_GSSAPI = MockGSSAPIModule()
 
@@ -127,8 +128,6 @@ class MockIOLoop:
     def add_callback_threadsafe(self, callback):
         """Add a callback to be executed on the IO loop thread."""
         self._callbacks.append(callback)
-        if self._running:
-            self._process_callbacks()
 
     def call_later(self, delay: float, callback):
         """Schedule a callback after delay seconds."""
@@ -154,10 +153,7 @@ class MockIOLoop:
         """Process pending callbacks."""
         while self._callbacks:
             cb = self._callbacks.pop(0)
-            try:
-                cb()
-            except Exception:
-                pass  # Swallow errors like real pika
+            cb()
 
 
 class MockSelectChannel:
@@ -224,10 +220,7 @@ class MockSelectChannel:
     def close(self):
         self._is_open = False
         for cb in self._close_callbacks:
-            try:
-                cb(self, Exception("Channel closed"))
-            except Exception:
-                pass
+            cb(self, Exception("Channel closed"))
 
     def _start_message_delivery(self):
         """Deliver messages to the callback in a background thread."""
@@ -247,11 +240,9 @@ class MockSelectChannel:
                 method.routing_key = routing_key
                 method.delivery_tag = self._reply_idx
 
-                if self._on_message_callback:
-                    try:
-                        self._on_message_callback(self, method, None, reply_bytes)
-                    except Exception:
-                        pass
+                callback = self._on_message_callback
+                if callback:
+                    self._connection.ioloop.add_callback_threadsafe(partial(callback, self, method, None, reply_bytes))
                 time.sleep(0.01)
 
         thread = threading.Thread(target=deliver, daemon=True)
@@ -285,10 +276,7 @@ class MockSelectConnection:
         """Close the connection."""
         self._is_open = False
         if self._on_close_callback:
-            try:
-                self._on_close_callback(self, Exception("Connection closed"))
-            except Exception:
-                pass
+            self._on_close_callback(self, Exception("Connection closed"))
         self.ioloop.stop()
 
     def _trigger_open(self):
@@ -433,6 +421,204 @@ def _mock_dmq_write_backend(write_response_factory=None, **kwargs):
 # =============================================================================
 # Test Backend Initialization
 # =============================================================================
+
+
+class TestMockPikaBehavior:
+    def test_threadsafe_callback_is_queued(self):
+        connection = MockSelectConnection()
+        callback = mock.MagicMock()
+        connection.ioloop._running = True
+
+        connection.ioloop.add_callback_threadsafe(callback)
+
+        callback.assert_not_called()
+        connection.ioloop._process_callbacks()
+        callback.assert_called_once_with()
+
+    def test_io_callback_error_propagates(self):
+        connection = MockSelectConnection()
+        connection.ioloop.add_callback_threadsafe(mock.MagicMock(side_effect=RuntimeError("callback failed")))
+
+        with pytest.raises(RuntimeError, match="callback failed"):
+            connection.ioloop._process_callbacks()
+
+    def test_channel_close_callback_error_propagates(self):
+        connection = MockSelectConnection()
+        channel = MockSelectChannel(connection, [], [])
+        channel.add_on_close_callback(mock.MagicMock(side_effect=RuntimeError("close callback failed")))
+
+        with pytest.raises(RuntimeError, match="close callback failed"):
+            channel.close()
+
+    def test_connection_close_callback_error_propagates(self):
+        connection = MockSelectConnection()
+        connection._on_close_callback = mock.MagicMock(side_effect=RuntimeError("close callback failed"))
+
+        with pytest.raises(RuntimeError, match="close callback failed"):
+            connection.close()
+
+
+class TestDMQCleanup:
+    @staticmethod
+    def _write_session(**overrides):
+        session = mock.MagicMock()
+        session.device = TEMP_DEVICE
+        session.init_drf = f"{TEMP_DEVICE}.SETTING@N"
+        session.channel = mock.MagicMock()
+        session.channel.is_open = True
+        session.exchange_name = "write-exchange"
+        session.consumer_tag = None
+        session.heartbeat_handle = None
+        session.cleanup_handle = None
+        session.init_timer = None
+        session.queued_sends = []
+        session.pending = {}
+        session.init_confirmed = False
+        for name, value in overrides.items():
+            setattr(session, name, value)
+        return session
+
+    def test_cancel_failure_still_closes_read_channel(self):
+        backend = DMQBackend.__new__(DMQBackend)
+        backend._send_drop = mock.MagicMock()
+        channel = mock.MagicMock()
+        channel.is_open = True
+        channel.basic_cancel.side_effect = ChannelWrongStateError("channel closed")
+        job = mock.MagicMock(
+            channel=channel,
+            exchange_name="reply-exchange",
+            consumer_tag="consumer",
+            done_event=threading.Event(),
+        )
+
+        backend._complete_read(job)
+
+        channel.close.assert_called_once_with()
+        assert job.done_event.is_set()
+
+    def test_unexpected_close_error_propagates_after_signalling_done(self):
+        backend = DMQBackend.__new__(DMQBackend)
+        backend._send_drop = mock.MagicMock()
+        channel = mock.MagicMock()
+        channel.is_open = True
+        channel.close.side_effect = RuntimeError("close failed")
+        job = mock.MagicMock(
+            channel=channel,
+            exchange_name="reply-exchange",
+            consumer_tag="consumer",
+            done_event=threading.Event(),
+        )
+
+        with pytest.raises(RuntimeError, match="close failed"):
+            backend._complete_read(job)
+
+        assert job.done_event.is_set()
+
+    def test_cleanup_timer_failure_preserves_handle(self):
+        backend = DMQBackend.__new__(DMQBackend)
+        backend._select_connection = mock.MagicMock()
+        backend._select_connection.is_open = True
+        backend._select_connection.ioloop.remove_timeout.side_effect = RuntimeError("invalid timer")
+        old_handle = object()
+        session = mock.MagicMock(cleanup_handle=old_handle)
+
+        with pytest.raises(RuntimeError, match="invalid timer"):
+            backend._schedule_write_session_cleanup(session)
+
+        assert session.cleanup_handle is old_handle
+        backend._select_connection.ioloop.call_later.assert_not_called()
+
+    def test_close_session_timer_failure_logs_and_finishes_cleanup(self, caplog):
+        backend = DMQBackend.__new__(DMQBackend)
+        backend._select_connection = mock.MagicMock()
+        backend._select_connection.ioloop.remove_timeout.side_effect = RuntimeError("invalid timer")
+        session = self._write_session(heartbeat_handle=object())
+        backend._write_sessions = {session.init_drf: session}
+
+        backend._close_write_session(session.init_drf, reason="test")
+
+        session.channel.close.assert_called_once_with()
+        assert session.init_drf not in backend._write_sessions
+        assert "Failed to cancel heartbeat timer" in caplog.text
+
+    def test_flush_timer_failure_logs_and_dispatches_queued_writes(self, caplog):
+        backend = DMQBackend.__new__(DMQBackend)
+        backend._select_connection = mock.MagicMock()
+        backend._select_connection.ioloop.remove_timeout.side_effect = RuntimeError("invalid timer")
+        backend._send_settings_async = mock.MagicMock()
+        queued = ([(0, TEMP_DEVICE, 1.0)], [None], mock.MagicMock())
+        session = self._write_session(init_timer=object(), queued_sends=[queued])
+
+        backend._flush_queued_writes(session)
+
+        assert session.init_timer is None
+        assert session.init_confirmed
+        assert not session.queued_sends
+        backend._send_settings_async.assert_called_once_with(session, *queued)
+        assert "Failed to cancel INIT timer" in caplog.text
+
+    def test_channel_close_timer_failure_logs_and_completes_tracker(self, caplog):
+        backend = DMQBackend.__new__(DMQBackend)
+        backend._select_connection = mock.MagicMock()
+        backend._select_connection.ioloop.remove_timeout.side_effect = RuntimeError("invalid timer")
+        tracker = mock.MagicMock()
+        results = [None]
+        queued = ([(0, TEMP_DEVICE, 1.0)], results, tracker)
+        session = self._write_session(cleanup_handle=object(), queued_sends=[queued])
+        backend._write_sessions = {session.init_drf: session}
+
+        backend._on_write_session_channel_closed(session.init_drf, RuntimeError("channel closed"))
+
+        assert results[0] is not None
+        tracker.device_complete.assert_called_once_with()
+        assert "Failed to cancel cleanup timer" in caplog.text
+
+    def test_connection_close_timer_failure_logs_and_completes_tracker(self, caplog):
+        backend = DMQBackend.__new__(DMQBackend)
+        backend._connection_ready = threading.Event()
+        backend._connection_ready.set()
+        backend._pending_session_setups = {}
+        tracker = mock.MagicMock()
+        results = [None]
+        queued = ([(0, TEMP_DEVICE, 1.0)], results, tracker)
+        session = self._write_session(init_timer=object(), queued_sends=[queued])
+        backend._write_sessions = {session.init_drf: session}
+        backend._stream_lock = threading.Lock()
+        backend._subscriptions = {}
+        backend._dispatcher = mock.MagicMock()
+        connection = mock.MagicMock()
+        connection.ioloop.remove_timeout.side_effect = RuntimeError("invalid timer")
+
+        backend._on_connection_closed(connection, RuntimeError("connection closed"))
+
+        assert results[0] is not None
+        tracker.device_complete.assert_called_once_with()
+        assert not backend._write_sessions
+        connection.ioloop.stop.assert_called_once_with()
+        assert "Failed to cancel INIT timer after connection loss" in caplog.text
+
+    def test_subscription_timer_failure_logs_and_finishes_cleanup(self, caplog):
+        backend = DMQBackend.__new__(DMQBackend)
+        connection = mock.MagicMock()
+        connection.is_open = True
+        connection.ioloop.remove_timeout.side_effect = RuntimeError("invalid timer")
+        connection.ioloop.add_callback_threadsafe.side_effect = lambda callback: callback()
+        backend._select_connection = connection
+        sub = mock.MagicMock()
+        sub.sub_id = "subscription-id"
+        sub.heartbeat_handle = object()
+        sub.channel.is_open = True
+        sub.exchange_name = "subscription-exchange"
+        sub.consumer_tag = "consumer"
+
+        backend._cancel_subscription_async(sub)
+
+        assert sub.heartbeat_handle is None
+        sub.channel.basic_publish.assert_called_once_with(exchange="subscription-exchange", routing_key="D", body=b"")
+        sub.channel.basic_cancel.assert_called_once_with("consumer")
+        sub.channel.close.assert_called_once_with()
+        sub.handle._signal_stop.assert_called_once_with()
+        assert "Failed to cancel heartbeat timer for subscription" in caplog.text
 
 
 class TestDMQBackendInit:
@@ -725,10 +911,11 @@ class MockSelectChannelWithWriteSupport(MockSelectChannel):
                         method.delivery_tag = 0
                         props = mock.MagicMock()
                         props.correlation_id = None
-                        try:
-                            self._on_message_callback(self, method, props, bytes(pending_reply.marshal()))
-                        except Exception:
-                            pass
+                        callback = self._on_message_callback
+                        reply_bytes = bytes(pending_reply.marshal())
+                        self._connection.ioloop.add_callback_threadsafe(
+                            partial(callback, self, method, props, reply_bytes)
+                        )
                     while self._pending_writes and self._on_message_callback:
                         corr_id = self._pending_writes.pop(0)
                         response_bytes = self._write_response_factory(corr_id)
@@ -740,10 +927,10 @@ class MockSelectChannelWithWriteSupport(MockSelectChannel):
                         props = mock.MagicMock()
                         props.correlation_id = corr_id
 
-                        try:
-                            self._on_message_callback(self, method, props, response_bytes)
-                        except Exception:
-                            pass
+                        callback = self._on_message_callback
+                        self._connection.ioloop.add_callback_threadsafe(
+                            partial(callback, self, method, props, response_bytes)
+                        )
                     time.sleep(0.02)
 
             threading.Thread(target=deliver_write_responses, daemon=True).start()
@@ -964,7 +1151,7 @@ class TestDictToAlarmSample:
     def test_mixed_keys_raises(self):
         from pacsys.backends.dmq import _dict_to_alarm_sample
 
-        with pytest.raises(ValueError, match="Cannot mix analog.*and digital"):
+        with pytest.raises(ValueError, match=r"Cannot mix analog.*and digital"):
             _dict_to_alarm_sample({"minimum": 1.0, "nominal": 5}, ref_id=1, timestamp_ms=0)
 
     def test_shared_only_keys_raises(self):
@@ -990,7 +1177,7 @@ class TestValueToSample:
 
     def test_basic_control_on_uses_sdd_enum(self):
         """Commands 0-6 use BasicControlSample with SDD enum constants."""
-        from pacsys.backends.dmq import DMQBackend, _BASIC_CONTROL_TO_SDD
+        from pacsys.backends.dmq import _BASIC_CONTROL_TO_SDD, DMQBackend
         from pacsys.types import BasicControl
 
         backend = object.__new__(DMQBackend)

@@ -4,7 +4,8 @@ import asyncio
 import inspect
 import logging
 import time
-from typing import Any, AsyncIterator, Optional
+from collections.abc import AsyncIterator
+from typing import Any
 
 from pacsys.types import Reading
 
@@ -26,9 +27,9 @@ class AsyncSubscriptionHandle:
         self._queue: asyncio.Queue[Reading | None] = asyncio.Queue(maxsize=self._maxsize)
         self._stopped = False
         self._stopping = False
-        self._exc: Optional[Exception] = None
-        self._task: Optional[asyncio.Task] = None
-        self._callback_task: Optional[asyncio.Task] = None
+        self._exc: Exception | None = None
+        self._task: asyncio.Task | None = None
+        self._callback_task: asyncio.Task | None = None
         self._drop_count = 0
         self._last_drop_log = 0.0
         self._core: Any = None
@@ -40,7 +41,7 @@ class AsyncSubscriptionHandle:
         return self._stopped
 
     @property
-    def exc(self) -> Optional[Exception]:
+    def exc(self) -> Exception | None:
         return self._exc
 
     # -- Producer API (called from core's dispatch_fn) -------------------------
@@ -88,9 +89,7 @@ class AsyncSubscriptionHandle:
 
     # -- Consumer API ----------------------------------------------------------
 
-    async def readings(
-        self, timeout: Optional[float] = None
-    ) -> AsyncIterator[tuple[Reading, "AsyncSubscriptionHandle"]]:
+    async def readings(self, timeout: float | None = None) -> AsyncIterator[tuple[Reading, "AsyncSubscriptionHandle"]]:
         while True:
             # Stop sentinel may not have been enqueued if queue was full
             if self._stopped and self._queue.empty():
@@ -102,7 +101,7 @@ class AsyncSubscriptionHandle:
             except asyncio.TimeoutError:
                 if self._stopped:
                     if self._exc is not None:
-                        raise self._exc
+                        raise self._exc from None
                     return
                 raise
             if item is None:
@@ -122,14 +121,18 @@ class AsyncSubscriptionHandle:
             self._task.cancel()
             try:
                 await self._task
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError:
                 pass
+            except Exception:  # noqa: BLE001
+                logger.exception("Subscription task failed during shutdown")
         if self._callback_task is not None and not self._callback_task.done():
             self._callback_task.cancel()
             try:
                 await self._callback_task
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError:
                 pass
+            except Exception:  # noqa: BLE001
+                logger.exception("Subscription callback task failed during shutdown")
 
     async def __aenter__(self):
         return self
@@ -151,7 +154,7 @@ async def _callback_feeder(handle: AsyncSubscriptionHandle, callback, on_error) 
                     await callback(reading, h)
                 else:
                     callback(reading, h)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 try:
                     if on_error:
                         if is_async_err:
@@ -160,18 +163,18 @@ async def _callback_feeder(handle: AsyncSubscriptionHandle, callback, on_error) 
                             on_error(exc, h)
                     else:
                         logger.error("Unhandled error in subscription callback: %s", exc)
-                except Exception as err_exc:
+                except Exception as err_exc:  # noqa: BLE001
                     logger.error("Error in on_error callback: %s", err_exc)
     except asyncio.CancelledError:
         pass
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         if on_error:
             try:
                 if is_async_err:
                     await on_error(exc, handle)
                 else:
                     on_error(exc, handle)
-            except Exception as err_exc:
+            except Exception as err_exc:  # noqa: BLE001
                 logger.error("Error in on_error callback: %s", err_exc)
         else:
             logger.error("Unhandled error in stream: %s", exc)

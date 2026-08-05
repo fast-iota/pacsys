@@ -18,6 +18,7 @@ import pytest
 from pacsys._proto.controls.service.DAQ.v1 import DAQ_pb2, DAQ_pb2_grpc
 from pacsys.backends.dpm_http import DPMHTTPBackend
 from pacsys.backends.grpc_backend import GRPCBackend
+from pacsys.drf_utils import strip_event
 from pacsys.errors import ReadError
 from pacsys.supervised import (
     DeviceAccessPolicy,
@@ -25,8 +26,6 @@ from pacsys.supervised import (
     ReadOnlyPolicy,
     SupervisedServer,
 )
-
-from pacsys.drf_utils import strip_event
 
 from .devices import (
     ANALOG_ALARM_DEVICE,
@@ -441,7 +440,8 @@ class TestSupervisedProxyWrite:
         read_drf = strip_event(SCALAR_SETPOINT)
         original_scaled = _stub_read_scalar(stub, read_drf)
         original_raw = _stub_read_raw(stub, SCALAR_SETPOINT_RAW)
-        assert isinstance(original_raw, bytes) and len(original_raw) > 0
+        assert isinstance(original_raw, bytes)
+        assert len(original_raw) > 0
 
         try:
             new_val = original_scaled + 1.0
@@ -459,7 +459,7 @@ class TestSupervisedProxyWrite:
         assert restored_raw == original_raw
 
     @pytest.mark.parametrize(
-        "cmd_true,cmd_false,field",
+        ("cmd_true", "cmd_false", "field"),
         CONTROL_PAIRS,
         ids=[f"{f}" for _, _, f in CONTROL_PAIRS],
     )
@@ -631,7 +631,7 @@ class TestSupervisedVsDirectGRPC:
     """Compare proxy path vs direct gRPC for identical device reads."""
 
     @pytest.mark.parametrize(
-        "drf,desc",
+        ("drf", "desc"),
         [(drf, desc) for drf, desc in _COMPARISON_DRFS],
         ids=[desc for _, desc in _COMPARISON_DRFS],
     )

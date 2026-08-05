@@ -139,7 +139,7 @@ class TestFTPContinuous:
             deadline = time.time() + 3.0
 
             for batch in stream.readings(timeout=1.0):
-                for di, points in batch.items():
+                for points in batch.values():
                     total_points += len(points)
                 batches += 1
 
@@ -203,7 +203,7 @@ class TestSnapshotCapture:
     """Test snapshot arm, collection, and retrieval against live front-ends."""
 
     # Expected per-device statuses after snapshot setup (positive = informational)
-    _ACCEPTABLE_SETUP_STATUSES = {FTP_PEND, FTP_WAIT_EVENT, FTP_WAIT_DELAY, FTP_COLLECTING}
+    _ACCEPTABLE_SETUP_STATUSES = frozenset({FTP_PEND, FTP_WAIT_EVENT, FTP_WAIT_DELAY, FTP_COLLECTING})
 
     def test_immediate_post_trigger(self, acnet_tcp_connection, mouttmp):
         """Arm immediately, collect 100 points post-trigger, retrieve."""
@@ -313,7 +313,7 @@ class TestSnapshotStateMachine:
             node=node,
             devices=[mouttmp],
             rate_hz=50,
-            num_points=100,  # 50 Hz × 2 s
+            num_points=100,  # 50 Hz x 2 s
             arm_source=2,  # clock event
             plot_mode=2,  # post-trigger
             arm_events=arm_events,

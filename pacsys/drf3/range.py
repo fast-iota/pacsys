@@ -1,5 +1,5 @@
 import re
-from typing import Literal, Optional
+from typing import Literal
 
 RANGE_RE = re.compile("(\\[(\\d*)(?::(\\d*))?\\])|(\\{(\\d*)(?::(\\d*))?\\})" + "$")
 
@@ -8,7 +8,7 @@ MAXIMUM = -2147483648
 MAX_UPPER_BOUND = 2147483648
 
 
-def parse_range(raw_string: Optional[str]):
+def parse_range(raw_string: str | None):
     if raw_string is None:
         return None
     match = RANGE_RE.match(raw_string)
@@ -28,7 +28,7 @@ def parse_range(raw_string: Optional[str]):
             # print(f'detected singlet from {raw_string}')
             return ARRAY_RANGE(mode="single", low=idx1, high=idx2)
         return ARRAY_RANGE(mode="std", low=idx1, high=idx2)
-    elif match.group(4) is not None:
+    if match.group(4) is not None:
         s1 = match.group(5)
         s2 = match.group(6)
         s1empty = s1 is None
@@ -42,16 +42,15 @@ def parse_range(raw_string: Optional[str]):
         if idx2 is None and ":" not in raw_string:
             return BYTE_RANGE(mode="single", offset=idx1, length=idx2)
         return BYTE_RANGE(mode="std", offset=idx1, length=idx2)
-    else:
-        raise Exception("Unrecognized range specifier")
+    raise Exception("Unrecognized range specifier")
 
 
-class ARRAY_RANGE:
+class ARRAY_RANGE:  # noqa: N801 -- established DRF API
     def __init__(
         self,
         mode: Literal["full", "std", "single"] | None = None,
-        low: Optional[int] = None,
-        high: Optional[int] = None,
+        low: int | None = None,
+        high: int | None = None,
     ):
         self.low = low
         self.high = high
@@ -65,29 +64,27 @@ class ARRAY_RANGE:
     def __str__(self):
         if self.mode == "full":
             return "[:]"
-        elif self.mode == "single":
-            s = f"[{self.low}]"
-            return s
-        else:
-            s = "["
-            if self.low is not None:
-                s += f"{self.low}"
-            s += ":"
-            if self.high is not None:
-                s += f"{self.high}"
-            s += "]"
-            return s
+        if self.mode == "single":
+            return f"[{self.low}]"
+        s = "["
+        if self.low is not None:
+            s += f"{self.low}"
+        s += ":"
+        if self.high is not None:
+            s += f"{self.high}"
+        s += "]"
+        return s
 
     def __repr__(self):
-        return f"<ARRAY_RANGE: {str(self)} ({self.mode} mode)>"
+        return f"<ARRAY_RANGE: {self!s} ({self.mode} mode)>"
 
 
-class BYTE_RANGE:
+class BYTE_RANGE:  # noqa: N801 -- established DRF API
     def __init__(
         self,
         mode: Literal["full", "std", "single"] | None = None,
-        offset: Optional[int] = None,
-        length: Optional[int] = None,
+        offset: int | None = None,
+        length: int | None = None,
     ):
         if offset is not None and offset < 0:
             raise ValueError("offset must be non-negative")
@@ -111,18 +108,16 @@ class BYTE_RANGE:
     def __str__(self):
         if self.mode == "full":
             return "{:}"
-        elif self.mode == "single":
-            s = f"{{{self.offset}}}"
-            return s
-        else:
-            s = "{"
-            if self.offset is not None:
-                s += f"{self.offset}"
-            s += ":"
-            if self.length is not None:
-                s += f"{self.length}"
-            s += "}"
-            return s
+        if self.mode == "single":
+            return f"{{{self.offset}}}"
+        s = "{"
+        if self.offset is not None:
+            s += f"{self.offset}"
+        s += ":"
+        if self.length is not None:
+            s += f"{self.length}"
+        s += "}"
+        return s
 
     def __repr__(self):
-        return f"<BYTE_RANGE: {str(self)} ({self.mode} mode)>"
+        return f"<BYTE_RANGE: {self!s} ({self.mode} mode)>"

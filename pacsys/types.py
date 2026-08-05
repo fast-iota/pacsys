@@ -3,13 +3,15 @@ Core data types - Reading, WriteResult, SubscriptionHandle, CombinedStream.
 """
 
 import base64
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Callable, Iterator, Optional, Union, cast
 from enum import Enum, Flag, IntEnum, auto
+from typing import TYPE_CHECKING, Any, Union, cast
 
 if TYPE_CHECKING:
     import numpy as np
+
     from pacsys.device import Device
 
 from pacsys.drf_utils import get_device_name as _get_device_name
@@ -18,9 +20,9 @@ from pacsys.drf_utils import get_device_name as _get_device_name
 # np.ndarray is only in the annotation at type-check time; at runtime the
 # alias omits it (numpy is heavy to import and not needed for annotation eval).
 if TYPE_CHECKING:
-    Value = Union[float, int, str, bytes, np.ndarray, list, dict]
+    Value = float | int | str | bytes | np.ndarray | list | dict
 else:
-    Value = Union[float, int, str, bytes, list, dict]
+    Value = float | int | str | bytes | list | dict
 
 
 def _value_to_json(value: object) -> object:
@@ -35,7 +37,7 @@ def _value_to_json(value: object) -> object:
         import numpy as np
 
         if isinstance(value, np.ndarray):
-            return cast(Any, value).tolist()
+            return cast("Any", value).tolist()
         if isinstance(value, (np.integer, np.floating)):
             return value.item()
     except ImportError:
@@ -71,7 +73,7 @@ def _value_from_json(value: object, value_type: "ValueType | None") -> "Value | 
 DeviceSpec = Union[str, "Device"]
 
 # Write settings: list of (device, value) tuples or a dict mapping device -> value
-WriteSettings = Union[list[tuple[DeviceSpec, Value]], dict[DeviceSpec, Value]]
+WriteSettings = list[tuple[DeviceSpec, Value]] | dict[DeviceSpec, Value]
 
 # Callback type for streaming subscriptions - receives (reading, handle) pairs
 ReadingCallback = Callable[["Reading", "SubscriptionHandle"], None]
@@ -150,8 +152,8 @@ class DeviceMeta:
     device_index: int
     name: str
     description: str
-    units: Optional[str] = None
-    format_hint: Optional[int] = None
+    units: str | None = None
+    format_hint: int | None = None
 
     def to_dict(self) -> dict:
         d: dict = {"device_index": self.device_index, "name": self.name, "description": self.description}
@@ -240,14 +242,14 @@ class Reading:
     """
 
     drf: str
-    value_type: Optional[ValueType] = None
+    value_type: ValueType | None = None
     facility_code: int = 0
     error_code: int = 0
-    value: Optional[Value] = None
-    message: Optional[str] = None
-    timestamp: Optional[datetime] = None
-    cycle: Optional[int] = None
-    meta: Optional[DeviceMeta] = None
+    value: Value | None = None
+    message: str | None = None
+    timestamp: datetime | None = None
+    cycle: int | None = None
+    meta: DeviceMeta | None = None
 
     def __post_init__(self) -> None:
         if self.value is not None and self.value_type is None:
@@ -312,7 +314,7 @@ class Reading:
         return _get_device_name(self.drf)
 
     @property
-    def units(self) -> Optional[str]:
+    def units(self) -> str | None:
         """Engineering units from metadata, or None if unavailable."""
         return self.meta.units if self.meta else None
 
@@ -363,10 +365,10 @@ class WriteResult:
     drf: str
     facility_code: int = 0
     error_code: int = 0
-    message: Optional[str] = None
+    message: str | None = None
     # Verification fields (None if verify not used)
-    verified: Optional[bool] = None  # True=readback matched, False=failed, None=no verify
-    readback: Optional[Value] = None  # Last readback value
+    verified: bool | None = None  # True=readback matched, False=failed, None=no verify
+    readback: Value | None = None  # Last readback value
     skipped: bool = False  # True if check_first found value already correct
     attempts: int = 0  # Number of readback attempts made
 
@@ -447,13 +449,13 @@ class SubscriptionHandle:
         raise NotImplementedError
 
     @property
-    def exc(self) -> Optional[Exception]:
+    def exc(self) -> Exception | None:
         """Exception if an error occurred, else None."""
         raise NotImplementedError
 
     def readings(
         self,
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
     ) -> Iterator[tuple["Reading", "SubscriptionHandle"]]:
         """Yield (reading, handle) pairs for THIS subscription.
 
@@ -507,7 +509,7 @@ class CombinedStream:
         return all(sub.stopped for sub in self._subscriptions)
 
     @property
-    def exc(self) -> Optional[Exception]:
+    def exc(self) -> Exception | None:
         """First exception from any subscription, or None."""
         for sub in self._subscriptions:
             if sub.exc is not None:
@@ -516,7 +518,7 @@ class CombinedStream:
 
     def readings(
         self,
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
     ) -> Iterator[tuple["Reading", "SubscriptionHandle"]]:
         """Yield readings from all subscriptions.
 
@@ -543,7 +545,7 @@ class CombinedStream:
         if timeout == 0:
             if self.exc is not None:
                 raise self.exc
-            heap: list[tuple[datetime, int, "Reading", "SubscriptionHandle"]] = []
+            heap: list[tuple[datetime, int, Reading, SubscriptionHandle]] = []
             counter = 0
             for sub in self._subscriptions:
                 if sub.stopped:
@@ -572,7 +574,7 @@ class CombinedStream:
                             return
                     if sub.stopped:
                         return
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 shared.put(exc)
             finally:
                 shared.put(_sentinel)

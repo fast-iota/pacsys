@@ -3,12 +3,12 @@
 import contextlib
 import io
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest import mock
 
 import numpy as np
 
-from pacsys.types import Reading, ValueType, DeviceMeta
+from pacsys.types import DeviceMeta, Reading, ValueType
 
 
 def _make_reading(
@@ -27,7 +27,7 @@ def _make_reading(
         value=value,
         error_code=error_code,
         message=msg,
-        timestamp=ts or datetime(2025, 6, 15, 12, 0, 0),
+        timestamp=ts or datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc),
         meta=meta,
     )
 

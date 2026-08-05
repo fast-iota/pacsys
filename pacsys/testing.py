@@ -4,37 +4,36 @@ Testing utilities - FakeBackend for unit tests without network.
 See SPECIFICATION.md for available methods and pytest fixtures.
 """
 
-from dataclasses import replace
-from datetime import datetime, timedelta, timezone
 import queue
 import threading
-from typing import Any, Iterator, Callable
-
-from pacsys.drf3.event import ClockEvent, PeriodicEvent
+from collections.abc import Callable, Iterator
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from pacsys.acnet.errors import ERR_NOPROP, ERR_OK, ERR_RETRY, FACILITY_ACNET, FACILITY_DBM
+from pacsys.aio._backends import AsyncBackend as _AsyncBackend
+from pacsys.aio._subscription import AsyncSubscriptionHandle
 from pacsys.backends import Backend
 from pacsys.backends._dispatch import CallbackDispatcher
 from pacsys.drf3 import parse_request
+from pacsys.drf3.event import ClockEvent, NeverEvent, PeriodicEvent
 from pacsys.drf3.field import DEFAULT_FIELD_FOR_PROPERTY
 from pacsys.drf3.range import ARRAY_RANGE, BYTE_RANGE
-from pacsys.types import (
-    Value,
-    Reading,
-    WriteResult,
-    BackendCapability,
-    DispatchMode,
-    ValueType,
-    DeviceMeta,
-    SubscriptionHandle,
-    ReadingCallback,
-    ErrorCallback,
-)
-from pacsys.aio._backends import AsyncBackend as _AsyncBackend
-from pacsys.aio._subscription import AsyncSubscriptionHandle
-from pacsys.errors import DeviceError
-from pacsys.drf3.event import NeverEvent
 from pacsys.drf_utils import get_device_name
+from pacsys.errors import DeviceError
+from pacsys.types import (
+    BackendCapability,
+    DeviceMeta,
+    DispatchMode,
+    ErrorCallback,
+    Reading,
+    ReadingCallback,
+    SubscriptionHandle,
+    Value,
+    ValueType,
+    WriteResult,
+)
 
 
 def _base_key(drf: str) -> str:
@@ -141,7 +140,7 @@ def _apply_range(drf: str, value: Any, rng: ARRAY_RANGE | BYTE_RANGE | None) -> 
                 return value[offset : offset + length]
             return value[offset:]
     except (TypeError, IndexError) as e:
-        raise DeviceError(drf, FACILITY_ACNET, ERR_RETRY, f"Cannot apply range to stored value: {e}")
+        raise DeviceError(drf, FACILITY_ACNET, ERR_RETRY, f"Cannot apply range to stored value: {e}") from e
 
     return value
 
@@ -221,9 +220,7 @@ def _write_range(existing: Any, value: Any, rng: ARRAY_RANGE | BYTE_RANGE) -> An
     """
     import numpy as np
 
-    if isinstance(existing, np.ndarray):
-        out = existing.copy()
-    elif isinstance(existing, (list, bytearray)):
+    if isinstance(existing, (np.ndarray, list, bytearray)):
         out = existing.copy()
     elif isinstance(existing, bytes):
         out = bytearray(existing)
@@ -1171,7 +1168,7 @@ try:
 
         monkeypatch.setattr(pacsys, "_global_backend", fake_backend)
         monkeypatch.setattr(pacsys, "_backend_initialized", True)
-        yield fake_backend
+        return fake_backend
 
 except ImportError:
     # pytest not installed, fixtures not available

@@ -1,7 +1,7 @@
 from enum import Enum
 
 
-class DRF_PROPERTY(Enum):
+class DRF_PROPERTY(Enum):  # noqa: N801 -- established DRF API
     READING = ":"
     SETTING = "_"
     STATUS = "|"
@@ -61,8 +61,7 @@ def parse_property(raw_string: str) -> DRF_PROPERTY:
     rs_upper = raw_string.upper()
     if rs_upper in DRF_PROPERTY_ALIASES:
         return DRF_PROPERTY_ALIASES[rs_upper]
-    else:
-        raise ValueError(f"Invalid property {raw_string}")
+    raise ValueError(f"Invalid property {raw_string}")
 
 
 def get_default_property(raw_string: str) -> DRF_PROPERTY:

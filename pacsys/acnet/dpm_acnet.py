@@ -12,7 +12,6 @@ import queue
 import threading
 import time
 from dataclasses import dataclass
-from typing import Optional
 
 from pacsys.dpm_protocol import (
     AddToList_reply,
@@ -57,7 +56,7 @@ class DPMReading:
     cycle: int = 0
     status: int = 0
     data: object = None
-    meta: Optional[dict] = None
+    meta: dict | None = None
     micros: object = None  # Per-sample timestamps from TimedScalarArray (int64 list)
 
 
@@ -90,7 +89,7 @@ class DPMAcnet:
         self,
         host: str = ACSYS_PROXY_HOST,
         port: int = ACNET_TCP_PORT,
-        dpm_node: Optional[str] = None,
+        dpm_node: str | None = None,
         *,
         trace: bool = False,
     ):
@@ -109,12 +108,12 @@ class DPMAcnet:
         self._trace = trace
 
         # ACNET connection
-        self._con: Optional[AcnetConnectionTCP] = None
+        self._con: AcnetConnectionTCP | None = None
 
         # DPM state
-        self._dpm_task: Optional[str] = None
-        self._dpm_node: Optional[int] = None
-        self._list_id: Optional[int] = None
+        self._dpm_task: str | None = None
+        self._dpm_node: int | None = None
+        self._list_id: int | None = None
         self._active = False
 
         # Request tracking
@@ -152,22 +151,22 @@ class DPMAcnet:
             self.close()
             raise
 
-        logger.info(f"Connected to DPM at {self._dpm_task}, list_id={self._list_id}")
+        logger.info("Connected to DPM at %s, list_id=%s", self._dpm_task, self._list_id)
 
     def close(self):
         """Close the connection."""
         if self._request_ctx:
             try:
                 self._request_ctx.cancel()
-            except Exception:
-                pass
+            except Exception:  # noqa: BLE001
+                logger.debug("Failed to cancel DPM request context", exc_info=True)
             self._request_ctx = None
 
         if self._con:
             try:
                 self._con.close()
-            except Exception:
-                pass
+            except Exception:  # noqa: BLE001
+                logger.debug("Failed to close DPM ACNET connection", exc_info=True)
             self._con = None
 
         self._list_id = None
@@ -183,12 +182,12 @@ class DPMAcnet:
         if self._desired_node:
             # Use specified node
             self._dpm_node = self._con.get_node(self._desired_node)
-            logger.debug(f"Using specified DPM node: {self._desired_node} ({self._dpm_node})")
+            logger.debug("Using specified DPM node: %s (%s)", self._desired_node, self._dpm_node)
         else:
             # Use known DPM node (DPM06 is known to work)
             # Service discovery via MCAST can cause issues with multiple ACKs
             self._dpm_node = self._con.get_node("DPM06")
-            logger.debug(f"Using DPM06 node: {self._dpm_node}")
+            logger.debug("Using DPM06 node: %s", self._dpm_node)
 
     def _open_list(self):
         """Open a new DPM list."""
@@ -206,7 +205,7 @@ class DPMAcnet:
                 else:
                     # Store for later processing
                     self._handle_dpm_reply(resp)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 result["error"] = str(e)
             result_event.set()
 
@@ -240,7 +239,7 @@ class DPMAcnet:
         def handle_reply(reply):
             try:
                 result["reply"] = unmarshal_reply(iter(reply.data))
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 result["error"] = str(e)
             result_event.set()
 
@@ -272,9 +271,9 @@ class DPMAcnet:
             drf: DRF3 format device request string
         """
         if not isinstance(tag, int):
-            raise ValueError("tag must be an integer")
+            raise TypeError("tag must be an integer")
         if not isinstance(drf, str):
-            raise ValueError("drf must be a string")
+            raise TypeError("drf must be a string")
 
         msg = AddToList_request()
         msg.list_id = self.list_id
@@ -291,7 +290,7 @@ class DPMAcnet:
         if not drf.startswith("#"):
             self._dev_list[tag] = drf
 
-        logger.debug(f"Added entry tag={tag}, drf={drf}")
+        logger.debug("Added entry tag=%s, drf=%s", tag, drf)
 
     def start(self, model: str | None = None):
         """Start data acquisition."""
@@ -317,10 +316,11 @@ class DPMAcnet:
         msg = StopList_request()
         msg.list_id = self.list_id
 
-        try:
-            self._send_request(msg)
-        except Exception as e:
-            logger.warning(f"Error stopping list: {e}")
+        reply = self._send_request(msg)
+        if not isinstance(reply, Status_reply):
+            raise DPMError(-1, f"Expected Status_reply, got {type(reply).__name__}")
+        if reply.status < 0:
+            raise DPMError(reply.status, "StopList failed")
 
         self._active = False
         logger.debug("Stopped DPM acquisition")
@@ -330,10 +330,11 @@ class DPMAcnet:
         msg = ClearList_request()
         msg.list_id = self.list_id
 
-        try:
-            self._send_request(msg)
-        except Exception as e:
-            logger.warning(f"Error clearing list: {e}")
+        reply = self._send_request(msg)
+        if not isinstance(reply, ListStatus_reply):
+            raise DPMError(-1, f"Expected ListStatus_reply, got {type(reply).__name__}")
+        if reply.status < 0:
+            raise DPMError(reply.status, "ClearList failed")
 
         self._dev_list.clear()
         self._meta.clear()
@@ -459,12 +460,14 @@ class DPMAcnet:
                 stacklevel=2,
             )
 
+        read_failed = True
         try:
             start = time.time()
             for reading in self.readings(timeout=timeout):
                 if reading.ref_id == tag:
                     if reading.status < 0:
                         raise DPMError(reading.status, f"Error reading {drf}")
+                    read_failed = False
                     return reading
                 if time.time() - start > timeout:
                     break
@@ -473,7 +476,13 @@ class DPMAcnet:
 
         finally:
             if not was_active:
-                self.stop()
+                try:
+                    self.stop()
+                except Exception:  # noqa: BLE001
+                    logger.exception("Failed to stop DPM acquisition after reading %s; closing connection", drf)
+                    self.close()
+                    if not read_failed:
+                        raise
 
     def __enter__(self):
         self.connect()

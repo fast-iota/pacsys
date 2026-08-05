@@ -21,9 +21,9 @@ from pacsys.backends.acl import (
     ACLBackend,
     _acl_read_command,
     _is_basic_status_request,
+    _is_error_response,
     _parse_acl_line,
     _parse_raw_hex,
-    _is_error_response,
 )
 from pacsys.errors import DeviceError, ReadError
 from pacsys.types import Reading, ValueType
@@ -34,7 +34,7 @@ class TestACLBackendInit:
     """Tests for ACLBackend input validation."""
 
     @pytest.mark.parametrize(
-        "kwargs,match",
+        ("kwargs", "match"),
         [
             ({"base_url": ""}, "base_url cannot be empty"),
             ({"timeout": 0}, "timeout must be positive"),
@@ -50,7 +50,7 @@ class TestParseACLLine:
     """Tests for _parse_acl_line - parses full ACL output lines."""
 
     @pytest.mark.parametrize(
-        "line,expected_value,expected_type",
+        ("line", "expected_value", "expected_type"),
         [
             # Scalar with device name and units
             ("M:OUTTMP       =  12.34 DegF", 12.34, ValueType.SCALAR),
@@ -173,7 +173,7 @@ class TestParseRawHex:
     """Tests for _parse_raw_hex - parses ACL /raw hex output."""
 
     @pytest.mark.parametrize(
-        "line,expected",
+        ("line", "expected"),
         [
             ("M:OUTTMP = 0x42900000", bytes.fromhex("42900000")),
             ("M:OUTTMP = 0x4290 0x0000", bytes.fromhex("42900000")),
@@ -451,7 +451,7 @@ class TestIsBasicStatusRequest:
     """Tests for _is_basic_status_request - detects bare STATUS DRFs."""
 
     @pytest.mark.parametrize(
-        "drf,expected",
+        ("drf", "expected"),
         [
             ("N|LGXS", True),  # qualifier char
             ("N:LGXS.STATUS", True),  # explicit property

@@ -82,6 +82,31 @@ class TestAuthenticationInit:
                 KerberosAuth()
 
 
+class TestGSSFailureMapping:
+    def test_security_context_failure_raises_authentication_error(self):
+        mock_gssapi = MockGSSAPIModule()
+
+        def fail_security_context(**kwargs):
+            raise mock_gssapi.exceptions.GSSError("context initialization failed")
+
+        mock_gssapi.SecurityContext = staticmethod(fail_security_context)
+        auth = create_mock_kerberos_auth()
+        auth._get_credentials.return_value = mock_gssapi.Credentials()
+        conn = mock.MagicMock()
+        conn.list_id = 1
+        conn.recv_message.return_value = make_auth_reply("dpm")
+
+        with mock.patch.dict("sys.modules", {"gssapi": mock_gssapi}):
+            backend = DPMHTTPBackend(auth=auth)
+            try:
+                with pytest.raises(AuthenticationError, match="Kerberos authentication failed") as exc_info:
+                    backend._authenticate_connection(conn)
+            finally:
+                backend.close()
+
+        assert isinstance(exc_info.value.__cause__, mock_gssapi.exceptions.GSSError)
+
+
 class TestWriteWithoutAuth:
     """Tests for write operations without authentication."""
 

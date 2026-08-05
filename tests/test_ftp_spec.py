@@ -15,7 +15,6 @@ from pacsys.acnet.ftp_spec import (
     parse_ftp_event,
 )
 
-
 # ---- FTP basic ----
 
 

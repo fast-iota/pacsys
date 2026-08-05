@@ -10,8 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pacsys.acnet.errors import AcnetError
-from pacsys.acnet.errors import FTP_COLLECTING, FTP_PEND, FTP_WAIT_DELAY, FTP_WAIT_EVENT
+from pacsys.acnet.errors import FTP_COLLECTING, FTP_PEND, FTP_WAIT_DELAY, FTP_WAIT_EVENT, AcnetError
 from pacsys.acnet.ftp import (
     FTP_CLASS_INFO,
     MAX_ACNET_MSG_SIZE,
@@ -50,7 +49,6 @@ from pacsys.acnet.ftp import (
     parse_snapshot_data_reply,
     parse_snapshot_setup_reply,
 )
-
 
 # =============================================================================
 # Test device fixtures
@@ -1009,7 +1007,7 @@ class TestSnapshotHandle:
         try:
             # Should NOT raise ValueError for 4096
             # (will fail at the network level since conn is mocked, but no ValueError)
-            with pytest.raises(Exception, match="(?!retrieval_max)"):
+            with pytest.raises(Exception, match=r"(?!retrieval_max)"):
                 handle.retrieve(num_points=4096, timeout=0.1)
         finally:
             handle.cancel()

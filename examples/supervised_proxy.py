@@ -16,8 +16,7 @@ import logging
 import os
 from logging.handlers import RotatingFileHandler
 
-import pacsys.aio as aio
-from pacsys import KerberosAuth
+from pacsys import KerberosAuth, aio
 from pacsys.supervised import (
     AuditLog,
     Policy,

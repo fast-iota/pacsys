@@ -8,14 +8,17 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Callable, Iterator, Optional
+from typing import TYPE_CHECKING
 
-from pacsys.types import DeviceSpec, Reading, SubscriptionHandle, Value, ValueType
-from pacsys.exp._resolve import resolve_drf, resolve_backend
+from pacsys.exp._resolve import resolve_backend, resolve_drf
 from pacsys.exp._values import numeric_value
+from pacsys.types import DeviceSpec, Reading, SubscriptionHandle, Value, ValueType
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
+
     import numpy as np
+
     from pacsys.backends import Backend
 
 # Alias builtins to avoid shadowing by methods
@@ -73,8 +76,8 @@ class MonitorResult:
     """Snapshot of collected monitoring data across channels."""
 
     channels: dict[str, ChannelData]
-    started: Optional[datetime] = None
-    stopped: Optional[datetime] = None
+    started: datetime | None = None
+    stopped: datetime | None = None
 
     def __getitem__(self, drf: DeviceSpec) -> ChannelData:
         return self._get_channel(drf)
@@ -153,7 +156,7 @@ class MonitorResult:
             try:
                 nums.append(numeric_value(v))
             except (TypeError, ValueError):
-                raise TypeError(f"Cannot compute stats on non-numeric value {type(v).__name__} in {drf}")
+                raise TypeError(f"Cannot compute stats on non-numeric value {type(v).__name__} in {drf}") from None
         return nums
 
     def _mean_one(self, drf: DeviceSpec) -> float | np.ndarray:
@@ -288,7 +291,7 @@ class MonitorResult:
         try:
             import numpy as np
         except ImportError:
-            raise ImportError("numpy is required for to_numpy(). Install with: pip install numpy")
+            raise ImportError("numpy is required for to_numpy(). Install with: pip install numpy") from None
         ch = self._get_channel(drf)
         ok = [r for r in ch.readings if r.ok and r.value is not None]
         if not ok:
@@ -316,7 +319,7 @@ class MonitorResult:
         try:
             import pandas as pd
         except ImportError:
-            raise ImportError("pandas is required for to_dataframe(). Install with: pip install pandas")
+            raise ImportError("pandas is required for to_dataframe(). Install with: pip install pandas") from None
 
         started = self.started
         if relative and started is None:
@@ -324,10 +327,7 @@ class MonitorResult:
 
         if drf is not None:
             ch = self._get_channel(drf)
-            rows = []
-            for r in ch.readings:
-                if r.ok:
-                    rows.append({"value": r.value, "units": r.units})
+            rows = [{"value": r.value, "units": r.units} for r in ch.readings if r.ok]
             if relative:
                 index = []
                 for r in ch.readings:
@@ -395,11 +395,11 @@ class Monitor:
         self._backend = backend
         self._lock = threading.Condition(threading.Lock())
         self._buffers: dict[str, deque[Reading]] = {drf: deque(maxlen=buffer_size) for drf in self._drfs}
-        self._counters: dict[str, int] = {drf: 0 for drf in self._drfs}
-        self._latest: dict[str, Reading | None] = {drf: None for drf in self._drfs}
+        self._counters: dict[str, int] = dict.fromkeys(self._drfs, 0)
+        self._latest: dict[str, Reading | None] = dict.fromkeys(self._drfs)
         self._started: datetime | None = None
         self._handle: SubscriptionHandle | None = None
-        self._received_at: dict[str, float | None] = {drf: None for drf in self._drfs}
+        self._received_at: dict[str, float | None] = dict.fromkeys(self._drfs)
         self._stale_after = stale_after
         self._on_stale = on_stale
         self._on_recover = on_recover
@@ -465,14 +465,14 @@ class Monitor:
                     try:
                         self._on_stale(drf, ch)
                     except Exception:
-                        logger.error("on_stale callback failed for %s", drf, exc_info=True)
+                        logger.exception("on_stale callback failed for %s", drf)
             for drf, ch in recover_events:
                 logger.info("channel %s recovered", drf)
                 if self._on_recover:
                     try:
                         self._on_recover(drf, ch)
                     except Exception:
-                        logger.error("on_recover callback failed for %s", drf, exc_info=True)
+                        logger.exception("on_recover callback failed for %s", drf)
             time.sleep(interval)
 
     def health(self, drf: DeviceSpec | None = None) -> ChannelHealth | dict[str, ChannelHealth]:

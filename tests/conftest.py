@@ -5,17 +5,17 @@ This module provides common fixtures used across multiple test files.
 """
 
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
 import pytest
 
-from pacsys.types import Reading, ValueType, DeviceMeta
+from pacsys.types import DeviceMeta, Reading, ValueType
 from tests.devices import (
-    make_jwt_token,
     MockGSSAPIModule,
     MockSocketWithReplies,
+    make_jwt_token,
 )
 
 _REAL_DIR = (Path(__file__).parent / "real").resolve()
@@ -42,7 +42,7 @@ def sample_reading():
         error_code=0,
         value=72.5,
         message=None,
-        timestamp=datetime(2024, 1, 1, 12, 0, 0),
+        timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
         cycle=1234,
         meta=DeviceMeta(
             device_index=12345,
