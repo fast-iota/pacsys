@@ -991,6 +991,11 @@ class DPMHTTPBackend(Backend):
                             else:
                                 if not reuse_safe:
                                     conn.close()
+                    else:
+                        # Boundary-safe decode errors keep connected=True, but the
+                        # list is un-stopped — close so release() discards (async twin
+                        # does the same)
+                        conn.close()
         except (PoolClosedError, PoolExhaustedError, DPMConnectionError, OSError) as e:
             transport_error = e
 

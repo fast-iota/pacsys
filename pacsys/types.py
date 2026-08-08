@@ -525,10 +525,17 @@ class CombinedStream:
         Readings are sorted by timestamp within each batch of available data,
         but global ordering is not guaranteed if streams have different latencies.
 
+        Delivery is destructive and at-most-once: readings are prefetched off the
+        constituent handles for batching, and prefetched-but-unyielded readings are
+        discarded (not requeued) if the iterator is abandoned early, the timeout
+        expires, or a subscription reports an error. Errors raise promptly without
+        draining buffers first.
+
         Args:
             timeout: Total timeout for the combined stream in seconds.
                     None = block forever (until all stopped)
-                    0 = non-blocking (drain buffered readings only)
+                    0 = non-blocking (drain buffered readings only, including
+                        buffers of already-stopped subscriptions)
 
         Yields:
             (reading, handle) pairs from any subscription
@@ -548,8 +555,7 @@ class CombinedStream:
             heap: list[tuple[datetime, int, Reading, SubscriptionHandle]] = []
             counter = 0
             for sub in self._subscriptions:
-                if sub.stopped:
-                    continue
+                # Stopped handles may still hold buffered readings -- drain them too
                 for reading, handle in sub.readings(timeout=0):
                     ts = reading.timestamp or datetime.min.replace(tzinfo=timezone.utc)
                     heapq.heappush(heap, (ts, counter, reading, handle))

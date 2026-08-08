@@ -176,8 +176,6 @@ def test_drf_parse(drf, expected_parts, expected_canonical, expected_qualified):
     [
         ("N:I2B1RI", "N:I2B1RI"),
         ("N_I2B1RI", "N:I2B1RI"),
-        ("N:I2B1RI@p,1000", "N:I2B1RI@p,1000"),
-        ("N_I2B1RI@p,1000", "N:I2B1RI@p,1000"),
         # Qualifier characters ^, #, ! must be recognized as ACNET names
         ("M^OUTTMP", "M:OUTTMP"),
         ("M#OUTTMP", "M:OUTTMP"),
@@ -185,11 +183,69 @@ def test_drf_parse(drf, expected_parts, expected_canonical, expected_qualified):
     ],
 )
 def test_drf_device_parse(drf, expected_canonical):
-    assert parse_device(drf).canonical_string == expected_canonical
+    dev = parse_device(drf)
+    assert dev.canonical_string == expected_canonical
+    assert dev.is_acnet
+
+
+def test_parse_device_epics_passthrough():
+    # Non-ACNET names pass through verbatim; full DRFs are not device names
+    dev = parse_device("N_I2B1RI@p,1000")
+    assert dev.canonical_string == "N_I2B1RI@p,1000"
+    assert not dev.is_acnet
 
 
 def test_get_qualified_device():
     assert get_qualified_device("N:I2B1RI", DRF_PROPERTY.SETTING) == "N_I2B1RI"
+
+
+def test_get_qualified_device_rejects_epics():
+    with pytest.raises(ValueError, match="non-ACNET"):
+        get_qualified_device("LINAC:CAV1:PHASE", DRF_PROPERTY.SETTING)
+
+
+@pytest.mark.parametrize(
+    "drf",
+    [
+        "M:OUTTMP.READING.RAW[0:2]",  # field before range
+        "M:OUTTMP.",
+        "M:OUTTMP@",
+        "M:OUTTMP..READING",
+        "M:OUTTMP[-1:5]",  # negative range rejected, must not become device name
+    ],
+)
+def test_parse_request_rejects_acnet_near_miss(drf):
+    with pytest.raises(ValueError, match="Invalid ACNET DRF"):
+        parse_request(drf)
+
+
+@pytest.mark.parametrize(
+    "drf",
+    [
+        "INVALID!",
+        "LINAC:CAV1:PHASE",
+        "temperature:water",
+        "SR:C01-MG:G02A{HFCor:FM1}Fld:SP",
+        "XF:31IDA-OP{Tbl-Ax:X1}Mtr",
+        "X:31IDA-OP{Tbl-Ax:X1}Mtr",  # ACNET-shaped prefix but braces -> EPICS
+    ],
+)
+def test_parse_request_epics_fallback(drf):
+    req = parse_request(drf)
+    assert req.device == drf
+    assert not req.is_acnet
+
+
+def test_parse_request_is_acnet_flag():
+    assert parse_request("M:OUTTMP.READING[0:2].RAW").is_acnet
+    assert parse_request("Z:ACLTST<-REDIR:N@UALL").is_acnet
+
+
+def test_to_qualified_rejects_epics():
+    with pytest.raises(ValueError, match="non-ACNET"):
+        parse_request("LINAC:CAV1:PHASE").to_qualified()
+    with pytest.raises(ValueError, match="non-ACNET"):
+        parse_request("LINAC:CAV1:PHASE").name_as(DRF_PROPERTY.SETTING)
 
 
 @pytest.mark.parametrize(

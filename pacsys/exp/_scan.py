@@ -11,7 +11,7 @@ from pacsys.exp._resolve import resolve_backend, resolve_drf
 from pacsys.exp._values import numeric_value
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
 
     from pacsys.backends import Backend
     from pacsys.types import DeviceSpec, Reading, Value, WriteResult
@@ -53,7 +53,7 @@ def scan(
     write_device: DeviceSpec,
     read_devices: list[DeviceSpec],
     *,
-    values: list[float] | None = None,
+    values: Iterable[float] | None = None,
     start: float | None = None,
     stop: float | None = None,
     steps: int | None = None,
@@ -67,8 +67,9 @@ def scan(
 ) -> ScanResult:
     """Ramp write_device through values, read read_devices at each step.
 
-    Provide either `values` (explicit list) or `start`/`stop`/`steps`
-    (linear range). Exactly one mode must be used.
+    Provide either `values` (any iterable of setpoints, e.g. list or
+    np.linspace) or `start`/`stop`/`steps` (linear range). Exactly one
+    mode must be used.
     """
     write_drf = resolve_drf(write_device)
     read_drfs = [resolve_drf(d) for d in read_devices]
@@ -141,7 +142,7 @@ def scan(
 
 
 def _build_values(
-    values: list[float] | None,
+    values: Iterable[float] | None,
     start: float | None,
     stop: float | None,
     steps: int | None,
@@ -156,9 +157,11 @@ def _build_values(
         raise ValueError("Provide either 'values' or 'start/stop/steps'")
 
     if has_explicit:
+        # Materialize first: ndarray truthiness is ambiguous/element-based
+        values = list(values)
         if not values:
             raise ValueError("values cannot be empty")
-        return list(values)
+        return values
 
     if start is None or stop is None or steps is None:
         raise ValueError("All of start, stop, steps must be provided for linear range")

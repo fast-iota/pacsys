@@ -44,6 +44,20 @@ class TestBuildValues:
         with pytest.raises(ValueError, match="steps must be >= 2"):
             _build_values(None, 0.0, 1.0, 1)
 
+    def test_numpy_linspace(self):
+        vals = _build_values(np.linspace(0.0, 1.0, 5), None, None, None)
+        assert vals == pytest.approx([0.0, 0.25, 0.5, 0.75, 1.0])
+
+    def test_numpy_single_zero_not_empty(self):
+        # bool(np.array([0.0])) is False -- must not be mis-rejected as empty
+        assert _build_values(np.array([0.0]), None, None, None) == [0.0]
+
+    def test_generator_and_empty_iterables(self):
+        assert _build_values((v for v in [1.0, 2.0]), None, None, None) == [1.0, 2.0]
+        for empty in (np.array([]), (v for v in []), ()):
+            with pytest.raises(ValueError, match="values cannot be empty"):
+                _build_values(empty, None, None, None)
+
 
 class TestScan:
     def test_basic_scan(self, fake):

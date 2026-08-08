@@ -673,6 +673,28 @@ class TestErrorHandling:
             finally:
                 backend.close()
 
+    def test_decode_error_connection_not_repooled(self):
+        """A boundary-safe decode error keeps connected=True, but the un-stopped
+        connection must be closed, not released back into the pool."""
+
+        class _UndecodableReply:
+            def marshal(self):
+                return b"\xff\xfe\xfd"  # well-framed, unmarshal fails
+
+        replies = [make_start_list(), _UndecodableReply()]
+        mock_socket = MockSocketWithReplies(list_id=1, replies=replies)
+
+        with mock.patch("socket.socket", return_value=mock_socket):
+            backend = DPMHTTPBackend()
+            try:
+                with pytest.raises(ReadError) as exc_info:
+                    backend.get_many([TEMP_DEVICE], timeout=2.0)
+                assert not exc_info.value.readings[0].ok
+                assert backend._get_pool().available_count == 0
+                assert mock_socket._closed
+            finally:
+                backend.close()
+
     def test_warning_status(self):
         """Positive status is treated as warning."""
         replies = [

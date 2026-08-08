@@ -184,10 +184,18 @@ class _SyncAcnetConnectionBase:
     # ------------------------------------------------------------------
 
     def connect(self):
-        """Connect to the remote ACNET daemon."""
-        self._start_reactor()
-        self._async = self._create_async()
-        self._run_sync(self._core.connect())
+        """Connect to the remote ACNET daemon.
+
+        A failed connect stops the reactor and clears state; the object can
+        be re-connected (fresh reactor and core).
+        """
+        try:
+            self._start_reactor()
+            self._async = self._create_async()
+            self._run_sync(self._core.connect())
+        except BaseException:
+            self.close()
+            raise
 
     def close(self):
         """Close the connection and clean up resources."""

@@ -6,11 +6,18 @@ and class code registry. Uses no network -- all ACNET interactions are mocked.
 """
 
 import struct
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pacsys.acnet.errors import FTP_COLLECTING, FTP_PEND, FTP_WAIT_DELAY, FTP_WAIT_EVENT, AcnetError
+from pacsys.acnet.errors import (
+    FTP_COLLECTING,
+    FTP_PEND,
+    FTP_WAIT_DELAY,
+    FTP_WAIT_EVENT,
+    AcnetError,
+    AcnetTimeoutError,
+)
 from pacsys.acnet.ftp import (
     FTP_CLASS_INFO,
     MAX_ACNET_MSG_SIZE,
@@ -1555,3 +1562,107 @@ class TestSnapshotStateTracking:
         assert handle.wait(timeout=2.0)
         assert handle.is_ready
         handle.cancel()
+
+    def _ok_restart(self, handle):
+        def fake_request_single(node, task, data, reply_handler, timeout):
+            reply = MagicMock()
+            reply.status = 0
+            reply.data = b""
+            reply_handler(reply)
+
+        handle._connection.request_single = fake_request_single
+
+    def test_restart_discards_queued_stale_ready(self):
+        """A cycle-1 READY queued before restart() must not satisfy the new wait()."""
+        import threading
+
+        from pacsys.acnet import ftp as ftp_mod
+
+        handle, rq = self._make_handle(per_device_errors=[FTP_PEND])
+        self._ok_restart(handle)
+        gate = threading.Event()
+        entered = threading.Event()
+        real_parse = ftp_mod._parse_status_update_states
+        calls = []
+
+        def blocking_parse(data, n):
+            if not calls:
+                calls.append(1)
+                entered.set()
+                assert gate.wait(timeout=5.0)
+            return real_parse(data, n)
+
+        pend = self._build_status_reply(0, [FTP_PEND])
+        ready = self._build_status_reply(0, [0])
+        try:
+            with patch.object(ftp_mod, "_parse_status_update_states", blocking_parse):
+                # Freeze the monitor mid-item on a harmless PENDING update
+                rq.put((0, pend, False))
+                assert entered.wait(timeout=2.0)
+                # Stale cycle-1 READY sits queued behind the frozen item
+                rq.put((0, ready, False))
+                handle.restart()  # drains the queued stale READY deterministically
+                gate.set()
+            # Monitor resumes with the harmless PENDING item; stale READY is gone
+            assert not handle.wait(timeout=0.3)
+            assert handle.state == SnapshotState.PENDING
+            # Fresh cycle-2 READY completes the wait
+            rq.put((0, ready, False))
+            assert handle.wait(timeout=2.0)
+        finally:
+            gate.set()
+            handle.cancel()
+
+    def test_restart_rejected_keeps_cycle1_state(self):
+        """FE rejection leaves the previous cycle's READY state intact."""
+        handle, rq = self._make_handle(per_device_errors=[FTP_PEND])
+        try:
+            data = self._build_status_reply(0, [0])
+            rq.put((0, data, False))
+            assert handle.wait(timeout=2.0)
+
+            def reject_request_single(node, task, data, reply_handler, timeout):
+                reply = MagicMock()
+                reply.status = -1
+                reply.data = b""
+                reply_handler(reply)
+
+            handle._connection.request_single = reject_request_single
+            with pytest.raises(AcnetError):
+                handle.restart()
+            assert handle.is_ready  # cycle-1 data still retrievable
+        finally:
+            handle.cancel()
+
+    def test_restart_ack_timeout_marks_error(self):
+        """No ack: outcome unknown -> all devices ERROR, wait() raises."""
+        handle, rq = self._make_handle(per_device_errors=[FTP_PEND])
+        try:
+            data = self._build_status_reply(0, [0])
+            rq.put((0, data, False))
+            assert handle.wait(timeout=2.0)
+
+            handle._connection.request_single = MagicMock()  # ack never arrives
+            with pytest.raises(AcnetTimeoutError):
+                handle.restart(timeout=0.1)
+            assert handle.state == SnapshotState.ERROR
+            with pytest.raises(AcnetError):
+                handle.wait(timeout=1.0)
+        finally:
+            handle.cancel()
+
+    def test_restart_drain_preserves_termination(self):
+        """A queued is_last survives the restart drain so the monitor exits."""
+        handle, rq = self._make_handle(per_device_errors=[FTP_PEND])
+        data = self._build_status_reply(0, [0])
+        rq.put((0, data, False))
+        assert handle.wait(timeout=2.0)
+
+        self._ok_restart(handle)
+        rq.put((-34, b"", True))  # stream-end (e.g. disconnect) queued pre-restart
+        handle.restart()
+        handle._monitor_thread.join(timeout=2.0)
+        assert not handle._monitor_thread.is_alive()
+        # Monitor exit marks non-terminal devices ERROR
+        with pytest.raises(AcnetError):
+            handle.wait(timeout=1.0)
