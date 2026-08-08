@@ -139,3 +139,80 @@ class TestKerberosAuth:
         with mock.patch.dict("sys.modules", {"gssapi": MockGSSAPI()}):
             with pytest.raises(AuthenticationError, match="No valid Kerberos credentials"):
                 KerberosAuth()
+
+    def test_lazy_name_failure_wrapped(self):
+        """gssapi resolves lazily: GSSError from creds.name must become AuthenticationError."""
+
+        class MockGSSError(Exception):
+            pass
+
+        class MockCreds:
+            lifetime = 3600
+
+            @property
+            def name(self):
+                raise MockGSSError("Expired credentials cache")
+
+        class MockGSSAPI:
+            class exceptions:  # noqa: N801 -- GSSAPI namespace
+                GSSError = MockGSSError
+
+            @staticmethod
+            def Credentials(usage=None):  # noqa: N802 -- GSSAPI method name
+                return MockCreds()
+
+        with mock.patch.dict("sys.modules", {"gssapi": MockGSSAPI()}):
+            with pytest.raises(AuthenticationError, match="No valid Kerberos credentials"):
+                KerberosAuth()
+
+    def test_lazy_lifetime_failure_wrapped(self):
+        """GSSError from creds.lifetime (expired ticket) must become AuthenticationError."""
+
+        class MockGSSError(Exception):
+            pass
+
+        class MockCreds:
+            name = "user@FNAL.GOV"
+
+            @property
+            def lifetime(self):
+                raise MockGSSError("Ticket expired")
+
+        class MockGSSAPI:
+            class exceptions:  # noqa: N801 -- GSSAPI namespace
+                GSSError = MockGSSError
+
+            @staticmethod
+            def Credentials(usage=None):  # noqa: N802 -- GSSAPI method name
+                return MockCreds()
+
+        with mock.patch.dict("sys.modules", {"gssapi": MockGSSAPI()}):
+            with pytest.raises(AuthenticationError, match="No valid Kerberos credentials"):
+                KerberosAuth()
+
+    def test_principal_no_second_unguarded_read(self):
+        """principal property must not re-read creds.name outside the boundary."""
+        reads = []
+
+        class MockCreds:
+            lifetime = 3600
+
+            @property
+            def name(self):
+                reads.append(1)
+                return "user@FNAL.GOV"
+
+        class MockGSSAPI:
+            class exceptions:  # noqa: N801 -- GSSAPI namespace
+                class GSSError(Exception):
+                    pass
+
+            @staticmethod
+            def Credentials(usage=None):  # noqa: N802 -- GSSAPI method name
+                return MockCreds()
+
+        with mock.patch.dict("sys.modules", {"gssapi": MockGSSAPI()}):
+            auth = KerberosAuth()
+            reads.clear()
+            assert auth.principal == "user@FNAL.GOV"
+            assert len(reads) == 1  # one guarded read per inspection, no extra property access

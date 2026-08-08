@@ -93,10 +93,14 @@ class CallbackDispatcher:
                     self._queue.put_nowait(None)
                 except queue.Full:
                     pass
-        if self._thread is not None:
+        # Snapshot guards concurrent close(); never join the worker from itself
+        # (close() from a callback runs on the worker thread -- _stop is set, so
+        # the loop exits right after the callback returns; thread is a daemon).
+        t = self._thread
+        if t is not None and t is not threading.current_thread():
             # If thread doesn't shutdown, ignore - it is a daemon
-            self._thread.join(timeout=2.0)
-            self._thread = None
+            t.join(timeout=2.0)
+        self._thread = None
 
     # ── internal ──
 

@@ -95,8 +95,7 @@ class TestDisconnectSingle:
             outgoing = MagicMock()
             outgoing._cancelled = False
             conn._reply_handlers[RequestId(1)] = outgoing
-            conn._reply_buffer[RequestId(2)].append((MagicMock(), 0.0))
-            conn._dead_requests.add(RequestId(3))
+            conn._reply_buffer[RequestId(2)].append((MagicMock(), 0))
             raw = struct.pack("<HhHHIHHH", ACNET_FLG_REQ, 0, 0, 0, 0, 0, 42, 18)
             incoming = AcnetPacket.parse(raw)
             conn._requests_in[incoming.reply_id] = incoming
@@ -111,7 +110,6 @@ class TestDisconnectSingle:
             assert outgoing._cancelled
             assert not conn._reply_handlers
             assert not conn._reply_buffer
-            assert not conn._dead_requests
             assert incoming.cancelled
             assert not conn._requests_in
             assert keepalive.cancelled()
@@ -202,7 +200,9 @@ class TestReplyBuffering:
     """Test that replies arriving before handler registration are buffered."""
 
     def test_reply_before_handler_is_buffered(self):
+        """During a registration window, unknown-ID replies are buffered."""
         conn = _make_tcp_conn()
+        conn._pending_sends = 1
         reply = _make_reply_packet(req_id=42)
 
         conn._handle_reply(reply)
@@ -210,6 +210,15 @@ class TestReplyBuffering:
         req_id = RequestId(42)
         assert req_id in conn._reply_buffer
         assert len(conn._reply_buffer[req_id]) == 1
+
+    def test_reply_without_pending_send_dropped(self):
+        """Outside any registration window an unknown-ID reply is provably stale."""
+        conn = _make_tcp_conn()
+        assert conn._pending_sends == 0
+
+        conn._handle_reply(_make_reply_packet(req_id=42))
+
+        assert RequestId(42) not in conn._reply_buffer
 
     def test_buffered_replies_delivered_on_registration(self):
         """Buffered replies are delivered when send_request registers the handler."""
@@ -219,7 +228,7 @@ class TestReplyBuffering:
             req_id = RequestId(7)
 
             reply = _make_reply_packet(req_id=7, last=True)
-            conn._reply_buffer[req_id].append((reply, float("inf")))
+            conn._reply_buffer[req_id].append((reply, 1))  # post-ack seq (ack_seq stays 0)
 
             received = []
             ack = struct.pack(">HhH", 2, 0, 7)
@@ -241,7 +250,7 @@ class TestReplyBuffering:
             req_id = RequestId(7)
 
             stale_reply = _make_reply_packet(req_id=7, last=True)
-            conn._reply_buffer[req_id].append((stale_reply, 0.0))
+            conn._reply_buffer[req_id].append((stale_reply, 0))  # pre-ack seq
 
             received = []
             ack = struct.pack(">HhH", 2, 0, 7)
@@ -296,35 +305,139 @@ class TestReplyBuffering:
 
         assert len(received) == 1
         assert req_id not in conn._reply_handlers
-        assert req_id in conn._dead_requests
         assert ctx.cancelled
 
-    def test_late_reply_for_dead_request_not_buffered(self):
-        """Replies for cancelled/completed requests must not leak into _reply_buffer."""
+    def test_late_reply_after_completion_not_buffered(self):
+        """Replies for completed requests must not leak into _reply_buffer when idle."""
         conn = _make_tcp_conn()
         req_id = RequestId(99)
-
-        conn._dead_requests.add(req_id)
 
         reply = _make_reply_packet(req_id=99)
         conn._handle_reply(reply)
 
         assert req_id not in conn._reply_buffer
 
-    def test_orphaned_buffer_evicted_after_cap(self):
-        """Excess buffered replies for an unknown request ID get evicted."""
+    def test_orphaned_buffer_fifo_eviction_keeps_newest(self):
+        """Overflow evicts oldest entries; the newest (possibly fresh) survive."""
         from pacsys.acnet.async_connection import _MAX_BUFFERED_REPLIES
 
         conn = _make_tcp_conn()
+        conn._pending_sends = 1
         req_id = RequestId(77)
 
-        for _ in range(_MAX_BUFFERED_REPLIES):
-            conn._handle_reply(_make_reply_packet(req_id=77, last=False))
-        assert len(conn._reply_buffer[req_id]) == _MAX_BUFFERED_REPLIES
+        replies = [_make_reply_packet(req_id=77, last=False) for _ in range(_MAX_BUFFERED_REPLIES + 1)]
+        for r in replies:
+            conn._handle_reply(r)
 
-        conn._handle_reply(_make_reply_packet(req_id=77, last=False))
-        assert req_id not in conn._reply_buffer
-        assert req_id in conn._dead_requests
+        buf = conn._reply_buffer[req_id]
+        assert len(buf) == _MAX_BUFFERED_REPLIES
+        kept = [r for r, _ in buf]
+        assert replies[0] not in kept  # oldest evicted
+        assert kept[-1] is replies[-1]  # newest kept
+
+
+class TestRequestIdReuseRace:
+    """acnetd recycles request IDs; a fresh first reply batched with the
+    SEND_REQUEST ack must be delivered, while stale replies from the ID's
+    previous life must be discarded (ack-sequence causality)."""
+
+    def _complete_request(self, conn, req_id_int):
+        """Run a request to completion so the ID is retired (was: tombstoned)."""
+        received = []
+        ctx = AsyncRequestContext(
+            connection=conn,
+            task="DPM",
+            node=0,
+            request_id=RequestId(req_id_int),
+            multiple_reply=False,
+            timeout=5000,
+            reply_handler=lambda r: received.append(r),
+        )
+        conn._reply_handlers[RequestId(req_id_int)] = ctx
+        conn._handle_reply(_make_reply_packet(req_id=req_id_int, last=True))
+        assert RequestId(req_id_int) not in conn._reply_handlers
+        return received
+
+    def test_reused_id_reply_batched_with_ack_delivered(self):
+        """The core race: ID retired, reused, first reply arrives before
+        send_request resumes from the ack."""
+
+        async def _test():
+            conn = _make_tcp_conn()
+            self._complete_request(conn, 7)
+
+            fresh = _make_reply_packet(req_id=7, last=True)
+            ack = struct.pack(">HhH", 2, 0, 7)
+
+            async def fake_xact(content, timeout=5.0):
+                # Simulate the read loop processing ACK then the batched reply
+                # before send_request resumes.
+                conn._ack_recv_seq = conn._recv_seq
+                conn._handle_reply(fresh)
+                return ack
+
+            received = []
+            with patch.object(conn, "_xact", new=fake_xact):
+                await conn.send_request(node=0x0901, task="DPM", data=b"", reply_handler=lambda r: received.append(r))
+
+            assert received == [fresh]
+
+        _run(_test())
+
+    def test_stale_reply_during_send_discarded_fresh_kept(self):
+        """A stale reply landing before our ack is discarded even though it
+        arrives during the registration window; the post-ack reply survives."""
+
+        async def _test():
+            conn = _make_tcp_conn()
+            self._complete_request(conn, 7)
+
+            stale = _make_reply_packet(req_id=7, last=True)
+            fresh = _make_reply_packet(req_id=7, last=True)
+            ack = struct.pack(">HhH", 2, 0, 7)
+
+            async def fake_xact(content, timeout=5.0):
+                conn._handle_reply(stale)  # e.g. arrived while waiting on _cmd_lock
+                conn._ack_recv_seq = conn._recv_seq
+                conn._handle_reply(fresh)
+                return ack
+
+            received = []
+            with patch.object(conn, "_xact", new=fake_xact):
+                await conn.send_request(node=0x0901, task="DPM", data=b"", reply_handler=lambda r: received.append(r))
+
+            assert received == [fresh]  # stale never misattributed
+
+        _run(_test())
+
+    def test_stray_buffers_cleared_when_windows_close(self):
+        async def _test():
+            conn = _make_tcp_conn()
+            stray = _make_reply_packet(req_id=99, last=False)
+            ack = struct.pack(">HhH", 2, 0, 7)
+
+            async def fake_xact(content, timeout=5.0):
+                conn._ack_recv_seq = conn._recv_seq
+                conn._handle_reply(stray)  # unrelated ID, buffered during window
+                return ack
+
+            with patch.object(conn, "_xact", new=fake_xact):
+                await conn.send_request(node=0x0901, task="DPM", data=b"", reply_handler=lambda r: None)
+
+            assert conn._pending_sends == 0
+            assert len(conn._reply_buffer) == 0
+
+        _run(_test())
+
+    def test_window_closes_on_send_failure(self):
+        async def _test():
+            conn = _make_tcp_conn()
+            with patch.object(conn, "_xact", new=AsyncMock(side_effect=AcnetUnavailableError)):
+                with pytest.raises(AcnetUnavailableError):
+                    await conn.send_request(node=0x0901, task="DPM", data=b"", reply_handler=lambda r: None)
+            assert conn._pending_sends == 0
+
+        _run(_test())
 
 
 class TestCloseCleanup:
@@ -346,7 +459,6 @@ class TestCloseCleanup:
             )
             conn._reply_handlers[req_id] = ctx
             conn._reply_buffer[RequestId(51)].append("stale")
-            conn._dead_requests.add(RequestId(52))
 
             conn._read_task = None
             conn._keepalive_task = None
@@ -355,7 +467,6 @@ class TestCloseCleanup:
 
             assert len(conn._reply_handlers) == 0
             assert len(conn._reply_buffer) == 0
-            assert len(conn._dead_requests) == 0
             assert conn._writer is None
 
         _run(_test())

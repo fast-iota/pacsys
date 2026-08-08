@@ -65,8 +65,14 @@ class AsyncGRPCBackend(AsyncBackend):
                 raise RuntimeError("Backend is closed")
             if self._connected:
                 return
-            self._core = _DaqCore(self._host, self._port, self._auth, self._timeout)
-            await self._core.connect()
+            # Publish only after connect + closed re-check so a concurrent
+            # close() cannot strand a half-connected core.
+            core = _DaqCore(self._host, self._port, self._auth, self._timeout)
+            await core.connect()
+            if self._closed:
+                await core.close()
+                raise RuntimeError("Backend is closed")
+            self._core = core
             self._connected = True
 
     @property

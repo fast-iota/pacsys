@@ -242,6 +242,132 @@ class TestSSHClientConnect:
         # Transport was closed during cleanup (it hadn't been appended to _transports yet)
         mock_transport.close.assert_called_once()
 
+    @patch("paramiko.Transport")
+    @patch("socket.create_connection")
+    def test_missing_key_file_cleans_up_and_reports_hop(self, mock_connect, mock_transport_cls):
+        """SSHConnectionError from _authenticate (missing key) must clean up hop-1 state."""
+        hop1_transport = _make_mock_transport()
+        hop2_transport = _make_mock_transport()
+        mock_transport_cls.side_effect = [hop1_transport, hop2_transport]
+        mock_connect.return_value = MagicMock()
+
+        hops = [
+            SSHHop("jump", auth_method="password", password="pw"),
+            SSHHop("target", auth_method="key", key_filename="/nonexistent/key"),
+        ]
+        ssh = SSHClient(hops)
+        with pytest.raises(SSHConnectionError, match="Key file not found") as exc_info:
+            ssh._ensure_connected()
+
+        assert exc_info.value.hop is hops[1]
+        assert ssh.connected is False
+        assert ssh._transports == []
+        assert ssh._channels == []
+        hop1_transport.close.assert_called()
+        hop2_transport.close.assert_called()
+
+    @patch("paramiko.Transport")
+    @patch("socket.create_connection")
+    def test_retry_after_failure_starts_fresh(self, mock_connect, mock_transport_cls):
+        """A failed connect must not leave stale transports for the next attempt to chain through."""
+        bad_transport = _make_mock_transport()
+        bad_transport.auth_password.side_effect = paramiko.AuthenticationException("bad pw")
+        good1, good2 = _make_mock_transport(), _make_mock_transport()
+        mock_transport_cls.side_effect = [bad_transport, good1, good2]
+        mock_connect.return_value = MagicMock()
+
+        ssh = SSHClient(
+            [
+                SSHHop("jump", auth_method="password", password="pw"),
+                SSHHop("target", auth_method="password", password="pw"),
+            ]
+        )
+        with pytest.raises(SSHConnectionError):
+            ssh._ensure_connected()
+        assert ssh._transports == []
+
+        ssh._ensure_connected()
+        assert ssh.connected is True
+        # Retry chained hop 2 through the fresh hop-1 transport, not a stale one
+        good1.open_channel.assert_called_once()
+        bad_transport.open_channel.assert_not_called()
+
+    @patch("paramiko.Transport")
+    @patch("socket.create_connection")
+    def test_multi_hop_failure_reports_failing_hop(self, mock_connect, mock_transport_cls):
+        """The raised error must name the hop that failed, not hop 0."""
+        hop1_transport = _make_mock_transport()
+        hop2_transport = _make_mock_transport()
+        hop2_transport.auth_password.side_effect = paramiko.AuthenticationException("bad pw")
+        mock_transport_cls.side_effect = [hop1_transport, hop2_transport]
+        mock_connect.return_value = MagicMock()
+
+        hops = [
+            SSHHop("jump", auth_method="password", password="pw1"),
+            SSHHop("target", auth_method="password", password="pw2"),
+        ]
+        ssh = SSHClient(hops)
+        with pytest.raises(SSHConnectionError, match="Authentication failed") as exc_info:
+            ssh._ensure_connected()
+        assert exc_info.value.hop is hops[1]
+
+    @patch("paramiko.Transport")
+    @patch("socket.create_connection")
+    def test_keyboard_interrupt_cleans_up_and_reraises(self, mock_connect, mock_transport_cls):
+        mock_transport = _make_mock_transport()
+        mock_transport.auth_password.side_effect = KeyboardInterrupt
+        mock_transport_cls.return_value = mock_transport
+        mock_connect.return_value = MagicMock()
+
+        ssh = SSHClient(SSHHop("host", auth_method="password", password="pw"))
+        with pytest.raises(KeyboardInterrupt):
+            ssh._ensure_connected()
+        assert ssh._transports == []
+        mock_transport.close.assert_called_once()
+
+    def test_effective_username_gss_failure_wrapped(self):
+        """Direct effective_username access must raise AuthenticationError, not raw GSSError."""
+        from pacsys.errors import AuthenticationError
+
+        class MockGSSError(Exception):
+            pass
+
+        class MockGSSAPI:
+            class exceptions:  # noqa: N801 -- GSSAPI namespace
+                GSSError = MockGSSError
+
+            @staticmethod
+            def Credentials(usage=None):  # noqa: N802 -- GSSAPI method name
+                raise MockGSSError("no ticket")
+
+        hop = SSHHop("host", auth_method="gssapi")
+        with patch.dict("sys.modules", {"gssapi": MockGSSAPI()}):
+            with pytest.raises(AuthenticationError, match="No valid Kerberos credentials"):
+                _ = hop.effective_username
+
+    def test_gssapi_error_wrapped(self):
+        """Raw GSSError from GSSAPI auth is wrapped as SSHConnectionError with the hop."""
+        gssapi_exc = pytest.importorskip("gssapi.exceptions")
+        hop = SSHHop("host", username="user", auth_method="gssapi")
+        ssh = SSHClient(hop)
+        transport = _make_mock_transport()
+        transport.auth_gssapi_with_mic.side_effect = gssapi_exc.GSSError(851968, 0)
+        with pytest.raises(SSHConnectionError, match="GSSAPI authentication failed") as exc_info:
+            ssh._authenticate(transport, hop)
+        assert exc_info.value.hop is hop
+
+    @patch("paramiko.Transport")
+    @patch("socket.create_connection")
+    def test_socket_closed_if_transport_ctor_fails(self, mock_connect, mock_transport_cls):
+        mock_sock = MagicMock()
+        mock_connect.return_value = mock_sock
+        mock_transport_cls.side_effect = paramiko.SSHException("bad banner")
+
+        ssh = SSHClient(SSHHop("host", auth_method="password", password="pw"))
+        with pytest.raises(SSHConnectionError, match="Connection failed"):
+            ssh._ensure_connected()
+        mock_sock.close.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # SSHClient.exec()

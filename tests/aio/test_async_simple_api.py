@@ -1,5 +1,6 @@
 """Tests for pacsys.aio module-level convenience API."""
 
+import asyncio
 from unittest import mock
 
 import pytest
@@ -14,6 +15,7 @@ def reset_aio_state():
     """Reset global state before/after each test."""
     aio._global_async_backend = None
     aio._async_backend_initialized = False
+    aio._owner_loop = None
     aio._config_backend = None
     aio._config_auth = None
     aio._config_role = None
@@ -24,6 +26,7 @@ def reset_aio_state():
     yield
     aio._global_async_backend = None
     aio._async_backend_initialized = False
+    aio._owner_loop = None
     aio._config_backend = None
     aio._config_auth = None
     aio._config_role = None
@@ -69,12 +72,31 @@ class TestConfigure:
         with pytest.raises(ValueError, match="auth string must be 'krb'"):
             aio.configure(auth="password")
 
-    def test_configure_after_init_auto_replaces(self, fake_backend):
+    def test_configure_after_init_no_loop_raises(self, fake_backend):
+        """Without a running loop the old backend cannot be cleaned up: fail fast, keep state."""
+        with pytest.raises(RuntimeError, match="running event loop"):
+            aio.configure(host="other")
+        assert aio._global_async_backend is fake_backend
+        assert aio._async_backend_initialized is True
+        assert aio._config_host is None
+        fake_backend.close.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_configure_after_init_schedules_close(self, fake_backend):
         aio.configure(host="other")
-        assert fake_backend._closed is True
         assert aio._global_async_backend is None
         assert aio._async_backend_initialized is False
         assert aio._config_host == "other"
+        await asyncio.gather(*aio._background_tasks)
+        fake_backend.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_configure_close_failure_logged_not_raised(self, fake_backend, caplog):
+        fake_backend.close = mock.AsyncMock(side_effect=OSError("boom"))
+        aio.configure(host="other")
+        with caplog.at_level("ERROR", logger="pacsys.aio"):
+            await asyncio.gather(*aio._background_tasks)
+        assert any("Failed to close replaced async backend" in r.message for r in caplog.records)
 
 
 class TestShutdown:
@@ -171,6 +193,71 @@ class TestModuleAPI:
         with pytest.raises(ReadError) as exc_info:
             await aio.read_many(["M:OUTTMP"])
         assert exc_info.value is transport_err
+
+
+class TestLoopOwnership:
+    """The global backend is loop-bound; cross-loop reuse must fail fast."""
+
+    def _patched_backend(self):
+        mock_instance = mock.AsyncMock()
+        mock_instance.read = mock.AsyncMock(return_value=72.5)
+        return mock.patch("pacsys.aio._dpm_http.AsyncDPMHTTPBackend", return_value=mock_instance)
+
+    def test_access_from_second_loop_raises(self):
+        with self._patched_backend():
+            asyncio.run(aio.read("M:OUTTMP"))  # creates backend, then loop closes
+
+            async def second():
+                with pytest.raises(RuntimeError, match="loop that has closed"):
+                    await aio.read("M:OUTTMP")
+
+            asyncio.run(second())
+
+    def test_shutdown_from_second_loop_abandons_dead_owner(self, caplog):
+        with self._patched_backend():
+            asyncio.run(aio.read("M:OUTTMP"))
+
+            async def second():
+                with caplog.at_level("WARNING", logger="pacsys.aio"):
+                    await aio.shutdown()
+                assert any("Abandoning async backend" in r.message for r in caplog.records)
+                # Fresh backend now works on this loop
+                assert await aio.read("M:OUTTMP") == 72.5
+
+            asyncio.run(second())
+        assert aio._global_async_backend is not None  # rebuilt in second loop
+
+    @pytest.mark.asyncio
+    async def test_shutdown_from_other_live_loop_raises(self, fake_backend):
+        live_owner = mock.Mock()
+        live_owner.is_closed.return_value = False
+        aio._owner_loop = live_owner
+        with pytest.raises(RuntimeError, match="owning loop"):
+            await aio.shutdown()
+        assert aio._global_async_backend is fake_backend
+        fake_backend.close.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_configure_from_other_live_loop_raises(self, fake_backend):
+        live_owner = mock.Mock()
+        live_owner.is_closed.return_value = False
+        aio._owner_loop = live_owner
+        with pytest.raises(RuntimeError, match="owning loop first"):
+            aio.configure(host="other")
+        assert aio._global_async_backend is fake_backend
+
+    @pytest.mark.asyncio
+    async def test_configure_dead_owner_abandons_without_close(self, fake_backend, caplog):
+        dead_owner = mock.Mock()
+        dead_owner.is_closed.return_value = True
+        aio._owner_loop = dead_owner
+        with caplog.at_level("WARNING", logger="pacsys.aio"):
+            aio.configure(host="other")
+        assert any("Abandoning async backend" in r.message for r in caplog.records)
+        assert aio._global_async_backend is None
+        assert aio._config_host == "other"
+        await asyncio.gather(*aio._background_tasks)
+        fake_backend.close.assert_not_awaited()  # cross-loop close would be unsafe
 
 
 class TestLazyInit:
