@@ -20,6 +20,7 @@ from enum import IntEnum
 from . import rad50
 from .connection_sync import AcnetConnectionTCP, AcnetRequestContext
 from .errors import (
+    ACNET_DISCONNECTED,
     FACILITY_FTP,
     FTP_COLLECTING,
     FTP_PEND,
@@ -312,7 +313,7 @@ def build_class_info_request(devices: list[FTPDevice]) -> bytes:
     return buf
 
 
-def _calculate_msg_size(num_devices: int, num_data_words: int, rate: int, return_period: int) -> int:
+def _calculate_msg_size(num_devices: int, num_data_words: int, rate: float, return_period: int) -> int:
     """Calculate the FTP reply buffer size in 16-bit words.
 
     Matches Java FTPPool formula exactly::
@@ -327,7 +328,8 @@ def _calculate_msg_size(num_devices: int, num_data_words: int, rate: int, return
     calculation.  Capped at ``MAX_ACNET_MSG_SIZE // 2``.
     """
     # bytes per second: (data_bytes + timestamp_bytes) * rate
-    msg_size = num_data_words * 2 * rate
+    # (Java casts the full product to int before overhead/shift steps)
+    msg_size = int(num_data_words * 2 * rate)
     msg_size += 6 * num_devices  # per-device header overhead (error+index+npts)
     msg_size += msg_size >> 1  # 50% oversize
     msg_size //= return_period * 2  # to 16-bit words
@@ -357,9 +359,14 @@ def build_continuous_setup(
     # (timestamp word + value words: 2 for int16, 3 for int32)
     num_data_words = sum(2 if d.data_length == 2 else 3 for d in devices)
 
-    effective_rate = int(rate_hz)
-    sample_period_10us = max(1, int(100000 / effective_rate))
-    msg_size = _calculate_msg_size(len(devices), num_data_words, effective_rate, return_period)
+    # Wire encodes a 10us-unit sample period as uint16 (1..65535): legal rates
+    # are ~1.526 Hz to 100 kHz. Validate before dividing so 0/negative/NaN all
+    # raise the same contextual error. Do NOT clamp like Java FTPPool -- it
+    # silently wraps below ~1.53 Hz.
+    if not 100_000 / 0x10000 < rate_hz <= 100_000:
+        raise ValueError(f"rate_hz={rate_hz} out of range (~1.53 Hz to 100 kHz)")
+    sample_period_10us = int(100_000 / rate_hz)
+    msg_size = _calculate_msg_size(len(devices), num_data_words, rate_hz, return_period)
 
     buf = struct.pack("<H", TYPECODE_CONTINUOUS)
     buf += struct.pack("<I", task_name)
@@ -938,6 +945,23 @@ class SnapshotHandle:
 
     def _monitor_loop(self):
         """Background thread: read status updates and track device states."""
+        try:
+            self._monitor_loop_inner()
+        except Exception:  # noqa: BLE001
+            logger.exception("Snapshot monitor error for %s", self._task_name)
+        finally:
+            # Stream ended: devices that never reached a terminal state can no
+            # longer progress -- mark ERROR so wait() raises instead of hanging
+            # or reporting false readiness (user cancel is reported separately).
+            if not self._cancelled:
+                with self._lock:
+                    for dev in self._devices:
+                        if self._device_states[dev.di] not in (SnapshotState.READY, SnapshotState.ERROR):
+                            self._device_states[dev.di] = SnapshotState.ERROR
+                            self._device_errors[dev.di] = ACNET_DISCONNECTED
+            self._ready_event.set()
+
+    def _monitor_loop_inner(self):
         while not self._cancelled:
             try:
                 item = self._reply_queue.get(timeout=1.0)
@@ -1013,10 +1037,13 @@ class SnapshotHandle:
         """Block until all devices reach a terminal state (READY or ERROR).
 
         Returns True if all devices are ready.  Returns False on timeout.
-        Raises :class:`AcnetError` if any device ended with an error.
+        Raises :class:`AcnetError` if any device ended with an error, or
+        :class:`RuntimeError` if the snapshot was cancelled.
         """
         if not self._ready_event.wait(timeout=timeout):
             return False
+        if self._cancelled:
+            raise RuntimeError("Snapshot has been cancelled")
         with self._lock:
             for dev in self._devices:
                 if self._device_states[dev.di] == SnapshotState.ERROR:
@@ -1124,6 +1151,8 @@ class SnapshotHandle:
         with self._lock:
             if self._cancelled:
                 raise RuntimeError("Snapshot has been cancelled")
+            if not self._monitor_thread.is_alive():
+                raise RuntimeError("Snapshot stream has ended (connection lost or stream closed)")
             # Reset states before sending command
             self._ready_event.clear()
             for dev in self._devices:
@@ -1188,7 +1217,8 @@ class SnapshotHandle:
         """Cancel the snapshot and stop the monitor thread."""
         if not self._cancelled:
             self._cancelled = True
-            # Wake the monitor thread so it can exit
+            # Wake wait()ers (they see _cancelled and raise) and the monitor thread
+            self._ready_event.set()
             self._reply_queue.put(None)
             try:
                 self._ctx.cancel()
@@ -1368,39 +1398,45 @@ class FTPClient:
             timeout=int(timeout * 1000),
         )
 
-        # Wait for setup reply
-        if not setup_event.wait(timeout=timeout):
-            ctx.cancel()
-            raise AcnetTimeoutError(int(timeout * 1000))
+        # Everything past this point must cancel the live request on failure,
+        # or the FE keeps streaming into an orphaned queue
+        try:
+            if not setup_event.wait(timeout=timeout):
+                raise AcnetTimeoutError(int(timeout * 1000))
 
-        status, data, is_last = setup_result[0]
+            status, data, is_last = setup_result[0]
 
-        if status < 0:
-            ctx.cancel()
-            raise AcnetError(status, "Continuous plot setup failed")
+            if status < 0:
+                raise AcnetError(status, "Continuous plot setup failed")
 
-        if is_last:
-            raise AcnetError(0, "Unexpected end of replies after setup")
+            if is_last:
+                raise AcnetError(0, "Unexpected end of replies after setup")
 
-        setup_statuses = parse_continuous_first_reply(data, len(devices))
+            setup_statuses = parse_continuous_first_reply(data, len(devices))
 
-        # Check per-device statuses (negative=error, positive=informational)
-        for i, s in enumerate(setup_statuses):
-            if s < 0:
-                fac, err = parse_error(s)
-                msg = ftp_status_message(s) if fac == FACILITY_FTP else f"facility={fac}, error={err}"
-                logger.error("Device %s (di=%s) setup error: %s [%s %s]", i, devices[i].di, msg, fac, err)
-            elif s > 0:
-                fac, err = parse_error(s)
-                msg = ftp_status_message(s) if fac == FACILITY_FTP else f"facility={fac}, error={err}"
-                logger.info("Device %s (di=%s) setup status: %s [%s %s]", i, devices[i].di, msg, fac, err)
+            # Check per-device statuses (negative=error, positive=informational)
+            for i, s in enumerate(setup_statuses):
+                if s < 0:
+                    fac, err = parse_error(s)
+                    msg = ftp_status_message(s) if fac == FACILITY_FTP else f"facility={fac}, error={err}"
+                    logger.error("Device %s (di=%s) setup error: %s [%s %s]", i, devices[i].di, msg, fac, err)
+                elif s > 0:
+                    fac, err = parse_error(s)
+                    msg = ftp_status_message(s) if fac == FACILITY_FTP else f"facility={fac}, error={err}"
+                    logger.info("Device %s (di=%s) setup status: %s [%s %s]", i, devices[i].di, msg, fac, err)
 
-        return FTPStream(
-            ctx=ctx,
-            devices=devices,
-            reply_queue=reply_queue,
-            setup_statuses=setup_statuses,
-        )
+            return FTPStream(
+                ctx=ctx,
+                devices=devices,
+                reply_queue=reply_queue,
+                setup_statuses=setup_statuses,
+            )
+        except BaseException:
+            try:
+                ctx.cancel()
+            except Exception:  # noqa: BLE001
+                logger.debug("Failed to cancel continuous request during setup failure", exc_info=True)
+            raise
 
     def start_snapshot(
         self,
@@ -1491,44 +1527,58 @@ class FTPClient:
             else:
                 reply_queue.put((reply.status, reply.data, reply.last))
 
+        # Protocol timeout 0: pre-arm silence is normal for event-armed
+        # snapshots, and acnetd's mult-request expiry would otherwise emit
+        # ACNET_PEND churn every `timeout` (precedent: dpm_acnet OpenList).
+        # The setup ack itself is bounded by the client-side wait below.
         ctx = self._connection.request_multiple(
             node=node,
             task=FTPMAN_TASK,
             data=payload,
             reply_handler=handler,
-            timeout=int(timeout * 1000),
+            timeout=0,
         )
 
-        if not setup_event.wait(timeout=timeout):
-            ctx.cancel()
-            raise AcnetTimeoutError(int(timeout * 1000))
+        # Everything past this point must cancel the live request on failure,
+        # or the FE keeps streaming into an orphaned queue
+        try:
+            if not setup_event.wait(timeout=timeout):
+                raise AcnetTimeoutError(int(timeout * 1000))
 
-        status, data, _ = setup_result[0]
+            status, data, is_last = setup_result[0]
 
-        if status < 0:
-            ctx.cancel()
-            raise AcnetError(status, "Snapshot setup failed")
+            if status < 0:
+                raise AcnetError(status, "Snapshot setup failed")
 
-        setup_reply = parse_snapshot_setup_reply(data, len(devices))
+            if is_last:
+                raise AcnetError(0, "Unexpected end of replies after setup")
 
-        # Log per-device statuses from setup reply
-        for i, s in enumerate(setup_reply.per_device_errors):
-            if s < 0:
-                fac, err = parse_error(s)
-                msg = ftp_status_message(s) if fac == FACILITY_FTP else f"facility={fac}, error={err}"
-                logger.error("Snapshot device %s (di=%s) error: %s [%s %s]", i, devices[i].di, msg, fac, err)
-            elif s > 0:
-                fac, err = parse_error(s)
-                msg = ftp_status_message(s) if fac == FACILITY_FTP else f"facility={fac}, error={err}"
-                logger.info("Snapshot device %s (di=%s) status: %s [%s %s]", i, devices[i].di, msg, fac, err)
+            setup_reply = parse_snapshot_setup_reply(data, len(devices))
 
-        return SnapshotHandle(
-            connection=self._connection,
-            node=node,
-            ctx=ctx,
-            devices=devices,
-            setup_reply=setup_reply,
-            reply_queue=reply_queue,
-            task_name=task_name,
-            snap_class_code=snap_class_code,
-        )
+            # Log per-device statuses from setup reply
+            for i, s in enumerate(setup_reply.per_device_errors):
+                if s < 0:
+                    fac, err = parse_error(s)
+                    msg = ftp_status_message(s) if fac == FACILITY_FTP else f"facility={fac}, error={err}"
+                    logger.error("Snapshot device %s (di=%s) error: %s [%s %s]", i, devices[i].di, msg, fac, err)
+                elif s > 0:
+                    fac, err = parse_error(s)
+                    msg = ftp_status_message(s) if fac == FACILITY_FTP else f"facility={fac}, error={err}"
+                    logger.info("Snapshot device %s (di=%s) status: %s [%s %s]", i, devices[i].di, msg, fac, err)
+
+            return SnapshotHandle(
+                connection=self._connection,
+                node=node,
+                ctx=ctx,
+                devices=devices,
+                setup_reply=setup_reply,
+                reply_queue=reply_queue,
+                task_name=task_name,
+                snap_class_code=snap_class_code,
+            )
+        except BaseException:
+            try:
+                ctx.cancel()
+            except Exception:  # noqa: BLE001
+                logger.debug("Failed to cancel snapshot request during setup failure", exc_info=True)
+            raise

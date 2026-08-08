@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 from .constants import (
+    ACNET_FLG_RPY,
     ACNET_TCP_PORT,
     CMD_BLOCK_REQUESTS,
     CMD_CANCEL,
@@ -61,6 +62,7 @@ from .constants import (
     SEND_BUFFER_SIZE,
 )
 from .errors import (
+    ACNET_DISCONNECTED,
     ACNET_NOT_CONNECTED,
     ACNET_REQREJ,
     AcnetError,
@@ -361,9 +363,7 @@ class AsyncAcnetConnectionBase:
         except Exception:  # noqa: BLE001
             logger.debug("Disconnect command failed for %s", self._handle_name, exc_info=True)
 
-        for ctx in self._reply_handlers.values():
-            ctx._cancelled = True
-        self._reply_handlers.clear()
+        self._fail_reply_handlers()
         self._reply_buffer.clear()
         self._dead_requests.clear()
 
@@ -380,12 +380,27 @@ class AsyncAcnetConnectionBase:
             self._pending_ack.set_exception(AcnetUnavailableError())
 
         # Fail all active request contexts so consumers don't hang
-        for ctx in list(self._reply_handlers.values()):
-            ctx._cancelled = True
-        self._reply_handlers.clear()
+        self._fail_reply_handlers()
         self._reply_buffer.clear()
 
         logger.debug("Connection lost for %s", self._handle_name)
+
+    def _fail_reply_handlers(self) -> None:
+        """Cancel all request contexts and deliver a synthetic final
+        DISCONNECTED reply to each handler.
+
+        Without this, mult-request consumers (FTP snapshots/streams,
+        DPM-over-ACNET) wait forever on queues that will never be fed again.
+        """
+        contexts = list(self._reply_handlers.values())
+        self._reply_handlers.clear()
+        for ctx in contexts:
+            ctx._cancelled = True
+            reply = AcnetReply(ACNET_FLG_RPY, ACNET_DISCONNECTED, 0, 0, 0, 0, ctx.request_id.id, 0, b"")
+            try:
+                ctx.reply_handler(reply)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Reply handler exception (disconnect): %s", e)
 
     # ------------------------------------------------------------------
     # Command transaction
@@ -835,9 +850,7 @@ class AsyncAcnetConnectionBase:
         if status < 0:
             raise AcnetError(status, "DISCONNECT_SINGLE failed")
 
-        for ctx in self._reply_handlers.values():
-            ctx._cancelled = True
-        self._reply_handlers.clear()
+        self._fail_reply_handlers()
         self._reply_buffer.clear()
         self._dead_requests.clear()
 

@@ -198,6 +198,16 @@ class DPMAcnet:
         result = {"list_id": None, "error": None}
 
         def handle_reply(reply):
+            if reply.last and reply.status < 0:
+                # Stream terminated (e.g. connection lost) -- wake readings() consumers
+                try:
+                    self._reply_queue.put_nowait(None)
+                except queue.Full:
+                    pass
+                if not result_event.is_set():
+                    result["error"] = f"stream terminated: status {reply.status}"
+                    result_event.set()
+                return
             try:
                 resp = unmarshal_reply(iter(reply.data))
                 if isinstance(resp, OpenList_reply):
@@ -421,9 +431,12 @@ class DPMAcnet:
         """
         while True:
             try:
-                yield self._reply_queue.get(timeout=timeout)
+                item = self._reply_queue.get(timeout=timeout)
             except queue.Empty:
                 return
+            if item is None:  # stream terminated (connection lost)
+                return
+            yield item
 
     def read(self, drf: str, timeout: float = 5.0) -> DPMReading:
         """

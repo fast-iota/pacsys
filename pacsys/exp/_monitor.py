@@ -388,6 +388,8 @@ class Monitor:
     ):
         if not devices:
             raise ValueError("devices cannot be empty")
+        if buffer_size < 1:
+            raise ValueError(f"buffer_size must be >= 1, got {buffer_size}")
         if stale_after is not None and stale_after <= 0:
             raise ValueError("stale_after must be positive")
         self._drfs = [resolve_drf(d) for d in devices]
@@ -593,11 +595,23 @@ class Monitor:
         Args:
             duration: Collect for this many seconds.
             count: Collect until each channel has at least this many readings.
+                Must be 1..buffer_size (a larger count can never be satisfied
+                by the ring buffers).
             timeout: Max seconds to wait in count mode (default: no limit).
             Exactly one of duration/count must be given.
+
+        Raises:
+            ValueError: On invalid duration/count arguments.
+            TimeoutError: Count mode timeout expired.
+            RuntimeError: Subscription stopped before count was satisfied.
         """
         if (duration is None) == (count is None):
             raise ValueError("Exactly one of duration or count must be specified")
+        if count is not None:
+            if count < 1:
+                raise ValueError(f"count must be >= 1, got {count}")
+            if count > self._buffer_size:
+                raise ValueError(f"count ({count}) cannot exceed buffer_size ({self._buffer_size})")
 
         # Clear stale data from previous runs
         with self._lock:
@@ -614,13 +628,25 @@ class Monitor:
                     time.sleep(min(0.1, max(0, remaining)))
             else:
                 assert count is not None
+                target = count  # narrowed local for the closure
+
+                def satisfied() -> bool:
+                    with self._lock:
+                        return all(len(buf) >= target for buf in self._buffers.values())
+
                 deadline = time.monotonic() + timeout if timeout is not None else None
                 while True:
-                    with self._lock:
-                        if all(len(buf) >= count for buf in self._buffers.values()):
+                    if satisfied():
+                        break
+                    handle = self._handle
+                    if handle is not None and handle.exc is not None:
+                        raise handle.exc
+                    if handle is None or handle.stopped:
+                        # Final readings may have landed between the buffer
+                        # check and the stop -- recheck before raising
+                        if satisfied():
                             break
-                    if self._handle is not None and self._handle.exc is not None:
-                        raise self._handle.exc
+                        raise RuntimeError(f"Subscription stopped before {count} readings per channel were collected")
                     if deadline is not None and time.monotonic() >= deadline:
                         raise TimeoutError(f"Timed out after {timeout}s waiting for {count} readings per channel")
                     time.sleep(0.01)

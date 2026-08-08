@@ -1812,7 +1812,17 @@ class DPMHTTPBackend(Backend):
         """
         conn = _AsyncDPMConnection(self._host, self._port, self._timeout)
         try:
-            await conn.connect()
+            # Catch connect failures only: core.stream reports its own errors
+            # via error_fn, so a broader catch could double-dispatch.
+            try:
+                await conn.connect()
+            except Exception as e:  # noqa: BLE001
+                if not handle._stopped:
+                    drfs = handle._drfs
+                    summary = ", ".join(drfs) if len(drfs) <= 5 else f"{', '.join(drfs[:5])} and {len(drfs) - 5} more"
+                    logger.error("Subscription connection failed for %s: %s", summary, e)
+                    handle._dispatch_error(e)
+                return
             core = _DpmStreamCore(conn)
             await core.stream(
                 drfs=handle._drfs,

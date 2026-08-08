@@ -239,6 +239,27 @@ class TestBuildContinuousSetup:
         pkt2 = build_continuous_setup(devices=[mouttmp, dev2], rate_hz=100)
         assert len(pkt2) - len(pkt1) == 22
 
+    # First device's sample_period field: 32-byte header + dipi(4)+offset(4)+ssdn(8)
+    _SAMPLE_PERIOD_OFFSET = 48
+
+    @pytest.mark.parametrize("bad_rate", [0, 0.5, 1.0, -5, float("nan"), 1.52, 200_000])
+    def test_invalid_rate_raises(self, mouttmp, bad_rate):
+        """Rates outside ~1.53 Hz .. 100 kHz raise ValueError (not ZeroDivision/struct.error)."""
+        with pytest.raises(ValueError, match="out of range"):
+            build_continuous_setup(devices=[mouttmp], rate_hz=bad_rate)
+
+    def test_fractional_rate_not_truncated(self, mouttmp):
+        """2.9 Hz must sample at 2.9 Hz, not silently at 2 Hz."""
+        pkt = build_continuous_setup(devices=[mouttmp], rate_hz=2.9)
+        sample_period = struct.unpack_from("<H", pkt, self._SAMPLE_PERIOD_OFFSET)[0]
+        assert sample_period == int(100000 / 2.9)  # 34482, not 50000
+
+    def test_rate_boundaries(self, mouttmp):
+        pkt = build_continuous_setup(devices=[mouttmp], rate_hz=1.53)
+        assert struct.unpack_from("<H", pkt, self._SAMPLE_PERIOD_OFFSET)[0] == int(100000 / 1.53)
+        pkt = build_continuous_setup(devices=[mouttmp], rate_hz=100_000)
+        assert struct.unpack_from("<H", pkt, self._SAMPLE_PERIOD_OFFSET)[0] == 1
+
 
 class TestBuildSnapshotSetup:
     def test_packet_structure(self, mouttmp):
@@ -822,6 +843,81 @@ class TestFTPClientContinuous:
         with pytest.raises(AcnetError):
             client.start_continuous(node=3018, devices=[mouttmp], rate_hz=1440)
 
+    def test_start_continuous_end_after_setup_cancels(self, mouttmp):
+        """is_last on the setup reply must cancel the request before raising."""
+        ctx = MagicMock()
+        conn = MagicMock()
+
+        def fake_request_multiple(node, task, data, reply_handler, timeout):
+            reply = MagicMock()
+            reply.status = 0
+            reply.data = struct.pack("<HH", 0, REPLY_TYPE_SETUP) + struct.pack("<H", 0)
+            reply.last = True
+            reply_handler(reply)
+            return ctx
+
+        conn.request_multiple = fake_request_multiple
+
+        client = FTPClient(conn)
+        with pytest.raises(AcnetError, match="Unexpected end"):
+            client.start_continuous(node=3018, devices=[mouttmp], rate_hz=1440)
+        ctx.cancel.assert_called_once()
+
+
+class TestFTPClientSnapshotSetup:
+    def test_start_snapshot_no_protocol_timeout(self, mouttmp):
+        """Snapshot mult request must use protocol timeout 0 (event-armed
+        captures sit silent pre-arm; setup ack is bounded client-side)."""
+        conn = MagicMock()
+        captured = {}
+
+        def fake_request_multiple(node, task, data, reply_handler, timeout):
+            captured["timeout"] = timeout
+            reply = MagicMock(status=-1, data=b"", last=False)
+            reply_handler(reply)
+            return MagicMock()
+
+        conn.request_multiple = fake_request_multiple
+
+        client = FTPClient(conn)
+        with pytest.raises(AcnetError):
+            client.start_snapshot(node=3018, devices=[mouttmp], rate_hz=1440)
+        assert captured["timeout"] == 0
+
+    def test_start_snapshot_parse_failure_cancels_request(self, mouttmp):
+        """A malformed setup reply must cancel the live request, not leak it."""
+        ctx = MagicMock()
+        conn = MagicMock()
+
+        def fake_request_multiple(node, task, data, reply_handler, timeout):
+            reply = MagicMock(status=0, data=b"\x00", last=False)  # unparseable
+            reply_handler(reply)
+            return ctx
+
+        conn.request_multiple = fake_request_multiple
+
+        client = FTPClient(conn)
+        with pytest.raises(Exception):  # noqa: B017 -- struct.error from parse
+            client.start_snapshot(node=3018, devices=[mouttmp], rate_hz=1440)
+        ctx.cancel.assert_called_once()
+
+    def test_start_snapshot_end_after_setup_cancels(self, mouttmp):
+        """is_last on the setup reply must cancel and raise (previously ignored)."""
+        ctx = MagicMock()
+        conn = MagicMock()
+
+        def fake_request_multiple(node, task, data, reply_handler, timeout):
+            reply = MagicMock(status=0, data=b"", last=True)
+            reply_handler(reply)
+            return ctx
+
+        conn.request_multiple = fake_request_multiple
+
+        client = FTPClient(conn)
+        with pytest.raises(AcnetError, match="Unexpected end"):
+            client.start_snapshot(node=3018, devices=[mouttmp], rate_hz=1440)
+        ctx.cancel.assert_called_once()
+
 
 # =============================================================================
 # FTP error codes tests
@@ -1346,6 +1442,55 @@ class TestSnapshotStateTracking:
         handle, rq = self._make_handle(per_device_errors=[FTP_PEND])
         try:
             assert handle.wait(timeout=0.1) is False
+        finally:
+            handle.cancel()
+
+    def test_cancel_wakes_waiters(self):
+        """cancel() must unblock wait(timeout=None), raising RuntimeError."""
+        import threading
+        import time
+
+        handle, rq = self._make_handle(per_device_errors=[FTP_PEND])
+        result = {}
+
+        def waiter():
+            try:
+                handle.wait(timeout=None)
+            except Exception as e:  # noqa: BLE001
+                result["exc"] = e
+
+        t = threading.Thread(target=waiter, daemon=True)
+        t.start()
+        time.sleep(0.1)
+        handle.cancel()
+        t.join(timeout=2.0)
+        assert not t.is_alive(), "wait() still blocked after cancel()"
+        assert isinstance(result.get("exc"), RuntimeError)
+
+    def test_premature_stream_end_marks_error_and_wakes(self):
+        """is_last with non-terminal devices → ERROR (disconnected), wait() raises."""
+        from pacsys.acnet.errors import ACNET_DISCONNECTED
+
+        handle, rq = self._make_handle(per_device_errors=[FTP_PEND])
+        try:
+            data = self._build_status_reply(0, [FTP_WAIT_EVENT])
+            rq.put((0, data, True))  # server ends stream while device is waiting
+            with pytest.raises(AcnetError):
+                handle.wait(timeout=2.0)
+            assert handle.device_states[1] == SnapshotState.ERROR
+            assert handle._device_errors[1] == ACNET_DISCONNECTED
+        finally:
+            handle.cancel()
+
+    def test_restart_after_stream_end_raises(self):
+        """restart() must fail fast once the monitor has exited."""
+        handle, rq = self._make_handle(per_device_errors=[FTP_PEND])
+        try:
+            rq.put((0, self._build_status_reply(0, [0]), True))  # ready, then stream ends
+            handle._monitor_thread.join(timeout=2.0)
+            assert not handle._monitor_thread.is_alive()
+            with pytest.raises(RuntimeError, match="stream has ended"):
+                handle.restart()
         finally:
             handle.cancel()
 

@@ -283,6 +283,56 @@ class TestStreamingRead:
                 assert len(g_replies) == 1
                 assert g_replies[0].index == 1
 
+    def test_streaming_read_backend_death_fails_rpc(self, fake_backend):
+        """Fatal subscription death must fail the RPC, not hang it (mcp H3)."""
+        with SupervisedServer(fake_backend, port=0) as srv:
+            with _make_channel(srv) as ch:
+                stub = DAQ_pb2_grpc.DAQStub(ch)
+                request = DAQ_pb2.ReadingList()
+                request.drf.append("M:OUTTMP@p,1000")
+
+                def kill():
+                    _wait_subscribed(fake_backend)
+                    fake_backend.emit_reading("M:OUTTMP@p,1000", 70.0)
+                    time.sleep(0.05)
+                    fake_backend.emit_error(RuntimeError("backend stream died"))
+
+                killer = threading.Thread(target=kill, daemon=True)
+                killer.start()
+
+                replies = []
+                with pytest.raises(grpc.RpcError) as exc_info:
+                    for reply in stub.Read(request, timeout=5.0):
+                        replies.append(reply)  # noqa: PERF402 -- keep partial replies on raise
+                killer.join(timeout=2.0)
+                # Buffered reading drains before the failure surfaces
+                assert len(replies) == 1
+                assert exc_info.value.code() == grpc.StatusCode.INTERNAL
+                assert "backend stream died" in (exc_info.value.details() or "")
+
+    def test_streaming_read_ends_cleanly_on_backend_stop(self, fake_backend):
+        """Backend stopping the handle without an error ends the stream gracefully."""
+        with SupervisedServer(fake_backend, port=0) as srv:
+            with _make_channel(srv) as ch:
+                stub = DAQ_pb2_grpc.DAQStub(ch)
+                request = DAQ_pb2.ReadingList()
+                request.drf.append("M:OUTTMP@p,1000")
+
+                def stopper():
+                    _wait_subscribed(fake_backend)
+                    fake_backend.emit_reading("M:OUTTMP@p,1000", 70.0)
+                    time.sleep(0.05)
+                    with fake_backend._lock:
+                        subs = list(fake_backend._subscriptions)
+                    for sub in subs:
+                        sub.stop()
+
+                t = threading.Thread(target=stopper, daemon=True)
+                t.start()
+                replies = list(stub.Read(request, timeout=5.0))  # must complete, not deadline
+                t.join(timeout=2.0)
+                assert len(replies) == 1
+
 
 # ── Set Tests ─────────────────────────────────────────────────────────────
 

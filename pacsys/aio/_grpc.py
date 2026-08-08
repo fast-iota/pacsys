@@ -148,9 +148,19 @@ class AsyncGRPCBackend(AsyncBackend):
             else:
                 logger.warning("gRPC stream transient error (will retry): %s", exc)
 
-        handle._task = asyncio.ensure_future(
-            self._core.stream(drfs, handle._dispatch, handle._is_stopped, _error_adapter)
-        )
+        core = self._core
+
+        async def _run_stream():
+            try:
+                await core.stream(drfs, handle._dispatch, handle._is_stopped, _error_adapter)
+            finally:
+                # Stream end (server onCompleted, fatal error, cancel) must
+                # stop the handle or readings() blocks forever
+                handle._signal_stop()
+                if handle in self._handles:
+                    self._handles.remove(handle)
+
+        handle._task = asyncio.ensure_future(_run_stream())
         if callback:
             handle._callback_task = asyncio.ensure_future(_callback_feeder(handle, callback, on_error))
         self._handles.append(handle)
