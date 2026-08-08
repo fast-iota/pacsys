@@ -16,7 +16,7 @@ from pacsys.backends import Backend
 from pacsys.backends.grpc_backend import _proto_value_to_python
 from pacsys.drf_utils import get_device_name
 from pacsys.errors import AuthenticationError
-from pacsys.types import Value
+from pacsys.types import Reading, Value
 
 from ._audit import AuditLog
 from ._conversions import reading_to_proto_reply, write_result_to_proto_status
@@ -237,14 +237,17 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
                         await handle.stop()
                         logger.debug("stream peer=%s event=stopped items=%d", peer, item_count)
                 else:
-                    queue: asyncio.Queue = asyncio.Queue(maxsize=_STREAM_QUEUE_MAXSIZE)
+                    queue: asyncio.Queue[Reading | object] = asyncio.Queue(maxsize=_STREAM_QUEUE_MAXSIZE)
                     loop = asyncio.get_running_loop()
+                    wake = object()  # terminal-state check marker
 
-                    def _enqueue(reading):
+                    def _enqueue(item):
                         try:
-                            queue.put_nowait(reading)
+                            queue.put_nowait(item)
                         except asyncio.QueueFull:
-                            logger.warning("stream peer=%s queue full, dropping reading for %s", peer, reading.drf)
+                            if item is wake:
+                                return  # timeout path re-checks handle state
+                            logger.warning("stream peer=%s queue full, dropping reading for %s", peer, item.drf)
 
                     def on_reading(reading, handle):
                         try:
@@ -252,14 +255,32 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
                         except RuntimeError:
                             pass  # loop closed during shutdown (#3)
 
+                    def on_error(exc, h):
+                        # Transient (retryable) errors leave the handle running;
+                        # only a stopped handle is terminal. Fatal errors set
+                        # stopped before this dispatch.
+                        if not h.stopped:
+                            return
+                        try:
+                            loop.call_soon_threadsafe(_enqueue, wake)
+                        except RuntimeError:
+                            pass
+
                     logger.debug("stream peer=%s event=started items=%d", peer, len(final_drfs))
-                    handle = await asyncio.to_thread(self._backend.subscribe, final_drfs, on_reading)
+                    handle = await asyncio.to_thread(self._backend.subscribe, final_drfs, on_reading, on_error)
                     try:
                         while not context.cancelled():
                             try:
-                                reading = await asyncio.wait_for(queue.get(), timeout=1.0)
+                                item = await asyncio.wait_for(queue.get(), timeout=1.0)
                             except asyncio.TimeoutError:
+                                item = wake  # periodic terminal-state check
+                            if item is wake or not isinstance(item, Reading):
+                                if handle.stopped:
+                                    if handle.exc is not None:
+                                        raise handle.exc
+                                    break  # graceful backend stop -> end stream
                                 continue
+                            reading = item
                             indices = drf_indices.get(reading.drf)
                             if indices is None:
                                 raise ValueError(f"Backend returned unexpected DRF {reading.drf!r}")

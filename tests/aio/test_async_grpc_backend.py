@@ -127,11 +127,30 @@ class TestAsyncGRPCSubscribe:
             collected.append(reading.value)
 
         handle = await backend.subscribe(["M:OUTTMP@p,1000"], callback=on_reading)
-        await asyncio.sleep(0.1)
-        handle._signal_stop()
+        # Stream completion stops the handle; callback feeder drains and exits
         if handle._callback_task:
-            await handle._callback_task
+            await asyncio.wait_for(handle._callback_task, timeout=2.0)
         assert collected == [10.0, 20.0]
+        assert handle.stopped
+
+    @pytest.mark.asyncio
+    async def test_subscribe_stream_completion_stops_iteration(self, backend):
+        """Normal stream end (server onCompleted) must terminate readings() (grpc B2)."""
+
+        async def fake_stream(drfs, dispatch_fn, stop_check, error_fn):
+            dispatch_fn(_make_reading(val=1.0))
+            dispatch_fn(_make_reading(val=2.0))
+
+        backend._core.stream = fake_stream
+        handle = await backend.subscribe(["M:OUTTMP@p,1000"])
+
+        async def consume():
+            return [reading.value async for reading, _h in handle.readings()]
+
+        vals = await asyncio.wait_for(consume(), timeout=2.0)
+        assert vals == [1.0, 2.0]
+        assert handle.stopped
+        assert handle not in backend._handles
 
 
 class TestAsyncGRPCMisc:
@@ -180,14 +199,17 @@ class TestAsyncGRPCMisc:
         async def fake_stream(drfs, dispatch_fn, stop_check, error_fn):
             # gRPC _DaqCore.stream calls error_fn with fatal=False for transient errors
             error_fn(RuntimeError("transport error"), fatal=False)
-            # Stream should NOT be stopped — subscription continues retrying
-            assert not stop_check()
+            # Subscription continues retrying -- stay alive until stopped
+            # (returning would legitimately end the subscription)
+            while not stop_check():
+                await asyncio.sleep(0.01)
 
         backend._core.stream = fake_stream
         handle = await backend.subscribe(["M:OUTTMP@p,1000"])
         await asyncio.sleep(0.05)
         # Handle should NOT be stopped by a non-fatal error
         assert not handle.stopped
+        await handle.stop()
 
     @pytest.mark.asyncio
     async def test_subscribe_error_adapter_fatal(self, backend):

@@ -25,10 +25,13 @@ import pytest
 from pika.adapters.select_connection import SelectConnection
 from pika.exceptions import ChannelWrongStateError
 
-from pacsys.acnet.errors import FACILITY_DMQ
+from pacsys.acnet.errors import ERR_TIMEOUT, FACILITY_DMQ
 from pacsys.backends.dmq import (
     DMQBackend,
     _reply_to_reading,
+    _resolve_reply,
+    _WriteCompletionTracker,
+    _WriteSession,
 )
 from pacsys.backends.dmq_protocol import (
     AnalogAlarmSample_reply,
@@ -650,6 +653,302 @@ class TestDMQBackendInit:
             DMQBackend(timeout=0, auth=auth)
         with pytest.raises(ValueError, match="timeout must be positive"):
             DMQBackend(timeout=-1, auth=auth)
+
+
+class TestDMQConnectionOpenError:
+    """A failed initial connect must not permanently brick the backend (dmq H1)."""
+
+    def test_open_error_stops_io_thread_and_allows_retry(self):
+        conns = []
+
+        def factory(
+            cls=None,
+            parameters=None,
+            on_open_callback=None,
+            on_open_error_callback=None,
+            on_close_callback=None,
+        ):
+            conn = MockSelectConnection()
+            conn._on_open_callback = on_open_callback
+            conn._on_close_callback = on_close_callback
+            conns.append(conn)
+            if len(conns) == 1:
+                # First attempt: connection open fails
+                threading.Timer(
+                    0.01, lambda: on_open_error_callback(conn, ConnectionRefusedError("connection refused"))
+                ).start()
+            else:
+                threading.Timer(0.01, conn._trigger_open).start()
+            return conn
+
+        with (
+            _mock_gssapi(),
+            mock.patch.object(SelectConnection, "__new__", side_effect=factory),
+        ):
+            backend = DMQBackend(host="localhost", auth=_create_mock_auth(), timeout=2.0)
+            try:
+                with pytest.raises(ConnectionError, match="connection refused"):
+                    backend._ensure_io_thread()
+
+                # IO thread must exit after the failed open (ioloop stopped)
+                thread = backend._io_thread
+                assert thread is not None
+                thread.join(timeout=2.0)
+                assert not thread.is_alive()
+
+                # Next attempt starts a fresh connection and recovers
+                backend._ensure_io_thread()
+                assert backend._connection_error is None
+                assert len(conns) == 2
+            finally:
+                start = time.monotonic()
+                backend.close()
+                # close() must not burn the full 3s join timeout on a stuck thread
+                assert time.monotonic() - start < 2.0
+
+
+# =============================================================================
+# Job-level INIT errors (plain "R" routing key, no ref_id) — dmq H2
+# =============================================================================
+
+SECURITY_VIOLATION = -99
+
+
+class _InitFailChannel(MockSelectChannel):
+    """Responds to INIT with a job-level ErrorSample on plain 'R' (no ref_id),
+    correlated to the INIT message_id — the ServerJobManager.sendStatus shape."""
+
+    def basic_publish(self, exchange="", routing_key="", body=b"", properties=None):
+        super().basic_publish(exchange, routing_key, body, properties)
+        if routing_key == "I":
+            self._init_message_id = getattr(properties, "message_id", None)
+
+    def basic_consume(self, queue, on_message_callback=None, auto_ack=False):
+        self._on_message_callback = on_message_callback
+        self._consumer_tag = f"ctag-{id(self)}"
+        mid = getattr(self, "_init_message_id", None)
+        if mid and not getattr(self, "_delivered", False):
+            self._delivered = True
+            method = mock.MagicMock()
+            method.routing_key = "R"
+            method.delivery_tag = 1
+            props = mock.MagicMock()
+            props.correlation_id = mid
+            body = make_error_reply(
+                facility_code=FACILITY_DMQ, error_number=SECURITY_VIOLATION, message="Security violation: test"
+            )
+            self._connection.ioloop.add_callback_threadsafe(partial(on_message_callback, self, method, props, body))
+        return self._consumer_tag
+
+
+class _InitFailConnection(MockSelectConnection):
+    def channel(self, on_open_callback=None):
+        ch = _InitFailChannel(self, [], [])
+        if on_open_callback:
+            self.ioloop.add_callback_threadsafe(lambda: on_open_callback(ch))
+        return ch
+
+
+@contextmanager
+def _init_fail_backend(**kwargs):
+    """DMQBackend whose server rejects every INIT with a security violation."""
+    mock_conn = _InitFailConnection()
+
+    def factory(
+        cls=None,
+        parameters=None,
+        on_open_callback=None,
+        on_open_error_callback=None,
+        on_close_callback=None,
+    ):
+        mock_conn._on_open_callback = on_open_callback
+        mock_conn._on_close_callback = on_close_callback
+        threading.Timer(0.01, mock_conn._trigger_open).start()
+        return mock_conn
+
+    with (
+        _mock_gssapi(),
+        mock.patch.object(SelectConnection, "__new__", side_effect=factory),
+        mock.patch.object(DMQBackend, "_create_gss_context", return_value=_mock_gss_context()),
+    ):
+        backend = DMQBackend(host="localhost", auth=_create_mock_auth(), **kwargs)
+        try:
+            yield backend
+        finally:
+            backend.close()
+
+
+class TestDMQJobLevelErrors:
+    """Server INIT failures (auth/server errors) must surface, not time out."""
+
+    def test_resolve_reply_job_error_correlation(self):
+        body = make_error_reply(facility_code=FACILITY_DMQ, error_number=SECURITY_VIOLATION, message="denied")
+        props = mock.MagicMock()
+        props.correlation_id = "init-123"
+        # Matching correlation id -> job-level error (idx None)
+        result = _resolve_reply("R", body, ["M:OUTTMP"], {"M:OUTTMP": 0}, props, "init-123")
+        assert result is not None
+        reply, idx, _ref_id = result
+        assert idx is None
+        assert reply.errorNumber == SECURITY_VIOLATION
+        # Mismatched correlation id -> dropped
+        assert _resolve_reply("R", body, ["M:OUTTMP"], {"M:OUTTMP": 0}, props, "other-id") is None
+        # No properties (empty correlation id) -> accepted
+        result = _resolve_reply("R", body, ["M:OUTTMP"], {"M:OUTTMP": 0}, None, "init-123")
+        assert result is not None and result[1] is None
+        # Device-keyed error still resolves per-device
+        result = _resolve_reply("R.M:OUTTMP", body, ["M:OUTTMP"], {"M:OUTTMP": 0}, props, "init-123")
+        assert result is not None and result[1] == 0
+
+    def test_read_init_failure_fails_fast(self):
+        error = make_error_reply(
+            facility_code=FACILITY_DMQ, error_number=SECURITY_VIOLATION, message="Security violation: test"
+        )
+        with _mock_dmq_backend(replies=[error], routing_keys=["R"]) as backend:
+            start = time.monotonic()
+            reading = backend.get(TEMP_DEVICE, timeout=5.0)
+            assert time.monotonic() - start < 2.0  # not a timeout
+            assert not reading.ok
+            assert reading.error_code == SECURITY_VIOLATION
+            assert reading.facility_code == FACILITY_DMQ
+            assert "Security violation" in reading.message
+
+    def test_get_many_init_failure_fails_all_devices(self):
+        with _init_fail_backend() as backend:
+            readings = backend.get_many([TEMP_DEVICE, TEMP_DEVICE_2], timeout=5.0)
+            assert len(readings) == 2
+            for reading in readings:
+                assert not reading.ok
+                assert reading.error_code == SECURITY_VIOLATION
+
+    def test_subscribe_init_failure_signals_error(self):
+        errors = []
+        err_event = threading.Event()
+
+        def on_err(exc, handle):
+            errors.append(exc)
+            err_event.set()
+
+        with _init_fail_backend() as backend:
+            try:
+                handle = backend.subscribe([TEMP_DEVICE], callback=lambda r, h: None, on_error=on_err)
+            except DeviceError as e:
+                # Error arrived before subscribe() returned
+                assert e.error_code == SECURITY_VIOLATION
+                return
+            assert err_event.wait(2.0), "on_error was never called for rejected INIT"
+            assert isinstance(errors[0], DeviceError)
+            assert errors[0].error_code == SECURITY_VIOLATION
+            assert handle.stopped
+            assert handle.exc is not None
+
+    def test_write_init_failure_returns_server_error(self):
+        with _init_fail_backend() as backend:
+            start = time.monotonic()
+            result = backend.write(TEMP_DEVICE, TEMP_VALUE, timeout=8.0)
+            elapsed = time.monotonic() - start
+            assert not result.success
+            assert result.error_code == SECURITY_VIOLATION
+            assert "Security violation" in (result.message or "")
+            assert elapsed < 3.0  # not the 5s INIT timer, not the 8s timeout
+
+
+# =============================================================================
+# write_many vs connection loss (dmq H3)
+# =============================================================================
+
+
+class TestDMQWriteConnectionLoss:
+    """Multi-device write_many must complete per (tracker, device) on connection loss."""
+
+    def test_connection_close_completes_tracker_per_device(self):
+        """Direct accounting: one device_complete per (tracker, init_drf)."""
+
+        def fake_session(init_drf):
+            return _WriteSession(
+                device=init_drf,
+                init_drf=init_drf,
+                channel=None,
+                exchange_name="x",
+                queue_name="q",
+                gss_context=None,
+                last_used=0.0,
+            )
+
+        with _mock_dmq_backend() as backend:
+            backend._ensure_io_thread()
+            conn = backend._select_connection
+            assert conn is not None
+
+            # Tracker A spans two sessions (a 2-device write_many)
+            tracker_a = _WriteCompletionTracker(total_devices=2)
+            results_a: list = [None, None]
+            # Tracker B has queued AND pending work in one session (1 device)
+            tracker_b = _WriteCompletionTracker(total_devices=1)
+            results_b: list = [None, None]
+            # Tracker C waits in a pending session setup (1 device)
+            tracker_c = _WriteCompletionTracker(total_devices=1)
+            results_c: list = [None]
+
+            s1 = fake_session("D:EV1.SETTING@N")
+            s1.queued_sends = [([(0, "D:EV1", 1.0)], results_a, tracker_a)]
+            s2 = fake_session("D:EV2.SETTING@N")
+            s2.pending = {"corr1": (1, "D:EV2", results_a, tracker_a), "corr2": (1, "D:EV2", results_b, tracker_b)}
+            s2.queued_sends = [([(0, "D:EV2", 3.0)], results_b, tracker_b)]
+            backend._write_sessions = {s1.init_drf: s1, s2.init_drf: s2}
+            backend._pending_session_setups = {"D:EV3.SETTING@N": [([(0, "D:EV3", 4.0)], results_c, tracker_c)]}
+
+            backend._on_connection_closed(conn, Exception("link lost"))
+
+            assert tracker_a.completed_devices == 2 and tracker_a.done_event.is_set()
+            assert tracker_b.completed_devices == 1 and tracker_b.done_event.is_set()
+            assert tracker_c.completed_devices == 1 and tracker_c.done_event.is_set()
+            for results in (results_a, results_b, results_c):
+                for r in results:
+                    assert r is not None and "Connection closed" in r.message
+
+    def test_write_many_two_devices_connection_loss_returns_promptly(self):
+        """2-device write_many + connection drop: prompt error results, no hang/crash."""
+        holder = {}
+        with _mock_dmq_backend() as backend:  # no PENDING ever arrives -> writes stay queued
+
+            def do_writes():
+                holder["results"] = backend.write_many([(TEMP_DEVICE, 1.0), (TEMP_DEVICE_2, 2.0)], timeout=8.0)
+
+            t = threading.Thread(target=do_writes)
+            t.start()
+            time.sleep(0.3)  # let both sessions get created
+            conn = backend._select_connection
+            assert conn is not None
+            conn.ioloop.add_callback_threadsafe(conn.close)
+            t.join(timeout=3.0)
+            assert not t.is_alive(), "write_many hung after connection loss"
+            results = holder["results"]
+            assert len(results) == 2
+            for r in results:
+                assert not r.success
+                assert "Connection closed" in (r.message or "")
+
+    def test_write_many_timeout_with_dead_connection_no_crash(self):
+        """IO loop dies without close callback: timeout backfill, no AttributeError."""
+        holder = {}
+        with _mock_dmq_backend() as backend:
+
+            def do_write():
+                holder["results"] = backend.write_many([(TEMP_DEVICE, 1.0)], timeout=1.5)
+
+            t = threading.Thread(target=do_write)
+            t.start()
+            time.sleep(0.3)
+            conn = backend._select_connection
+            assert conn is not None
+            conn.ioloop.stop()  # thread exits, _select_connection -> None, results unfilled
+            t.join(timeout=6.0)
+            assert not t.is_alive()
+            assert "results" in holder, "write_many raised instead of returning results"
+            result = holder["results"][0]
+            assert not result.success
+            assert result.error_code == ERR_TIMEOUT
 
 
 # =============================================================================

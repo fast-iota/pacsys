@@ -816,3 +816,16 @@ class TestReplyBuffering:
 
         assert len(cancel_sent) == 0
         assert RequestId(42) not in conn._reply_buffer
+
+
+class TestDPMAcnetStreamTermination:
+    def test_readings_stops_on_termination_sentinel(self):
+        """A None sentinel (connection lost) terminates the readings() generator."""
+        import queue
+
+        d = DPMAcnet.__new__(DPMAcnet)
+        d._reply_queue = queue.Queue()
+        d._reply_queue.put("r1")
+        d._reply_queue.put(None)
+        d._reply_queue.put("r2")
+        assert list(d.readings(timeout=0.5)) == ["r1"]

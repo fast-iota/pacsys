@@ -178,6 +178,7 @@ class _ReadJob:
     exchange_name: str = ""
     queue_name: str = ""
     consumer_tag: str | None = None
+    init_message_id: str = ""  # AMQP message_id of the INIT (job-error correlation)
 
 
 @dataclass
@@ -206,6 +207,7 @@ class _WriteSession:
         default_factory=list
     )
     init_timer: object | None = None  # safety timer if PENDING never arrives
+    init_message_id: str = ""  # AMQP message_id of the INIT (job-error correlation)
 
 
 @dataclass
@@ -381,12 +383,20 @@ def _reply_to_reading(reply, drf: str) -> Reading:
 
 
 def _resolve_reply(
-    routing_key: str, body: bytes, drfs: list[str], drf_to_idx: dict[str, int]
-) -> tuple[Any, int, int | None] | None:
+    routing_key: str,
+    body: bytes,
+    drfs: list[str],
+    drf_to_idx: dict[str, int],
+    properties: pika.BasicProperties | None = None,
+    init_message_id: str = "",
+) -> tuple[Any, int | None, int | None] | None:
     """Parse reply and resolve device index from routing key or ref_id.
 
     Shared by read and subscription message handlers.
-    Returns (reply, idx, ref_id) or None if message should be skipped.
+    Returns (reply, idx, ref_id), or (reply, None, None) for a job-level
+    INIT failure (ErrorSample on exact routing key "R" with no ref_id,
+    correlated to the INIT message_id), or None if the message should be
+    skipped.
     """
     if routing_key == "Q":
         return None
@@ -417,6 +427,17 @@ def _resolve_reply(
     elif routing_key.startswith("R."):
         idx = drf_to_idx.get(routing_key[2:])
     if idx is None:
+        # Job-level INIT failure: the server publishes ErrorSample on exact
+        # "R" with no ref_id and correlationId = INIT message_id
+        # (ServerJobManager.sendStatus). Accept an empty correlation id -- the
+        # reply queue is private to this job.
+        if routing_key == "R" and isinstance(reply, ErrorSample_reply) and not ref_id:
+            corr_id = getattr(properties, "correlation_id", None)
+            if not corr_id or corr_id == init_message_id:
+                return reply, None, None
+            logger.warning(
+                "Dropping job-level error with unmatched correlation_id=%s (expected %s)", corr_id, init_message_id
+            )
         return None
     return reply, idx, ref_id
 
@@ -463,6 +484,7 @@ class _SelectSubscription:
     heartbeat_handle: object | None = None  # ioloop timer handle
     setup_complete: threading.Event = field(default_factory=threading.Event)
     setup_error: Exception | None = None
+    init_message_id: str = ""  # AMQP message_id of the INIT (job-error correlation)
 
 
 class DMQBackend(Backend):
@@ -812,10 +834,12 @@ class DMQBackend(Backend):
                 return
 
             try:
-                self._send_init(channel, exchange_name, job.prepared_drfs, ctx, token)
+                job.init_message_id = self._send_init(channel, exchange_name, job.prepared_drfs, ctx, token)
                 job.consumer_tag = channel.basic_consume(
                     queue=queue_name,
-                    on_message_callback=lambda ch, method, props, body: self._on_read_message(job, ch, method, body),
+                    on_message_callback=lambda ch, method, props, body: self._on_read_message(
+                        job, ch, method, props, body
+                    ),
                     auto_ack=False,
                 )
             except Exception as exc:  # noqa: BLE001
@@ -830,13 +854,27 @@ class DMQBackend(Backend):
 
         self._setup_channel_async(on_ready=on_ready)
 
-    def _on_read_message(self, job: _ReadJob, channel: Channel, method, body: bytes) -> None:
+    def _on_read_message(self, job: _ReadJob, channel: Channel, method, properties, body: bytes) -> None:
         """Handle a message for an async read (IO thread)."""
-        result = _resolve_reply(method.routing_key, body, job.prepared_drfs, job.drf_to_idx)
+        result = _resolve_reply(
+            method.routing_key, body, job.prepared_drfs, job.drf_to_idx, properties, job.init_message_id
+        )
         channel.basic_ack(method.delivery_tag)
         if result is None:
             return
         reply, idx, _ref_id = result
+        if idx is None:
+            # Job-level INIT failure: fail all unfilled indices with the server error
+            logger.error(
+                "DMQ job error for read (%s devices): %s",
+                len(job.drfs),
+                getattr(reply, "message", None) or f"error {reply.errorNumber}",
+            )
+            for i, drf in enumerate(job.drfs):
+                if i not in job.readings:
+                    job.readings[i] = _reply_to_reading(reply, drf)
+            self._complete_read(job)
+            return
         # Fill this index and any unfilled duplicates with the same prepared DRF.
         # The server deduplicates requests, so only one reply arrives per unique device.
         # Uses pre-built reverse index for O(K) lookup (K = duplicates) instead of O(N).
@@ -1314,6 +1352,7 @@ class DMQBackend(Backend):
             queue_name=queue_name,
             gss_context=ctx,
             last_used=time.monotonic(),
+            init_message_id=message_id,
         )
 
         # Queue writes until server confirms INIT via PENDING response.
@@ -1566,6 +1605,16 @@ class DMQBackend(Backend):
                 self._flush_queued_writes(session)
             return
 
+        # Job-level INIT failure (ServerJobManager.sendStatus): ErrorSample
+        # correlated to the INIT message_id. Before confirmation any error
+        # is job-level -- writes stay queued until PENDING, so no per-write
+        # responses can exist yet.
+        if isinstance(reply, ErrorSample_reply) and (
+            (corr_id and corr_id == session.init_message_id) or (not corr_id and not session.init_confirmed)
+        ):
+            self._fail_session_init(session, reply)
+            return
+
         # Match by correlation_id. impl1 sends correlationId="" on write
         # responses (ServerSettingJob.dataChanged). Fall back to FIFO (oldest
         # pending) when correlationId is missing or unknown.
@@ -1596,6 +1645,27 @@ class DMQBackend(Backend):
         device_still_has_pending = any(t is tracker for _, _, _, t in session.pending.values())
         if not device_still_has_pending:
             tracker.device_complete()
+
+    def _fail_session_init(self, session: _WriteSession, reply: ErrorSample_reply) -> None:
+        """Fail a write session on a job-level INIT error from the server (IO thread).
+
+        Fills queued/pending results with the real server error before
+        _close_write_session backfills the rest and completes trackers.
+        """
+        msg = getattr(reply, "message", None) or f"DMQ job error {reply.errorNumber}"
+        logger.error("Write session INIT failed for %s (%s): %s", session.device, session.init_drf, msg)
+        for q_settings, q_results, _q_tracker in session.queued_sends:
+            for i, drf, _ in q_settings:
+                if q_results[i] is None:
+                    q_results[i] = WriteResult(
+                        drf=drf, facility_code=reply.facilityCode, error_code=reply.errorNumber, message=msg
+                    )
+        for i, drf, results_list, _tracker in list(session.pending.values()):
+            if results_list[i] is None:
+                results_list[i] = WriteResult(
+                    drf=drf, facility_code=reply.facilityCode, error_code=reply.errorNumber, message=msg
+                )
+        self._close_write_session(session.init_drf, reason=msg)
 
     def _abort_pending_writes(self, init_drfs: set[str]) -> None:
         """Abort pending writes for given init_drfs (IO thread).
@@ -1783,13 +1853,13 @@ class DMQBackend(Backend):
         results = cast("list[WriteResult | None]", [None] * len(settings))
         tracker = _WriteCompletionTracker(total_devices=0)
 
-        # Schedule async execution on IO thread
-        if self._select_connection is None:
+        # Schedule async execution on IO thread (snapshot: the IO thread's
+        # finally resets _select_connection to None on connection loss)
+        conn = self._select_connection
+        if conn is None:
             raise RuntimeError("Connection not available")
 
-        self._select_connection.ioloop.add_callback_threadsafe(
-            lambda: self._execute_write_many_async(settings, results, tracker)
-        )
+        conn.ioloop.add_callback_threadsafe(lambda: self._execute_write_many_async(settings, results, tracker))
 
         # Block until done or timeout
         effective_timeout = timeout if timeout is not None else self._timeout
@@ -1801,15 +1871,27 @@ class DMQBackend(Backend):
             abort_done = threading.Event()
 
             def do_abort():
-                self._abort_pending_writes(init_drfs_involved)
-                abort_done.set()
+                try:
+                    self._abort_pending_writes(init_drfs_involved)
+                finally:
+                    abort_done.set()
 
-            self._select_connection.ioloop.add_callback_threadsafe(do_abort)
-            if not abort_done.wait(timeout=2.0):
-                logger.warning(
-                    "Write abort for %d device(s) did not complete within 2s; IO thread may be unresponsive",
-                    len(init_drfs_involved),
-                )
+            conn = self._select_connection
+            if conn is not None:
+                try:
+                    conn.ioloop.add_callback_threadsafe(do_abort)
+                except OSError:
+                    # The callback may still have been queued before the loop
+                    # died -- fall through and wait so results can't be mutated
+                    # under the backfill below.
+                    pass
+                if not abort_done.wait(timeout=2.0):
+                    logger.warning(
+                        "Write abort for %d device(s) did not complete within 2s; IO thread may be unresponsive",
+                        len(init_drfs_involved),
+                    )
+            # else: connection already lost -- _on_connection_closed filled
+            # results and the IO thread has exited, so results are safe to touch
 
             # Fill timeout errors for results the IO thread didn't cover
             # (e.g. devices that never got a session).  Safe now because
@@ -1914,17 +1996,27 @@ class DMQBackend(Backend):
         logger.error("SelectConnection open error: %s", error)
         self._connection_error = error
         self._connection_ready.set()
+        # Stop the ioloop so the IO thread exits and _ensure_io_thread can restart it
+        try:
+            connection.ioloop.stop()
+        except OSError:
+            pass
 
     def _on_connection_closed(self, connection: SelectConnection, reason: Exception) -> None:
         """Called when SelectConnection is closed."""
         logger.info("SelectConnection closed: %s", reason)
         self._connection_ready.clear()
 
-        # Fail all pending writes - signal each tracker exactly once
-        trackers: dict[int, _WriteCompletionTracker] = {}
+        # Fail all pending writes. A multi-device write_many shares one tracker
+        # across several sessions, so complete once per (tracker, init_drf) --
+        # not once per tracker -- to satisfy total_devices.
+        completions: dict[int, tuple[_WriteCompletionTracker, set[str]]] = {}
+
+        def note_completion(tracker: _WriteCompletionTracker, init_drf: str) -> None:
+            completions.setdefault(id(tracker), (tracker, set()))[1].add(init_drf)
 
         # Fail writes queued during channel setup
-        for queued in self._pending_session_setups.values():
+        for setup_drf, queued in self._pending_session_setups.items():
             for q_settings, q_results, q_tracker in queued:
                 for i, drf, _ in q_settings:
                     if q_results[i] is None:
@@ -1934,7 +2026,7 @@ class DMQBackend(Backend):
                             error_code=ERR_RETRY,
                             message=f"Connection closed: {reason}",
                         )
-                trackers.setdefault(id(q_tracker), q_tracker)
+                note_completion(q_tracker, setup_drf)
         self._pending_session_setups.clear()
 
         for session in self._write_sessions.values():
@@ -1954,7 +2046,7 @@ class DMQBackend(Backend):
                             error_code=ERR_RETRY,
                             message=f"Connection closed: {reason}",
                         )
-                trackers.setdefault(id(q_tracker), q_tracker)
+                note_completion(q_tracker, session.init_drf)
             session.queued_sends = []
             # Fail pending writes
             for corr_id, (i, drf, results, tracker) in list(session.pending.items()):
@@ -1965,10 +2057,11 @@ class DMQBackend(Backend):
                         error_code=ERR_RETRY,
                         message=f"Connection closed: {reason}",
                     )
-                trackers.setdefault(id(tracker), tracker)
+                note_completion(tracker, session.init_drf)
             session.pending.clear()
-        for tracker in trackers.values():
-            tracker.device_complete()
+        for tracker, init_drfs in completions.values():
+            for _ in init_drfs:
+                tracker.device_complete()
 
         # Clear write state
         self._write_sessions.clear()
@@ -2094,6 +2187,37 @@ class DMQBackend(Backend):
         if sub.handle._on_error is not None:
             self._dispatcher.dispatch_error(sub.handle._on_error, reason, sub.handle)
 
+    def _fail_subscription(self, sub: _SelectSubscription, error: Exception) -> None:
+        """Fail a subscription with a terminal server error (IO thread)."""
+        with self._stream_lock:
+            was_active = self._subscriptions.pop(sub.sub_id, None) is not None
+        if not was_active:
+            return
+        # Unblock a thread still waiting in subscribe()
+        sub.setup_error = error
+        sub.setup_complete.set()
+        conn = self._select_connection
+        if sub.heartbeat_handle is not None and conn is not None:
+            try:
+                conn.ioloop.remove_timeout(sub.heartbeat_handle)
+            except Exception:  # noqa: BLE001
+                logger.exception("Failed to cancel heartbeat timer for failed subscription %s", sub.sub_id)
+            sub.heartbeat_handle = None
+        sub.handle._signal_error(error)
+        if sub.handle._on_error is not None:
+            self._dispatcher.dispatch_error(sub.handle._on_error, error, sub.handle)
+        # Close channel -- no DROP, the server never created the job
+        if sub.channel is not None and sub.channel.is_open:
+            if sub.consumer_tag is not None:
+                try:
+                    sub.channel.basic_cancel(sub.consumer_tag)
+                except (AMQPError, ValueError):
+                    pass
+            try:
+                sub.channel.close()
+            except AMQPError:
+                pass
+
     def _on_message(
         self,
         sub: _SelectSubscription,
@@ -2103,11 +2227,22 @@ class DMQBackend(Backend):
         body: bytes,
     ) -> None:
         """Handle incoming message for subscription (runs in IO thread)."""
-        result = _resolve_reply(method.routing_key, body, sub.drfs, sub.drf_to_idx)
+        result = _resolve_reply(method.routing_key, body, sub.drfs, sub.drf_to_idx, properties, sub.init_message_id)
         channel.basic_ack(method.delivery_tag)
         if result is None:
             return
         reply, idx, _ref_id = result
+        if idx is None:
+            # Job-level INIT failure: fail the whole subscription
+            error = DeviceError(
+                drf=", ".join(sub.drfs),
+                facility_code=reply.facilityCode,
+                error_code=reply.errorNumber,
+                message=getattr(reply, "message", None) or "DMQ job error",
+            )
+            logger.error("DMQ job error for subscription %s: %s", sub.sub_id[:8], error)
+            self._fail_subscription(sub, error)
+            return
         drf = sub.drfs[idx]
         handle = sub.handle
 
@@ -2216,6 +2351,7 @@ class DMQBackend(Backend):
         init_body = bytes(req.marshal())
 
         message_id = str(uuid.uuid4())
+        sub.init_message_id = message_id
         mic = self._sign_message(ctx, init_body, message_id, reply_to=exchange_name, app_id="pacsys")
 
         init_headers = {

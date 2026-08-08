@@ -612,3 +612,56 @@ class TestUDPProtocol:
         protocol.connection_lost(None)
 
         assert not conn._connected
+
+
+class TestConnectionLossNotifiesHandlers:
+    """Connection loss must deliver a final DISCONNECTED reply to mult-request
+    consumers instead of silently clearing their handlers (ftp/dpm hang fix)."""
+
+    def test_connection_lost_delivers_final_disconnected_reply(self):
+        from pacsys.acnet.errors import ACNET_DISCONNECTED
+
+        conn = _make_tcp_conn()
+        received = []
+        ctx = AsyncRequestContext(
+            connection=conn,
+            task="FTPMAN",
+            node=1,
+            request_id=RequestId(7),
+            multiple_reply=True,
+            timeout=0,
+            reply_handler=received.append,
+        )
+        conn._reply_handlers[RequestId(7)] = ctx
+
+        conn._on_connection_lost()
+
+        assert not conn._reply_handlers
+        assert ctx.cancelled
+        assert len(received) == 1
+        reply = received[0]
+        assert reply.last
+        assert reply.status == ACNET_DISCONNECTED
+        assert reply.request_id == RequestId(7)
+
+    def test_handler_exception_does_not_block_others(self):
+        conn = _make_tcp_conn()
+        received = []
+
+        def bad_handler(reply):
+            raise RuntimeError("boom")
+
+        for req_id, handler in [(1, bad_handler), (2, received.append)]:
+            conn._reply_handlers[RequestId(req_id)] = AsyncRequestContext(
+                connection=conn,
+                task="T",
+                node=1,
+                request_id=RequestId(req_id),
+                multiple_reply=True,
+                timeout=0,
+                reply_handler=handler,
+            )
+
+        conn._on_connection_lost()
+
+        assert len(received) == 1

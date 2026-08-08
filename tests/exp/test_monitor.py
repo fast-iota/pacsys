@@ -34,6 +34,11 @@ class TestMonitorInit:
         with pytest.raises(ValueError, match="stale_after must be positive"):
             Monitor(["M:OUTTMP@p,1000"], stale_after=-1.0)
 
+    @pytest.mark.parametrize("size", [0, -1])
+    def test_invalid_buffer_size_raises(self, size):
+        with pytest.raises(ValueError, match="buffer_size must be >= 1"):
+            Monitor(["M:OUTTMP@p,1000"], buffer_size=size)
+
 
 class TestMonitorLiveMode:
     def test_start_stop(self, fake):
@@ -110,6 +115,41 @@ class TestMonitorCollect:
             mon.collect()
         with pytest.raises(ValueError, match="Exactly one"):
             mon.collect(duration=1.0, count=10)
+
+    @pytest.mark.parametrize("count", [0, -3])
+    def test_collect_nonpositive_count_raises(self, fake, count):
+        mon = Monitor(["M:OUTTMP@p,1000"], backend=fake)
+        with pytest.raises(ValueError, match="count must be >= 1"):
+            mon.collect(count=count)
+
+    def test_collect_count_exceeding_buffer_size_raises(self, fake):
+        """count > buffer_size can never be satisfied -- must fail fast, not hang."""
+        mon = Monitor(["M:OUTTMP@p,1000"], backend=fake, buffer_size=5)
+        with pytest.raises(ValueError, match="cannot exceed buffer_size"):
+            mon.collect(count=10)
+
+    def test_collect_count_subscription_stop_raises(self, fake):
+        """A subscription that stops without error must raise, not spin forever."""
+
+        def stopper():
+            time.sleep(0.1)
+            fake.emit_reading("M:OUTTMP@p,1000", 1.0)
+            time.sleep(0.05)
+            with fake._lock:
+                subs = list(fake._subscriptions)
+            for sub in subs:
+                sub.stop()
+
+        t = threading.Thread(target=stopper, daemon=True)
+        t.start()
+        mon = Monitor(["M:OUTTMP@p,1000"], backend=fake)
+        start = time.monotonic()
+        # timeout bounds the pre-fix behavior (TimeoutError after 5s);
+        # fixed code raises RuntimeError promptly on the stop
+        with pytest.raises(RuntimeError, match="Subscription stopped"):
+            mon.collect(count=5, timeout=5.0)
+        assert time.monotonic() - start < 3.0
+        t.join(timeout=2.0)
 
 
 class TestMonitorTags:

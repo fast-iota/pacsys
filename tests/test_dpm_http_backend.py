@@ -1123,3 +1123,43 @@ class TestPooledConnectionHygiene:
                 assert r2[0].value == 55.5  # NOT 2.0 — the stale sample from call 1
             finally:
                 backend.close()
+
+
+# =============================================================================
+# Subscription connect failure (dpm H1)
+# =============================================================================
+
+
+class TestDPMSubscribeConnectFailure:
+    """A dead server must surface through the handle, not silent empty readings."""
+
+    def test_subscribe_connect_failure_dispatches_error(self):
+        import threading
+        import time
+
+        from pacsys.backends.dpm_http import _AsyncDPMConnection
+        from pacsys.dpm_connection import DPMConnectionError
+
+        errors = []
+        err_event = threading.Event()
+
+        def on_err(exc, handle):
+            errors.append(exc)
+            err_event.set()
+
+        backend = DPMHTTPBackend()
+        try:
+            with mock.patch.object(
+                _AsyncDPMConnection, "connect", side_effect=DPMConnectionError("connection refused")
+            ):
+                handle = backend.subscribe(["M:OUTTMP@p,1000"], callback=lambda r, h: None, on_error=on_err)
+                assert err_event.wait(2.0), "on_error never fired for failed connect"
+                assert isinstance(errors[0], DPMConnectionError)
+                assert handle.exc is errors[0]
+                assert handle.stopped
+                deadline = time.monotonic() + 2.0
+                while handle in backend._handles and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert handle not in backend._handles
+        finally:
+            backend.close()
