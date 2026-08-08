@@ -21,6 +21,7 @@ from . import rad50
 from .connection_sync import AcnetConnectionTCP, AcnetRequestContext
 from .errors import (
     ACNET_DISCONNECTED,
+    ACNET_UTIME,
     FACILITY_FTP,
     FTP_COLLECTING,
     FTP_PEND,
@@ -1145,19 +1146,16 @@ class SnapshotHandle:
     def restart(self, timeout: float = 5.0):
         """Re-arm and re-trigger the snapshot.
 
-        Resets all device states to PENDING and clears the ready event,
-        so :meth:`wait` can be used again for the new capture cycle.
+        On success, discards queued pre-restart status updates and resets all
+        device states to PENDING so :meth:`wait` covers the new capture cycle.
+        On FE rejection the previous cycle's state stays intact; on ack timeout
+        the restart outcome is unknown, so all devices are marked ERROR.
         """
         with self._lock:
             if self._cancelled:
                 raise RuntimeError("Snapshot has been cancelled")
             if not self._monitor_thread.is_alive():
                 raise RuntimeError("Snapshot stream has ended (connection lost or stream closed)")
-            # Reset states before sending command
-            self._ready_event.clear()
-            for dev in self._devices:
-                self._device_states[dev.di] = SnapshotState.PENDING
-                self._device_errors.pop(dev.di, None)
 
         payload = build_snapshot_control(subtype=SNAPSHOT_CONTROL_RESTART, task_name=self._task_name)
         result_q: queue.Queue = queue.Queue()
@@ -1176,11 +1174,39 @@ class SnapshotHandle:
         try:
             status, _ = result_q.get(timeout=timeout)
         except queue.Empty:
+            # No ack: the FE may or may not have restarted. State is
+            # indeterminate -- fail loudly rather than report stale readiness.
+            with self._lock:
+                for dev in self._devices:
+                    self._device_states[dev.di] = SnapshotState.ERROR
+                    self._device_errors[dev.di] = ACNET_UTIME
+                self._ready_event.set()
             raise AcnetTimeoutError(int(timeout * 1000)) from None
 
         if status < 0:
+            # FE rejected: nothing was reset, cycle-1 state remains valid
             raise AcnetError(status, "Snapshot restart failed")
+
         with self._lock:
+            # Discard queued pre-restart status updates so a stale cycle-1
+            # READY cannot satisfy the new cycle's wait(). Termination items
+            # (None sentinel, is_last) are re-enqueued for the monitor. An
+            # update already dequeued by the monitor or still in network
+            # flight can slip through -- not closable client-side.
+            keep = []
+            while True:
+                try:
+                    item = self._reply_queue.get_nowait()
+                except queue.Empty:
+                    break
+                if item is None or item[2]:
+                    keep.append(item)
+            for item in keep:
+                self._reply_queue.put(item)
+            self._ready_event.clear()
+            for dev in self._devices:
+                self._device_states[dev.di] = SnapshotState.PENDING
+                self._device_errors.pop(dev.di, None)
             self._metadata_consumed.clear()
 
     def reset_pointers(self, timeout: float = 5.0):
@@ -1247,8 +1273,7 @@ class FTPClient:
     Wraps an existing AcnetConnectionTCP to provide FTP operations.
 
     Example:
-        with AcnetConnectionTCP() as conn:
-            conn.connect()
+        with AcnetConnectionTCP() as conn:  # __enter__ connects
             ftp = FTPClient(conn)
 
             # Query class codes

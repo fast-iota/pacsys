@@ -161,6 +161,70 @@ class TestAsyncDPMSubscribe:
         await asyncio.sleep(0.05)
         assert not handle._queue.empty()
 
+    @pytest.mark.asyncio
+    async def test_stream_death_closes_core_and_removes_handle(self, backend):
+        # Stream error exit must close the dedicated core, stop the handle,
+        # and drop it from _handles -- without an explicit handle.stop()
+        err = RuntimeError("StartList failed")
+        core = _mock_core()
+
+        async def fake_stream(drfs, dispatch, stop, error):
+            error(err)
+
+        core.stream = fake_stream
+
+        async def fake_create():
+            return core
+
+        backend._create_core = fake_create
+        handle = await backend.subscribe(["M:OUTTMP@p,1000"])
+        await handle._task
+        core.close.assert_awaited()
+        assert handle.stopped
+        assert handle not in backend._handles
+        with pytest.raises(RuntimeError, match="StartList failed"):
+            async for _ in handle.readings(timeout=0.1):
+                pass
+
+    @pytest.mark.asyncio
+    async def test_normal_stream_end_closes_core(self, backend):
+        core = _mock_core()
+
+        async def fake_stream(drfs, dispatch, stop, error):
+            dispatch(_make_reading())
+
+        core.stream = fake_stream
+
+        async def fake_create():
+            return core
+
+        backend._create_core = fake_create
+        handle = await backend.subscribe(["M:OUTTMP@p,1000"])
+        await handle._task
+        core.close.assert_awaited()
+        assert handle.stopped
+        assert handle not in backend._handles
+
+    @pytest.mark.asyncio
+    async def test_user_stop_still_safe_after_wrapper(self, backend):
+        # Explicit stop() after stream end: remover's second close is a no-op
+        core = _mock_core()
+
+        async def fake_stream(drfs, dispatch, stop, error):
+            dispatch(_make_reading())
+
+        core.stream = fake_stream
+
+        async def fake_create():
+            return core
+
+        backend._create_core = fake_create
+        handle = await backend.subscribe(["M:OUTTMP@p,1000"])
+        await handle._task
+        await handle.stop()
+        assert handle.stopped
+        assert handle not in backend._handles
+
 
 class TestAsyncDPMMisc:
     @pytest.mark.asyncio

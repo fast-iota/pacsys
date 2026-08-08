@@ -808,6 +808,41 @@ class TestScalerNumpy:
         result = s.common_to_primary(np.array([100.0, 200.0]))
         np.testing.assert_array_almost_equal(result, [50.0, 100.0])
 
+    # Narrow/float/empty dtypes: vectorized paths must coerce like the scalar paths
+    # (NumPy 2 raises OverflowError/TypeError otherwise; empty needs otypes)
+
+    def test_scale_int16_array(self):
+        s = Scaler(p_index=0, c_index=0, constants=(), input_len=2)
+        raw = np.array([1000, 2000, -1], dtype=np.int16)
+        expected = [s.scale(int(r)) for r in raw]
+        np.testing.assert_array_almost_equal(s.scale(raw), expected)
+
+    def test_scale_int32_array_input_len_4(self):
+        s = Scaler(p_index=0, c_index=0, constants=(), input_len=4)
+        raw = np.array([100000, -100000], dtype=np.int32)
+        expected = [s.scale(int(r)) for r in raw]
+        np.testing.assert_array_almost_equal(s.scale(raw), expected)
+
+    def test_scale_float_array_truncates_like_scalar(self):
+        s = Scaler(p_index=0, c_index=0, constants=(), input_len=2)
+        raw = np.array([1000.7, 2000.2])
+        expected = [s.scale(r) for r in raw]
+        np.testing.assert_array_almost_equal(s.scale(raw), expected)
+
+    def test_empty_arrays_all_methods(self):
+        s = Scaler(p_index=10, c_index=2, constants=(2.0, 1.0, 0.0), input_len=2)
+        empty_i = np.array([], dtype=np.int16)
+        empty_f = np.array([], dtype=np.float64)
+        for method, arg in [
+            (s.scale, empty_i),
+            (s.unscale, empty_f),
+            (s.raw_to_primary, empty_i),
+            (s.primary_to_common, empty_f),
+            (s.common_to_primary, empty_f),
+            (s.primary_to_raw, empty_f),
+        ]:
+            assert len(method(arg)) == 0
+
 
 class TestScalerFromPropertyInfo:
     def test_from_property_info(self):

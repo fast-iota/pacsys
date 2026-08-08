@@ -296,13 +296,21 @@ class AsyncAcnetConnectionBase:
     # ------------------------------------------------------------------
 
     async def connect(self):
-        """Connect to the remote ACNET daemon."""
+        """Connect to the remote ACNET daemon.
+
+        A failed connect closes the connection (transport, read task) and
+        disposes it -- create a new instance to retry.
+        """
         if self._disposed:
             raise AcnetError(ACNET_NOT_CONNECTED, "Connection disposed")
 
-        await self._open_transport()
-        self._start_read_loop()
-        await self._do_connect()
+        try:
+            await self._open_transport()
+            self._start_read_loop()
+            await self._do_connect()
+        except BaseException:
+            await self.close()
+            raise
 
         logger.info("Connected to ACNET via %s:%s as %s", self._host, self._port, self._handle_name)
 

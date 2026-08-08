@@ -1317,7 +1317,7 @@ class Scaler:
         Accepts int, float, or numpy array.
         """
         if _HAS_NUMPY and isinstance(raw, np.ndarray):
-            return np.vectorize(self._scale_one)(raw)
+            return np.vectorize(lambda r: self._scale_one(int(r)), otypes=[float])(raw)
         return self._scale_one(int(raw))
 
     def unscale(self, value):  # type: (int | float | object) -> int | object
@@ -1326,31 +1326,37 @@ class Scaler:
         Accepts int, float, or numpy array.
         """
         if _HAS_NUMPY and isinstance(value, np.ndarray):
-            return np.vectorize(self._unscale_one)(value)
+            return np.vectorize(lambda v: self._unscale_one(float(v)), otypes=[int])(value)
         return self._unscale_one(float(value))
 
     def raw_to_primary(self, raw):  # type: (int | float | object) -> float | object
         """Raw integer -> primary units."""
         if _HAS_NUMPY and isinstance(raw, np.ndarray):
-            return np.vectorize(lambda r: _primary_scale(int(r), self.p_index, self.input_len))(raw)
+            return np.vectorize(lambda r: _primary_scale(int(r), self.p_index, self.input_len), otypes=[float])(raw)
         return _primary_scale(int(raw), self.p_index, self.input_len)
 
     def primary_to_common(self, primary):  # type: (float | object) -> float | object
         """Primary units -> common (engineering) units."""
         if _HAS_NUMPY and isinstance(primary, np.ndarray):
-            return np.vectorize(lambda p: _common_scale(float(p), self.c_index, self.constants))(primary)
+            return np.vectorize(lambda p: _common_scale(float(p), self.c_index, self.constants), otypes=[float])(
+                primary
+            )
         return _common_scale(float(primary), self.c_index, self.constants)
 
     def common_to_primary(self, value):  # type: (float | object) -> float | object
         """Common (engineering) units -> primary units."""
         if _HAS_NUMPY and isinstance(value, np.ndarray):
-            return np.vectorize(lambda v: _common_unscale(float(v), self.c_index, self.constants, self.p_index))(value)
+            return np.vectorize(
+                lambda v: _common_unscale(float(v), self.c_index, self.constants, self.p_index), otypes=[float]
+            )(value)
         return _common_unscale(float(value), self.c_index, self.constants, self.p_index)
 
     def primary_to_raw(self, primary):  # type: (float | object) -> int | object
         """Primary units -> raw integer."""
         if _HAS_NUMPY and isinstance(primary, np.ndarray):
-            return np.vectorize(lambda p: _primary_unscale(float(p), self.p_index, self.input_len))(primary)
+            return np.vectorize(lambda p: _primary_unscale(float(p), self.p_index, self.input_len), otypes=[int])(
+                primary
+            )
         return _primary_unscale(float(primary), self.p_index, self.input_len)
 
     def _scale_one(self, raw: int) -> float:

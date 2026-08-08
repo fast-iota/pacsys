@@ -293,9 +293,22 @@ class AsyncDPMHTTPBackend(AsyncBackend):
         core = await self._create_core()
         handle = AsyncSubscriptionHandle(remover=self.remove)
         handle._drfs = drfs
-        handle._task = asyncio.ensure_future(
-            core.stream(drfs, handle._dispatch, handle._is_stopped, handle._signal_error)
-        )
+
+        async def _run_stream():
+            try:
+                await core.stream(drfs, handle._dispatch, handle._is_stopped, handle._signal_error)
+            finally:
+                # Stream end (StartList/job failure, transport error, cancel) must
+                # stop the handle and close the dedicated core or the socket leaks
+                handle._signal_stop()
+                try:
+                    await core.close()
+                except Exception:  # noqa: BLE001
+                    logger.debug("Failed to close DPM subscription core after stream end", exc_info=True)
+                if handle in self._handles:
+                    self._handles.remove(handle)
+
+        handle._task = asyncio.ensure_future(_run_stream())
         if callback:
             handle._callback_task = asyncio.ensure_future(_callback_feeder(handle, callback, on_error))
         handle._core = core

@@ -440,6 +440,97 @@ class TestRequestIdReuseRace:
         _run(_test())
 
 
+class TestConnectFailureCleanup:
+    """Failed connect() must not leak the transport or read task."""
+
+    def _make_conn_with_fakes(self):
+        conn = AsyncAcnetConnectionTCP("localhost", port=9999)
+        writer = MagicMock()
+        writer.close = MagicMock()
+        writer.wait_closed = AsyncMock()
+
+        async def fake_open():
+            conn._reader = MagicMock()
+            conn._writer = writer
+
+        def fake_start_read_loop():
+            conn._read_task = asyncio.ensure_future(asyncio.sleep(3600))
+
+        conn._open_transport = fake_open
+        conn._start_read_loop = fake_start_read_loop
+        return conn, writer
+
+    def test_do_connect_failure_closes_transport_and_read_task(self):
+        async def _test():
+            conn, writer = self._make_conn_with_fakes()
+
+            async def fail_connect():
+                raise AcnetError(-1, "CONNECT rejected")
+
+            conn._do_connect = fail_connect
+            with pytest.raises(AcnetError, match="CONNECT rejected"):
+                await conn.connect()
+
+            read_task = conn._read_task
+            assert read_task is not None and read_task.done()
+            writer.close.assert_called_once()
+            assert conn._writer is None
+            assert conn._disposed
+            # Caller-side double close is safe
+            await conn.close()
+            writer.close.assert_called_once()
+            # Disposed object refuses reconnect
+            with pytest.raises(AcnetError, match="disposed"):
+                await conn.connect()
+
+        _run(_test())
+
+    def test_do_connect_cancellation_cleans_up(self):
+        async def _test():
+            conn, writer = self._make_conn_with_fakes()
+
+            async def cancelled_connect():
+                raise asyncio.CancelledError
+
+            conn._do_connect = cancelled_connect
+            with pytest.raises(asyncio.CancelledError):
+                await conn.connect()
+            writer.close.assert_called_once()
+            assert conn._writer is None
+
+        _run(_test())
+
+
+class TestSyncConnectFailureCleanup:
+    """Sync wrapper: failed connect() must stop the reactor and stay retryable."""
+
+    def test_core_connect_failure_stops_reactor_then_retry_works(self):
+        from pacsys.acnet.connection_sync import AcnetConnectionTCP
+
+        conn = AcnetConnectionTCP("localhost", port=9999)
+        fail_core = MagicMock()
+        fail_core.connect = AsyncMock(side_effect=AcnetUnavailableError)
+        fail_core.close = AsyncMock()
+        ok_core = MagicMock()
+        ok_core.connect = AsyncMock()
+        ok_core.close = AsyncMock()
+        cores = iter([fail_core, ok_core])
+        conn._create_async = lambda: next(cores)
+
+        with pytest.raises(AcnetUnavailableError):
+            conn.connect()
+        fail_core.close.assert_awaited()
+        assert conn._async is None
+        assert conn._loop is None
+        assert conn._reactor_thread is None
+
+        conn.connect()
+        assert conn._async is ok_core
+        assert conn._reactor_thread is not None and conn._reactor_thread.is_alive()
+        conn.close()
+        assert conn._reactor_thread is None
+
+
 class TestCloseCleanup:
     """Test that close() releases all tracking state."""
 

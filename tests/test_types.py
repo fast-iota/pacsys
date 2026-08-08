@@ -196,19 +196,19 @@ class TestCombinedStream:
         h1.stop()
         h2.stop()
 
-    def test_nonblocking_skips_stopped_subs(self):
-        fake = FakeBackend()
-        h1 = fake.subscribe(["M:OUTTMP"])
-        h2 = fake.subscribe(["G:AMANDA"])
+    def test_nonblocking_drains_stopped_subs(self):
+        # Stopped handles may still hold buffered readings; nonblocking mode
+        # must drain them (FakeSubscriptionHandle discards its buffer on stop,
+        # so this regression needs the real BufferedSubscriptionHandle).
+        from pacsys.backends._subscription import BufferedSubscriptionHandle
 
-        fake.emit_reading("M:OUTTMP", 1.0)
-        fake.emit_reading("G:AMANDA", 2.0)
-        h1.stop()
+        h = BufferedSubscriptionHandle()
+        for i in range(3):
+            h._dispatch(Reading(drf="M:OUTTMP", value=float(i), value_type=ValueType.SCALAR))
+        h._signal_stop()
 
-        results = list(CombinedStream([h1, h2]).readings(timeout=0))
-        assert len(results) == 1
-        assert results[0][0].value == 2.0
-        h2.stop()
+        results = list(CombinedStream([h]).readings(timeout=0))
+        assert [r.value for r, _ in results] == [0.0, 1.0, 2.0]
 
     def test_nonblocking_raises_on_error(self):
         fake = FakeBackend()

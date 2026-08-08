@@ -1,7 +1,7 @@
 import re
 from typing import Any
 
-from .device import get_qualified_device, parse_device
+from .device import ACNET_NAME_GRAMMAR, PATTERN_NAME, get_qualified_device, parse_device
 from .event import DRF_EVENT, DefaultEvent, parse_event
 from .extra import DRF_EXTRA, parse_extra
 from .field import DEFAULT_FIELD_FOR_PROPERTY, DRF_FIELD, get_default_field, parse_field
@@ -10,10 +10,12 @@ from .range import ARRAY_RANGE, BYTE_RANGE, parse_range
 
 _UNSET: Any = object()
 
-# 1=DEVIVE, 2=PROPERTY OR FIELD, 3=RANGE, 4=FIELD, 5=EVENT
-PATTERN_FULL = re.compile(
-    "(?i)(.{3,}?)" + "(?:\\.(\\w+))?" + "(\\[[\\d:]*\\]|\\{[\\d:]*\\})?" + "(?:\\.(\\w+))?" + "(?:@(.+))?" + "$"
-)
+# 1=DEVICE, 2=PROPERTY OR FIELD, 3=RANGE, 4=FIELD, 5=EVENT
+_REQUEST_TAIL = "(?:\\.(\\w+))?" + "(\\[[\\d:]*\\]|\\{[\\d:]*\\})?" + "(?:\\.(\\w+))?" + "(?:@(.+))?" + "$"
+# Strict form: device group is the real ACNET grammar, so backtracking cannot launder
+# malformed suffixes into the device name. Tried first; EPICS fallback uses the lax form.
+PATTERN_ACNET_FULL = re.compile("(?i)(" + ACNET_NAME_GRAMMAR + ")" + _REQUEST_TAIL)
+PATTERN_FULL = re.compile("(?i)(.{3,}?)" + _REQUEST_TAIL)
 
 
 class DataRequest:
@@ -53,6 +55,7 @@ class DataRequest:
         self.extra_raw = extra_raw or (extra.name if extra is not None else None)
         self.property_explicit = False
         self.field_explicit = False
+        self.is_acnet = True
 
     def __eq__(self, other):
         if not isinstance(other, DataRequest):
@@ -203,9 +206,16 @@ def parse_request(device_str: str) -> DataRequest:
     else:
         extra_obj = None
         extra_str = None
-    match = PATTERN_FULL.match(device_str)
+    match = PATTERN_ACNET_FULL.match(device_str)
     if match is None:
-        raise ValueError(f"{device_str} is not a valid DRF2 device")
+        # ACNET-shaped near miss: a valid device token followed by a DRF delimiter that
+        # the strict grammar could not parse. Reject instead of laundering into EPICS.
+        nm = PATTERN_NAME.match(device_str)
+        if nm is not None and nm.end() < len(device_str) and device_str[nm.end()] in ".[@":
+            raise ValueError(f"Invalid ACNET DRF {device_str!r}")
+        match = PATTERN_FULL.match(device_str)
+        if match is None:
+            raise ValueError(f"{device_str} is not a valid DRF2 device")
     dev, prop, rng, field, event = match.groups()
     dev_obj = parse_device(dev)
     dev_name = dev_obj.canonical_string
@@ -237,4 +247,5 @@ def parse_request(device_str: str) -> DataRequest:
     req = DataRequest(device_str, dev_name, prop_obj, rng, field_obj, event_obj, extra_obj, extra_str)
     req.property_explicit = prop_explicit
     req.field_explicit = field is not None
+    req.is_acnet = dev_obj.is_acnet
     return req
