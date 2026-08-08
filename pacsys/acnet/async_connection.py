@@ -26,8 +26,7 @@ import asyncio
 import logging
 import socket
 import struct
-import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import ClassVar
@@ -222,11 +221,19 @@ class AsyncAcnetConnectionBase:
 
         # Outgoing request tracking
         self._reply_handlers: dict[RequestId, AsyncRequestContext] = {}
-        # Buffered replies for requests not yet registered.
-        # Stores (reply, monotonic_time) tuples for causality checking.
-        self._reply_buffer: dict[RequestId, list[tuple]] = defaultdict(list)
-        # Recently cancelled/completed request IDs - prevents _reply_buffer leak
-        self._dead_requests: set[RequestId] = set()
+        # Buffered replies for requests not yet registered, keyed by (possibly
+        # reused) request ID. Stores (reply, recv_seq) for causality: acnetd
+        # writes the SEND_REQUEST ack before any reply for the new request, so
+        # a buffered reply is fresh iff its recv_seq is after the ack's.
+        self._reply_buffer: dict[RequestId, deque[tuple]] = defaultdict(lambda: deque(maxlen=_MAX_BUFFERED_REPLIES))
+        # Receive sequence: counts reply frames as processed; ACK handler
+        # records its position so send_request can discard pre-ack strays.
+        self._recv_seq = 0
+        self._ack_recv_seq = 0
+        # Registration windows: buffering is only meaningful while a
+        # send_request is between sending and draining. Outside any window an
+        # unknown-ID reply is provably stale.
+        self._pending_sends = 0
         # Incoming request tracking
         self._requests_in: dict[ReplyId, AcnetRequest] = {}
 
@@ -332,7 +339,6 @@ class AsyncAcnetConnectionBase:
             self._pending_ack.set_exception(AcnetUnavailableError())
 
         self._reply_buffer.clear()
-        self._dead_requests.clear()
 
         logger.info("Closed async ACNET connection %s", self._handle_name)
 
@@ -365,7 +371,6 @@ class AsyncAcnetConnectionBase:
 
         self._fail_reply_handlers()
         self._reply_buffer.clear()
-        self._dead_requests.clear()
 
         self._connected = False
 
@@ -494,6 +499,7 @@ class AsyncAcnetConnectionBase:
             pass
         elif msg_type == ACNETD_ACK:
             if self._pending_ack and not self._pending_ack.done():
+                self._ack_recv_seq = self._recv_seq
                 self._pending_ack.set_result(data)
             else:
                 logger.debug("Dropping unexpected ACK (no pending command)")
@@ -523,10 +529,13 @@ class AsyncAcnetConnectionBase:
     def _handle_reply(self, reply: AcnetReply):
         """Handle an incoming reply.
 
-        No race condition: if handler isn't registered yet, buffer the reply.
-        send_request() will drain the buffer when it registers the handler.
+        No race condition: if handler isn't registered yet, buffer the reply
+        (acnetd reuses request IDs, so even a "finished" ID may carry a fresh
+        reply for a new request whose handler isn't registered yet).
+        send_request() drains the buffer, discarding pre-ack (stale) entries.
         All runs on the event loop - no locks needed.
         """
+        self._recv_seq += 1
         context = self._reply_handlers.get(reply.request_id)
 
         if context:
@@ -537,17 +546,13 @@ class AsyncAcnetConnectionBase:
 
             if reply.last:
                 self._reply_handlers.pop(reply.request_id, None)
-                self._dead_requests.add(reply.request_id)
                 context._cancelled = True
-        elif reply.request_id in self._dead_requests:
-            pass
+        elif self._pending_sends > 0:
+            # deque maxlen evicts oldest: newest replies are the fresh ones
+            self._reply_buffer[reply.request_id].append((reply, self._recv_seq))
         else:
-            buf = self._reply_buffer[reply.request_id]
-            if len(buf) < _MAX_BUFFERED_REPLIES:
-                buf.append((reply, time.monotonic()))
-            else:
-                del self._reply_buffer[reply.request_id]
-                self._dead_requests.add(reply.request_id)
+            # No registration in flight - reply cannot be fresh
+            logger.debug("Dropping stale reply for unknown request %s", reply.request_id)
 
     def _handle_request(self, request: AcnetRequest):
         task = asyncio.create_task(self._request_ack(request.reply_id))
@@ -610,55 +615,68 @@ class AsyncAcnetConnectionBase:
             + data
         )
 
-        request_time = time.monotonic()
+        # Open a registration window: replies for our (possibly reused) req_id
+        # may arrive in the same TCP batch as the ack, before the handler is
+        # registered below - _handle_reply buffers them while a window is open.
+        self._pending_sends += 1
+        try:
+            ack = await self._xact(content)
 
-        ack = await self._xact(content)
+            if len(ack) < 4:
+                raise AcnetUnavailableError
 
-        if len(ack) < 4:
-            raise AcnetUnavailableError
+            if len(ack) < 6:
+                _ack_code, status = struct.unpack(">Hh", ack[:4])
+                if status == ACNET_REQREJ:
+                    raise AcnetRequestRejectedError(task)
+                if status < 0:
+                    raise AcnetError(status, f"SEND_REQUEST to '{task}' failed")
+                raise AcnetUnavailableError
 
-        if len(ack) < 6:
-            _ack_code, status = struct.unpack(">Hh", ack[:4])
-            if status == ACNET_REQREJ:
-                raise AcnetRequestRejectedError(task)
+            _ack_code, status, req_id = struct.unpack(">HhH", ack[:6])
+
             if status < 0:
                 raise AcnetError(status, f"SEND_REQUEST to '{task}' failed")
-            raise AcnetUnavailableError
 
-        _ack_code, status, req_id = struct.unpack(">HhH", ack[:6])
+            # Snapshot our ack's position in the receive stream (still valid:
+            # _cmd_lock serializes commands, so no other ack can overwrite it
+            # before we resume).
+            ack_seq = self._ack_recv_seq
 
-        if status < 0:
-            raise AcnetError(status, f"SEND_REQUEST to '{task}' failed")
+            context = AsyncRequestContext(
+                connection=self,
+                task=task,
+                node=node,
+                request_id=RequestId(req_id),
+                multiple_reply=multiple_reply,
+                timeout=timeout,
+                reply_handler=reply_handler,
+            )
 
-        context = AsyncRequestContext(
-            connection=self,
-            task=task,
-            node=node,
-            request_id=RequestId(req_id),
-            multiple_reply=multiple_reply,
-            timeout=timeout,
-            reply_handler=reply_handler,
-        )
+            self._reply_handlers[context.request_id] = context
 
-        self._reply_handlers[context.request_id] = context
-        self._dead_requests.discard(context.request_id)
+            # Drain buffered replies (ACK+reply arrived in same batch).
+            # acnetd writes our ack before forwarding any reply for the new
+            # request, so pre-ack entries are stale from the ID's prior life.
+            buffered = self._reply_buffer.pop(context.request_id, ())
+            for reply, recv_seq in buffered:
+                if recv_seq <= ack_seq:
+                    continue
+                try:
+                    context.reply_handler(reply)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Reply handler exception (buffered): %s", e)
+                if reply.last:
+                    self._reply_handlers.pop(context.request_id, None)
+                    context._cancelled = True
+                    break
 
-        # Drain buffered replies (ACK+reply arrived in same batch).
-        buffered = self._reply_buffer.pop(context.request_id, [])
-        for reply, arrival_time in buffered:
-            if arrival_time < request_time:
-                continue
-            try:
-                context.reply_handler(reply)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("Reply handler exception (buffered): %s", e)
-            if reply.last:
-                self._reply_handlers.pop(context.request_id, None)
-                self._dead_requests.add(context.request_id)
-                context._cancelled = True
-                break
-
-        return context
+            return context
+        finally:
+            self._pending_sends -= 1
+            if self._pending_sends == 0:
+                # No registration in flight - remaining buffered strays are stale
+                self._reply_buffer.clear()
 
     async def request_single(
         self,
@@ -852,7 +870,6 @@ class AsyncAcnetConnectionBase:
 
         self._fail_reply_handlers()
         self._reply_buffer.clear()
-        self._dead_requests.clear()
 
         for request in self._requests_in.values():
             request.cancel()
@@ -913,7 +930,6 @@ class AsyncAcnetConnectionBase:
     async def _send_cancel(self, context: AsyncRequestContext):
         """Send a cancel for an outgoing request."""
         self._reply_handlers.pop(context.request_id, None)
-        self._dead_requests.add(context.request_id)
         self._reply_buffer.pop(context.request_id, None)
 
         content = struct.pack(

@@ -1358,6 +1358,26 @@ class TestFakeBackendDispatchMode:
         handle.stop()
         fake.close()
 
+    def test_close_from_worker_callback(self):
+        """backend.close() from inside a WORKER-mode callback must complete cleanly."""
+        fake = FakeBackend(dispatch_mode=DispatchMode.WORKER)
+        errors = []
+        done = threading.Event()
+
+        def cb(reading, handle):
+            try:
+                fake.close()
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+            finally:
+                done.set()
+
+        fake.subscribe(["M:OUTTMP"], callback=cb)
+        fake.emit_reading("M:OUTTMP", 42.0)
+        assert done.wait(2.0)
+        assert errors == []
+        assert fake._closed is True
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Event Perturbation Tests

@@ -77,8 +77,8 @@ class KerberosAuth(Auth):
     @property
     def principal(self) -> str:
         """Get principal name from credential cache."""
-        creds = self._get_credentials()
-        return str(creds.name)
+        _, principal = self._inspect_credentials()
+        return principal
 
     def _get_credentials(self):
         """Get and validate Kerberos credentials from cache.
@@ -90,9 +90,18 @@ class KerberosAuth(Auth):
             ImportError: If gssapi library is not installed
             AuthenticationError: If no valid credentials or wrong realm
         """
+        creds, _ = self._inspect_credentials()
+        return creds
+
+    def _inspect_credentials(self):
+        """Acquire and validate credentials; returns (creds, principal string).
+
+        gssapi resolves the cache lazily, so name/lifetime inspection (not just
+        construction) can raise GSSError -- everything stays in one boundary.
+        """
         try:
             import gssapi
-        except ImportError:
+        except (ImportError, OSError):
             raise ImportError(
                 "gssapi library required for Kerberos authentication. Install with: pip install pacsys[kerberos]"
             ) from None
@@ -104,6 +113,8 @@ class KerberosAuth(Auth):
             if self.name is not None:
                 kwargs["name"] = gssapi.Name(self.name, name_type=gssapi.NameType.kerberos_principal)
             creds = gssapi.Credentials(**kwargs)
+            principal = str(creds.name)
+            lifetime = creds.lifetime
         except Exception as e:
             if self.name is not None:
                 raise AuthenticationError(
@@ -111,17 +122,17 @@ class KerberosAuth(Auth):
                 ) from e
             raise AuthenticationError(f"No valid Kerberos credentials. Run 'kinit' first. Error: {e}") from e
 
-        principal_parts = str(creds.name).split("@")
+        principal_parts = principal.split("@")
         if len(principal_parts) != 2:
-            raise AuthenticationError(f"Invalid Kerberos principal format: {creds.name}")
+            raise AuthenticationError(f"Invalid Kerberos principal format: {principal}")
 
         if principal_parts[1] != "FNAL.GOV":
             raise AuthenticationError(f"Kerberos principal {principal_parts[0]} is not from FNAL.GOV realm")
 
-        if creds.lifetime <= 0:
+        if lifetime <= 0:
             raise AuthenticationError(f"Kerberos ticket for {principal_parts[0]} has expired")
 
-        return creds
+        return creds, principal
 
 
 @dataclass(frozen=True)

@@ -42,6 +42,31 @@ def backend():
     return b
 
 
+class TestAsyncGRPCConnectRace:
+    @pytest.mark.asyncio
+    async def test_close_during_connect_does_not_strand_core(self):
+        core = mock.AsyncMock()
+        connect_started = asyncio.Event()
+        connect_release = asyncio.Event()
+
+        async def slow_connect():
+            connect_started.set()
+            await connect_release.wait()
+
+        core.connect = slow_connect
+        with mock.patch("pacsys.aio._grpc._DaqCore", return_value=core):
+            b = AsyncGRPCBackend()
+            task = asyncio.create_task(b._ensure_connected())
+            await connect_started.wait()
+            await b.close()
+            connect_release.set()
+            with pytest.raises(RuntimeError, match="Backend is closed"):
+                await task
+        core.close.assert_awaited_once()
+        assert b._core is None
+        assert b._connected is False
+
+
 class TestAsyncGRPCRead:
     @pytest.mark.asyncio
     async def test_read_single(self, backend):

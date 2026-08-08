@@ -11,6 +11,7 @@ for use in async code. Uses lazy-initialized global async backend.
 """
 
 import asyncio
+import logging
 
 from pacsys.aio._backends import AsyncBackend
 from pacsys.aio._device import AsyncDevice
@@ -80,12 +81,23 @@ _config_timeout: float | None = None
 
 _global_async_backend: AsyncBackend | None = None
 _async_backend_initialized: bool = False
+_owner_loop: asyncio.AbstractEventLoop | None = None
 _background_tasks: set[asyncio.Task[None]] = set()
+
+
+logger = logging.getLogger(__name__)
 
 
 def _retain_background_task(task: asyncio.Task[None]) -> None:
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
+
+
+async def _close_old_backend(backend: AsyncBackend) -> None:
+    try:
+        await backend.close()
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to close replaced async backend")
 
 
 def configure(
@@ -100,12 +112,13 @@ def configure(
 ) -> None:
     """Configure async backend settings.
 
-    Can be called at any time. If a backend is already initialized, it will
-    be marked as closed and replaced on the next operation. Pass None to
-    clear a previously set value (falls back to default).
+    If a backend is already initialized, its cleanup is scheduled on the
+    running event loop (best-effort) and it is replaced on the next
+    operation. Pass None to clear a previously set value (falls back to
+    default).
 
-    For a graceful close of the old backend (flushing connections), call
-    ``await shutdown()`` before ``configure()``.
+    For deterministic cleanup of the old backend (flushing connections),
+    call ``await shutdown()`` before ``configure()``.
 
     Args:
         backend: Backend type - "dpm" or "grpc" (default: "dpm")
@@ -119,24 +132,45 @@ def configure(
 
     Raises:
         ValueError: If backend is not a valid type
+        RuntimeError: If a backend is initialized but no event loop is
+            running (its resources are loop-bound and cannot be cleaned up
+            here -- ``await shutdown()`` on the owning loop first)
     """
     global _config_backend, _config_auth, _config_role
     global _config_host, _config_port, _config_pool_size, _config_timeout
-    global _global_async_backend, _async_backend_initialized
+    global _global_async_backend, _async_backend_initialized, _owner_loop
 
     if _async_backend_initialized:
         old_backend = _global_async_backend
-        _global_async_backend = None
-        _async_backend_initialized = False
         if old_backend is not None:
-            old_backend._closed = True
-            # Schedule proper cleanup if event loop is running
+            # Resolve the loop before touching global state so a failed
+            # configure() leaves shutdown() reachable.
             try:
                 loop = asyncio.get_running_loop()
-                _retain_background_task(loop.create_task(old_backend.close()))
             except RuntimeError:
-                # No running loop -- force close synchronously
-                old_backend._closed = True
+                raise RuntimeError(
+                    "Cannot reconfigure an initialized async backend without a running "
+                    "event loop; await pacsys.aio.shutdown() on its owning loop first"
+                ) from None
+            owner = _owner_loop
+            if owner is not None and owner is not loop and not owner.is_closed():
+                raise RuntimeError(
+                    "configure() called from a different event loop than the one owning "
+                    "the initialized async backend; await pacsys.aio.shutdown() on the "
+                    "owning loop first"
+                )
+            if owner is None or owner is loop:
+                _retain_background_task(loop.create_task(_close_old_backend(old_backend)))
+            else:
+                # Owner loop already closed -- cleanup is impossible by any means.
+                logger.warning(
+                    "Abandoning async backend owned by a closed event loop; its connections "
+                    "cannot be cleaned up. await pacsys.aio.shutdown() before the owning "
+                    "loop exits to avoid this."
+                )
+        _global_async_backend = None
+        _async_backend_initialized = False
+        _owner_loop = None
 
     if not isinstance(backend, _Unset):
         if backend is not None and backend not in _VALID_ASYNC_BACKENDS:
@@ -167,13 +201,38 @@ async def shutdown() -> None:
 
     After shutdown(), configure() can be called again and the next
     operation will re-initialize the backend.
-    """
-    global _global_async_backend, _async_backend_initialized
 
-    if _global_async_backend is not None:
-        await _global_async_backend.close()
+    Must run on the backend's owning event loop. If the owning loop has
+    already closed, the backend is abandoned with a warning (its resources
+    are unrecoverable); if the owning loop is still open elsewhere, raises
+    RuntimeError instead of clobbering it.
+    """
+    global _global_async_backend, _async_backend_initialized, _owner_loop
+
+    backend = _global_async_backend
+    if backend is None:
+        _async_backend_initialized = False
+        return
+    owner = _owner_loop
+    if owner is not None and owner is not asyncio.get_running_loop():
+        if not owner.is_closed():
+            raise RuntimeError(
+                "shutdown() called from a different event loop than the one owning "
+                "the global async backend; await it on the owning loop"
+            )
+        logger.warning(
+            "Abandoning async backend owned by a closed event loop; its connections "
+            "cannot be cleaned up. await pacsys.aio.shutdown() before the owning "
+            "loop exits to avoid this."
+        )
+    else:
+        await backend.close()
+    # Identity check: a concurrent configure() may have installed a new backend
+    # while close() was awaited -- never erase that one.
+    if _global_async_backend is backend:
         _global_async_backend = None
-    _async_backend_initialized = False
+        _owner_loop = None
+        _async_backend_initialized = False
 
 
 def _get_global_async_backend() -> AsyncBackend:
@@ -181,10 +240,28 @@ def _get_global_async_backend() -> AsyncBackend:
 
     Backend creation is synchronous (no I/O at construction).
     Connection happens lazily on first operation.
+
+    Raises RuntimeError when called from a loop other than the one that
+    created the backend -- its pool/transports are loop-bound and would
+    fail cryptically (or corrupt state) if reused cross-loop.
     """
-    global _global_async_backend, _async_backend_initialized
+    global _global_async_backend, _async_backend_initialized, _owner_loop
 
     if _global_async_backend is not None:
+        if _owner_loop is not None and _owner_loop is not asyncio.get_running_loop():
+            if _owner_loop.is_closed():
+                raise RuntimeError(
+                    "Global async backend belongs to an event loop that has closed. "
+                    "await pacsys.aio.shutdown() before the owning loop exits; to "
+                    "recover now, await pacsys.aio.shutdown() (abandons the stale "
+                    "backend) and retry, or use explicit backend instances "
+                    "(aio.dpm()/aio.grpc())."
+                )
+            raise RuntimeError(
+                "Global async backend belongs to a different, still-open event loop. "
+                "Use it from that loop, or use explicit backend instances "
+                "(aio.dpm()/aio.grpc()) instead of the global API."
+            )
         return _global_async_backend
 
     timeout = _config_timeout if _config_timeout is not None else 5.0
@@ -209,6 +286,7 @@ def _get_global_async_backend() -> AsyncBackend:
     else:
         raise ValueError(f"Unknown backend type {backend_type!r}")
 
+    _owner_loop = asyncio.get_running_loop()
     _async_backend_initialized = True
     return _global_async_backend
 

@@ -112,7 +112,8 @@ class AsyncDPMHTTPBackend(AsyncBackend):
             raise RuntimeError("Backend is closed")
 
     async def _create_core(self) -> _AsyncDpmCore:
-        """Create and connect a new core."""
+        """Create and connect a new core. Raises if the backend closed mid-connect."""
+        self._check_closed()
         core = _AsyncDpmCore(
             host=self._host,
             port=self._port,
@@ -121,6 +122,9 @@ class AsyncDPMHTTPBackend(AsyncBackend):
             role=self._role,
         )
         await core.connect()
+        if self._closed:
+            await core.close()
+            raise RuntimeError("Backend is closed")
         return core
 
     async def _borrow_core(self) -> _AsyncDpmCore:
@@ -136,17 +140,26 @@ class AsyncDPMHTTPBackend(AsyncBackend):
                 self._pool_count += 1
                 return core
         # Pool is full — wait with timeout to avoid permanent hangs
+        self._check_closed()
         try:
-            return await asyncio.wait_for(self._pool.get(), timeout=self._timeout)
+            core = await asyncio.wait_for(self._pool.get(), timeout=self._timeout)
         except asyncio.TimeoutError:
+            self._check_closed()
             raise RuntimeError("Connection pool exhausted (all cores busy)") from None
+        if self._closed:
+            await self._discard_core(core)
+            raise RuntimeError("Backend is closed")
+        return core
 
     async def _release_core(self, core: _AsyncDpmCore) -> None:
-        """Return a core to the pool."""
+        """Return a core to the pool, discarding it if the backend closed."""
+        if self._closed:
+            await self._discard_core(core)
+            return
         try:
             self._pool.put_nowait(core)
         except asyncio.QueueFull:
-            await core.close()
+            await self._discard_core(core)
 
     async def _discard_core(self, core: _AsyncDpmCore) -> None:
         """Close and discard a core (on error), freeing a pool slot."""

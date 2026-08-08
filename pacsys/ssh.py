@@ -98,13 +98,19 @@ def _gssapi_username() -> str:
     """Extract username from Kerberos principal"""
     try:
         import gssapi
-    except ImportError:
+    except (ImportError, OSError):
         raise ImportError(
             "gssapi library required for GSSAPI SSH auth. Install with: pip install pacsys[kerberos]"
         ) from None
 
-    creds = gssapi.Credentials(usage="initiate")
-    principal = str(creds.name)
+    from pacsys.errors import AuthenticationError
+
+    try:
+        # gssapi resolves the cache lazily -- name access can raise, not just construction
+        creds = gssapi.Credentials(usage="initiate")
+        principal = str(creds.name)
+    except Exception as e:
+        raise AuthenticationError(f"No valid Kerberos credentials. Run 'kinit' first. Error: {e}") from e
     return principal.split("@")[0]
 
 
@@ -560,14 +566,18 @@ class SSHClient:
     def _connect(self):
         """Build the transport chain through all hops."""
         current_transport = None
+        current_sock = None
+        failed_idx = 0
         try:
             for i, hop in enumerate(self._hops):
+                failed_idx = i
                 if i == 0:
-                    sock = socket.create_connection(
+                    current_sock = socket.create_connection(
                         (hop.hostname, hop.port),
                         timeout=self._connect_timeout,
                     )
-                    current_transport = paramiko.Transport(sock)
+                    current_transport = paramiko.Transport(current_sock)
+                    current_sock = None  # now owned by the transport
                 else:
                     prev_transport = self._transports[-1]
                     chan = prev_transport.open_channel(
@@ -591,33 +601,57 @@ class SSHClient:
                 " -> ".join(h.hostname for h in self._hops),
             )
 
-        except paramiko.AuthenticationException as e:
-            if current_transport:
+        except BaseException as e:
+            # Cleanup boundary: every failure must leave no live transports or
+            # stale chain state (a retry chains through _transports[-1]).
+            if current_sock is not None:
                 try:
-                    current_transport.close()
+                    current_sock.close()
                 except Exception:  # noqa: BLE001
-                    logger.debug("Failed to close transport after authentication error", exc_info=True)
-            self._cleanup_transports()
-            hop = self._hops[min(len(self._transports), len(self._hops) - 1)]
-            raise SSHConnectionError(f"Authentication failed: {e}", hop=hop) from e
-        except (paramiko.SSHException, OSError) as e:
-            if current_transport:
+                    logger.debug("Failed to close socket after connection error", exc_info=True)
+            if current_transport is not None:
                 try:
                     current_transport.close()
                 except Exception:  # noqa: BLE001
                     logger.debug("Failed to close transport after connection error", exc_info=True)
             self._cleanup_transports()
-            hop = self._hops[min(len(self._transports), len(self._hops) - 1)]
-            raise SSHConnectionError(f"Connection failed: {e}", hop=hop) from e
+            failed_hop = self._hops[failed_idx]
+            if isinstance(e, Exception):
+                logger.error(
+                    "SSH connect failed at hop %d (%s:%d): %s",
+                    failed_idx,
+                    failed_hop.hostname,
+                    failed_hop.port,
+                    e,
+                )
+            if isinstance(e, SSHError):
+                raise  # already typed with hop context
+            if isinstance(e, paramiko.AuthenticationException):
+                raise SSHConnectionError(f"Authentication failed: {e}", hop=failed_hop) from e
+            if isinstance(e, (paramiko.SSHException, OSError)):
+                raise SSHConnectionError(f"Connection failed: {e}", hop=failed_hop) from e
+            # KeyboardInterrupt/SystemExit/unexpected: cleaned up, re-raised unchanged
+            raise
 
     def _authenticate(self, transport: paramiko.Transport, hop: SSHHop):
         """Authenticate a transport using the hop's auth method."""
+        if hop.auth_method == "gssapi":
+            # gssapi availability was validated in __init__ for gssapi hops
+            from gssapi.exceptions import GeneralError, GSSError
+
+            from pacsys.errors import AuthenticationError
+
+            try:
+                # effective_username may hit GSS credential lookup
+                username = hop.effective_username
+                transport.auth_gssapi_with_mic(username, hop.hostname, gss_deleg_creds=True)
+            except (GSSError, GeneralError, AuthenticationError) as e:
+                raise SSHConnectionError(f"GSSAPI authentication failed: {e}", hop=hop) from e
+            return
+
         username = hop.effective_username
 
-        if hop.auth_method == "gssapi":
-            transport.auth_gssapi_with_mic(username, hop.hostname, gss_deleg_creds=True)
-
-        elif hop.auth_method == "key":
+        if hop.auth_method == "key":
             assert hop.key_filename is not None  # validated in __post_init__
             key_path = Path(hop.key_filename).expanduser()
             if not key_path.exists():
@@ -930,7 +964,9 @@ class SSHClient:
                 logger.exception("Failed to stop SSH tunnel on port %s", tunnel.local_port)
         self._tunnels.clear()
 
-        self._cleanup_transports()
+        # Serialize with a concurrent _connect() (which holds the same lock)
+        with self._lock:
+            self._cleanup_transports()
         logger.info("SSH client closed")
 
     def __enter__(self):

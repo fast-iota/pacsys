@@ -91,6 +91,28 @@ class TestWorkerMode:
         d.close()
         assert not thread.is_alive()
 
+    def test_close_from_worker_callback(self):
+        """close() called from inside a worker callback must not raise (self-join)."""
+        d = CallbackDispatcher(DispatchMode.WORKER)
+        errors = []
+        worker = []
+        done = threading.Event()
+
+        def cb(reading, handle):
+            worker.append(threading.current_thread())
+            try:
+                d.close()
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+            finally:
+                done.set()
+
+        d.dispatch_reading(cb, _make_reading(), _FakeHandle())
+        assert done.wait(2.0)
+        assert errors == []
+        worker[0].join(2.0)
+        assert not worker[0].is_alive()
+
     def test_callback_exception_doesnt_crash_worker(self):
         """A failing callback doesn't kill the worker - next dispatch still works."""
         d = CallbackDispatcher(DispatchMode.WORKER)

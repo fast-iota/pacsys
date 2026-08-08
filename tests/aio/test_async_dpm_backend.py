@@ -203,6 +203,110 @@ class TestAsyncDPMMisc:
         with pytest.raises(RuntimeError, match="closed"):
             await b.write("M:OUTTMP", 72.5)
 
+
+class TestAsyncDPMCloseRaces:
+    """close() racing in-flight operations must not leak connected cores."""
+
+    @pytest.mark.asyncio
+    async def test_release_after_close_discards(self):
+        b = AsyncDPMHTTPBackend(host="localhost", port=6802)
+        b._pool_count = 1
+        await b.close()
+        core = _mock_core()
+        await b._release_core(core)
+        core.close.assert_awaited_once()
+        assert b._pool.empty()
+        assert b._pool_count == 0
+
+    @pytest.mark.asyncio
+    async def test_release_queue_full_decrements_count(self):
+        b = AsyncDPMHTTPBackend(host="localhost", port=6802, pool_size=1)
+        await b._pool.put(_mock_core())
+        b._pool_count = 2
+        extra = _mock_core()
+        await b._release_core(extra)
+        extra.close.assert_awaited_once()
+        assert b._pool_count == 1
+
+    @pytest.mark.asyncio
+    async def test_get_many_racing_close_discards_core(self):
+        b = AsyncDPMHTTPBackend(host="localhost", port=6802)
+        core = _mock_core()
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_read(*args, **kwargs):
+            started.set()
+            await release.wait()
+            return [_make_reading()]
+
+        core.read_many = slow_read
+        b._create_core = mock.AsyncMock(return_value=core)
+
+        task = asyncio.create_task(b.get_many(["M:OUTTMP"]))
+        await started.wait()
+        await b.close()
+        release.set()
+        readings = await task
+        assert readings[0].ok
+        core.close.assert_awaited()
+        assert b._pool.empty()
+        assert b._pool_count == 0
+
+    @pytest.mark.asyncio
+    async def test_create_core_close_during_connect(self):
+        core = _mock_core()
+        connect_started = asyncio.Event()
+        connect_release = asyncio.Event()
+
+        async def slow_connect():
+            connect_started.set()
+            await connect_release.wait()
+
+        core.connect = slow_connect
+        with mock.patch("pacsys.aio._dpm_http._AsyncDpmCore", return_value=core):
+            b = AsyncDPMHTTPBackend(host="localhost", port=6802)
+            task = asyncio.create_task(b._borrow_core())
+            await connect_started.wait()
+            await b.close()
+            connect_release.set()
+            with pytest.raises(RuntimeError, match="Backend is closed"):
+                await task
+        core.close.assert_awaited_once()
+        assert b._pool_count == 0
+
+    @pytest.mark.asyncio
+    async def test_subscribe_close_during_connect(self):
+        core = _mock_core()
+        connect_started = asyncio.Event()
+        connect_release = asyncio.Event()
+
+        async def slow_connect():
+            connect_started.set()
+            await connect_release.wait()
+
+        core.connect = slow_connect
+        with mock.patch("pacsys.aio._dpm_http._AsyncDpmCore", return_value=core):
+            b = AsyncDPMHTTPBackend(host="localhost", port=6802)
+            task = asyncio.create_task(b.subscribe(["M:OUTTMP@p,1000"]))
+            await connect_started.wait()
+            await b.close()
+            connect_release.set()
+            with pytest.raises(RuntimeError, match="Backend is closed"):
+                await task
+        core.close.assert_awaited_once()
+        assert b._handles == []
+
+    @pytest.mark.asyncio
+    async def test_borrow_wait_path_reports_closed(self):
+        b = AsyncDPMHTTPBackend(host="localhost", port=6802, pool_size=1, timeout=0.2)
+        b._pool_count = 1  # one core checked out, pool queue empty
+        task = asyncio.create_task(b._borrow_core())
+        await asyncio.sleep(0.05)  # waiter parked in pool.get()
+        await b.close()
+        with pytest.raises(RuntimeError, match="Backend is closed"):
+            await task
+
     @pytest.mark.asyncio
     async def test_closed_backend_subscribe_raises(self, backend):
         await backend.close()
