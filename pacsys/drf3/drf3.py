@@ -16,6 +16,10 @@ _REQUEST_TAIL = "(?:\\.(\\w+))?" + "(\\[[\\d:]*\\]|\\{[\\d:]*\\})?" + "(?:\\.(\\
 # malformed suffixes into the device name. Tried first; EPICS fallback uses the lax form.
 PATTERN_ACNET_FULL = re.compile("(?i)(" + ACNET_NAME_GRAMMAR + ")" + _REQUEST_TAIL)
 PATTERN_FULL = re.compile("(?i)(.{3,}?)" + _REQUEST_TAIL)
+# Tail openers that mark an ACNET near miss (see parse_request). A brace only counts when the
+# group closes the DRF -- EPICS PVs carry more name text after "}" (XF:31IDA-OP{Tbl-Ax:X1}Mtr),
+# whereas a byte range is followed by nothing, a .FIELD, or an @event.
+PATTERN_NEAR_MISS = re.compile("[.\\[@]|\\{[^{}]*\\}(?:[.@]|\\Z)")
 
 
 class DataRequest:
@@ -56,6 +60,10 @@ class DataRequest:
         self.property_explicit = False
         self.field_explicit = False
         self.is_acnet = True
+        # Raw dot-suffix tokens of a non-ACNET (EPICS) request, verbatim and case-preserved.
+        # Mirrors the DPM server's two field slots (record field / pvRequest); the typed
+        # property/field above are compat defaults that EPICS serialization ignores.
+        self.epics_fields: tuple[str | None, str | None] = (None, None)
 
     def __eq__(self, other):
         if not isinstance(other, DataRequest):
@@ -68,6 +76,7 @@ class DataRequest:
             and self.event == other.event
             and self.extra == other.extra
             and self.extra_raw == other.extra_raw
+            and self.epics_fields == other.epics_fields
         )
 
     def __str__(self):
@@ -111,6 +120,29 @@ class DataRequest:
         event: DRF_EVENT | None = None,
         extra: DRF_EXTRA | None = _UNSET,
     ) -> str:
+        if not self.is_acnet:
+            # EPICS: emit device and raw suffix tokens verbatim - never synthesize an
+            # ACNET property (the server would misread it as a PVA sub-field request).
+            if property is not None or field is not None:
+                raise ValueError(f"Cannot set ACNET property/field on non-ACNET device {self.device}")
+            out = device or self.device
+            f0, f1 = self.epics_fields
+            if f0 is not None:
+                out += f".{f0}"
+            r = self.range if range is _UNSET else range
+            if r is not None:
+                out += str(r)
+            if f1 is not None:
+                out += f".{f1}"
+            e = event or self.event
+            if e is not None and e.mode != "U":
+                out += f"@{e.raw_string}"
+            if extra is _UNSET:
+                if self.extra is not None:
+                    out += f"<-{self.extra_raw}"
+            elif extra is not None:
+                out += f"<-{extra.name}"
+            return out
         out = ""
         out += device or self.device
         p = property or self.property
@@ -211,7 +243,7 @@ def parse_request(device_str: str) -> DataRequest:
         # ACNET-shaped near miss: a valid device token followed by a DRF delimiter that
         # the strict grammar could not parse. Reject instead of laundering into EPICS.
         nm = PATTERN_NAME.match(device_str)
-        if nm is not None and nm.end() < len(device_str) and device_str[nm.end()] in ".[@":
+        if nm is not None and PATTERN_NEAR_MISS.match(device_str, nm.end()):
             raise ValueError(f"Invalid ACNET DRF {device_str!r}")
         match = PATTERN_FULL.match(device_str)
         if match is None:
@@ -219,6 +251,25 @@ def parse_request(device_str: str) -> DataRequest:
     dev, prop, rng, field, event = match.groups()
     dev_obj = parse_device(dev)
     dev_name = dev_obj.canonical_string
+
+    if not dev_obj.is_acnet:
+        # EPICS: keep dot-suffix tokens verbatim (server-side they are a record field or
+        # pvRequest slot, not DRF property/field) - never coerce through ACNET parsers.
+        prop_obj = DRF_PROPERTY.READING  # compat default; EPICS serialization ignores it
+        event_obj = DefaultEvent() if event is None else parse_event(event)
+        req = DataRequest(
+            device_str,
+            dev_name,
+            prop_obj,
+            parse_range(rng),
+            get_default_field(prop_obj),
+            event_obj,
+            extra_obj,
+            extra_str,
+        )
+        req.epics_fields = (prop, field)
+        req.is_acnet = False
+        return req
 
     prop_explicit = False
     if prop is None:

@@ -212,6 +212,10 @@ def test_get_qualified_device_rejects_epics():
         "M:OUTTMP@",
         "M:OUTTMP..READING",
         "M:OUTTMP[-1:5]",  # negative range rejected, must not become device name
+        "M:OUTTMP{bad}",  # malformed byte range, brace group closes the DRF
+        "Z:ACLTST{-1:20}",
+        "M:OUTTMP{0:2O}.RAW",  # letter O in length, followed by a field
+        "M:OUTTMP{bad}@I",  # followed by an event
     ],
 )
 def test_parse_request_rejects_acnet_near_miss(drf):
@@ -241,6 +245,30 @@ def test_parse_request_is_acnet_flag():
     assert parse_request("Z:ACLTST<-REDIR:N@UALL").is_acnet
 
 
+@pytest.mark.parametrize(
+    ("drf", "fields"),
+    [
+        ("pv:name.VAL", ("VAL", None)),  # common EPICS record fields must parse
+        ("pv:name.val", ("val", None)),  # case preserved
+        ("pv:name.value.alarm", ("value", "alarm")),
+        ("XF:31IDA-OP{Tbl-Ax:X1}Mtr.RBV", ("RBV", None)),
+        ("pv:name[0:5]", (None, None)),
+    ],
+)
+def test_parse_request_epics_suffix_verbatim(drf, fields):
+    """EPICS dot-suffixes are raw server-side field slots, never ACNET properties."""
+    req = parse_request(drf)
+    assert not req.is_acnet
+    assert req.epics_fields == fields
+    assert req.to_canonical() == drf  # round-trip, no synthesized .READING
+
+
+def test_epics_to_canonical_rejects_acnet_overrides():
+    req = parse_request("LINAC:CAV1:PHASE")
+    with pytest.raises(ValueError, match="non-ACNET"):
+        req.to_canonical(property=DRF_PROPERTY.SETTING)
+
+
 def test_to_qualified_rejects_epics():
     with pytest.raises(ValueError, match="non-ACNET"):
         parse_request("LINAC:CAV1:PHASE").to_qualified()
@@ -263,6 +291,10 @@ def test_to_qualified_rejects_epics():
         ("Z:ACLTST<-REDIR:N@UALL", "Z:ACLTST.READING@I<-REDIR:N@UALL"),
         ("M:OUTTMP<-LOGGER", "M:OUTTMP<-LOGGER"),
         ("M:OUTTMP@p,100H<-FTP", "M:OUTTMP@p,100H<-FTP"),
+        # EPICS: append @I (server would otherwise subscribe), never inject .READING
+        ("SR:BPM:01:X", "SR:BPM:01:X@I"),
+        ("pv:name.VAL", "pv:name.VAL@I"),
+        ("LINAC:CAV1:PHASE@p,1000", "LINAC:CAV1:PHASE@p,1000"),
     ],
 )
 def test_ensure_immediate_event(drf, expected):
@@ -317,6 +349,9 @@ def test_parse_time_freq(raw, expected_ms):
         ("M:OUTTMP.STATUS", "M:OUTTMP.CONTROL@N"),
         ("M:OUTTMP.STATUS.ON", "M:OUTTMP.CONTROL@N"),
         ("M_OUTTMP", "M:OUTTMP.SETTING@N"),
+        # EPICS: write the PV itself - no property mapping, just @N
+        ("SR:BPM:01:X", "SR:BPM:01:X@N"),
+        ("pv:name.VAL", "pv:name.VAL@N"),
     ],
 )
 def test_prepare_for_write(drf, expected):

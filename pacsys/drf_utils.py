@@ -79,21 +79,9 @@ def strip_event(drf: str) -> str:
     Returns:
         DRF without event portion
     """
-    request = parse_request(drf)
-    # Build DRF manually without event
-    out = request.device
-    if request.property is not None:
-        out += f".{request.property.name}"
-    if request.range is not None:
-        out += str(request.range)
-    if request.field is not None and request.property is not None:
-        from pacsys.drf3.field import DEFAULT_FIELD_FOR_PROPERTY
+    from pacsys.drf3.event import DefaultEvent
 
-        if DEFAULT_FIELD_FOR_PROPERTY.get(request.property) != request.field:
-            out += f".{request.field.name}"
-    if request.extra is not None:
-        out += f"<-{request.extra_raw}"
-    return out
+    return parse_request(drf).to_canonical(event=DefaultEvent())
 
 
 def has_event(drf: str) -> bool:
@@ -163,6 +151,10 @@ def prepare_for_write(drf: str) -> str:
     from pacsys.drf3.property import DRF_PROPERTY
 
     request = parse_request(drf)
+
+    # EPICS writes target the PV itself - no property mapping, just force @N
+    if not request.is_acnet:
+        return request.to_canonical(event=NeverEvent())
 
     # Map read properties to their writable counterparts
     _write_property = {

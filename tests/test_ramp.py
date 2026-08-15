@@ -270,6 +270,23 @@ class TestValidation:
         with pytest.raises(ValueError, match="overflow"):
             ramp.to_bytes()
 
+    def test_value_overflow_diagnostic_survives_pathological_scaler(self):
+        """The overflow message must not be replaced by errors from building the diagnostic."""
+        from pacsys.scaling import Scaler
+
+        class PathoRamp(Ramp):
+            POINTS_PER_SLOT = 64
+            # scale() raises ZeroDivisionError (0.0 ** negative) for the int16 limits
+            scaler = Scaler(p_index=10, c_index=48, constants=(1.0, 0, 0, 0, 0, 0), input_len=2)
+
+            @classmethod
+            def _tick_us(cls):
+                return 1389.0
+
+        ramp = PathoRamp(values=np.full(64, 1e9), times=np.zeros(64))
+        with pytest.raises(ValueError, match="Ramp value overflow"):
+            ramp.to_bytes()
+
     def test_max_time_exceeded(self):
         # 66_660 us is max cumulative for BoosterHVRamp; spread across points to exceed
         ramp = BoosterHVRamp(
@@ -1276,13 +1293,17 @@ class TestRampEquality:
         a = BoosterHVRamp(values=np.ones(64), times=np.ones(64), device="B:HS23T", slot=0)
         b = BoosterHVRamp(values=np.ones(64), times=np.ones(64), device="B:HS23T", slot=0)
         assert a == b
-        assert hash(a) == hash(b)
 
     def test_not_equal_values(self):
         a = BoosterHVRamp(values=np.ones(64), times=np.ones(64))
         b = BoosterHVRamp(values=np.zeros(64), times=np.ones(64))
         assert a != b
-        assert hash(a) != hash(b)
+
+    def test_unhashable(self):
+        # Mutable by design (modify(), post-hoc device assignment) - no stable hash
+        a = BoosterHVRamp(values=np.ones(64), times=np.ones(64))
+        with pytest.raises(TypeError, match="unhashable"):
+            hash(a)
 
     def test_not_equal_different_subclass(self):
         a = BoosterHVRamp(values=np.zeros(64), times=np.zeros(64))
@@ -1299,7 +1320,11 @@ class TestRampGroupEquality:
         a = BoosterHVRampGroup(devices=["B:HS23T"], values=np.zeros((64, 1)), times=np.zeros((64, 1)))
         b = BoosterHVRampGroup(devices=["B:HS23T"], values=np.zeros((64, 1)), times=np.zeros((64, 1)))
         assert a == b
-        assert hash(a) == hash(b)
+
+    def test_unhashable(self):
+        a = BoosterHVRampGroup(devices=["B:HS23T"], values=np.zeros((64, 1)), times=np.zeros((64, 1)))
+        with pytest.raises(TypeError, match="unhashable"):
+            hash(a)
 
     def test_not_equal_different_devices(self):
         a = BoosterHVRampGroup(devices=["B:HS23T"], values=np.zeros((64, 1)), times=np.zeros((64, 1)))

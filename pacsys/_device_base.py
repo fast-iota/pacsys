@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import inspect
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 from pacsys.drf3 import DataRequest, parse_event, parse_extra
 from pacsys.drf3.event import DefaultEvent, PeriodicEvent
@@ -13,11 +13,9 @@ from pacsys.drf3.field import (
     DRF_FIELD,
     parse_field,
 )
+from pacsys.drf3.property import DRF_PROPERTY
 from pacsys.drf3.range import ARRAY_RANGE
 from pacsys.types import BasicControl
-
-if TYPE_CHECKING:
-    from pacsys.drf3.property import DRF_PROPERTY
 
 CONTROL_STATUS_MAP: dict[BasicControl, tuple[str, bool]] = {
     BasicControl.ON: ("on", True),
@@ -107,6 +105,14 @@ class _DeviceBase:
         return isinstance(self._request.event, PeriodicEvent)
 
     def _build_drf(self, prop: DRF_PROPERTY, field: DRF_FIELD | None, event: str) -> str:
+        if not self._request.is_acnet:
+            # EPICS: read/write/subscribe target the PV itself; ACNET-only properties
+            # and fields have no analogue and must fail loudly, never be synthesized.
+            if prop not in (DRF_PROPERTY.READING, DRF_PROPERTY.SETTING):
+                raise ValueError(f"{prop.name} is ACNET-specific, not supported for non-ACNET device {self.name}")
+            if field is not None and field != DEFAULT_FIELD_FOR_PROPERTY.get(prop):
+                raise ValueError(f"ACNET field {field.name} not supported for non-ACNET device {self.name}")
+            return self._request.to_canonical(event=parse_event(event))
         out = self.name
         out += f".{prop.name}"
         if self._request.range is not None:

@@ -49,8 +49,10 @@ def _value_to_json(value: object) -> object:
     return value
 
 
-def _value_from_json(value: object, value_type: "ValueType | None") -> "Value | None":
-    """Reconstruct a Value from its JSON representation and ValueType."""
+def _value_from_json(
+    value: object, value_type: "ValueType | None", dtype: "str | dict[str, str] | None" = None
+) -> "Value | None":
+    """Reconstruct a Value from its JSON representation, ValueType, and recorded dtype(s)."""
     if value is None:
         return None
     if value_type is None:
@@ -60,13 +62,47 @@ def _value_from_json(value: object, value_type: "ValueType | None") -> "Value | 
 
         if value_type in (ValueType.SCALAR_ARRAY, ValueType.TIMED_SCALAR_ARRAY):
             if isinstance(value, dict):
-                return {k: np.array(v) for k, v in value.items()}
-            return np.array(value)
+                dtypes = dtype if isinstance(dtype, dict) else {}
+                return {k: np.array(v, dtype=dtypes.get(k)) for k, v in value.items()}
+            return np.array(value, dtype=dtype if isinstance(dtype, str) else None)
     except ImportError:
         pass
     if value_type == ValueType.RAW and isinstance(value, str):
         return base64.b64decode(value, validate=True)
     return cast("Value", value)
+
+
+def _value_dtype(value: object) -> "str | dict[str, str] | None":
+    """Dtype name(s) of ndarray content in a Value, recorded for exact round-trip."""
+    try:
+        import numpy as np
+
+        if isinstance(value, np.ndarray):
+            return value.dtype.name
+        if isinstance(value, dict):
+            dtypes = {k: v.dtype.name for k, v in value.items() if isinstance(v, np.ndarray)}
+            return cast("dict[str, str]", dtypes) or None
+    except ImportError:
+        pass
+    return None
+
+
+def _infer_serialization_type(value: object) -> "ValueType | None":
+    """Serialization tag for a bare Value (WriteResult.readback has no value_type).
+
+    Only types whose JSON form is lossy need a tag: ndarray and bytes. Scalars,
+    str, and lists round-trip as plain JSON and stay untagged.
+    """
+    try:
+        import numpy as np
+
+        if isinstance(value, np.ndarray):
+            return ValueType.SCALAR_ARRAY
+    except ImportError:
+        pass
+    if isinstance(value, bytes):
+        return ValueType.RAW
+    return None
 
 
 # Type alias for functions accepting DRF strings or Device objects
@@ -174,21 +210,25 @@ class DeviceMeta:
         )
 
 
-def _freeze_value(value: object) -> None:
-    """Make numpy arrays in a Value read-only (supports zero-copy hashing)."""
-    if value is None:
-        return
-    try:
-        import numpy as np
+def _frozen_value(value: object) -> object:
+    """Return value with ndarrays read-only, for stable hashing.
 
-        if isinstance(value, np.ndarray):
-            value.flags.writeable = False
-            return
-    except ImportError:
-        pass
+    Buffer-owning arrays are frozen in place (zero-copy: passing one into a
+    Reading/WriteResult transfers ownership — later caller mutation raises).
+    Views are replaced by read-only copies since freezing a view would leave
+    its base buffer writable and the hash unstable.
+    """
     if isinstance(value, dict):
-        for v in value.values():
-            _freeze_value(v)
+        return {k: _frozen_value(v) for k, v in value.items()}
+    if type(value).__module__ != "numpy":  # fast bail for None/scalars/str/bytes/list
+        return value
+    import numpy as np
+
+    if isinstance(value, np.ndarray):
+        if value.base is not None:
+            value = value.copy()
+        value.flags.writeable = False
+    return value
 
 
 def _value_hashable(value: object) -> object:
@@ -254,7 +294,7 @@ class Reading:
     def __post_init__(self) -> None:
         if self.value is not None and self.value_type is None:
             raise ValueError("value_type is required when value is set")
-        _freeze_value(self.value)
+        object.__setattr__(self, "value", _frozen_value(self.value))
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Reading):
@@ -329,6 +369,8 @@ class Reading:
             d["value_type"] = self.value_type.value
         if self.value is not None:
             d["value"] = _value_to_json(self.value)
+            if (dt := _value_dtype(self.value)) is not None:
+                d["value_dtype"] = dt
         if self.message is not None:
             d["message"] = self.message
         if self.timestamp is not None:
@@ -350,7 +392,7 @@ class Reading:
             value_type=vt,
             facility_code=d.get("facility_code", 0),
             error_code=d.get("error_code", 0),
-            value=_value_from_json(d.get("value"), vt),
+            value=_value_from_json(d.get("value"), vt, d.get("value_dtype")),
             message=d.get("message"),
             timestamp=ts,
             cycle=d.get("cycle"),
@@ -371,6 +413,37 @@ class WriteResult:
     readback: Value | None = None  # Last readback value
     skipped: bool = False  # True if check_first found value already correct
     attempts: int = 0  # Number of readback attempts made
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "readback", _frozen_value(self.readback))
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, WriteResult):
+            return NotImplemented
+        return (
+            self.drf == other.drf
+            and self.facility_code == other.facility_code
+            and self.error_code == other.error_code
+            and self.message == other.message
+            and self.verified == other.verified
+            and self.skipped == other.skipped
+            and self.attempts == other.attempts
+            and _values_equal(self.readback, other.readback)
+        )
+
+    def __hash__(self) -> int:
+        return hash(
+            (
+                self.drf,
+                self.facility_code,
+                self.error_code,
+                self.message,
+                self.verified,
+                self.skipped,
+                self.attempts,
+                _value_hashable(self.readback),
+            )
+        )
 
     @property
     def ok(self) -> bool:
@@ -395,6 +468,10 @@ class WriteResult:
             d["verified"] = self.verified
         if self.readback is not None:
             d["readback"] = _value_to_json(self.readback)
+            if (vt := _infer_serialization_type(self.readback)) is not None:
+                d["readback_type"] = vt.value
+                if (dt := _value_dtype(self.readback)) is not None:
+                    d["readback_dtype"] = dt
         if self.skipped:
             d["skipped"] = self.skipped
         if self.attempts:
@@ -404,13 +481,14 @@ class WriteResult:
     @classmethod
     def from_dict(cls, d: dict) -> "WriteResult":
         """Deserialize from a dict produced by ``to_dict()``."""
+        rvt = ValueType(d["readback_type"]) if "readback_type" in d else None
         return cls(
             drf=d["drf"],
             facility_code=d.get("facility_code", 0),
             error_code=d.get("error_code", 0),
             message=d.get("message"),
             verified=d.get("verified"),
-            readback=d.get("readback"),
+            readback=_value_from_json(d.get("readback"), rvt, d.get("readback_dtype")),
             skipped=d.get("skipped", False),
             attempts=d.get("attempts", 0),
         )
