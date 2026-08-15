@@ -1501,6 +1501,31 @@ class TestSnapshotStateTracking:
         finally:
             handle.cancel()
 
+    def test_restart_during_stream_end_preserves_terminal_state(self):
+        """Monitor dying during the FE round trip must not be undone by restart()."""
+        from pacsys.acnet.errors import ACNET_DISCONNECTED
+
+        handle, rq = self._make_handle(per_device_errors=[FTP_PEND])
+
+        def fake_request_single(node, task, data, reply_handler, timeout):
+            rq.put(None)  # stream ends mid-round-trip
+            handle._monitor_thread.join(timeout=2.0)
+            reply = MagicMock()
+            reply.status = 0
+            reply.data = b""
+            reply_handler(reply)  # FE acks success after the monitor died
+
+        handle._connection.request_single = fake_request_single
+
+        with pytest.raises(RuntimeError, match="stream has ended"):
+            handle.restart()
+        # Monitor's terminal cleanup must stand: wait() raises instead of hanging
+        assert handle._ready_event.is_set()
+        assert handle.device_states[1] == SnapshotState.ERROR
+        assert handle._device_errors[1] == ACNET_DISCONNECTED
+        with pytest.raises(AcnetError):
+            handle.wait(timeout=1.0)
+
     def test_cancel_stops_monitor_thread(self):
         """cancel() terminates the monitor thread."""
         handle, rq = self._make_handle(per_device_errors=[FTP_PEND])
@@ -1660,6 +1685,7 @@ class TestSnapshotStateTracking:
 
         self._ok_restart(handle)
         rq.put((-34, b"", True))  # stream-end (e.g. disconnect) queued pre-restart
+        assert not handle._stream_ended  # monitor still consuming: restart proceeds
         handle.restart()
         handle._monitor_thread.join(timeout=2.0)
         assert not handle._monitor_thread.is_alive()

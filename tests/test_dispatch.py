@@ -110,7 +110,11 @@ class TestWorkerMode:
         d.dispatch_reading(cb, _make_reading(), _FakeHandle())
         assert done.wait(2.0)
         assert errors == []
-        worker[0].join(2.0)
+        # Self-close must not null the thread reference: a later cross-thread
+        # close() still needs it to join the worker.
+        assert d._thread is worker[0]
+        d.close()
+        assert d._thread is None
         assert not worker[0].is_alive()
 
     def test_callback_exception_doesnt_crash_worker(self):
