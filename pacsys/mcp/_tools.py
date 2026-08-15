@@ -16,8 +16,23 @@ from ._serialization import reading_to_dict, write_result_to_dict
 logger = logging.getLogger("pacsys.mcp")
 
 
-def tool_read_device(backend: Backend, drf: str) -> dict:
-    """Read a device value. Returns a JSON-safe dict."""
+def tool_read_device(backend: Backend, drf: str, policies: list[Policy]) -> dict:
+    """Read a device value with policy enforcement. Returns a JSON-safe dict."""
+    if policies:
+        ctx = RequestContext(
+            drfs=[drf],
+            rpc_method="Read",
+            peer="mcp-client",
+            metadata={},
+            values=[],
+            raw_request=None,
+            allowed=frozenset({0}),  # reads start approved (match supervised server)
+        )
+        decision = evaluate_policies(policies, ctx)
+        if not decision.allowed:
+            reason = decision.reason or "Read denied by policy"
+            logger.warning("read_device drf=%s denied reason=%s", drf, reason)
+            return {"ok": False, "name": get_device_name(drf), "drf": drf, "value": None, "error": reason}
     try:
         reading = backend.get(drf)
         return reading_to_dict(reading)

@@ -113,7 +113,9 @@ policies = [ReadOnlyPolicy()]
 
 ### DeviceAccessPolicy
 
-Allow or deny access based on device name patterns. In `mode="allow"`, matching devices are **approved** for the operation (non-matching devices are left unapproved, not denied). In `mode="deny"`, matching devices are blocked outright. The `action` parameter controls which RPC types the policy applies to.
+Allow or deny access based on device name patterns. In `mode="allow"`, matching devices are **approved for writes** (non-matching devices are left unapproved, not denied). In `mode="deny"`, matching devices are blocked outright. The `action` parameter controls which RPC types the policy applies to.
+
+Reads are allowed by default, so only `mode="deny"` can restrict them — `mode="allow"` with `action="read"` would be a silent no-op and raises `ValueError` at construction. For a read allowlist, use `mode="deny"` with a negated regex (e.g. `DeviceAccessPolicy([r"(?!M:).*"], mode="deny", action="read", syntax="regex")`).
 
 ```python
 from pacsys.supervised import DeviceAccessPolicy
@@ -137,11 +139,11 @@ policies = [DeviceAccessPolicy(patterns=[r"M:OUT.*", r"G:AMANDA"], action="set",
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `patterns` | `list[str]` | *(required)* | Patterns against device names |
-| `mode` | `str` | `"allow"` | `"allow"` = approve matching devices, `"deny"` = block matching devices |
+| `mode` | `str` | `"allow"` | `"allow"` = approve matching devices for writes, `"deny"` = block matching devices |
 | `action` | `str` | `"all"` | `"all"` = both Read and Set, `"read"` = Read only, `"set"` = Set only |
 | `syntax` | `str` | `"glob"` | `"glob"` (fnmatch) or `"regex"` (full-match, case-insensitive) |
 
-**Per-slot approval:** In `mode="allow"`, the policy tracks which request slots (device indices) it approves. Multiple `DeviceAccessPolicy` instances compose — each adds its approved slots. After the full policy chain, any unapproved slots cause `PERMISSION_DENIED`.
+**Per-slot approval (writes only):** In `mode="allow"`, the policy tracks which request slots (device indices) it approves. Multiple `DeviceAccessPolicy` instances compose — each adds its approved slots. After the full policy chain, any unapproved **write** slots cause `PERMISSION_DENIED`. Read slots are pre-approved by default and unaffected by allow-mode policies.
 
 ### RateLimitPolicy
 

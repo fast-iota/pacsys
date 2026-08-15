@@ -271,9 +271,10 @@ class TestDeviceAccessPolicy:
         p = DeviceAccessPolicy(patterns=["M:*"], action="set", mode="deny")
         assert p.allows_writes is False
 
-    def test_allows_writes_allow_read(self):
-        p = DeviceAccessPolicy(patterns=["M:*"], action="read", mode="allow")
-        assert p.allows_writes is False
+    def test_allow_read_combination_rejected(self):
+        # Read allowlists cannot work (reads are allowed by default) — must fail loudly
+        with pytest.raises(ValueError, match="no effect"):
+            DeviceAccessPolicy(patterns=["M:*"], action="read", mode="allow")
 
 
 # ── RateLimitPolicy ───────────────────────────────────────────────────────
@@ -346,6 +347,15 @@ class TestValueRangePolicy:
         p = ValueRangePolicy(limits={"G:*": (0.0, 100.0)})
         d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", "hello")]))
         assert d.allowed
+
+    def test_control_enum_denied_regardless_of_range(self):
+        """BasicControl is an IntEnum — its ordinal must never pass a setpoint range check."""
+        from pacsys.types import BasicControl
+
+        p = ValueRangePolicy(limits={"M:*": (0.0, 100.0)})  # ON ordinal (1) is inside this range
+        d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP.CONTROL"], values=[("M:OUTTMP.CONTROL", BasicControl.ON)]))
+        assert not d.allowed
+        assert "Non-numeric" in d.reason
 
     @pytest.mark.parametrize(
         "value",
