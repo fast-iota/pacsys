@@ -504,12 +504,14 @@ class TestWriteOperations:
         assert "Cannot convert value of type" in result.message
         mock_stub.Set.assert_not_called()
 
-    def test_unexpected_write_error_propagates(self, auth_backend_with_mock_stub):
+    def test_unexpected_write_error_becomes_write_results(self, auth_backend_with_mock_stub):
         backend, mock_stub = auth_backend_with_mock_stub
         mock_stub.Set = mock.AsyncMock(side_effect=RuntimeError("programming bug"))
 
-        with pytest.raises(RuntimeError, match="programming bug"):
-            backend.write_many([("M:OUTTMP", 72.5)])
+        results = backend.write_many([("M:OUTTMP", 72.5)])
+        assert len(results) == 1
+        assert not results[0].success
+        assert "programming bug" in results[0].message
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -541,12 +543,35 @@ class TestGRPCErrors:
         assert all("DEADLINE_EXCEEDED" in r.message for r in readings)
         assert isinstance(exc_info.value.__cause__, grpc.aio.AioRpcError)
 
-    def test_unexpected_read_error_propagates(self, backend_with_mock_stub):
+    def test_unexpected_read_error_becomes_read_error(self, backend_with_mock_stub):
         backend, mock_stub = backend_with_mock_stub
         mock_stub.Read.return_value = AsyncReplyThenError([], RuntimeError("programming bug"))
 
-        with pytest.raises(RuntimeError, match="programming bug"):
+        with pytest.raises(ReadError) as exc_info:
             backend.get("M:OUTTMP")
+        readings = exc_info.value.readings
+        assert len(readings) == 1
+        assert readings[0].is_error
+        assert "programming bug" in readings[0].message
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
+
+    def test_multisample_text_reading_degrades_per_device(self, backend_with_mock_stub):
+        # Text device packed 2+ samples per message: aggregation cannot coerce to
+        # float; that device gets ERR_RETRY while the rest of the batch succeeds.
+        backend, mock_stub = backend_with_mock_stub
+        reply0 = DAQ_pb2.ReadingReply()
+        reply0.index = 0
+        for txt in ("a", "b"):
+            rd = DAQ_pb2.Reading()
+            rd.timestamp.seconds = 1234567890
+            rd.data.text = txt
+            reply0.readings.reading.append(rd)
+        reply1 = make_reading_reply(1, scalar_value=72.5)
+        mock_stub.Read.return_value = AsyncReplyThenError([reply0, reply1])
+
+        readings = backend.get_many(["Z:ACLTST", "M:OUTTMP"])
+        assert readings[0].is_error
+        assert readings[1].value == 72.5
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -787,7 +787,7 @@ class DMQBackend(Backend):
 
         # Connection-level errors or total timeout → raise
         if job.error is not None:
-            raise ReadError(result, backfill_msg) from job.error
+            raise ReadError(result, f"DMQ job start failed: {backfill_msg}") from job.error
         if has_backfill:
             raise ReadError(result, backfill_msg)
 
@@ -864,15 +864,18 @@ class DMQBackend(Backend):
             return
         reply, idx, _ref_id = result
         if idx is None:
-            # Job-level INIT failure: fail all unfilled indices with the server error
-            logger.error(
-                "DMQ job error for read (%s devices): %s",
-                len(job.drfs),
-                getattr(reply, "message", None) or f"error {reply.errorNumber}",
+            # Job-level INIT failure: fail all unfilled indices and the job itself
+            error = DeviceError(
+                drf=", ".join(job.drfs),
+                facility_code=reply.facilityCode,
+                error_code=reply.errorNumber,
+                message=getattr(reply, "message", None) or "DMQ job error",
             )
+            logger.error("DMQ job error for read (%s devices): %s", len(job.drfs), error)
             for i, drf in enumerate(job.drfs):
                 if i not in job.readings:
                     job.readings[i] = _reply_to_reading(reply, drf)
+            job.error = error
             self._complete_read(job)
             return
         # Fill this index and any unfilled duplicates with the same prepared DRF.

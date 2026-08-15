@@ -1010,6 +1010,61 @@ class TestGetManyTimeoutConnectionCleanup:
         # The connection MUST be closed so the pool discards it
         mock_conn.close.assert_called()
 
+    def test_stop_send_failure_returns_readings(self):
+        """A failed StopList/ClearList send after a complete read keeps the readings."""
+        import threading
+        from contextlib import contextmanager
+
+        backend = DPMHTTPBackend.__new__(DPMHTTPBackend)
+        backend._timeout = 0.5
+        backend._pools = {}
+        backend._pool_lock = threading.Lock()
+        backend._pool_size = 2
+        backend._closed = False
+        backend._default_node = "test-node"
+
+        mock_conn = MagicMock()
+        mock_conn.list_id = 1
+        mock_conn.connected = True
+
+        call_count = [0]
+
+        def mock_recv(timeout=None):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return make_add_to_list_reply(ref_id=1, status=0)
+            if call_count[0] == 2:
+                return make_start_list(status=0)
+            if call_count[0] == 3:
+                return make_device_info(ref_id=1)
+            if call_count[0] == 4:
+                return make_scalar_reply(ref_id=1)
+            raise TimeoutError
+
+        send_calls = [0]
+
+        def mock_send_batch(msgs):
+            send_calls[0] += 1
+            if send_calls[0] == 2:  # first batch = setup, second = stop/clear
+                raise RuntimeError("unexpected")
+
+        mock_conn.recv_message = mock_recv
+        mock_conn.send_messages_batch = mock_send_batch
+        mock_conn.send_message = MagicMock()
+        mock_conn.close = MagicMock()
+
+        @contextmanager
+        def mock_connection(wait_timeout=None):
+            yield mock_conn
+
+        mock_pool = MagicMock()
+        mock_pool.connection = mock_connection
+        backend._get_pool = MagicMock(return_value=mock_pool)
+
+        readings = backend.get_many(["Z:ACLTST"], timeout=0.5)
+        assert readings[0].value == TEMP_VALUE
+        mock_conn.close.assert_called()
+
 
 # =============================================================================
 # Pooled-connection hygiene (review §1.4: stale-reply desync)

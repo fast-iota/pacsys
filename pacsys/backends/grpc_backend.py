@@ -354,7 +354,10 @@ def _aggregate_proto_readings(reading_list, drf: str, now: datetime) -> Reading:
                     timestamp=ts,
                 )
 
-    data = np.array([_proto_value_to_python(rd.data)[0] for rd in reading_list], dtype=float)
+    try:
+        data = np.array([_proto_value_to_python(rd.data)[0] for rd in reading_list], dtype=float)
+    except (TypeError, ValueError) as e:
+        return Reading(drf=drf, facility_code=FACILITY_ACNET, error_code=ERR_RETRY, message=str(e), timestamp=now)
     micros = np.array(
         [
             rd.timestamp.seconds * 1_000_000 + rd.timestamp.nanos // 1_000
@@ -569,6 +572,16 @@ class _DaqCore:
                         timestamp=now,
                     )
 
+        except Exception as e:  # noqa: BLE001
+            transport_error = e
+            error_message = f"gRPC error ({self._host}:{self._port}): {type(e).__name__}: {e}"
+            logger.error("%s (received %s/%s)", error_message, received_count, expected_count)
+            if call is not None:
+                call.cancel()
+            for i in range(len(drfs)):
+                if results[i] is None:
+                    results[i] = Reading(drf=drfs[i], error_code=ERR_RETRY, message=error_message, timestamp=now)
+
         # Backfill missing (stream ended without responses for some devices)
         has_missing = False
         for i in range(len(drfs)):
@@ -652,6 +665,12 @@ class _DaqCore:
                 fc = _grpc_facility_code(e)
                 for orig_idx, drf, _ in valid_items:
                     rpc_results[orig_idx] = WriteResult(drf=drf, facility_code=fc, error_code=ec, message=error_message)
+
+            except Exception as e:  # noqa: BLE001
+                error_message = f"gRPC error ({self._host}:{self._port}): {type(e).__name__}: {e}"
+                logger.error(error_message)
+                for orig_idx, drf, _ in valid_items:
+                    rpc_results[orig_idx] = WriteResult(drf=drf, error_code=ERR_RETRY, message=error_message)
 
         # Phase 3: Merge in original order
         results = []
