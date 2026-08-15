@@ -175,7 +175,8 @@ GEMINI.md
 .claude
 .gemini
 .llm/
-SPECIFICATION.md
+# Local AI-context spec notes (not shipped)
+specs/
 .claude-header.md
 known_limitations.md
 

@@ -1,5 +1,5 @@
 """
-Backend abstract base class. See SPECIFICATION.md for backend comparison.
+Backend abstract base class. See specs/backends.md for backend comparison.
 """
 
 from abc import ABC, abstractmethod
