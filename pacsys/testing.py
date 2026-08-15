@@ -1,7 +1,7 @@
 """
 Testing utilities - FakeBackend for unit tests without network.
 
-See SPECIFICATION.md for available methods and pytest fixtures.
+See class docstrings below for available methods and pytest fixtures.
 """
 
 import queue

@@ -5,7 +5,7 @@ Architecture: single reactor thread running grpc.aio on a dedicated asyncio loop
 Each subscribe() creates an asyncio.Task (not a thread). Bounded FIFO queues
 prevent OOM. Auto-reconnection with exponential backoff for UNAVAILABLE errors.
 
-Requires grpcio package. See SPECIFICATION.md for protocol details.
+Requires grpcio package. See specs/backends.md for protocol details.
 """
 
 import asyncio

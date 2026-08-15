@@ -3,7 +3,7 @@ DPM HTTP Backend - primary backend for ACNET device access.
 
 Uses TCP/PC protocol via acsys-proxy. Connection pool for reads,
 independent TCP connections per subscribe() for streaming.
-See SPECIFICATION.md for protocol details.
+See specs/protocols.md and specs/backends.md for protocol details.
 """
 
 import asyncio
