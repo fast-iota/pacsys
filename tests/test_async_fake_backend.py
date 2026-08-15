@@ -83,3 +83,17 @@ class TestAsyncFakeBackendStreaming:
                 await fb.get("M:OUTTMP")
 
         asyncio.run(_run())
+
+    def test_close_stops_all_handles(self):
+        """close() must stop every handle; remove() mutates _handles mid-loop."""
+
+        async def _run():
+            fb = AsyncFakeBackend()
+            fb.set_reading("M:OUTTMP", 72.5)
+            handles = [await fb.subscribe(["M:OUTTMP"]) for _ in range(4)]
+            await fb.close()
+            assert [h.stopped for h in handles] == [True] * 4
+            assert fb._handles == []
+            assert fb._sync_handles == []
+
+        asyncio.run(_run())

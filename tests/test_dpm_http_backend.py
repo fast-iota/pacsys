@@ -1207,6 +1207,28 @@ class TestPooledConnectionHygiene:
 # =============================================================================
 
 
+class TestDPMSubscribeCloseRace:
+    def test_subscribe_close_race_raises(self):
+        """_closed flipping between the pre-check and the locked append must raise."""
+        backend = DPMHTTPBackend()
+        try:
+            orig = backend._ensure_reactor
+
+            def racy():
+                orig()
+                backend._closed = True  # concurrent close() lands here
+
+            with (
+                mock.patch.object(backend, "_ensure_reactor", side_effect=racy),
+                pytest.raises(RuntimeError, match="Backend is closed"),
+            ):
+                backend.subscribe(["M:OUTTMP@p,1000"], callback=lambda r, h: None)
+            assert backend._handles == []
+        finally:
+            backend._closed = False  # let close() run fully
+            backend.close()
+
+
 class TestDPMSubscribeConnectFailure:
     """A dead server must surface through the handle, not silent empty readings."""
 

@@ -1120,7 +1120,8 @@ class AsyncFakeBackend(_AsyncBackend):
         if self._closed:
             return
         self._closed = True
-        for h in self._handles:
+        # Copy: h.stop() -> remover -> remove() mutates _handles/_sync_handles
+        for h in list(self._handles):
             await h.stop()
         self._handles.clear()
         for sh in self._sync_handles:

@@ -213,6 +213,23 @@ class TestLoopOwnership:
 
             asyncio.run(second())
 
+    def test_create_without_loop_leaves_no_stale_backend(self):
+        """No running loop → RuntimeError with zero state mutated; a stale
+        install with _owner_loop=None would disable the cross-loop guard."""
+        with self._patched_backend():
+            with pytest.raises(RuntimeError):
+                aio._get_global_async_backend()
+            assert aio._global_async_backend is None
+            assert aio._owner_loop is None
+            assert aio._async_backend_initialized is False
+
+            async def main():
+                aio._get_global_async_backend()
+                assert aio._owner_loop is asyncio.get_running_loop()
+                assert aio._async_backend_initialized
+
+            asyncio.run(main())
+
     def test_shutdown_from_second_loop_abandons_dead_owner(self, caplog):
         with self._patched_backend():
             asyncio.run(aio.read("M:OUTTMP"))

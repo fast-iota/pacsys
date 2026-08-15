@@ -264,6 +264,11 @@ def _get_global_async_backend() -> AsyncBackend:
             )
         return _global_async_backend
 
+    # Capture the loop before any global mutation: a raise here (no running
+    # loop) must not leave a backend installed with _owner_loop=None, which
+    # would disable the cross-loop guard above.
+    owner_loop = asyncio.get_running_loop()
+
     timeout = _config_timeout if _config_timeout is not None else 5.0
     backend_type = _config_backend if _config_backend is not None else "dpm"
 
@@ -286,7 +291,7 @@ def _get_global_async_backend() -> AsyncBackend:
     else:
         raise ValueError(f"Unknown backend type {backend_type!r}")
 
-    _owner_loop = asyncio.get_running_loop()
+    _owner_loop = owner_loop
     _async_backend_initialized = True
     return _global_async_backend
 

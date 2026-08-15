@@ -130,8 +130,12 @@ class AsyncDPMHTTPBackend(AsyncBackend):
             raise RuntimeError("Backend is closed")
         return core
 
-    async def _borrow_core(self) -> _AsyncDpmCore:
-        """Borrow a core from the read pool, creating if needed."""
+    async def _borrow_core(self, timeout: float | None = None) -> _AsyncDpmCore:
+        """Borrow a core from the read pool, creating if needed.
+
+        timeout bounds the wait for a busy pool (per-call override of the
+        backend default), mirroring the sync pool's wait_timeout.
+        """
         self._check_closed()
         try:
             return self._pool.get_nowait()
@@ -144,8 +148,9 @@ class AsyncDPMHTTPBackend(AsyncBackend):
                 return core
         # Pool is full — wait with timeout to avoid permanent hangs
         self._check_closed()
+        borrow_timeout = timeout if timeout is not None else self._timeout
         try:
-            core = await asyncio.wait_for(self._pool.get(), timeout=self._timeout)
+            core = await asyncio.wait_for(self._pool.get(), timeout=borrow_timeout)
         except asyncio.TimeoutError:
             self._check_closed()
             raise PoolExhaustedError("Connection pool exhausted (all cores busy)") from None
@@ -213,7 +218,7 @@ class AsyncDPMHTTPBackend(AsyncBackend):
             return []
         effective_timeout = timeout if timeout is not None else self._timeout
         try:
-            core = await self._borrow_core()
+            core = await self._borrow_core(effective_timeout)
         except (PoolExhaustedError, DPMConnectionError, OSError) as e:
             readings = [
                 Reading(
@@ -314,29 +319,43 @@ class AsyncDPMHTTPBackend(AsyncBackend):
         if not drfs:
             raise ValueError("drfs cannot be empty")
         core = await self._create_core()
-        handle = AsyncSubscriptionHandle(remover=self.remove)
-        handle._drfs = drfs
+        # Until handle._core is set and the handle registered, a raise here
+        # would strand the connected core (unreachable by remove/close) --
+        # mirror write_many's guard.
+        try:
+            handle = AsyncSubscriptionHandle(remover=self.remove)
+            handle._drfs = drfs
 
-        async def _run_stream():
-            try:
-                await core.stream(drfs, handle._dispatch, handle._is_stopped, handle._signal_error)
-            finally:
-                # Stream end (StartList/job failure, transport error, cancel) must
-                # stop the handle and close the dedicated core or the socket leaks
-                handle._signal_stop()
+            async def _run_stream():
                 try:
-                    await core.close()
-                except Exception:  # noqa: BLE001
-                    logger.debug("Failed to close DPM subscription core after stream end", exc_info=True)
-                if handle in self._handles:
-                    self._handles.remove(handle)
+                    await core.stream(drfs, handle._dispatch, handle._is_stopped, handle._signal_error)
+                except Exception as exc:  # noqa: BLE001
+                    # A failure escaping the core is a subscription error, not a
+                    # graceful end -- consumers must see it raised.
+                    handle._signal_error(exc)
+                finally:
+                    # Stream end (StartList/job failure, transport error, cancel) must
+                    # stop the handle and close the dedicated core or the socket leaks
+                    handle._signal_stop()
+                    try:
+                        await core.close()
+                    except Exception:  # noqa: BLE001
+                        logger.debug("Failed to close DPM subscription core after stream end", exc_info=True)
+                    if handle in self._handles:
+                        self._handles.remove(handle)
 
-        handle._task = asyncio.ensure_future(_run_stream())
-        if callback:
-            handle._callback_task = asyncio.ensure_future(_callback_feeder(handle, callback, on_error))
-        handle._core = core
-        self._handles.append(handle)
-        return handle
+            handle._task = asyncio.ensure_future(_run_stream())
+            if callback:
+                handle._callback_task = asyncio.ensure_future(_callback_feeder(handle, callback, on_error))
+            handle._core = core
+            self._handles.append(handle)
+            return handle
+        except BaseException:
+            try:
+                await core.close()
+            except Exception:  # noqa: BLE001
+                logger.debug("Failed to close DPM subscription core after setup error", exc_info=True)
+            raise
 
     async def remove(self, handle) -> None:
         if isinstance(handle, AsyncSubscriptionHandle):

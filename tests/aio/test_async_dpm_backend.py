@@ -203,6 +203,43 @@ class TestAsyncDPMSubscribe:
                 pass
 
     @pytest.mark.asyncio
+    async def test_subscribe_setup_failure_closes_core(self, backend):
+        """A raise between core creation and handle registration must close the core."""
+        core = _mock_core()
+
+        async def fake_create():
+            return core
+
+        backend._create_core = fake_create
+        with (
+            mock.patch("pacsys.aio._dpm_http.AsyncSubscriptionHandle", side_effect=RuntimeError("no loop")),
+            pytest.raises(RuntimeError, match="no loop"),
+        ):
+            await backend.subscribe(["M:OUTTMP@p,1000"])
+        core.close.assert_awaited_once()
+        assert backend._handles == []
+
+    @pytest.mark.asyncio
+    async def test_stream_exception_raises_in_readings(self, backend):
+        """An exception escaping core.stream() is a subscription error, not a graceful end."""
+        core = _mock_core()
+
+        async def fake_stream(drfs, dispatch, stop, error):
+            raise ConnectionResetError("boom mid-stream")
+
+        core.stream = fake_stream
+
+        async def fake_create():
+            return core
+
+        backend._create_core = fake_create
+        handle = await backend.subscribe(["M:OUTTMP@p,1000"])
+        await handle._task
+        with pytest.raises(ConnectionResetError, match="boom mid-stream"):
+            async for _ in handle.readings(timeout=0.1):
+                pass
+
+    @pytest.mark.asyncio
     async def test_normal_stream_end_closes_core(self, backend):
         core = _mock_core()
 
@@ -396,6 +433,18 @@ class TestAsyncDPMCloseRaces:
         readings = exc_info.value.readings
         assert len(readings) == 2
         assert all(r.error_code == ERR_RETRY for r in readings)
+
+    @pytest.mark.asyncio
+    async def test_per_call_timeout_governs_pool_borrow(self):
+        """get_many(timeout=...) must bound the pool borrow, not the backend default."""
+        import time
+
+        b = AsyncDPMHTTPBackend(host="localhost", port=6802, pool_size=1, timeout=30.0)
+        b._pool_count = 1  # one core checked out, pool queue empty
+        t0 = time.monotonic()
+        with pytest.raises(ReadError, match="pool exhausted"):
+            await b.get_many(["M:OUTTMP"], timeout=0.1)
+        assert time.monotonic() - t0 < 5.0  # not the 30s backend default
 
     @pytest.mark.asyncio
     async def test_connect_failure_raises_read_error(self):

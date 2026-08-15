@@ -27,6 +27,8 @@ class AsyncSubscriptionHandle:
         self._queue: asyncio.Queue[Reading | None] = asyncio.Queue(maxsize=self._maxsize)
         self._stopped = False
         self._stopping = False
+        self._stop_complete = asyncio.Event()
+        self._stop_task: asyncio.Task | None = None
         self._exc: Exception | None = None
         self._task: asyncio.Task | None = None
         self._callback_task: asyncio.Task | None = None
@@ -111,28 +113,44 @@ class AsyncSubscriptionHandle:
             yield (item, self)
 
     async def stop(self) -> None:
+        cur = asyncio.current_task()
         if self._stopping:
+            # Reentrant call from the stopping task itself (stop -> _remover ->
+            # backend.remove -> handle.stop) must not wait on its own
+            # completion; genuinely concurrent callers wait until tasks are
+            # fully unwound (close() drains the pool right after).
+            if self._stop_task is cur:
+                return
+            await self._stop_complete.wait()
             return
         self._stopping = True
-        self._signal_stop()
-        if self._remover is not None:
-            await self._remover(self)
-        if self._task is not None and not self._task.done():
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            except Exception:  # noqa: BLE001
-                logger.exception("Subscription task failed during shutdown")
-        if self._callback_task is not None and not self._callback_task.done():
-            self._callback_task.cancel()
-            try:
-                await self._callback_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:  # noqa: BLE001
-                logger.exception("Subscription callback task failed during shutdown")
+        self._stop_task = cur
+        try:
+            self._signal_stop()
+            if self._remover is not None:
+                await self._remover(self)
+            # Never cancel/await the current task (callback calling stop());
+            # it ends naturally via the stop sentinel.
+            if self._task is not None and self._task is not cur and not self._task.done():
+                self._task.cancel()
+                try:
+                    await self._task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:  # noqa: BLE001
+                    logger.exception("Subscription task failed during shutdown")
+            if self._callback_task is not None and self._callback_task is not cur and not self._callback_task.done():
+                self._callback_task.cancel()
+                try:
+                    await self._callback_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:  # noqa: BLE001
+                    logger.exception("Subscription callback task failed during shutdown")
+        finally:
+            # A cancelled stop() releases waiters without a completion
+            # guarantee -- acceptable while no caller wraps stop in a timeout.
+            self._stop_complete.set()
 
     async def __aenter__(self):
         return self
