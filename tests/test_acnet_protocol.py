@@ -587,9 +587,9 @@ class TestDPMAcnetListState:
         with pytest.raises(DPMError, match="Expected Status_reply"):
             dpm.stop()
 
-        assert dpm._active
+        assert not dpm._active
 
-    def test_stop_failure_preserves_active_state(self, dpm):
+    def test_stop_failure_clears_active_state(self, dpm):
         reply = Status_reply()
         reply.status = -1
         dpm._send_request = MagicMock(return_value=reply)
@@ -597,15 +597,15 @@ class TestDPMAcnetListState:
         with pytest.raises(DPMError, match="StopList failed"):
             dpm.stop()
 
-        assert dpm._active
+        assert not dpm._active
 
-    def test_stop_transport_failure_preserves_active_state(self, dpm):
+    def test_stop_transport_failure_clears_active_state(self, dpm):
         dpm._send_request = MagicMock(side_effect=DPMError(-1, "timeout"))
 
         with pytest.raises(DPMError, match="timeout"):
             dpm.stop()
 
-        assert dpm._active
+        assert not dpm._active
 
     def test_read_preserves_primary_error_when_stop_fails(self, dpm, caplog):
         dpm._active = False
@@ -816,6 +816,33 @@ class TestReplyBuffering:
 
         assert len(cancel_sent) == 0
         assert RequestId(42) not in conn._reply_buffer
+
+
+class TestDPMAcnetOpenList:
+    def test_open_list_rejects_non_openlist_first_reply(self):
+        """A wrong-type first reply must fail the handshake, not leave list_id=None."""
+        import queue
+        from types import SimpleNamespace
+
+        d = DPMAcnet.__new__(DPMAcnet)
+        d._reply_queue = queue.Queue()
+        d._meta = {}
+        d._con = MagicMock()
+        d._dpm_node = 0x0901
+
+        status = ListStatus_reply()
+        status.status = 0
+        status.list_id = 5
+        fake = SimpleNamespace(last=False, status=0, data=bytes(status.marshal()))
+
+        def request_multiple(**kwargs):
+            kwargs["reply_handler"](fake)
+            return MagicMock()
+
+        d._con.request_multiple.side_effect = request_multiple
+
+        with pytest.raises(DPMError, match="expected OpenList_reply, got ListStatus_reply"):
+            d._open_list()
 
 
 class TestDPMAcnetStreamTermination:

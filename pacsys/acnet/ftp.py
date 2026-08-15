@@ -910,6 +910,7 @@ class SnapshotHandle:
         self._task_name = task_name
         self._snap_class_info = get_snap_class_info(snap_class_code) if snap_class_code else None
         self._cancelled = False
+        self._stream_ended = False  # set by monitor's finally; read/write only under _lock
         self._lock = threading.Lock()
         self._metadata_consumed: set[int] = set()
 
@@ -954,8 +955,11 @@ class SnapshotHandle:
             # Stream ended: devices that never reached a terminal state can no
             # longer progress -- mark ERROR so wait() raises instead of hanging
             # or reporting false readiness (user cancel is reported separately).
-            if not self._cancelled:
-                with self._lock:
+            # _stream_ended and the terminal states must become visible
+            # atomically (restart() re-checks the flag under the same lock).
+            with self._lock:
+                self._stream_ended = True
+                if not self._cancelled:
                     for dev in self._devices:
                         if self._device_states[dev.di] not in (SnapshotState.READY, SnapshotState.ERROR):
                             self._device_states[dev.di] = SnapshotState.ERROR
@@ -1149,12 +1153,14 @@ class SnapshotHandle:
         On success, discards queued pre-restart status updates and resets all
         device states to PENDING so :meth:`wait` covers the new capture cycle.
         On FE rejection the previous cycle's state stays intact; on ack timeout
-        the restart outcome is unknown, so all devices are marked ERROR.
+        the restart outcome is unknown, so all devices are marked ERROR. If the
+        stream ends (or the snapshot is cancelled) during the round trip,
+        raises RuntimeError and leaves the monitor's terminal state intact.
         """
         with self._lock:
             if self._cancelled:
                 raise RuntimeError("Snapshot has been cancelled")
-            if not self._monitor_thread.is_alive():
+            if self._stream_ended:
                 raise RuntimeError("Snapshot stream has ended (connection lost or stream closed)")
 
         payload = build_snapshot_control(subtype=SNAPSHOT_CONTROL_RESTART, task_name=self._task_name)
@@ -1188,6 +1194,16 @@ class SnapshotHandle:
             raise AcnetError(status, "Snapshot restart failed")
 
         with self._lock:
+            # The monitor may have terminated (or the user cancelled) during
+            # the FE round trip -- do not undo its terminal cleanup (ERROR
+            # states + ready event), and do not re-enqueue items nobody will
+            # consume. Flag unset here guarantees the monitor makes at least
+            # one more queue read, so re-enqueued terminal items are consumed
+            # and its finally converts our fresh PENDINGs if it dies next.
+            if self._cancelled:
+                raise RuntimeError("Snapshot has been cancelled")
+            if self._stream_ended:
+                raise RuntimeError("Snapshot stream has ended (connection lost or stream closed)")
             # Discard queued pre-restart status updates so a stale cycle-1
             # READY cannot satisfy the new cycle's wait(). Termination items
             # (None sentinel, is_last) are re-enqueued for the monitor. An

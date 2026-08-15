@@ -215,6 +215,9 @@ class DPMAcnet:
                 else:
                     # Store for later processing
                     self._handle_dpm_reply(resp)
+                    # During the handshake the first reply must be OpenList
+                    if not result_event.is_set():
+                        result["error"] = f"expected OpenList_reply, got {type(resp).__name__}"
             except Exception as e:  # noqa: BLE001
                 result["error"] = str(e)
             result_event.set()
@@ -326,13 +329,16 @@ class DPMAcnet:
         msg = StopList_request()
         msg.list_id = self.list_id
 
-        reply = self._send_request(msg)
-        if not isinstance(reply, Status_reply):
-            raise DPMError(-1, f"Expected Status_reply, got {type(reply).__name__}")
-        if reply.status < 0:
-            raise DPMError(reply.status, "StopList failed")
-
-        self._active = False
+        # Once StopList is attempted, "active" is no longer trustworthy -
+        # clear it on all exit paths.
+        try:
+            reply = self._send_request(msg)
+            if not isinstance(reply, Status_reply):
+                raise DPMError(-1, f"Expected Status_reply, got {type(reply).__name__}")
+            if reply.status < 0:
+                raise DPMError(reply.status, "StopList failed")
+        finally:
+            self._active = False
         logger.debug("Stopped DPM acquisition")
 
     def clear_list(self):

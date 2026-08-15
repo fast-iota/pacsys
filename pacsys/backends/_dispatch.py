@@ -100,7 +100,9 @@ class CallbackDispatcher:
         if t is not None and t is not threading.current_thread():
             # If thread doesn't shutdown, ignore - it is a daemon
             t.join(timeout=2.0)
-        self._thread = None
+            # Keep _thread on the self-join path so a later cross-thread
+            # close() still joins the worker.
+            self._thread = None
 
     # ── internal ──
 

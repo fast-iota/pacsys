@@ -25,7 +25,7 @@ from pacsys.acnet.constants import (
     CMD_DISCONNECT_SINGLE,
     CMD_RECEIVE_REQUESTS,
 )
-from pacsys.acnet.errors import AcnetError, AcnetUnavailableError
+from pacsys.acnet.errors import ACNET_DISCONNECTED, AcnetError, AcnetUnavailableError
 from pacsys.acnet.packet import AcnetPacket, AcnetReply, RequestId
 from pacsys.acnet.rad50 import encode as _rad50_encode
 
@@ -410,6 +410,30 @@ class TestRequestIdReuseRace:
 
         _run(_test())
 
+    def test_udp_reply_overtaking_ack_delivered(self):
+        """UDP: acnetd sends acks and data on separate sockets, so a fresh
+        reply datagram can overtake its ack — it must not be dropped as stale."""
+
+        async def _test():
+            conn = _make_udp_conn()
+            self._complete_request(conn, 7)
+
+            fresh = _make_reply_packet(req_id=7, last=True)
+            ack = struct.pack(">HhH", 2, 0, 7)
+
+            async def fake_xact(content, timeout=5.0):
+                conn._handle_reply(fresh)  # datagram overtakes the ack
+                conn._ack_recv_seq = conn._recv_seq
+                return ack
+
+            received = []
+            with patch.object(conn, "_xact", new=fake_xact):
+                await conn.send_request(node=0x0901, task="DPM", data=b"", reply_handler=lambda r: received.append(r))
+
+            assert received == [fresh]
+
+        _run(_test())
+
     def test_stray_buffers_cleared_when_windows_close(self):
         async def _test():
             conn = _make_tcp_conn()
@@ -559,6 +583,82 @@ class TestCloseCleanup:
             assert len(conn._reply_handlers) == 0
             assert len(conn._reply_buffer) == 0
             assert conn._writer is None
+
+        _run(_test())
+
+    @staticmethod
+    def _arm(conn, received):
+        ctx = AsyncRequestContext(
+            connection=conn,
+            task="DPM",
+            node=0,
+            request_id=RequestId(50),
+            multiple_reply=True,
+            timeout=5000,
+            reply_handler=received.append,
+        )
+        conn._reply_handlers[RequestId(50)] = ctx
+        return ctx
+
+    def test_close_fails_handlers_when_already_disconnected(self):
+        """Connection already dropped (_xact ack-timeout nulled the writer), so
+        _do_disconnect never runs - handlers must still get ACNET_DISCONNECTED
+        or a multi-reply consumer waits forever."""
+
+        async def _test():
+            conn = _make_tcp_conn()
+            conn._connected = False
+            conn._writer = None
+            conn._read_task = None
+            conn._keepalive_task = None
+
+            received = []
+            ctx = self._arm(conn, received)
+
+            await conn.close()
+
+            assert len(conn._reply_handlers) == 0
+            assert [r.status for r in received] == [ACNET_DISCONNECTED]
+            assert ctx.cancelled
+
+        _run(_test())
+
+    def test_close_delivers_synthetic_reply_exactly_once(self):
+        """Connected path calls _fail_reply_handlers via _do_disconnect; the
+        unconditional call in close() must not double-deliver."""
+
+        async def _test():
+            conn = _make_tcp_conn()
+            conn._read_task = None
+            conn._keepalive_task = None
+            conn._xact = AsyncMock(side_effect=Exception("boom"))
+
+            received = []
+            self._arm(conn, received)
+
+            await conn.close()
+
+            assert len(received) == 1
+            assert len(conn._reply_handlers) == 0
+
+        _run(_test())
+
+    def test_close_fails_handlers_even_if_transport_close_raises(self):
+        async def _test():
+            conn = _make_tcp_conn()
+            conn._connected = False
+            conn._read_task = None
+            conn._keepalive_task = None
+            conn._writer.wait_closed = AsyncMock(side_effect=RuntimeError("transport blew up"))
+
+            received = []
+            self._arm(conn, received)
+
+            with pytest.raises(RuntimeError):
+                await conn.close()
+
+            assert len(conn._reply_handlers) == 0
+            assert [r.status for r in received] == [ACNET_DISCONNECTED]
 
         _run(_test())
 
@@ -760,6 +860,31 @@ class TestTCPSendFrame:
 
         _run(_test())
 
+    def test_send_frame_closed_transport_raises_acnet_error(self):
+        async def _test():
+            conn = _make_tcp_conn()
+            conn._writer = None  # close-race: _close_transport ran, connection object alive
+            with pytest.raises(AcnetUnavailableError):
+                await conn._send_frame(b"\x00\x01")
+
+        _run(_test())
+
+
+class TestRequestAckErrorHandling:
+    """Fire-and-forget ack must never leak an unretrieved task exception."""
+
+    def test_request_ack_swallows_transport_failure(self, caplog):
+        async def _test():
+            conn = _make_tcp_conn()
+            conn._writer = None
+            from pacsys.acnet.packet import ReplyId
+
+            await conn._request_ack(ReplyId(1))  # must not raise
+
+        with caplog.at_level("WARNING"):
+            _run(_test())
+        assert any("Failed to send request ack" in r.message for r in caplog.records)
+
 
 # ======================================================================
 # UDP transport tests
@@ -776,6 +901,15 @@ class TestUDPSendFrame:
             await conn._send_frame(content)
 
             conn._udp_transport.sendto.assert_called_once_with(content)
+
+        _run(_test())
+
+    def test_send_frame_closed_transport_raises_acnet_error(self):
+        async def _test():
+            conn = _make_udp_conn()
+            conn._udp_transport = None
+            with pytest.raises(AcnetUnavailableError):
+                await conn._send_frame(b"\x00\x01")
 
         _run(_test())
 
@@ -821,8 +955,6 @@ class TestConnectionLossNotifiesHandlers:
     consumers instead of silently clearing their handlers (ftp/dpm hang fix)."""
 
     def test_connection_lost_delivers_final_disconnected_reply(self):
-        from pacsys.acnet.errors import ACNET_DISCONNECTED
-
         conn = _make_tcp_conn()
         received = []
         ctx = AsyncRequestContext(

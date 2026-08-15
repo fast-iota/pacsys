@@ -167,6 +167,11 @@ class AsyncAcnetConnectionBase:
     - _start_read_loop()
     """
 
+    # True when the transport guarantees acnetd's SEND_REQUEST ack is observed
+    # before any reply for the new request (TCP stream ordering). UDP has no
+    # such guarantee: acnetd sends acks and data on separate sockets.
+    _ORDERED_TRANSPORT: ClassVar[bool] = True
+
     # Command code → name for tracing
     _CMD_NAMES: ClassVar[dict[int, str]] = {
         0: "KEEPALIVE",
@@ -222,9 +227,11 @@ class AsyncAcnetConnectionBase:
         # Outgoing request tracking
         self._reply_handlers: dict[RequestId, AsyncRequestContext] = {}
         # Buffered replies for requests not yet registered, keyed by (possibly
-        # reused) request ID. Stores (reply, recv_seq) for causality: acnetd
-        # writes the SEND_REQUEST ack before any reply for the new request, so
-        # a buffered reply is fresh iff its recv_seq is after the ack's.
+        # reused) request ID. Stores (reply, recv_seq) for causality: on TCP,
+        # acnetd writes the SEND_REQUEST ack before any reply for the new
+        # request, so a buffered reply is fresh iff its recv_seq is after the
+        # ack's. On UDP no such ordering exists (_ORDERED_TRANSPORT=False) and
+        # all buffered replies are delivered.
         self._reply_buffer: dict[RequestId, deque[tuple]] = defaultdict(lambda: deque(maxlen=_MAX_BUFFERED_REPLIES))
         # Receive sequence: counts reply frames as processed; ACK handler
         # records its position so send_request can discard pre-ack strays.
@@ -341,12 +348,17 @@ class AsyncAcnetConnectionBase:
             except asyncio.CancelledError:
                 pass
 
-        await self._close_transport()
+        try:
+            await self._close_transport()
+        finally:
+            if self._pending_ack and not self._pending_ack.done():
+                self._pending_ack.set_exception(AcnetUnavailableError())
 
-        if self._pending_ack and not self._pending_ack.done():
-            self._pending_ack.set_exception(AcnetUnavailableError())
-
-        self._reply_buffer.clear()
+            # Also needed when the connection already dropped (_connected is
+            # False, so _do_disconnect never ran): handlers would otherwise be
+            # left waiting forever. Idempotent - the dict is snapshot+cleared.
+            self._fail_reply_handlers()
+            self._reply_buffer.clear()
 
         logger.info("Closed async ACNET connection %s", self._handle_name)
 
@@ -540,7 +552,8 @@ class AsyncAcnetConnectionBase:
         No race condition: if handler isn't registered yet, buffer the reply
         (acnetd reuses request IDs, so even a "finished" ID may carry a fresh
         reply for a new request whose handler isn't registered yet).
-        send_request() drains the buffer, discarding pre-ack (stale) entries.
+        send_request() drains the buffer, discarding pre-ack (stale) entries
+        on ordered transports (TCP only — UDP delivers all buffered replies).
         All runs on the event loop - no locks needed.
         """
         self._recv_seq += 1
@@ -664,11 +677,15 @@ class AsyncAcnetConnectionBase:
             self._reply_handlers[context.request_id] = context
 
             # Drain buffered replies (ACK+reply arrived in same batch).
-            # acnetd writes our ack before forwarding any reply for the new
-            # request, so pre-ack entries are stale from the ID's prior life.
+            # On TCP acnetd writes our ack before forwarding any reply for the
+            # new request, so pre-ack entries are stale from the ID's prior
+            # life. On UDP acks and data use separate sockets — no ordering to
+            # classify by, so deliver everything (bounded stale risk beats
+            # dropping reordered fresh replies).
             buffered = self._reply_buffer.pop(context.request_id, ())
             for reply, recv_seq in buffered:
-                if recv_seq <= ack_seq:
+                if self._ORDERED_TRANSPORT and recv_seq <= ack_seq:
+                    logger.debug("Discarding pre-ack stale reply for %s", context.request_id)
                     continue
                 try:
                     context.reply_handler(reply)
@@ -967,8 +984,8 @@ class AsyncAcnetConnectionBase:
 
         try:
             await self._xact(content)
-        except AcnetError as e:
-            logger.warning("Failed to send request ack: %s", e)
+        except Exception:  # noqa: BLE001
+            logger.warning("Failed to send request ack for %s", reply_id, exc_info=True)
 
     async def _start_receiving(self):
         """Start receiving incoming packets."""
@@ -1074,7 +1091,8 @@ class AsyncAcnetConnectionTCP(AsyncAcnetConnectionBase):
 
     async def _send_frame(self, content: bytes):
         """Send content with 4-byte big-endian length prefix."""
-        assert self._writer is not None, "transport not open"
+        if self._writer is None:
+            raise AcnetUnavailableError
         self._writer.write(struct.pack(">I", len(content)) + content)
         await self._writer.drain()
 
@@ -1149,6 +1167,9 @@ class _AcnetUDPProtocol(asyncio.DatagramProtocol):
 class AsyncAcnetConnectionUDP(AsyncAcnetConnectionBase):
     """Async ACNET connection over UDP (no length-prefix framing)."""
 
+    # acnetd sends acks and data on separate sockets — no ack/reply ordering
+    _ORDERED_TRANSPORT: ClassVar[bool] = False
+
     def __init__(
         self,
         host: str = ACSYS_PROXY_HOST,
@@ -1188,7 +1209,8 @@ class AsyncAcnetConnectionUDP(AsyncAcnetConnectionBase):
 
     async def _send_frame(self, content: bytes):
         """Send content as a UDP datagram (no length prefix)."""
-        assert self._udp_transport is not None, "transport not open"
+        if self._udp_transport is None:
+            raise AcnetUnavailableError
         self._udp_transport.sendto(content)
 
     def _start_read_loop(self):
