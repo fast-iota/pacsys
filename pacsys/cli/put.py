@@ -40,6 +40,9 @@ def main() -> int:
         # BasicControl values target CONTROL property regardless of DRF form
         if isinstance(value, BasicControl):
             req = parse_request(drf)
+            if not req.is_acnet:
+                print(f"Error: basic control writes require an ACNET device: {drf}", file=sys.stderr)
+                return EXIT_USAGE_ERROR
             if req.property not in (DRF_PROPERTY.CONTROL, DRF_PROPERTY.STATUS):
                 drf = req.to_canonical(property=DRF_PROPERTY.CONTROL)
         settings.append((drf, value))

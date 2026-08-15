@@ -129,6 +129,40 @@ class TestDeviceImmutability:
             mock.call("M:OUTTMP.STATUS.ALL@I", None),
         ]
 
+
+class TestEpicsDevice:
+    """Non-ACNET (EPICS) devices: raw PV DRFs, no synthesized ACNET properties."""
+
+    def test_read_and_write_use_raw_pv(self, mock_backend):
+        dev = Device("SR:BPM:01:X", backend=mock_backend)
+        dev.read()
+        mock_backend.read.assert_called_once_with("SR:BPM:01:X@I", None)
+        dev.write(1.5)
+        mock_backend.write.assert_called_once_with("SR:BPM:01:X@N", 1.5, timeout=None)
+
+    def test_epics_record_field_preserved(self, mock_backend):
+        Device("pv:name.VAL", backend=mock_backend).read()
+        mock_backend.read.assert_called_once_with("pv:name.VAL@I", None)
+
+    def test_acnet_specific_methods_raise(self, fake):
+        dev = Device("SR:BPM:01:X", backend=fake)
+        with pytest.raises(ValueError, match="non-ACNET"):
+            dev.status()
+        with pytest.raises(ValueError, match="non-ACNET"):
+            dev.control(BasicControl.ON)
+        with pytest.raises(ValueError, match="non-ACNET"):
+            dev.analog_alarm()
+
+    def test_explicit_acnet_field_raises(self, fake):
+        with pytest.raises(ValueError, match="non-ACNET"):
+            Device("SR:BPM:01:X", backend=fake).read(field="RAW")
+
+    def test_fake_backend_round_trip(self, fake):
+        fake.set_reading("SR:BPM:01:X", 4.2)
+        fake.set_reading("pv:name.VAL", 7.0)
+        assert Device("SR:BPM:01:X", backend=fake).read() == 4.2
+        assert Device("pv:name.VAL", backend=fake).read() == 7.0
+
     def test_with_backend_preserves_explicit_default_field(self, mock_backend):
         modified = Device("M:OUTTMP.ANALOG.ALL").with_backend(mock_backend)
         assert modified.request.field_explicit

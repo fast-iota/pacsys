@@ -1771,12 +1771,21 @@ class DMQBackend(Backend):
             _set_sample_ref_id(sample, ref_id)
             return sample
         if isinstance(value, (list, np.ndarray)):
-            if len(value) > 0 and isinstance(value[0], str):
+            if isinstance(value, np.ndarray) and value.ndim != 1:
+                raise TypeError("DMQ array settings must be one-dimensional")
+            items = list(value)
+            text_items = [isinstance(item, str) for item in items]
+            if items and all(text_items):
                 sample = StringArraySample_reply()
-                sample.value = list(value)
+                sample.value = items
             else:
-                sample = DoubleArraySample_reply()
-                sample.value = [float(v) for v in value]
+                if any(text_items):
+                    raise TypeError("DMQ text array settings must contain only strings")
+                try:
+                    sample = DoubleArraySample_reply()
+                    sample.value = [float(v) for v in items]
+                except (TypeError, ValueError) as e:
+                    raise TypeError("DMQ array settings must contain numeric values") from e
             sample.time = timestamp_ms
             _set_sample_ref_id(sample, ref_id)
             return sample

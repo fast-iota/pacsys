@@ -1543,6 +1543,29 @@ class TestValueToSample:
         assert isinstance(sample, StringArraySample_reply)
         assert list(sample.value) == ["hello", "world"]
 
+    def test_mixed_list_rejected_regardless_of_order(self):
+        """Mixed str/numeric lists fail closed like the DPM/gRPC peers, order-independent."""
+        from pacsys.backends.dmq import DMQBackend
+
+        backend = object.__new__(DMQBackend)
+        for mixed in (["a", 1, 2], [1, "a", 2]):
+            with pytest.raises(TypeError, match="only strings|numeric"):
+                backend._value_to_sample(mixed)
+
+    def test_non_numeric_list_rejected(self):
+        from pacsys.backends.dmq import DMQBackend
+
+        backend = object.__new__(DMQBackend)
+        with pytest.raises(TypeError, match="numeric"):
+            backend._value_to_sample([object(), object()])
+
+    def test_2d_array_rejected(self):
+        from pacsys.backends.dmq import DMQBackend
+
+        backend = object.__new__(DMQBackend)
+        with pytest.raises(TypeError, match="one-dimensional"):
+            backend._value_to_sample(np.zeros((2, 2)))
+
 
 # =============================================================================
 # Test Reply Conversion

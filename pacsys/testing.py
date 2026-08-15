@@ -45,13 +45,7 @@ def _base_key(drf: str) -> str:
     """
     try:
         req = parse_request(drf)
-        out = req.device
-        if req.property is not None:
-            out += f".{req.property.name}"
-        if req.field is not None:
-            default = DEFAULT_FIELD_FOR_PROPERTY.get(req.property)
-            if req.field != default:
-                out += f".{req.field.name}"
+        out = _key_head(req)
         if req.extra is not None:
             out += f"<-{req.extra_raw}"
         return out
@@ -67,13 +61,7 @@ def _full_key(drf: str) -> str:
     """
     try:
         req = parse_request(drf)
-        out = req.device
-        if req.property is not None:
-            out += f".{req.property.name}"
-        if req.field is not None:
-            default = DEFAULT_FIELD_FOR_PROPERTY.get(req.property)
-            if req.field != default:
-                out += f".{req.field.name}"
+        out = _key_head(req)
         if req.event is not None and req.event.mode != "U":
             out += f"@{req.event.raw_string}"
         if req.extra is not None:
@@ -81,6 +69,21 @@ def _full_key(drf: str) -> str:
         return out
     except ValueError:
         return drf
+
+
+def _key_head(req) -> str:
+    """Device+property/field key prefix (range-free). EPICS keys use raw suffix tokens."""
+    if not req.is_acnet:
+        f0, f1 = req.epics_fields
+        return req.device + (f".{f0}" if f0 else "") + (f".{f1}" if f1 else "")
+    out = req.device
+    if req.property is not None:
+        out += f".{req.property.name}"
+    if req.field is not None:
+        default = DEFAULT_FIELD_FOR_PROPERTY.get(req.property)
+        if req.field != default:
+            out += f".{req.field.name}"
+    return out
 
 
 def _normalize_drf(drf: str) -> str:
@@ -109,6 +112,18 @@ def _get_range(drf: str) -> ARRAY_RANGE | BYTE_RANGE | None:
         return parse_request(drf).range
     except ValueError:
         return None
+
+
+def _copy_arrays(value: Value) -> Value:
+    """Copy ndarrays so Reading's freeze never touches the caller's buffer."""
+    if type(value).__module__ == "numpy" or isinstance(value, dict):
+        import numpy as np
+
+        if isinstance(value, np.ndarray):
+            return value.copy()
+        if isinstance(value, dict):
+            return {k: v.copy() if isinstance(v, np.ndarray) else v for k, v in value.items()}
+    return value
 
 
 def _apply_range(drf: str, value: Any, rng: ARRAY_RANGE | BYTE_RANGE | None) -> Any:
@@ -478,6 +493,7 @@ class FakeBackend(Backend):
             TypeError: If value type doesn't match value_type declaration
         """
         self._validate_value_type(value, value_type)
+        value = _copy_arrays(value)
         device_name = get_device_name(drf)
 
         meta = DeviceMeta(
@@ -930,6 +946,7 @@ class FakeBackend(Backend):
             cycle: Cycle number (None if not available)
         """
         self._validate_value_type(value, value_type)
+        value = _copy_arrays(value)
         device_name = get_device_name(drf)
         meta = DeviceMeta(
             device_index=0,

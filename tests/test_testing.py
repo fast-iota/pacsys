@@ -54,6 +54,26 @@ class TestSetReading:
         result = fake.read("B:HS23T[0:3]")
         np.testing.assert_array_equal(result, arr)
 
+    def test_set_reading_leaves_caller_array_writable(self):
+        """set_reading stores a private copy - the caller's buffer stays mutable."""
+        fake = FakeBackend()
+        buf = np.array([1.0, 2.0, 3.0])
+        fake.set_reading("B:HS23T", buf, value_type=ValueType.SCALAR_ARRAY)
+        buf[0] = 9.9  # must not raise, must not affect stored reading
+        np.testing.assert_array_equal(fake.read("B:HS23T"), [1.0, 2.0, 3.0])
+
+    def test_emit_reading_leaves_caller_array_writable(self):
+        """emit_reading copies arrays so tests can reuse and mutate one buffer."""
+        fake = FakeBackend()
+        buf = np.array([1.0, 2.0])
+        with fake.subscribe(["M:ARR.READING"]) as handle:
+            fake.emit_reading("M:ARR.READING", buf, value_type=ValueType.SCALAR_ARRAY)
+            buf[0] = 5.0
+            fake.emit_reading("M:ARR.READING", buf, value_type=ValueType.SCALAR_ARRAY)
+            readings = [r for (r, _h), _ in zip(handle.readings(timeout=1.0), range(2))]
+        np.testing.assert_array_equal(readings[0].value, [1.0, 2.0])
+        np.testing.assert_array_equal(readings[1].value, [5.0, 2.0])
+
     def test_set_reading_overwrites_error(self):
         """set_reading removes any configured error for same DRF."""
         fake = FakeBackend()

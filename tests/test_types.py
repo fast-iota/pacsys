@@ -115,6 +115,24 @@ class TestReadingEquality:
         c = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=np.array([1.0, 2.0]))
         assert hash(a) == hash(c)
 
+    def test_owning_array_frozen_in_place(self):
+        # Ownership transfer: the passed-in owning array becomes read-only, no copy
+        arr = np.array([1.0, 2.0])
+        r = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=arr)
+        assert r.value is arr
+        with pytest.raises(ValueError, match="read-only"):
+            arr[0] = 9.0
+
+    def test_view_replaced_by_stable_copy(self):
+        # Freezing a view can't freeze its base - a copy keeps the hash stable
+        buf = np.arange(10.0)
+        r = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=buf[0:5])
+        s = {r}
+        buf[0] = 99.0
+        assert r in s
+        # base stays writable and the reading's copy is unaffected
+        np.testing.assert_array_equal(r.value, [0.0, 1.0, 2.0, 3.0, 4.0])
+
 
 class TestCombinedStream:
     """Tests for CombinedStream."""
@@ -376,6 +394,21 @@ class TestReadingToDict:
         r2 = Reading.from_dict(d)
         np.testing.assert_array_equal(r2.value, arr)
 
+    @pytest.mark.parametrize("dtype", [np.int16, np.int32, np.float32, bool])
+    def test_array_dtype_round_trip(self, dtype):
+        # Full equality requires dtype preservation, not just value equality
+        r = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=np.array([1, 0, 3], dtype=dtype))
+        r2 = Reading.from_dict(r.to_dict())
+        assert r2 == r
+
+    def test_legacy_dict_without_dtype(self):
+        # Dicts serialized before value_dtype existed must still deserialize
+        r = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=np.array([1, 2], dtype=np.int16))
+        d = r.to_dict()
+        d.pop("value_dtype")
+        r2 = Reading.from_dict(d)
+        np.testing.assert_array_equal(r2.value, [1, 2])
+
     def test_bytes_round_trip(self):
         r = Reading(drf="M:OUTTMP.RAW", value_type=ValueType.RAW, value=b"\x01\x02\x03")
         d = r.to_dict()
@@ -415,6 +448,15 @@ class TestReadingToDict:
         r2 = Reading.from_dict(json.loads(s))
         np.testing.assert_array_equal(r2.value["data"], value["data"])
         np.testing.assert_array_equal(r2.value["micros"], value["micros"])
+        # Per-key dtypes preserved (data float64, micros int64)
+        assert r2 == r
+
+    def test_scalar_dict_value_no_dtype_key(self):
+        # BASIC_STATUS-style dicts hold plain scalars - no value_dtype emitted
+        r = Reading(drf="M:OUTTMP.STATUS", value_type=ValueType.BASIC_STATUS, value={"on": True, "ready": False})
+        d = r.to_dict()
+        assert "value_dtype" not in d
+        assert Reading.from_dict(d) == r
 
     def test_omits_none_fields(self):
         r = Reading(drf="M:OUTTMP", error_code=0)
@@ -456,6 +498,29 @@ class TestWriteResultToDict:
         s = json.dumps(wr.to_dict())
         wr2 = WriteResult.from_dict(json.loads(s))
         assert wr2.ok
+
+    def test_array_readback_round_trip(self):
+        import json
+
+        wr = WriteResult(drf="Z:ACLTST", verified=True, readback=np.array([1, 2], dtype=np.int16), attempts=1)
+        wr2 = WriteResult.from_dict(json.loads(json.dumps(wr.to_dict())))
+        assert isinstance(wr2.readback, np.ndarray)
+        assert wr2 == wr
+
+    def test_bytes_readback_round_trip(self):
+        import json
+
+        wr = WriteResult(drf="Z:ACLTST", verified=True, readback=b"\x01\x02")
+        wr2 = WriteResult.from_dict(json.loads(json.dumps(wr.to_dict())))
+        assert wr2.readback == b"\x01\x02"
+        assert wr2 == wr
+
+    def test_array_readback_eq_hash(self):
+        wr = WriteResult(drf="Z:ACLTST", verified=True, readback=np.array([1.0, 2.0]))
+        wr2 = WriteResult(drf="Z:ACLTST", verified=True, readback=np.array([1.0, 2.0]))
+        assert wr == wr2
+        assert hash(wr) == hash(wr2)
+        assert wr != WriteResult(drf="Z:ACLTST", verified=True, readback=np.array([1.0, 9.0]))
 
 
 class TestDeviceMetaToDict:

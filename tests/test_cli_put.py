@@ -189,6 +189,19 @@ class TestControlWrite:
         drf_arg = backend.write.call_args[0][0]
         assert "CONTROL" in drf_arg
 
+    @mock.patch("pacsys.cli.put.make_backend")
+    def test_control_on_epics_device_rejected(self, mock_mb):
+        """Basic control has no EPICS analogue - usage error, no backend call."""
+        from pacsys.cli.put import main
+
+        err = io.StringIO()
+        with mock.patch("sys.argv", ["acput", "SR:BPM:01:X", "on"]), contextlib.redirect_stderr(err):
+            rc = main()
+
+        assert rc != 0
+        assert "ACNET" in err.getvalue()
+        mock_mb.return_value.write.assert_not_called()
+
 
 class TestVerifyPath:
     """Tests for --verify / --tolerance / --retries path."""

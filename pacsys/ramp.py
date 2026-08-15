@@ -336,10 +336,14 @@ class Ramp:
         # Compute max representable engineering value from scaler
         limit_msg = ""
         if scaler is not None:
-            max_eng: float = float(scaler.scale(i16.max))
-            min_eng: float = float(scaler.scale(i16.min))
-            lo, hi = min(min_eng, max_eng), max(min_eng, max_eng)
-            limit_msg = f", representable range [{lo:.6g}, {hi:.6g}]"
+            try:
+                max_eng: float = float(scaler.scale(i16.max))
+                min_eng: float = float(scaler.scale(i16.min))
+            except Exception:  # noqa: BLE001, S110 - diagnostic garnish must never mask the overflow report
+                pass
+            else:
+                lo, hi = min(min_eng, max_eng), max(min_eng, max_eng)
+                limit_msg = f", representable range [{lo:.6g}, {hi:.6g}]"
 
         # Find which points overflowed
         if raw_values is not None:
@@ -352,7 +356,7 @@ class Ramp:
             for idx, v in enumerate(self.values):
                 try:
                     scaler.unscale(float(v))
-                except ScalingError:
+                except Exception:  # noqa: BLE001 - any unscale failure marks a bad point
                     bad.append(idx)
             bad = np.array(bad)
 
@@ -574,8 +578,8 @@ class Ramp:
             and np.array_equal(self.times, other.times, equal_nan=True)
         )
 
-    def __hash__(self) -> int:
-        return hash((type(self).__name__, self.device, self.slot, self.values.tobytes(), self.times.tobytes()))
+    # Defining __eq__ without __hash__ makes Ramp unhashable: it is mutable by design
+    # (modify(), post-construction device/slot assignment), so no stable hash exists.
 
     def __repr__(self) -> str:
         n_active = int(np.count_nonzero(self.values))
@@ -906,8 +910,7 @@ class RampGroup:
             and np.array_equal(self.times, other.times, equal_nan=True)
         )
 
-    def __hash__(self) -> int:
-        return hash((type(self).__name__, tuple(self.devices), self.slot, self.values.tobytes(), self.times.tobytes()))
+    # Unhashable like Ramp: mutable by design, no stable hash exists.
 
     def to_dict(self) -> dict:
         """Serialize to a JSON-safe dict. Round-trippable via ``RampGroup.from_dict()``."""
