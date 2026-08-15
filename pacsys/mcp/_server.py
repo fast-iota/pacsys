@@ -97,7 +97,7 @@ def create_server(config: MCPConfig) -> FastMCP:
     )
     def read_device(drf: str) -> dict:
         ctx: ServerContext = mcp.get_context().request_context.lifespan_context
-        return tool_read_device(ctx.backend, drf)
+        return tool_read_device(ctx.backend, drf, ctx.policies)
 
     @mcp.tool(
         description="Write a value to a device. Requires policy approval. Pass DRF and value (float, string, or list)."

@@ -1,5 +1,6 @@
 """Pluggable policy system for supervised proxy server."""
 
+import enum
 import fnmatch
 import math
 import re
@@ -19,8 +20,11 @@ def _numeric_elements(value: object) -> list[float] | None:
 
     Policies must fail closed: a value they cannot interpret numerically
     (str, bytes, dict, mixed list, ...) returns None and must be denied for
-    limited devices, not skipped.
+    limited devices, not skipped. Enums (e.g. BasicControl.ON) are commands,
+    not setpoints — their ordinals must never pass a numeric range check.
     """
+    if isinstance(value, enum.Enum):
+        return None
     if isinstance(value, (bool, int, float)):  # covers np.float64 (subclasses float)
         return [float(value)]
     if isinstance(value, np.generic):
@@ -95,12 +99,20 @@ class ReadOnlyPolicy(Policy):
         return _ALLOW
 
 
+# TODO: patterns match device names only — operators cannot express property scope
+# (e.g. "deny raw/byte-range writes to B:*" or "allow ANALOG_ALARM on B:*"). Adding
+# property/field matching requires normalizing the wire DRF first (prepare_for_write),
+# ideally once at the gateway boundary (_server.py) so all policies see canonical DRFs.
 class DeviceAccessPolicy(Policy):
     """Allow or deny access based on device name patterns.
 
+    Reads are allowed by default and can only be restricted with mode="deny";
+    writes are denied by default and require mode="allow" approval. Hence
+    mode="allow" with action="read" would be a silent no-op and is rejected.
+
     Args:
         patterns: List of patterns (e.g. ["M:*", "G:AMANDA"])
-        mode: "allow" = approve matching devices, "deny" = block matching devices
+        mode: "allow" = approve matching devices for writes, "deny" = block matching devices
         action: "all" (both RPCs), "read" (Read only), "set" (Set only)
         syntax: "glob" (fnmatch, default) or "regex" (full-match, case-insensitive)
     """
@@ -120,6 +132,12 @@ class DeviceAccessPolicy(Policy):
             raise ValueError(f"action must be 'all', 'read', or 'set', got {action!r}")
         if syntax not in ("glob", "regex"):
             raise ValueError(f"syntax must be 'glob' or 'regex', got {syntax!r}")
+        if mode == "allow" and action == "read":
+            raise ValueError(
+                "mode='allow' with action='read' has no effect: reads are allowed by default. "
+                "Use mode='deny' to block specific devices, or mode='deny' with syntax='regex' "
+                "and a negated pattern (e.g. r'(?!M:).*') for a read allowlist."
+            )
         self._patterns = patterns
         self._mode = mode
         self._action = action

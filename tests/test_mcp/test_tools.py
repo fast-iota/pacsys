@@ -20,7 +20,7 @@ def backend():
 
 
 def test_read_device_success(backend):
-    result = tool_read_device(backend, "M:OUTTMP")
+    result = tool_read_device(backend, "M:OUTTMP", [])
     assert result["ok"] is True
     assert result["value"] == 72.5
     assert result["name"] == "M:OUTTMP"
@@ -28,7 +28,7 @@ def test_read_device_success(backend):
 
 def test_read_device_error(backend):
     backend.set_error("M:BADDEV", -42, "DIO_NO_SUCH")
-    result = tool_read_device(backend, "M:BADDEV")
+    result = tool_read_device(backend, "M:BADDEV", [])
     assert result["ok"] is False
     assert "DIO_NO_SUCH" in result["error"]
 
@@ -36,7 +36,7 @@ def test_read_device_error(backend):
 def test_read_device_backend_exception(backend):
     """Backend raises unexpected exception — tool catches it."""
     backend.close()
-    result = tool_read_device(backend, "M:DOESNOTEXIST")
+    result = tool_read_device(backend, "M:DOESNOTEXIST", [])
     assert result["ok"] is False
     assert "error" in result
 

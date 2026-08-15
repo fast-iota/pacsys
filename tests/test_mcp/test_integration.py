@@ -27,16 +27,40 @@ def write_policies():
 
 def test_read_then_write_then_read(backend, write_policies):
     """Full cycle: read current value, write new value, read back."""
-    r1 = tool_read_device(backend, "Z:ACLTST.SETTING")
+    r1 = tool_read_device(backend, "Z:ACLTST.SETTING", write_policies)
     assert r1["ok"] is True
     assert r1["value"] == 10.0
 
     w = tool_write_device(backend, "Z:ACLTST", 15.0, policies=write_policies)
     assert w["ok"] is True
 
-    r2 = tool_read_device(backend, "Z:ACLTST.SETTING")
+    r2 = tool_read_device(backend, "Z:ACLTST.SETTING", write_policies)
     assert r2["ok"] is True
     assert r2["value"] == 15.0
+
+
+def test_read_denied_by_deny_policy(backend):
+    """Deny-mode device policy must gate MCP reads, matching the supervised server."""
+    policies = [DeviceAccessPolicy(patterns=["Z:*"], mode="deny", action="read")]
+    result = tool_read_device(backend, "Z:ACLTST.SETTING", policies)
+    assert result["ok"] is False
+    assert "denied" in result["error"].lower()
+
+    ok = tool_read_device(backend, "M:OUTTMP", policies)
+    assert ok["ok"] is True
+    assert ok["value"] == 72.5
+
+
+def test_read_rate_limited(backend):
+    """Rate-limit policy applies to MCP reads."""
+    from pacsys.supervised._policies import RateLimitPolicy
+
+    policies = [RateLimitPolicy(max_requests=2, window_seconds=60.0)]
+    assert tool_read_device(backend, "M:OUTTMP", policies)["ok"] is True
+    assert tool_read_device(backend, "M:OUTTMP", policies)["ok"] is True
+    denied = tool_read_device(backend, "M:OUTTMP", policies)
+    assert denied["ok"] is False
+    assert "rate limit" in denied["error"].lower()
 
 
 def test_write_denied_no_allowlist(backend):

@@ -14,7 +14,7 @@ Three tools are exposed:
 
 | Tool | Description |
 |------|-------------|
-| `read_device(drf)` | Read a device value |
+| `read_device(drf)` | Read a device value (deny/rate-limit policies enforced) |
 | `write_device(drf, value)` | Write with policy enforcement |
 | `device_info(name)` | Look up device metadata from DevDB |
 
@@ -23,7 +23,7 @@ Write safety comes from two layers:
 1. **Claude Code's tool permission prompt** — human-in-the-loop approval for each write call
 2. **Server-side policy chain** — `DeviceAccessPolicy` → `ValueRangePolicy` → `SlewRatePolicy`
 
-Without a policy config, all writes are denied. Reads are always allowed. This is the same policy system used by [Supervised Mode](supervised.md).
+Without a policy config, all writes are denied. Reads are allowed by default, but deny-mode and rate-limit policies apply to reads too (the TOML config only expresses write policies; pass read policies programmatically via `create_server`). This is the same policy system used by [Supervised Mode](supervised.md).
 
 Writes require Kerberos credentials. The server refuses to start if write devices are configured but no Kerberos ticket is available.
 
