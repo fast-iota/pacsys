@@ -3,9 +3,10 @@
 import grpc
 import warnings
 
+from google.protobuf import empty_pb2 as google_dot_protobuf_dot_empty__pb2
 from pacsys._proto.controls.service.DevDB.v1 import DevDB_pb2 as proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2
 
-GRPC_GENERATED_VERSION = '1.66.0'
+GRPC_GENERATED_VERSION = '1.76.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -53,6 +54,31 @@ class DevDBStub(object):
                 request_serializer=proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.AlarmTextIdList.SerializeToString,
                 response_deserializer=proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.DeviceAlarmTextList.FromString,
                 _registered_method=True)
+        self.getPlotConfiguration = channel.unary_unary(
+                '/services.devdb.DevDB/getPlotConfiguration',
+                request_serializer=proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.PlotSelector.SerializeToString,
+                response_deserializer=proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.PlotConfigResult.FromString,
+                _registered_method=True)
+        self.getUserPlotConfiguration = channel.unary_unary(
+                '/services.devdb.DevDB/getUserPlotConfiguration',
+                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+                response_deserializer=proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.PlotConfigResult.FromString,
+                _registered_method=True)
+        self.deletePlotConfiguration = channel.unary_unary(
+                '/services.devdb.DevDB/deletePlotConfiguration',
+                request_serializer=proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.PlotSelector.SerializeToString,
+                response_deserializer=proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.PlotConfigResult.FromString,
+                _registered_method=True)
+        self.savePlotConfiguration = channel.unary_unary(
+                '/services.devdb.DevDB/savePlotConfiguration',
+                request_serializer=proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.PlotConfigSpecification.SerializeToString,
+                response_deserializer=proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.PlotConfigResult.FromString,
+                _registered_method=True)
+        self.saveUserPlotConfiguration = channel.unary_unary(
+                '/services.devdb.DevDB/saveUserPlotConfiguration',
+                request_serializer=proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.PlotConfig.SerializeToString,
+                response_deserializer=proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.PlotConfigResult.FromString,
+                _registered_method=True)
 
 
 class DevDBServicer(object):
@@ -80,6 +106,39 @@ class DevDBServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def getPlotConfiguration(self, request, context):
+        """These functions implement the plotting app API to manage plot
+        configurations.
+
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def getUserPlotConfiguration(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def deletePlotConfiguration(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def savePlotConfiguration(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def saveUserPlotConfiguration(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_DevDBServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -97,6 +156,31 @@ def add_DevDBServicer_to_server(servicer, server):
                     servicer.getAlarmText,
                     request_deserializer=proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.AlarmTextIdList.FromString,
                     response_serializer=proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.DeviceAlarmTextList.SerializeToString,
+            ),
+            'getPlotConfiguration': grpc.unary_unary_rpc_method_handler(
+                    servicer.getPlotConfiguration,
+                    request_deserializer=proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.PlotSelector.FromString,
+                    response_serializer=proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.PlotConfigResult.SerializeToString,
+            ),
+            'getUserPlotConfiguration': grpc.unary_unary_rpc_method_handler(
+                    servicer.getUserPlotConfiguration,
+                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                    response_serializer=proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.PlotConfigResult.SerializeToString,
+            ),
+            'deletePlotConfiguration': grpc.unary_unary_rpc_method_handler(
+                    servicer.deletePlotConfiguration,
+                    request_deserializer=proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.PlotSelector.FromString,
+                    response_serializer=proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.PlotConfigResult.SerializeToString,
+            ),
+            'savePlotConfiguration': grpc.unary_unary_rpc_method_handler(
+                    servicer.savePlotConfiguration,
+                    request_deserializer=proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.PlotConfigSpecification.FromString,
+                    response_serializer=proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.PlotConfigResult.SerializeToString,
+            ),
+            'saveUserPlotConfiguration': grpc.unary_unary_rpc_method_handler(
+                    servicer.saveUserPlotConfiguration,
+                    request_deserializer=proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.PlotConfig.FromString,
+                    response_serializer=proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.PlotConfigResult.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -184,6 +268,141 @@ class DevDB(object):
             '/services.devdb.DevDB/getAlarmText',
             proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.AlarmTextIdList.SerializeToString,
             proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.DeviceAlarmTextList.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def getPlotConfiguration(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/services.devdb.DevDB/getPlotConfiguration',
+            proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.PlotSelector.SerializeToString,
+            proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.PlotConfigResult.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def getUserPlotConfiguration(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/services.devdb.DevDB/getUserPlotConfiguration',
+            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.PlotConfigResult.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def deletePlotConfiguration(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/services.devdb.DevDB/deletePlotConfiguration',
+            proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.PlotSelector.SerializeToString,
+            proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.PlotConfigResult.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def savePlotConfiguration(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/services.devdb.DevDB/savePlotConfiguration',
+            proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.PlotConfigSpecification.SerializeToString,
+            proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.PlotConfigResult.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def saveUserPlotConfiguration(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/services.devdb.DevDB/saveUserPlotConfiguration',
+            proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.PlotConfig.SerializeToString,
+            proto_dot_controls_dot_service_dot_DevDB_dot_v1_dot_DevDB__pb2.PlotConfigResult.FromString,
             options,
             channel_credentials,
             insecure,
