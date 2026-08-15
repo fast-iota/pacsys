@@ -159,6 +159,10 @@ class AsyncGRPCBackend(AsyncBackend):
         async def _run_stream():
             try:
                 await core.stream(drfs, handle._dispatch, handle._is_stopped, _error_adapter)
+            except Exception as exc:  # noqa: BLE001
+                # A failure escaping the core is a subscription error, not a
+                # graceful end -- consumers must see it raised.
+                handle._signal_error(exc)
             finally:
                 # Stream end (server onCompleted, fatal error, cancel) must
                 # stop the handle or readings() blocks forever

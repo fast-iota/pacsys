@@ -1089,6 +1089,23 @@ class TestDMQBackendRead:
 class TestDMQBackendSubscribe:
     """Tests for DMQBackend subscribe operations."""
 
+    def test_subscribe_close_race_raises(self):
+        """_closed flipping between the pre-check and the locked insert must raise."""
+        with _mock_dmq_backend([]) as backend:
+            orig = backend._ensure_io_thread
+
+            def racy():
+                orig()
+                backend._closed = True  # concurrent close() lands here
+
+            with (
+                mock.patch.object(backend, "_ensure_io_thread", side_effect=racy),
+                pytest.raises(RuntimeError, match="Backend is closed"),
+            ):
+                backend.subscribe([TEMP_DEVICE])
+            assert backend._subscriptions == {}
+            backend._closed = False  # let the context manager close() run fully
+
     def test_subscribe_iterator_mode(self):
         """Test subscribe with iterator mode yields readings."""
         replies = [make_double_reply(TEMP_VALUE + i, ref_id=1) for i in range(3)]

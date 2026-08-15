@@ -159,6 +159,20 @@ class TestAsyncGRPCSubscribe:
         assert handle.stopped
 
     @pytest.mark.asyncio
+    async def test_stream_exception_raises_in_readings(self, backend):
+        """An exception escaping core.stream() is a subscription error, not a graceful end."""
+
+        async def fake_stream(drfs, dispatch_fn, stop_check, error_fn):
+            raise ConnectionResetError("boom mid-stream")
+
+        backend._core.stream = fake_stream
+        handle = await backend.subscribe(["M:OUTTMP@p,1000"])
+        await handle._task
+        with pytest.raises(ConnectionResetError, match="boom mid-stream"):
+            async for _ in handle.readings(timeout=0.1):
+                pass
+
+    @pytest.mark.asyncio
     async def test_subscribe_stream_completion_stops_iteration(self, backend):
         """Normal stream end (server onCompleted) must terminate readings() (grpc B2)."""
 

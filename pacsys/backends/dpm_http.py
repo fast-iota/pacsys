@@ -1890,6 +1890,11 @@ class DPMHTTPBackend(Backend):
             return asyncio.ensure_future(self._stream_subscription(handle))
 
         with self._handles_lock:
+            # Re-check under the lock: close() sets _closed before
+            # stop_streaming() drains _handles, so an append here either
+            # happens-before the drain or raises (grpc has the same guard).
+            if self._closed:
+                raise RuntimeError("Backend is closed")
             self._handles.append(handle)
         future = None
         try:

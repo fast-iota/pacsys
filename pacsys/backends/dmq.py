@@ -2364,6 +2364,11 @@ class DMQBackend(Backend):
         }
 
         with self._stream_lock:
+            # Re-check under the lock: close() sets _closed before
+            # stop_streaming() drains _subscriptions, so an insert here either
+            # happens-before the drain or raises (grpc has the same guard).
+            if self._closed:
+                raise RuntimeError("Backend is closed")
             self._subscriptions[sub_id] = sub
 
         # Schedule async setup on IO loop
