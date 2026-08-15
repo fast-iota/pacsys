@@ -806,8 +806,10 @@ class TestDMQJobLevelErrors:
         )
         with _mock_dmq_backend(replies=[error], routing_keys=["R"]) as backend:
             start = time.monotonic()
-            reading = backend.get(TEMP_DEVICE, timeout=5.0)
+            with pytest.raises(ReadError, match="job start failed") as exc_info:
+                backend.get(TEMP_DEVICE, timeout=5.0)
             assert time.monotonic() - start < 2.0  # not a timeout
+            reading = exc_info.value.readings[0]
             assert not reading.ok
             assert reading.error_code == SECURITY_VIOLATION
             assert reading.facility_code == FACILITY_DMQ
@@ -815,7 +817,9 @@ class TestDMQJobLevelErrors:
 
     def test_get_many_init_failure_fails_all_devices(self):
         with _init_fail_backend() as backend:
-            readings = backend.get_many([TEMP_DEVICE, TEMP_DEVICE_2], timeout=5.0)
+            with pytest.raises(ReadError) as exc_info:
+                backend.get_many([TEMP_DEVICE, TEMP_DEVICE_2], timeout=5.0)
+            readings = exc_info.value.readings
             assert len(readings) == 2
             for reading in readings:
                 assert not reading.ok

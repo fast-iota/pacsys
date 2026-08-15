@@ -294,8 +294,12 @@ class TestReadMany:
         assert not core.connected
 
     @pytest.mark.asyncio
-    async def test_read_stop_send_failure_closes_core(self, make_core):
-        """StopList send failure = unknown connection state — close (match sync)."""
+    @pytest.mark.parametrize(
+        "exc",
+        [OSError("send failed"), DPMConnectionError("Not connected"), RuntimeError("unexpected")],
+    )
+    async def test_read_stop_send_failure_closes_core(self, make_core, exc):
+        """StopList send failure = unknown connection state — close, keep readings."""
         replies = [_add_ok(1), _device_info(1), _start_ok(), _scalar_reply(1, 5.0)]
         core, conn = make_core(replies)
 
@@ -305,7 +309,7 @@ class TestReadMany:
         async def flaky(msgs):
             calls["n"] += 1
             if calls["n"] == 2:  # first batch = setup, second = stop/clear
-                raise OSError("send failed")
+                raise exc
             await orig(msgs)
 
         conn.send_messages_batch = flaky

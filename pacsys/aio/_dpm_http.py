@@ -3,13 +3,16 @@
 import asyncio
 import logging
 
+from pacsys.acnet.errors import ERR_RETRY, FACILITY_ACNET
 from pacsys.aio._backends import AsyncBackend
 from pacsys.aio._subscription import AsyncSubscriptionHandle, _callback_feeder
 from pacsys.auth import KerberosAuth
 from pacsys.backends._dpm_core import _AsyncDpmCore
 from pacsys.backends.dpm_http import _value_to_setting
+from pacsys.dpm_connection import DPMConnectionError
 from pacsys.drf_utils import prepare_for_write
-from pacsys.errors import AuthenticationError, DeviceError
+from pacsys.errors import AuthenticationError, DeviceError, ReadError
+from pacsys.pool import PoolExhaustedError
 from pacsys.types import (
     BackendCapability,
     ErrorCallback,
@@ -145,7 +148,7 @@ class AsyncDPMHTTPBackend(AsyncBackend):
             core = await asyncio.wait_for(self._pool.get(), timeout=self._timeout)
         except asyncio.TimeoutError:
             self._check_closed()
-            raise RuntimeError("Connection pool exhausted (all cores busy)") from None
+            raise PoolExhaustedError("Connection pool exhausted (all cores busy)") from None
         if self._closed:
             await self._discard_core(core)
             raise RuntimeError("Backend is closed")
@@ -209,7 +212,20 @@ class AsyncDPMHTTPBackend(AsyncBackend):
         if not drfs:
             return []
         effective_timeout = timeout if timeout is not None else self._timeout
-        core = await self._borrow_core()
+        try:
+            core = await self._borrow_core()
+        except (PoolExhaustedError, DPMConnectionError, OSError) as e:
+            readings = [
+                Reading(
+                    drf=drf,
+                    facility_code=FACILITY_ACNET,
+                    error_code=ERR_RETRY,
+                    message=f"Connection error: {e}",
+                    cycle=0,
+                )
+                for drf in drfs
+            ]
+            raise ReadError(readings, str(e)) from e
         try:
             result = await core.read_many(drfs, effective_timeout)
             # read_many closes its connection on repeating-event DRFs or failures —
@@ -263,7 +279,14 @@ class AsyncDPMHTTPBackend(AsyncBackend):
         setting_payloads = [_value_to_setting(i, value) for i, (_, value) in enumerate(settings, 1)]
 
         # Dedicated core for writes (fresh authenticated connection)
-        core = await self._create_core()
+        try:
+            core = await self._create_core()
+        except (DPMConnectionError, OSError) as e:
+            error_msg = f"Failed to get write connection: {e}"
+            return [
+                WriteResult(drf=drf, facility_code=FACILITY_ACNET, error_code=ERR_RETRY, message=error_msg)
+                for drf, _ in settings
+            ]
         try:
             result = await core.write_many(
                 prepared,

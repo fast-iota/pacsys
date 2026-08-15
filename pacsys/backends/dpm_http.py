@@ -417,7 +417,8 @@ class _AsyncDPMConnection:
 
     async def send_message(self, msg) -> None:
         """Send a length-prefixed SDD message."""
-        assert self._writer is not None
+        if self._writer is None:
+            raise DPMConnectionError("Not connected")
         if hasattr(msg, "marshal"):
             data = bytes(msg.marshal())
         else:
@@ -427,7 +428,8 @@ class _AsyncDPMConnection:
 
     async def send_messages_batch(self, msgs: list) -> None:
         """Send multiple length-prefixed messages in a single TCP write."""
-        assert self._writer is not None
+        if self._writer is None:
+            raise DPMConnectionError("Not connected")
         buf = bytearray()
         for msg in msgs:
             data = bytes(msg.marshal()) if hasattr(msg, "marshal") else bytes(msg)
@@ -443,7 +445,8 @@ class _AsyncDPMConnection:
         sends ListStatus_reply heartbeats every ~2s, so if nothing arrives
         within _RECV_TIMEOUT seconds, the connection is presumed dead.
         """
-        assert self._reader is not None
+        if self._reader is None:
+            raise DPMConnectionError("Not connected")
         effective_timeout = timeout if timeout is not None else self._RECV_TIMEOUT
         try:
             len_bytes = await asyncio.wait_for(self._reader.readexactly(4), timeout=effective_timeout)
@@ -983,11 +986,12 @@ class DPMHTTPBackend(Backend):
                                 clear_req = ClearList_request()
                                 clear_req.list_id = list_id
                                 conn.send_messages_batch([stop_req, clear_req])
-                            except DPMConnectionError:
+                            except Exception as e:  # noqa: BLE001
+                                # Failed StopList send means unknown connection state —
+                                # close so it is not re-pooled dirty. Data is already
+                                # complete; don't destroy the readings over cleanup.
+                                logger.warning("StopList cleanup failed: %s", e, exc_info=True)
                                 conn.close()
-                            except Exception:
-                                conn.close()
-                                raise
                             else:
                                 if not reuse_safe:
                                     conn.close()
@@ -1240,6 +1244,7 @@ class DPMHTTPBackend(Backend):
         Raises:
             AuthenticationError: If authentication fails
             DPMConnectionError: If connection fails
+            RuntimeError: If the backend was closed concurrently
         """
         assert self._auth is not None, "Auth required for write connections"
         current_principal = self._auth.principal
@@ -1618,7 +1623,8 @@ class DPMHTTPBackend(Backend):
 
             try:
                 wc = self._get_write_connection()
-            except (AuthenticationError, ImportError):
+            except (AuthenticationError, ImportError, RuntimeError):
+                # Auth failures and closed-backend are caller bugs - fail fast
                 raise
             except (DPMConnectionError, OSError, PoolExhaustedError) as e:
                 error_msg = f"Failed to get write connection: {e}"

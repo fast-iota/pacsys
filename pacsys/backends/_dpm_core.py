@@ -343,13 +343,12 @@ class _AsyncDpmCore:
                         clear_req = ClearList_request()
                         clear_req.list_id = list_id
                         await self._conn.send_messages_batch([stop_req, clear_req])
-                    except OSError:
-                        # Match sync: a failed StopList send means unknown connection
-                        # state — close so the core is not re-pooled dirty.
+                    except Exception as e:  # noqa: BLE001
+                        # Failed StopList send means unknown connection state — close
+                        # so the core is not re-pooled dirty. Data is already complete;
+                        # don't destroy the readings over cleanup.
+                        logger.warning("StopList cleanup failed: %s", e, exc_info=True)
                         await self.close()
-                    except Exception:
-                        await self.close()
-                        raise
                     else:
                         if not reuse_safe:
                             await self.close()

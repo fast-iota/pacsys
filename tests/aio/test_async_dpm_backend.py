@@ -5,9 +5,11 @@ from unittest import mock
 
 import pytest
 
+from pacsys.acnet.errors import ERR_RETRY
 from pacsys.aio._dpm_http import AsyncDPMHTTPBackend
 from pacsys.auth import KerberosAuth
-from pacsys.errors import AuthenticationError, DeviceError
+from pacsys.dpm_connection import DPMConnectionError
+from pacsys.errors import AuthenticationError, DeviceError, ReadError
 from pacsys.types import BackendCapability, Reading, ValueType, WriteResult
 
 
@@ -129,6 +131,20 @@ class TestAsyncDPMWrite:
         b = AsyncDPMHTTPBackend(host="localhost", port=6802, auth=auth)
         result = await b.write_many([])
         assert result == []
+
+    @pytest.mark.asyncio
+    async def test_write_connect_failure_returns_write_results(self):
+        auth = mock.MagicMock(spec=KerberosAuth)
+        auth.principal = "test@FNAL.GOV"
+        b = AsyncDPMHTTPBackend(host="localhost", port=6802, auth=auth)
+        b._create_core = mock.AsyncMock(side_effect=DPMConnectionError("Connection refused"))
+
+        results = await b.write_many([("M:OUTTMP", 72.5), ("G:AMANDA", 1.0)])
+        assert len(results) == 2
+        for r in results:
+            assert not r.success
+            assert r.error_code == ERR_RETRY
+            assert "Connection refused" in r.message
 
     @pytest.mark.asyncio
     async def test_write_many_prevalidates_before_connecting(self):
@@ -370,6 +386,27 @@ class TestAsyncDPMCloseRaces:
         await b.close()
         with pytest.raises(RuntimeError, match="Backend is closed"):
             await task
+
+    @pytest.mark.asyncio
+    async def test_pool_exhaustion_raises_read_error(self):
+        b = AsyncDPMHTTPBackend(host="localhost", port=6802, pool_size=1, timeout=0.2)
+        b._pool_count = 1  # one core checked out, pool queue empty
+        with pytest.raises(ReadError, match="pool exhausted") as exc_info:
+            await b.get_many(["M:OUTTMP", "G:AMANDA"])
+        readings = exc_info.value.readings
+        assert len(readings) == 2
+        assert all(r.error_code == ERR_RETRY for r in readings)
+
+    @pytest.mark.asyncio
+    async def test_connect_failure_raises_read_error(self):
+        with mock.patch(
+            "pacsys.aio._dpm_http._AsyncDpmCore.connect",
+            mock.AsyncMock(side_effect=DPMConnectionError("Connection refused")),
+        ):
+            b = AsyncDPMHTTPBackend(host="localhost", port=6802)
+            with pytest.raises(ReadError, match="Connection refused") as exc_info:
+                await b.get_many(["M:OUTTMP"])
+            assert exc_info.value.readings[0].error_code == ERR_RETRY
 
     @pytest.mark.asyncio
     async def test_closed_backend_subscribe_raises(self, backend):
