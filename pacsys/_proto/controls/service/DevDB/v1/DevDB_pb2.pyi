@@ -1,3 +1,4 @@
+from google.protobuf import empty_pb2 as _empty_pb2
 from google.protobuf.internal import containers as _containers
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
@@ -5,6 +6,44 @@ from collections.abc import Iterable as _Iterable, Mapping as _Mapping
 from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
+
+class PlotSelector(_message.Message):
+    __slots__ = ("id",)
+    ID_FIELD_NUMBER: _ClassVar[int]
+    id: int
+    def __init__(self, id: _Optional[int] = ...) -> None: ...
+
+class PlotConfigSpecification(_message.Message):
+    __slots__ = ("id", "name", "config")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    CONFIG_FIELD_NUMBER: _ClassVar[int]
+    id: int
+    name: str
+    config: str
+    def __init__(self, id: _Optional[int] = ..., name: _Optional[str] = ..., config: _Optional[str] = ...) -> None: ...
+
+class PlotConfigResults(_message.Message):
+    __slots__ = ("data",)
+    DATA_FIELD_NUMBER: _ClassVar[int]
+    data: _containers.RepeatedCompositeFieldContainer[PlotConfigSpecification]
+    def __init__(self, data: _Optional[_Iterable[_Union[PlotConfigSpecification, _Mapping]]] = ...) -> None: ...
+
+class PlotConfig(_message.Message):
+    __slots__ = ("config",)
+    CONFIG_FIELD_NUMBER: _ClassVar[int]
+    config: str
+    def __init__(self, config: _Optional[str] = ...) -> None: ...
+
+class PlotConfigResult(_message.Message):
+    __slots__ = ("config", "user_config", "errMsg")
+    CONFIG_FIELD_NUMBER: _ClassVar[int]
+    USER_CONFIG_FIELD_NUMBER: _ClassVar[int]
+    ERRMSG_FIELD_NUMBER: _ClassVar[int]
+    config: PlotConfigResults
+    user_config: PlotConfig
+    errMsg: str
+    def __init__(self, config: _Optional[_Union[PlotConfigResults, _Mapping]] = ..., user_config: _Optional[_Union[PlotConfig, _Mapping]] = ..., errMsg: _Optional[str] = ...) -> None: ...
 
 class DeviceList(_message.Message):
     __slots__ = ("device",)
