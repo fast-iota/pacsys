@@ -5,7 +5,7 @@ import warnings
 
 from pacsys._proto.controls.service.DAQ.v1 import DAQ_pb2 as proto_dot_controls_dot_service_dot_DAQ_dot_v1_dot_DAQ__pb2
 
-GRPC_GENERATED_VERSION = '1.76.0'
+GRPC_GENERATED_VERSION = '1.66.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
