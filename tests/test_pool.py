@@ -263,29 +263,98 @@ class TestConcurrentAccess:
 
         errors = []
         operations = []
+        in_use: set[int] = set()
+        max_in_use = 0
+        pool_full = threading.Event()
+        release_first_batch = threading.Event()
 
         def worker(worker_id: int, iterations: int):
+            nonlocal max_in_use
             for i in range(iterations):
                 try:
                     conn = pool.borrow(wait_timeout=5.0)
-                    operations.append((worker_id, i, "borrow", conn.list_id))
-                    time.sleep(0.01)  # Simulate work
-                    pool.release(conn)
-                    operations.append((worker_id, i, "release"))
+                    with lock:
+                        if id(conn) in in_use:
+                            raise AssertionError(f"connection {conn.list_id} borrowed concurrently")
+                        in_use.add(id(conn))
+                        max_in_use = max(max_in_use, len(in_use))
+                        if len(in_use) == pool.pool_size:
+                            pool_full.set()
+                        operations.append((worker_id, i, "borrow", conn.list_id))
+                    if i == 0:
+                        assert release_first_batch.wait(2.0)
+                    with lock:
+                        pool.release(conn)
+                        in_use.remove(id(conn))
+                        operations.append((worker_id, i, "release"))
                 except Exception as e:  # noqa: BLE001
-                    errors.append((worker_id, i, e))
+                    with lock:
+                        errors.append((worker_id, i, e))
 
         with mock.patch("socket.socket", side_effect=mock_socket_factory):
             threads = [threading.Thread(target=worker, args=(i, 10)) for i in range(8)]
 
             for t in threads:
                 t.start()
+            assert pool_full.wait(2.0)
+            release_first_batch.set()
             for t in threads:
                 t.join(timeout=30.0)
 
+            assert not any(t.is_alive() for t in threads)
             assert len(errors) == 0, f"Errors occurred: {errors}"
-            # Should have had many successful operations
-            assert len(operations) > 100
+            assert not in_use
+            assert max_in_use == pool.pool_size
+            assert list_id_counter[0] <= pool.pool_size
+            assert len(operations) == 160
+
+    def test_concurrent_creation_reserves_pool_slots(self):
+        """Slow connection creation cannot exceed the configured pool size."""
+        pool = ConnectionPool(pool_size=2)
+        start = threading.Barrier(5)
+        allow_creation = threading.Event()
+        two_creating = threading.Event()
+        extra_creation = threading.Event()
+        lock = threading.Lock()
+        created = 0
+        errors = []
+
+        def mock_socket_factory(*args, **kwargs):
+            nonlocal created
+            with lock:
+                created += 1
+                list_id = created
+                if created == 2:
+                    two_creating.set()
+                elif created > 2:
+                    extra_creation.set()
+            assert allow_creation.wait(2.0)
+            return create_mock_socket(list_id=list_id)
+
+        def worker():
+            start.wait()
+            try:
+                conn = pool.borrow(wait_timeout=2.0)
+                pool.release(conn)
+            except Exception as exc:  # noqa: BLE001
+                with lock:
+                    errors.append(exc)
+
+        with mock.patch("socket.socket", side_effect=mock_socket_factory):
+            threads = [threading.Thread(target=worker) for _ in range(4)]
+            for thread in threads:
+                thread.start()
+            start.wait()
+            assert two_creating.wait(1.0)
+            assert pool.total_count == pool.pool_size
+            assert not extra_creation.wait(0.1)
+            allow_creation.set()
+            for thread in threads:
+                thread.join(timeout=3.0)
+
+        assert not any(thread.is_alive() for thread in threads)
+        assert errors == []
+        assert created == pool.pool_size
 
     def test_concurrent_mixed_operations(self):
         """Test concurrent borrow, release, and discard operations."""

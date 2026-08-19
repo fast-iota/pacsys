@@ -11,6 +11,7 @@ This file contains DPM HTTP-specific tests:
 - Digital status reflects control
 """
 
+import math
 import threading
 import time
 
@@ -66,7 +67,8 @@ class TestDPMHTTPBackendPool:
         with DPMHTTPBackend(host=DPM_TEST_HOST, port=DPM_TEST_PORT, pool_size=2) as backend:
             for i in range(5):
                 value = backend.read("M:OUTTMP", timeout=TIMEOUT_READ)
-                assert isinstance(value, (int, float))
+                assert isinstance(value, (int, float)) and not isinstance(value, bool)
+                assert math.isfinite(value)
 
     def test_concurrent_reads(self):
         """Concurrent reads use pool correctly."""
@@ -88,6 +90,10 @@ class TestDPMHTTPBackendPool:
 
         assert len(errors) == 0, f"Errors: {errors}"
         assert len(results) == 4
+        assert all(
+            isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+            for value in results
+        )
 
 
 # =============================================================================
@@ -135,19 +141,22 @@ class TestDPMHTTPBackendWrite:
         backend = _create_dpm_write_backend()
         try:
             original_raw = backend.read(SCALAR_SETPOINT_RAW, timeout=TIMEOUT_READ)
+            assert isinstance(original_raw, bytes)
+            try:
+                for raw_bytes, expected_scaled in raw_cases:
+                    result = backend.write(SCALAR_SETPOINT_RAW, raw_bytes, timeout=TIMEOUT_READ)
+                    assert result.success, f"Write {raw_bytes.hex()} failed: {result.error_code} {result.message}"
 
-            for raw_bytes, expected_scaled in raw_cases:
-                result = backend.write(SCALAR_SETPOINT_RAW, raw_bytes, timeout=TIMEOUT_READ)
-                assert result.success, f"Write {raw_bytes.hex()} failed: {result.error_code} {result.message}"
-
-                time.sleep(1.0)
-                readback_raw = backend.read(SCALAR_SETPOINT_RAW, timeout=TIMEOUT_READ)
-                readback_scaled = backend.read(read_drf, timeout=TIMEOUT_READ)
-                assert readback_raw == raw_bytes, f"Raw mismatch: wrote {raw_bytes.hex()}, read {readback_raw.hex()}"
-                assert readback_scaled == expected_scaled, f"Expected scaled={expected_scaled}, got {readback_scaled}"
-
-            # Restore
-            backend.write(SCALAR_SETPOINT_RAW, original_raw, timeout=TIMEOUT_READ)
+                    time.sleep(1.0)
+                    readback_raw = backend.read(SCALAR_SETPOINT_RAW, timeout=TIMEOUT_READ)
+                    readback_scaled = backend.read(read_drf, timeout=TIMEOUT_READ)
+                    assert readback_raw == raw_bytes, (
+                        f"Raw mismatch: wrote {raw_bytes.hex()}, read {readback_raw.hex()}"
+                    )
+                    assert readback_scaled == pytest.approx(expected_scaled)
+            finally:
+                result = backend.write(SCALAR_SETPOINT_RAW, original_raw, timeout=TIMEOUT_READ)
+                assert result.success, f"Restore failed: {result.error_code} {result.message}"
         finally:
             backend.close()
 
@@ -161,20 +170,21 @@ class TestDPMHTTPBackendWrite:
             reading = backend.get(alarm_drf, timeout=TIMEOUT_READ)
             assert reading.ok, f"Failed to read alarm: {reading.message}"
             orig_max = reading.value["maximum"]
+            assert isinstance(orig_max, (int, float)) and not isinstance(orig_max, bool)
+            assert math.isfinite(orig_max)
+            try:
+                new_max = orig_max + 0.5
+                result = backend.write(f"{alarm_drf}.MAX", new_max, timeout=TIMEOUT_READ)
+                assert result.success
 
-            new_max = orig_max + 0.5
-            result = backend.write(f"{alarm_drf}.MAX", new_max, timeout=TIMEOUT_READ)
-            assert result.success
-
-            time.sleep(1.0)
-            after = backend.get(alarm_drf, timeout=TIMEOUT_READ)
-            assert after.ok
-            assert after.value["maximum"] == new_max, f"Expected maximum={new_max}, got {after.value['maximum']}"
-            assert after.value["minimum"] == reading.value["minimum"]
-
-            # Restore
-            result2 = backend.write(f"{alarm_drf}.MAX", orig_max, timeout=TIMEOUT_READ)
-            assert result2.success
+                time.sleep(1.0)
+                after = backend.get(alarm_drf, timeout=TIMEOUT_READ)
+                assert after.ok
+                assert after.value["maximum"] == pytest.approx(new_max)
+                assert after.value["minimum"] == pytest.approx(reading.value["minimum"])
+            finally:
+                result = backend.write(f"{alarm_drf}.MAX", orig_max, timeout=TIMEOUT_READ)
+                assert result.success, f"Restore failed: {result.error_code} {result.message}"
         finally:
             backend.close()
 
@@ -188,28 +198,28 @@ class TestDPMHTTPBackendWrite:
             reading = backend.get(alarm_drf, timeout=TIMEOUT_READ)
             assert reading.ok, f"Failed to read alarm: {reading.message}"
             orig_inhibit = reading.value["abort_inhibit"]
+            try:
+                # Enable bypass
+                result = backend.write(f"{alarm_drf}.ABORT_INHIBIT", 1, timeout=TIMEOUT_READ)
+                assert result.success
 
-            # Enable bypass
-            result = backend.write(f"{alarm_drf}.ABORT_INHIBIT", 1, timeout=TIMEOUT_READ)
-            assert result.success
+                time.sleep(1.0)
+                after_on = backend.get(alarm_drf, timeout=TIMEOUT_READ)
+                assert after_on.ok
+                assert after_on.value["abort_inhibit"] is True
 
-            time.sleep(1.0)
-            after_on = backend.get(alarm_drf, timeout=TIMEOUT_READ)
-            assert after_on.ok
-            assert after_on.value["abort_inhibit"] is True
+                # Disable bypass
+                result = backend.write(f"{alarm_drf}.ABORT_INHIBIT", 0, timeout=TIMEOUT_READ)
+                assert result.success
 
-            # Disable bypass
-            result2 = backend.write(f"{alarm_drf}.ABORT_INHIBIT", 0, timeout=TIMEOUT_READ)
-            assert result2.success
-
-            time.sleep(1.0)
-            after_off = backend.get(alarm_drf, timeout=TIMEOUT_READ)
-            assert after_off.ok
-            assert after_off.value["abort_inhibit"] is False
-
-            # Restore
-            restore = 1 if orig_inhibit else 0
-            backend.write(f"{alarm_drf}.ABORT_INHIBIT", restore, timeout=TIMEOUT_READ)
+                time.sleep(1.0)
+                after_off = backend.get(alarm_drf, timeout=TIMEOUT_READ)
+                assert after_off.ok
+                assert after_off.value["abort_inhibit"] is False
+            finally:
+                restore = 1 if orig_inhibit else 0
+                result = backend.write(f"{alarm_drf}.ABORT_INHIBIT", restore, timeout=TIMEOUT_READ)
+                assert result.success, f"Restore failed: {result.error_code} {result.message}"
         finally:
             backend.close()
 
@@ -234,22 +244,24 @@ class TestDeviceDigitalStatus:
         try:
             dev = Device("Z:ACLTST", backend=backend)
             initial = dev.digital_status(timeout=TIMEOUT_READ)
+            try:
+                # Turn ON and verify via digital_status
+                result = backend.write(STATUS_CONTROL_DEVICE, BasicControl.ON, timeout=TIMEOUT_READ)
+                assert result.success
+                time.sleep(1.0)
+                after_on = dev.digital_status(timeout=TIMEOUT_READ)
+                assert after_on.on is True, f"Expected on=True, got {after_on.on}"
 
-            # Turn ON and verify via digital_status
-            backend.write(STATUS_CONTROL_DEVICE, BasicControl.ON, timeout=TIMEOUT_READ)
-            time.sleep(1.0)
-            after_on = dev.digital_status(timeout=TIMEOUT_READ)
-            assert after_on.on is True, f"Expected on=True, got {after_on.on}"
-
-            # Turn OFF and verify
-            backend.write(STATUS_CONTROL_DEVICE, BasicControl.OFF, timeout=TIMEOUT_READ)
-            time.sleep(1.0)
-            after_off = dev.digital_status(timeout=TIMEOUT_READ)
-            assert after_off.on is False, f"Expected on=False, got {after_off.on}"
-
-            # Restore
-            restore = BasicControl.ON if initial.on else BasicControl.OFF
-            backend.write(STATUS_CONTROL_DEVICE, restore, timeout=TIMEOUT_READ)
+                # Turn OFF and verify
+                result = backend.write(STATUS_CONTROL_DEVICE, BasicControl.OFF, timeout=TIMEOUT_READ)
+                assert result.success
+                time.sleep(1.0)
+                after_off = dev.digital_status(timeout=TIMEOUT_READ)
+                assert after_off.on is False, f"Expected on=False, got {after_off.on}"
+            finally:
+                restore = BasicControl.ON if initial.on else BasicControl.OFF
+                result = backend.write(STATUS_CONTROL_DEVICE, restore, timeout=TIMEOUT_READ)
+                assert result.success, f"Restore failed: {result.error_code} {result.message}"
         finally:
             backend.close()
 
@@ -296,6 +308,9 @@ class TestRamp:
 
                 # Cross-check: scalar read at same index should match ramp value
                 scalar = backend.read(f"{qualifier}[{idx}]", timeout=TIMEOUT_READ)
+                assert isinstance(scalar, (int, float)) and not isinstance(scalar, bool)
+                assert math.isfinite(scalar)
+                assert math.isfinite(ramp.values[1])
                 print(f"  scalar[{idx}] = {scalar}, ramp.values[1] = {ramp.values[1]}")
                 assert ramp.values[1] == scalar
 

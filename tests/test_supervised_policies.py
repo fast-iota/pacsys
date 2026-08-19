@@ -1,10 +1,11 @@
 """Tests for supervised mode policy system - pure unit tests, no server needed."""
 
-import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
+from pacsys.supervised import _policies as policies
 from pacsys.supervised._policies import (
     DeviceAccessPolicy,
     Policy,
@@ -36,6 +37,19 @@ def _ctx(
         raw_request=raw_request,
         allowed=allowed if allowed is not None else frozenset(),
     )
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    now = [0.0]
+    fake_time = SimpleNamespace(**vars(policies.time))
+    fake_time.monotonic = lambda: now[0]
+    monkeypatch.setattr(policies, "time", fake_time)
+
+    def advance(seconds):
+        now[0] += seconds
+
+    return advance
 
 
 # ── RequestContext.allowed ────────────────────────────────────────────────
@@ -300,11 +314,20 @@ class TestRateLimitPolicy:
         assert p.check(_ctx(peer="peer_b")).allowed
         assert not p.check(_ctx(peer="peer_a")).allowed
 
-    def test_window_expiry(self):
+    def test_stale_peers_pruned(self, clock):
+        p = RateLimitPolicy(max_requests=1)
+        for i in range(101):
+            assert p.check(_ctx(peer=f"peer_{i}")).allowed
+
+        clock(3601.0)
+        assert p.check(_ctx(peer="current")).allowed
+        assert set(p._timestamps) == {"current"}
+
+    def test_window_expiry(self, clock):
         p = RateLimitPolicy(max_requests=1, window_seconds=0.1)
         assert p.check(_ctx()).allowed
         assert not p.check(_ctx()).allowed
-        time.sleep(0.15)
+        clock(0.15)
         assert p.check(_ctx()).allowed
 
     def test_zero_max_raises(self):
@@ -445,10 +468,10 @@ class TestSlewRatePolicy:
         d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 50.0)]))
         assert d.allowed
 
-    def test_within_rate_allowed(self):
+    def test_within_rate_allowed(self, clock):
         p = SlewRatePolicy(limits={"M:*": SlewLimit(max_rate=1000.0)})
         p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 50.0)]))
-        time.sleep(0.05)
+        clock(0.05)
         d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 51.0)]))
         assert d.allowed
 
@@ -480,28 +503,28 @@ class TestSlewRatePolicy:
         assert not d.allowed
         assert "Slew rate" in d.reason
 
-    def test_both_limits_step_denied(self):
+    def test_both_limits_step_denied(self, clock):
         p = SlewRatePolicy(limits={"M:*": SlewLimit(max_step=5.0, max_rate=1000.0)})
         p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 0.0)]))
-        time.sleep(0.05)
+        clock(0.05)
         # Rate is fine (20/0.05 = 400 < 1000), but step is not (20 > 5)
         d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 20.0)]))
         assert not d.allowed
         assert "Step" in d.reason
 
-    def test_window_decay(self):
+    def test_window_decay(self, clock):
         p = SlewRatePolicy(limits={"M:*": SlewLimit(max_rate=10.0)})
         p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 0.0)]))
-        time.sleep(0.6)
+        clock(0.6)
         d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 5.0)]))
         assert d.allowed
 
-    def test_denied_does_not_update_history(self):
+    def test_denied_does_not_update_history(self, clock):
         p = SlewRatePolicy(limits={"M:*": SlewLimit(max_rate=1.0)})
         p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 0.0)]))
         d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 100.0)]))
         assert not d.allowed
-        time.sleep(0.2)
+        clock(0.2)
         d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 0.1)]))
         assert d.allowed
 

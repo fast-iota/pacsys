@@ -11,6 +11,7 @@ This file contains DMQ-specific tests:
 - Raw integer write (.SETTING.RAW)
 """
 
+import math
 import threading
 import time
 
@@ -196,17 +197,24 @@ class TestDMQBackendWrite:
         backend = _create_dmq_backend()
         try:
             original_scaled = backend.read(read_drf, timeout=TIMEOUT_READ)
+            assert isinstance(original_scaled, (int, float)) and not isinstance(original_scaled, bool)
+            assert math.isfinite(original_scaled)
+            try:
+                for val in (45, 46):
+                    result = backend.write(SCALAR_SETPOINT_RAW, val, timeout=TIMEOUT_READ)
+                    assert result.success, f"Write {val} failed: {result.error_code} {result.message}"
 
-            for val in (45, 46):
-                result = backend.write(SCALAR_SETPOINT_RAW, val, timeout=TIMEOUT_READ)
-                assert result.success, f"Write {val} failed: {result.error_code} {result.message}"
-
+                    time.sleep(1.0)
+                    raw = backend.read(SCALAR_SETPOINT_RAW, timeout=TIMEOUT_READ)
+                    assert isinstance(raw, bytes)
+                    scaled = backend.read(read_drf, timeout=TIMEOUT_READ)
+                    assert scaled == pytest.approx(float(val))
+            finally:
+                # DMQ rejects byte writes, so restore the exact engineering value.
+                result = backend.write(SCALAR_SETPOINT, original_scaled, timeout=TIMEOUT_READ)
+                assert result.success, f"Restore failed: {result.error_code} {result.message}"
                 time.sleep(1.0)
-                backend.read(SCALAR_SETPOINT_RAW, timeout=TIMEOUT_READ)
-                scaled = backend.read(read_drf, timeout=TIMEOUT_READ)
-                assert scaled == float(val), f"Expected scaled={float(val)}, got {scaled}"
-
-            # Restore
-            backend.write(SCALAR_SETPOINT_RAW, int(original_scaled), timeout=TIMEOUT_READ)
+                restored = backend.read(read_drf, timeout=TIMEOUT_READ)
+                assert restored == pytest.approx(original_scaled)
         finally:
             backend.close()

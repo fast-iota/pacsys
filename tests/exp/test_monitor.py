@@ -17,6 +17,18 @@ def fake():
     return fb
 
 
+def _track_next_wait(condition: threading.Condition) -> threading.Event:
+    waiting = threading.Event()
+    original_wait = condition.wait
+
+    def tracked_wait(timeout=None):
+        waiting.set()
+        return original_wait(timeout)
+
+    condition.wait = tracked_wait
+    return waiting
+
+
 class TestMonitorInit:
     def test_empty_devices_raises(self):
         with pytest.raises(ValueError, match="devices cannot be empty"):
@@ -60,7 +72,6 @@ class TestMonitorLiveMode:
         mon.start()
         fake.emit_reading("M:OUTTMP@p,1000", 72.0)
         fake.emit_reading("M:OUTTMP@p,1000", 73.0)
-        time.sleep(0.05)  # let callbacks deliver
         snap = mon.snapshot()
         mon.stop()
         assert len(snap.channels["M:OUTTMP@p,1000"].readings) == 2
@@ -69,7 +80,6 @@ class TestMonitorLiveMode:
         mon = Monitor(["M:OUTTMP@p,1000"], backend=fake)
         mon.start()
         fake.emit_reading("M:OUTTMP@p,1000", 72.0)
-        time.sleep(0.05)
         result = mon.flush()
         assert len(result.channels["M:OUTTMP@p,1000"].readings) == 1
         # Buffer is now empty
@@ -80,7 +90,6 @@ class TestMonitorLiveMode:
     def test_context_manager(self, fake):
         with Monitor(["M:OUTTMP@p,1000"], backend=fake) as mon:
             fake.emit_reading("M:OUTTMP@p,1000", 72.0)
-            time.sleep(0.05)
             snap = mon.snapshot()
         assert not mon.running
         assert len(snap.channels["M:OUTTMP@p,1000"].readings) == 1
@@ -89,24 +98,28 @@ class TestMonitorLiveMode:
 class TestMonitorCollect:
     def test_collect_duration(self, fake):
         def emitter():
+            assert fake.wait_for_subscription("M:OUTTMP@p,1000")
             for i in range(5):
                 fake.emit_reading("M:OUTTMP@p,1000", float(i))
-                time.sleep(0.02)
 
         t = threading.Thread(target=emitter, daemon=True)
         t.start()
         result = Monitor(["M:OUTTMP@p,1000"], backend=fake).collect(duration=0.15)
+        t.join(timeout=1.0)
+        assert not t.is_alive()
         assert len(result.channels["M:OUTTMP@p,1000"].readings) >= 1
 
     def test_collect_count(self, fake):
         def emitter():
+            assert fake.wait_for_subscription("M:OUTTMP@p,1000")
             for i in range(10):
                 fake.emit_reading("M:OUTTMP@p,1000", float(i))
-                time.sleep(0.01)
 
         t = threading.Thread(target=emitter, daemon=True)
         t.start()
         result = Monitor(["M:OUTTMP@p,1000"], backend=fake).collect(count=3, timeout=2.0)
+        t.join(timeout=1.0)
+        assert not t.is_alive()
         assert len(result.channels["M:OUTTMP@p,1000"].readings) >= 3
 
     def test_collect_requires_exactly_one_arg(self, fake):
@@ -132,13 +145,9 @@ class TestMonitorCollect:
         """A subscription that stops without error must raise, not spin forever."""
 
         def stopper():
-            time.sleep(0.1)
+            assert fake.wait_for_subscription("M:OUTTMP@p,1000")
             fake.emit_reading("M:OUTTMP@p,1000", 1.0)
-            time.sleep(0.05)
-            with fake._lock:
-                subs = list(fake._subscriptions)
-            for sub in subs:
-                sub.stop()
+            fake.stop_streaming()
 
         t = threading.Thread(target=stopper, daemon=True)
         t.start()
@@ -163,7 +172,6 @@ class TestMonitorTags:
         mon.start()
         fake.emit_reading("M:OUTTMP@p,1000", 72.0)
         fake.emit_reading("M:OUTTMP@p,1000", 73.0)
-        time.sleep(0.05)
         assert mon.tags == {"M:OUTTMP@p,1000": 2}
         mon.stop()
 
@@ -173,7 +181,6 @@ class TestMonitorTags:
         old = mon.tags
         assert not mon.has_new(old)
         fake.emit_reading("M:OUTTMP@p,1000", 72.0)
-        time.sleep(0.05)
         assert mon.has_new(old)
         mon.stop()
 
@@ -187,9 +194,6 @@ class TestMonitorRunToken:
         def racing_subscribe(drfs, callback=None, **kw):
             h = orig(drfs, callback=callback, **kw)
             fake.emit_reading("M:OUTTMP@p,1000", 42.0)
-            deadline = time.monotonic() + 2.0
-            while mon.tags["M:OUTTMP@p,1000"] == 0 and time.monotonic() < deadline:
-                time.sleep(0.01)  # let the dispatcher deliver before subscribe() returns
             return h
 
         fake.subscribe = racing_subscribe
@@ -221,9 +225,10 @@ class TestMonitorAwaitNext:
     def test_await_next_returns_reading(self, fake):
         mon = Monitor(["M:OUTTMP@p,1000"], backend=fake)
         mon.start()
+        waiting = _track_next_wait(mon._lock)
 
         def emit_later():
-            time.sleep(0.05)
+            assert waiting.wait(1.0)
             fake.emit_reading("M:OUTTMP@p,1000", 99.0)
 
         t = threading.Thread(target=emit_later, daemon=True)
@@ -243,10 +248,10 @@ class TestMonitorAwaitNext:
         mon = Monitor(["M:OUTTMP@p,1000"], backend=fake)
         mon.start()
         fake.emit_reading("M:OUTTMP@p,1000", 1.0)
-        time.sleep(0.05)
+        waiting = _track_next_wait(mon._lock)
 
         def emit_later():
-            time.sleep(0.05)
+            assert waiting.wait(1.0)
             fake.emit_reading("M:OUTTMP@p,1000", 2.0)
 
         t = threading.Thread(target=emit_later, daemon=True)
@@ -268,8 +273,8 @@ class TestMonitorAwaitNext:
         mon.start()
         for i in range(5):
             fake.emit_reading("M:OUTTMP@p,1000", float(i))
-        time.sleep(0.05)
         result = {}
+        waiting = _track_next_wait(mon._lock)
 
         def waiter():
             try:
@@ -279,7 +284,7 @@ class TestMonitorAwaitNext:
 
         t = threading.Thread(target=waiter, daemon=True)
         t.start()
-        time.sleep(0.1)
+        assert waiting.wait(1.0)
         mon.stop()
         mon.start()
         for i in range(5):  # exactly the old baseline count
@@ -299,7 +304,6 @@ class TestMonitorBufferSize:
         mon.start()
         for i in range(5):
             fake.emit_reading("M:OUTTMP@p,1000", float(i))
-        time.sleep(0.05)
         snap = mon.snapshot()
         mon.stop()
         vals = snap.values("M:OUTTMP@p,1000")
@@ -338,7 +342,6 @@ class TestMonitorHealthOnDemand:
         mon = Monitor(["M:OUTTMP@p,1000"], backend=fake)
         mon.start()
         fake.emit_reading("M:OUTTMP@p,1000", 72.0)
-        time.sleep(0.05)
         h = mon.health("M:OUTTMP@p,1000")
         mon.stop()
         assert h.last_reading is not None
@@ -351,7 +354,6 @@ class TestMonitorHealthOnDemand:
         mon = Monitor(["M:OUTTMP@p,1000", "G:AMANDA@p,1000"], backend=fake)
         mon.start()
         fake.emit_reading("M:OUTTMP@p,1000", 72.0)
-        time.sleep(0.05)
         result = mon.health()
         mon.stop()
         assert isinstance(result, dict)
@@ -375,7 +377,6 @@ class TestMonitorStaleness:
         mon = Monitor(["M:OUTTMP@p,1000"], stale_after=0.1, backend=fake)
         mon.start()
         fake.emit_reading("M:OUTTMP@p,1000", 72.0)
-        time.sleep(0.05)
         assert mon.health("M:OUTTMP@p,1000").stale is False
         time.sleep(0.15)  # exceed threshold
         assert mon.health("M:OUTTMP@p,1000").stale is True
@@ -401,7 +402,6 @@ class TestMonitorStaleness:
         mon = Monitor(["M:OUTTMP@p,1000"], stale_after=5.0, backend=fake)
         mon.start()
         fake.emit_reading("M:OUTTMP@p,1000", 72.0)
-        time.sleep(0.05)
         mon.flush()
         h = mon.health("M:OUTTMP@p,1000")
         assert h.total_received == 1  # counters survive flush
@@ -414,7 +414,6 @@ class TestMonitorRestart:
         mon = Monitor(["M:OUTTMP@p,1000"], stale_after=5.0, backend=fake)
         mon.start()
         fake.emit_reading("M:OUTTMP@p,1000", 72.0)
-        time.sleep(0.05)
         assert mon.health("M:OUTTMP@p,1000").total_received == 1
         mon.stop()
         mon.start()
@@ -446,71 +445,79 @@ class TestMonitorRestart:
         mon.stop()
 
     def test_restart_resets_stale_set(self, fake):
-        stale_events = []
+        stale = threading.Event()
         mon = Monitor(
             ["M:OUTTMP@p,1000"],
             stale_after=0.1,
-            on_stale=lambda drf, h: stale_events.append(drf),
+            on_stale=lambda drf, h: stale.set(),
             backend=fake,
         )
         mon.start()
-        time.sleep(0.25)  # go stale
-        assert len(stale_events) == 1
+        assert stale.wait(1.0)
         mon.stop()
-        stale_events.clear()
+        stale.clear()
         mon.start()
-        time.sleep(0.25)  # should go stale again (not suppressed)
+        assert stale.wait(1.0)
         mon.stop()
-        assert len(stale_events) == 1
 
 
 class TestMonitorWatchdog:
     def test_on_stale_fires_once(self, fake):
         stale_events = []
+        stale = threading.Event()
+
+        def on_stale(drf, health):
+            stale_events.append((drf, health))
+            stale.set()
+
         mon = Monitor(
             ["M:OUTTMP@p,1000"],
             stale_after=0.1,
-            on_stale=lambda drf, h: stale_events.append((drf, h)),
+            on_stale=on_stale,
             backend=fake,
         )
         mon.start()
-        # No data — should go stale after grace period
-        time.sleep(0.4)
+        assert stale.wait(1.0)
         mon.stop()
         assert len(stale_events) == 1
         assert stale_events[0][0] == "M:OUTTMP@p,1000"
         assert stale_events[0][1].stale is True
 
     def test_on_stale_not_repeated(self, fake):
-        stale_events = []
+        first = threading.Event()
+        repeated = threading.Event()
+
+        def on_stale(drf, health):
+            if first.is_set():
+                repeated.set()
+            first.set()
+
         mon = Monitor(
             ["M:OUTTMP@p,1000"],
             stale_after=0.1,
-            on_stale=lambda drf, h: stale_events.append(drf),
+            on_stale=on_stale,
             backend=fake,
         )
         mon.start()
-        time.sleep(0.5)  # well past threshold, multiple watchdog cycles
+        assert first.wait(1.0)
+        assert not repeated.wait(0.3)
         mon.stop()
-        assert len(stale_events) == 1  # edge-triggered, not repeated
 
     def test_on_recover_fires_on_recovery(self, fake):
-        stale_events = []
-        recover_events = []
+        stale = threading.Event()
+        recovered = threading.Event()
         mon = Monitor(
             ["M:OUTTMP@p,1000"],
-            stale_after=0.1,
-            on_stale=lambda drf, h: stale_events.append(drf),
-            on_recover=lambda drf, h: recover_events.append(drf),
+            stale_after=0.2,
+            on_stale=lambda drf, h: stale.set(),
+            on_recover=lambda drf, h: recovered.set(),
             backend=fake,
         )
         mon.start()
-        time.sleep(0.25)  # go stale
-        assert len(stale_events) == 1
+        assert stale.wait(1.0)
         fake.emit_reading("M:OUTTMP@p,1000", 72.0)
-        time.sleep(0.15)  # watchdog detects recovery
+        assert recovered.wait(1.0)
         mon.stop()
-        assert len(recover_events) == 1
 
     def test_no_on_recover_no_crash(self, fake):
         """Recovery with on_recover=None should not crash."""
@@ -536,7 +543,6 @@ class TestMonitorWatchdog:
         assert mon._watchdog is not None
         assert mon._watchdog.is_alive()
         mon.stop()
-        time.sleep(0.2)
         assert not mon._watchdog.is_alive()
 
     def test_no_watchdog_without_stale_after(self, fake):
@@ -547,9 +553,12 @@ class TestMonitorWatchdog:
 
     def test_callback_exception_does_not_crash_watchdog(self, fake):
         call_count = []
+        both_called = threading.Event()
 
         def bad_callback(drf, h):
             call_count.append(1)
+            if len(call_count) == 2:
+                both_called.set()
             raise RuntimeError("boom")
 
         mon = Monitor(
@@ -559,7 +568,7 @@ class TestMonitorWatchdog:
             backend=fake,
         )
         mon.start()
-        time.sleep(0.4)  # both channels should go stale
+        assert both_called.wait(1.0)
         mon.stop()
         # Both channels should have triggered despite exception
         assert len(call_count) == 2

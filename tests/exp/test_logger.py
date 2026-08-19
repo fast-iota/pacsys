@@ -1,7 +1,7 @@
 """Tests for DataLogger."""
 
 import csv
-import time
+import threading
 
 import pytest
 
@@ -19,15 +19,29 @@ def fake():
 class TestDataLogger:
     def test_logs_readings_to_csv(self, fake, tmp_path):
         path = tmp_path / "log.csv"
+
+        class SignalingWriter:
+            def __init__(self):
+                self._writer = CsvWriter(path)
+                self.written = threading.Event()
+
+            def write_readings(self, readings: list[Reading]) -> None:
+                self._writer.write_readings(readings)
+                self.written.set()
+
+            def close(self) -> None:
+                self._writer.close()
+
+        writer = SignalingWriter()
         with DataLogger(
             ["M:OUTTMP@p,1000"],
-            writer=CsvWriter(path),
+            writer=writer,
             flush_interval=0.05,
             backend=fake,
         ):
             fake.emit_reading("M:OUTTMP@p,1000", 72.5)
             fake.emit_reading("M:OUTTMP@p,1000", 73.0)
-            time.sleep(0.15)  # wait for flush
+            assert writer.written.wait(1.0)
 
         with path.open(newline="") as f:
             rows = list(csv.reader(f))
@@ -72,7 +86,6 @@ class TestDataLogger:
         )
         dl.start()
         fake.emit_reading("M:OUTTMP@p,1000", 72.5)
-        time.sleep(0.05)
         dl.stop()
 
         with path.open(newline="") as f:
@@ -85,9 +98,12 @@ class TestDataLogger:
         class FailingWriter:
             def __init__(self):
                 self.attempts = 0
+                self.retries_exhausted = threading.Event()
 
             def write_readings(self, readings: list[Reading]) -> None:
                 self.attempts += 1
+                if self.attempts == 3:
+                    self.retries_exhausted.set()
                 raise ValueError("persistent error")
 
             def close(self) -> None:
@@ -102,12 +118,8 @@ class TestDataLogger:
         )
         dl.start()
         fake.emit_reading("M:OUTTMP@p,1000", 72.5)
-        # Wait enough for max_retries (3) flush cycles
-        time.sleep(0.2)
-        dl._stopped = True
-        dl._stop_event.set()
-        if dl._flush_thread:
-            dl._flush_thread.join(timeout=2.0)
+        assert writer.retries_exhausted.wait(1.0)
+        dl.stop()
         # Should have attempted exactly max_retries times, then dropped
         assert writer.attempts == dl._max_retries
         assert dl.last_error is not None

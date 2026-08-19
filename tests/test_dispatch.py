@@ -130,7 +130,6 @@ class TestWorkerMode:
 
         try:
             d.dispatch_reading(bad_cb, _make_reading(), _FakeHandle())
-            time.sleep(0.05)  # let worker process first item
             d.dispatch_reading(good_cb, _make_reading(), _FakeHandle())
             assert ok.wait(2.0)
         finally:
@@ -140,17 +139,18 @@ class TestWorkerMode:
         """Dispatching after close() silently drops instead of queueing to dead worker."""
         d = CallbackDispatcher(DispatchMode.WORKER)
         called = []
+        delivered = threading.Event()
 
         def cb(reading, handle):
             called.append(1)
+            delivered.set()
 
         d.dispatch_reading(cb, _make_reading(), _FakeHandle())
-        time.sleep(0.05)
+        assert delivered.wait(2.0)
         d.close()
         # Should not raise or enqueue
         d.dispatch_reading(cb, _make_reading(), _FakeHandle())
         d.dispatch_error(lambda e, h: called.append(2), RuntimeError("x"), _FakeHandle())
-        time.sleep(0.05)
         assert len(called) == 1  # only the pre-close dispatch
 
     def test_error_dispatch_worker(self):

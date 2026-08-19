@@ -92,7 +92,7 @@ class TestRealKerberosAuth:
             print(f"Successfully authenticated as: {auth.principal}")
 
         except AuthenticationError as e:
-            if "FNAL.GOV" in str(e) or "expired" in str(e):
+            if "expired" in str(e).lower():
                 pytest.skip(f"Credential validation failed: {e}")
             raise
 

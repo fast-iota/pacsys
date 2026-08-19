@@ -210,11 +210,8 @@ class TestConnectionError:
         with mock.patch("pacsys.cli.monitor.make_backend", side_effect=Exception("connection refused")):
             with mock.patch("sys.argv", ["acmonitor", "M:OUTTMP"]):
                 err = io.StringIO()
-                try:
-                    with contextlib.redirect_stderr(err):
-                        rc = main()
-                except SystemExit as e:
-                    rc = e.code
+                with contextlib.redirect_stderr(err):
+                    rc = main()
                 assert rc == 2
                 assert "connection" in err.getvalue().lower()
 

@@ -1,3 +1,6 @@
+from types import SimpleNamespace
+from unittest import mock
+
 import pytest
 
 from pacsys.mcp._tools import tool_device_info, tool_read_device, tool_write_device
@@ -35,10 +38,10 @@ def test_read_device_error(backend):
 
 def test_read_device_backend_exception(backend):
     """Backend raises unexpected exception — tool catches it."""
-    backend.close()
-    result = tool_read_device(backend, "M:DOESNOTEXIST", [])
+    with mock.patch.object(backend, "get", side_effect=RuntimeError("backend failed")):
+        result = tool_read_device(backend, "M:DOESNOTEXIST", [])
     assert result["ok"] is False
-    assert "error" in result
+    assert result["error"] == "backend failed"
 
 
 # ── write_device ─────────────────────────────────────────────
@@ -48,7 +51,7 @@ def test_write_device_no_policies(backend):
     """No policies = no policy approves writes = denied."""
     result = tool_write_device(backend, "Z:ACLTST", 42.0, policies=[])
     assert result["ok"] is False
-    assert "denied" in result["error"].lower() or "no policy" in result["error"].lower()
+    assert "no policy" in result["error"].lower()
 
 
 def test_write_device_allowed(backend):
@@ -82,3 +85,24 @@ def test_device_info_no_devdb():
     result = tool_device_info(None, "M:OUTTMP")
     assert result["ok"] is False
     assert "unavailable" in result["error"].lower()
+
+
+def test_device_info_success():
+    reading = SimpleNamespace(primary_units="deg F", common_units="C", min_val=-50.0, max_val=200.0)
+    setting = SimpleNamespace(primary_units="A", common_units=None, min_val=0.0, max_val=10.0)
+    control = (SimpleNamespace(value=1, short_name="ON", long_name="Turn on"),)
+    info = SimpleNamespace(
+        device_index=123, description="Test device", reading=reading, setting=setting, control=control
+    )
+    devdb = mock.MagicMock()
+    devdb.get_device_info.return_value = {"M:OUTTMP": info}
+
+    assert tool_device_info(devdb, "M:OUTTMP") == {
+        "ok": True,
+        "name": "M:OUTTMP",
+        "description": "Test device",
+        "device_index": 123,
+        "reading": {"units": "deg F", "common_units": "C", "min": -50.0, "max": 200.0},
+        "setting": {"units": "A", "common_units": None, "min": 0.0, "max": 10.0},
+        "control_commands": [{"value": 1, "short_name": "ON", "long_name": "Turn on"}],
+    }

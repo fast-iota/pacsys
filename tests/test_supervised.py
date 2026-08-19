@@ -142,10 +142,13 @@ class TestServerLifecycle:
         srv.start()
         assert srv.port > 0
         srv.stop()
+        assert srv._thread is None
+        assert srv._loop is None
 
     def test_context_manager(self, fake_backend):
         with SupervisedServer(fake_backend, port=0) as srv:
             assert srv.port > 0
+        assert srv._thread is None
 
     def test_invalid_backend_type(self):
         with pytest.raises(TypeError, match="Backend"):

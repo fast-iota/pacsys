@@ -12,6 +12,7 @@ Requires:
 - grpcio package installed
 """
 
+import math
 import threading
 import time
 
@@ -49,7 +50,8 @@ class TestGRPCBackendMultipleReads:
             value = grpc_backend.read("M:OUTTMP@I", timeout=TIMEOUT_READ)
             elapsed = time.time() - start
             assert_fast_response(elapsed, f"read #{i + 1}")
-            assert isinstance(value, (int, float))
+            assert isinstance(value, (int, float)) and not isinstance(value, bool)
+            assert math.isfinite(value)
         total_elapsed = time.time() - total_start
         print(f"\n  5 sequential reads completed in {total_elapsed * 1000:.0f}ms")
 
@@ -78,6 +80,10 @@ class TestGRPCBackendMultipleReads:
 
         assert len(errors) == 0, f"Errors: {errors}"
         assert len(results) == 4
+        assert all(
+            isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+            for value in results
+        )
 
         for i, t in enumerate(timings):
             assert_fast_response(t, f"concurrent read #{i + 1}")

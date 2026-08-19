@@ -425,6 +425,7 @@ class FakeBackend(Backend):
         self._write_history: list[tuple[str, Value]] = []
         self._subscriptions: list[FakeSubscriptionHandle] = []
         self._lock = threading.Lock()
+        self._subscription_condition = threading.Condition(self._lock)
         self._closed = False
         self._dispatch_mode = dispatch_mode
         self._dispatcher = CallbackDispatcher(dispatch_mode)
@@ -914,9 +915,18 @@ class FakeBackend(Backend):
             FakeSubscriptionHandle for managing subscription
         """
         handle = FakeSubscriptionHandle(drfs, callback, on_error, self._remove_subscription, self._dispatcher)
-        with self._lock:
+        with self._subscription_condition:
             self._subscriptions.append(handle)
+            self._subscription_condition.notify_all()
         return handle
+
+    def wait_for_subscription(self, drf: str, timeout: float = 1.0) -> bool:
+        """Wait until an active subscription includes ``drf``."""
+        with self._subscription_condition:
+            return self._subscription_condition.wait_for(
+                lambda: any(not sub.stopped and drf in sub._drfs for sub in self._subscriptions),
+                timeout=timeout,
+            )
 
     def emit_reading(
         self,
@@ -996,9 +1006,10 @@ class FakeBackend(Backend):
 
     def _remove_subscription(self, handle: FakeSubscriptionHandle) -> None:
         """Internal: remove subscription from tracking."""
-        with self._lock:
+        with self._subscription_condition:
             if handle in self._subscriptions:
                 self._subscriptions.remove(handle)
+                self._subscription_condition.notify_all()
 
     # ─────────────────────────────────────────────────────────────────────
     # Lifecycle

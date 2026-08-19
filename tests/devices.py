@@ -766,7 +766,7 @@ class MockAsyncDPMConnection:
     async def send_messages_batch(self, msgs):
         self.sent_messages.extend(msgs)
 
-    async def recv_message(self):
+    async def recv_message(self, timeout=None):
         if self._index >= len(self._replies):
             from pacsys.dpm_connection import DPMConnectionError
 

@@ -166,7 +166,9 @@ _NO_RANGE = parse_range(None)
 )
 def test_drf_parse(drf, expected_parts, expected_canonical, expected_qualified):
     result = parse_request(drf)
-    assert result.parts == expected_parts
+    assert result.parts[:-1] == expected_parts[:-1]
+    assert type(result.event) is type(expected_parts[-1])
+    assert vars(result.event) == vars(expected_parts[-1])
     assert result.to_canonical() == expected_canonical
     assert result.to_qualified() == expected_qualified
 

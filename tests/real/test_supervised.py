@@ -10,6 +10,7 @@ With writes:
     PACSYS_TEST_REAL=1 PACSYS_TEST_WRITE=1 python -m pytest tests/real/test_supervised.py -v -s
 """
 
+import math
 import time
 
 import grpc
@@ -219,10 +220,11 @@ def _assert_values_equivalent(direct_val, proxied_val, tol):
             f"direct[:{len(proxied_val)}]={direct_val[: len(proxied_val)]!r}, proxied={proxied_val!r}"
         )
     elif isinstance(direct_val, dict) and isinstance(proxied_val, dict):
-        # Both paths return dicts but status dicts may differ structurally:
-        # gRPC server returns digital status bit labels, HTTP returns basic status booleans
-        assert direct_val, "direct dict is empty"
-        assert proxied_val, "proxied dict is empty"
+        # Sequential live reads may omit unavailable fields, so compare their shared shape.
+        shared_keys = direct_val.keys() & proxied_val.keys()
+        assert shared_keys, f"dicts have no shared keys: direct={direct_val.keys()}, proxied={proxied_val.keys()}"
+        for key in shared_keys:
+            _assert_values_equivalent(direct_val[key], proxied_val[key], tol)
     elif hasattr(direct_val, "__len__") and hasattr(proxied_val, "__len__"):
         # Array length must match; element values drift for live beam data
         assert len(direct_val) == len(proxied_val), (
@@ -232,6 +234,7 @@ def _assert_values_equivalent(direct_val, proxied_val, tol):
         assert type(direct_val) is type(proxied_val), (
             f"type mismatch: direct={type(direct_val).__name__}, proxied={type(proxied_val).__name__}"
         )
+        assert direct_val == proxied_val, f"value mismatch: direct={direct_val!r}, proxied={proxied_val!r}"
 
 
 # =============================================================================
@@ -248,6 +251,7 @@ class TestSupervisedProxyRead:
         reading = proxy_client.get(SCALAR_DEVICE, timeout=TIMEOUT_READ)
         assert reading.ok, f"Read failed: {reading.message}"
         assert isinstance(reading.value, float)
+        assert math.isfinite(reading.value)
 
     def test_read_batch(self, proxy_client):
         """Batch read through proxy returns results for all devices."""
@@ -256,6 +260,7 @@ class TestSupervisedProxyRead:
         for r in readings:
             assert r.ok, f"Read failed: {r.message}"
             assert isinstance(r.value, float)
+            assert math.isfinite(r.value)
 
     def test_read_array(self, proxy_client):
         """Read array device through proxy."""
@@ -299,6 +304,7 @@ class TestSupervisedProxyStreaming:
         reading = proxy_client.get(PERIODIC_DEVICE, timeout=TIMEOUT_READ)
         assert reading.ok, f"Periodic snapshot failed: {reading.message}"
         assert isinstance(reading.value, float)
+        assert math.isfinite(reading.value)
 
     def test_subscribe_periodic(self, supervised_server):
         """subscribe() through proxy receives multiple streaming updates."""
@@ -310,6 +316,7 @@ class TestSupervisedProxyStreaming:
                 for reading, _h in handle.readings(timeout=TIMEOUT_STREAM_EVENT * 3):
                     assert reading.ok, f"Streaming read failed: {reading.message}"
                     assert isinstance(reading.value, float)
+                    assert math.isfinite(reading.value)
                     count += 1
                     if count >= 3:
                         break
@@ -342,7 +349,9 @@ def _stub_read_scalar(stub, drf, *, timeout=TIMEOUT_READ):
     replies = list(stub.Read(req, timeout=timeout))
     assert len(replies) >= 1, f"No reply for {drf}"
     rd = replies[0].readings.reading[0]
-    return rd.data.scalar
+    value = rd.data.scalar
+    assert math.isfinite(value), f"Non-finite scalar for {drf}: {value}"
+    return value
 
 
 def _stub_read_raw(stub, drf, *, timeout=TIMEOUT_READ):
@@ -366,11 +375,14 @@ def _stub_read_status(stub, drf, *, timeout=TIMEOUT_READ):
 
 
 def _stub_write(stub, drf, value, *, timeout=TIMEOUT_READ):
-    """Write a scalar value via raw gRPC stub. Returns status_code."""
+    """Write a scalar or raw value via raw gRPC stub. Returns status_code."""
     req = DAQ_pb2.SettingList()
     setting = DAQ_pb2.Setting()
     setting.device = drf
-    setting.value.scalar = float(value)
+    if isinstance(value, bytes):
+        setting.value.raw = value
+    else:
+        setting.value.scalar = float(value)
     req.setting.append(setting)
     reply = stub.Set(req, timeout=timeout)
     assert len(reply.status) == 1, f"Expected 1 status, got {len(reply.status)}"
@@ -423,7 +435,8 @@ class TestSupervisedProxyWrite:
             readback = _stub_read_scalar(stub, read_drf)
             assert readback == pytest.approx(new_val, abs=0.01)
         finally:
-            _stub_write(stub, SCALAR_SETPOINT, original)
+            status = _stub_write(stub, SCALAR_SETPOINT, original)
+            assert status == 0, f"Restore failed: status_code={status}"
             time.sleep(1.0)
 
         restored = _stub_read_scalar(stub, read_drf)
@@ -447,7 +460,8 @@ class TestSupervisedProxyWrite:
             new_raw = _stub_read_raw(stub, SCALAR_SETPOINT_RAW)
             assert new_raw != original_raw, "Raw bytes unchanged after write"
         finally:
-            _stub_write(stub, SCALAR_SETPOINT, original_scaled)
+            status = _stub_write(stub, SCALAR_SETPOINT_RAW, original_raw)
+            assert status == 0, f"Restore failed: status_code={status}"
             time.sleep(1.0)
 
         restored_raw = _stub_read_raw(stub, SCALAR_SETPOINT_RAW)
@@ -480,7 +494,8 @@ class TestSupervisedProxyWrite:
             assert st.get(field) == "False", f"Expected {field}=False after {cmd_false}, got {st.get(field)}"
         finally:
             restore = cmd_true if initial == "True" else cmd_false
-            _stub_write(stub, STATUS_CONTROL_DEVICE, restore)
+            status = _stub_write(stub, STATUS_CONTROL_DEVICE, restore)
+            assert status == 0, f"Restore failed: status_code={status}"
 
     def test_control_reset(self, write_proxy):
         """RESET command succeeds and status is readable afterwards."""

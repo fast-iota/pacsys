@@ -8,6 +8,7 @@ Tests here verify cross-backend behavior consistency. Backend-specific tests
 should remain in their individual test files (test_dmq_backend.py, etc.).
 """
 
+import math
 import threading
 import time
 
@@ -99,6 +100,7 @@ class TestBackendRead:
         assert reading.ok, f"Failed to read {SCALAR_DEVICE}: {reading.message}"
         assert reading.value_type == ValueType.SCALAR
         assert isinstance(reading.value, float)
+        assert math.isfinite(reading.value)
         assert reading.timestamp is not None
 
     def test_get_second_device(self, read_backend_cls: Backend):
@@ -107,6 +109,7 @@ class TestBackendRead:
 
         assert reading.ok, f"Failed to read {SCALAR_DEVICE_2}: {reading.message}"
         assert isinstance(reading.value, float)
+        assert math.isfinite(reading.value)
 
     def test_get_array(self, read_backend_cls: Backend):
         """get() returns array for array device."""
@@ -124,6 +127,8 @@ class TestBackendRead:
         assert reading.ok, f"Failed to read {SCALAR_ELEMENT}: {reading.message}"
         assert reading.value_type == ValueType.SCALAR
         assert isinstance(reading.value, (int, float))
+        assert not isinstance(reading.value, bool)
+        assert math.isfinite(reading.value)
 
 
 # =============================================================================
@@ -143,6 +148,7 @@ class TestBackendBatchReads:
         for i, reading in enumerate(readings):
             assert reading.ok, f"Failed: {devices[i]}: {reading.message}"
             assert isinstance(reading.value, float)
+            assert math.isfinite(reading.value)
 
     def test_get_many_empty_list(self, read_backend_cls: Backend):
         """get_many() with empty list returns empty list."""
@@ -781,6 +787,7 @@ class TestBackendWrite:
 
         read1 = write_backend_cls.read(SCALAR_DEVICE_2)
         assert isinstance(read1, float)
+        assert math.isfinite(read1)
         read2 = write_backend_cls.get_many([SCALAR_DEVICE_2, SCALAR_ELEMENT, ARRAY_DEVICE])
         assert all(r.ok for r in read2)
         for i in range(5):
@@ -796,9 +803,15 @@ class TestBackendWrite:
         finally:
             handle.stop()
 
-        assert len(readings) >= 1
-        assert all(r.ok for r in readings if r.name == valid_drf)
-        assert all(not r.ok for r in readings if r.name == invalid_drf)
+        valid_name = parse_request(valid_drf).device
+        invalid_name = parse_request(invalid_drf).device
+        valid_readings = [r for r in readings if r.name == valid_name]
+        invalid_readings = [r for r in readings if r.name == invalid_name]
+        assert valid_readings and all(r.ok for r in valid_readings)
+
+        # DPM_PEND can arrive after this stress test's short window; dedicated
+        # subscription tests above require the delayed invalid-device reply.
+        assert all(not r.ok for r in invalid_readings)
 
         for j, r in enumerate(h1.readings(), start=1):
             if j > 3:

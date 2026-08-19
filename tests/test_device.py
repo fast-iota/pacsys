@@ -14,6 +14,8 @@ Tests cover:
 - Field validation
 """
 
+import copy
+import pickle
 from unittest import mock
 
 import numpy as np
@@ -70,6 +72,27 @@ class TestDeviceCreation:
 class TestDeviceImmutability:
     """Tests for Device immutability - modification methods return new instances."""
 
+    @pytest.mark.parametrize(("operation", "name"), [("set", "_backend"), ("delete", "_request")])
+    def test_attribute_mutation_rejected(self, operation, name):
+        device = Device("M:OUTTMP")
+        with pytest.raises(AttributeError, match="immutable"):
+            if operation == "set":
+                setattr(device, name, None)
+            else:
+                delattr(device, name)
+
+    @pytest.mark.parametrize("copier", [copy.copy, copy.deepcopy])
+    def test_copy_preserves_device(self, copier):
+        original = Device("M:OUTTMP@p,1000")
+        copied = copier(original)
+        assert copied == original
+        assert copied is not original
+
+    def test_pickle_round_trip(self):
+        original = Device("M:OUTTMP@p,1000")
+        restored = pickle.loads(pickle.dumps(original))
+        assert restored == original
+
     def test_with_event_returns_new_device(self):
         original = Device("M:OUTTMP")
         modified = original.with_event("p,1000")
@@ -104,7 +127,8 @@ class TestDeviceImmutability:
         dev = Device("M:OUTTMP@p,1000")
         modified = dev.with_event("E,0F")
         assert not modified.is_periodic
-        assert "@E,0F" in modified.drf.upper() or "E,0F" in modified.drf
+        assert modified.drf == "M:OUTTMP.READING@E,0F"
+        assert "P,1000" not in modified.drf.upper()
 
     @pytest.mark.parametrize(
         ("drf", "method", "args"),

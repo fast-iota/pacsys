@@ -45,6 +45,11 @@ class TestSetReading:
         reading = fake.get("M:OUTTMP")
         assert reading.value_type == ValueType.SCALAR
 
+    def test_set_reading_rejects_incompatible_value_type(self):
+        fake = FakeBackend()
+        with pytest.raises(TypeError, match="incompatible with ValueType.RAW"):
+            fake.set_reading("M:OUTTMP", "not bytes", value_type=ValueType.RAW)
+
     def test_set_reading_with_array_value(self):
         """set_reading handles array values."""
         fake = FakeBackend()

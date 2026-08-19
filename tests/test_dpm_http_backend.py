@@ -962,11 +962,9 @@ class TestGetManyTimeoutConnectionCleanup:
 
         backend = DPMHTTPBackend.__new__(DPMHTTPBackend)
         backend._timeout = 0.5
-        backend._pools = {}
         backend._pool_lock = threading.Lock()
         backend._pool_size = 2
         backend._closed = False
-        backend._default_node = "test-node"
 
         mock_conn = MagicMock()
         mock_conn.list_id = 1
@@ -1017,11 +1015,9 @@ class TestGetManyTimeoutConnectionCleanup:
 
         backend = DPMHTTPBackend.__new__(DPMHTTPBackend)
         backend._timeout = 0.5
-        backend._pools = {}
         backend._pool_lock = threading.Lock()
         backend._pool_size = 2
         backend._closed = False
-        backend._default_node = "test-node"
 
         mock_conn = MagicMock()
         mock_conn.list_id = 1
