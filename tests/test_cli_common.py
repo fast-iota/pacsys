@@ -119,6 +119,13 @@ class TestParseValue:
         assert parse_value("Off") is BasicControl.OFF
         assert parse_value("rEsEt") is BasicControl.RESET
 
+    @pytest.mark.parametrize("s", ["nan", "inf", "-inf", "Infinity", "1e309", "1,inf,3", "nan,nan"])
+    def test_non_finite_rejected(self, s):
+        from pacsys.cli._common import parse_value
+
+        with pytest.raises(ValueError, match="non-finite"):
+            parse_value(s)
+
     def test_numeric_string_stays_float(self):
         """Numeric '1' should remain float, not become BasicControl.ON."""
         from pacsys.cli._common import parse_value
@@ -223,6 +230,13 @@ class TestFormatValue:
         parsed = json.loads(result)
         assert parsed["minimum"] == 0.0
         assert parsed["maximum"] == 100.0
+
+    def test_alarm_dict_numpy_scalars(self):
+        from pacsys.cli._common import format_value
+
+        alarm = {"minimum": np.float32(1.5), "maximum": 2.0, "tries_needed": np.int32(3)}
+        parsed = json.loads(format_value(alarm, None))
+        assert parsed == {"minimum": 1.5, "maximum": 2.0, "tries_needed": 3}
 
     def test_timed_array_dict(self):
         from pacsys.cli._common import format_value

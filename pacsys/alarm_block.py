@@ -803,8 +803,6 @@ class _AlarmModifyContext:
                 if s.get(key) != init.get(key):
                     struct_changed = True
                     break
-        elif isinstance(self._block, DigitalAlarm) and isinstance(init_block, DigitalAlarm):
-            eng_changed = self._block.nominal != init_block.nominal or self._block.mask != init_block.mask
 
         if s is None:
             if raw_changed:

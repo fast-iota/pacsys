@@ -95,6 +95,21 @@ class TestOddArgsError:
         assert rc == 2
 
 
+class TestNonFiniteValueError:
+    """Non-finite setpoints are rejected before any backend connection."""
+
+    @mock.patch("pacsys.cli.put.make_backend")
+    def test_non_finite_rejected(self, mock_mb):
+        from pacsys.cli.put import main
+
+        err = io.StringIO()
+        with mock.patch("sys.argv", ["acput", "M:OUTTMP", "inf"]), contextlib.redirect_stderr(err):
+            rc = main()
+        assert rc == 2
+        assert "non-finite" in err.getvalue()
+        mock_mb.assert_not_called()
+
+
 class TestJsonOutput:
     """JSON output produces valid JSON with ok field."""
 

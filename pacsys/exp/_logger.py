@@ -96,6 +96,8 @@ class DataLogger:
         while not self._stop_event.wait(timeout=self._flush_interval):
             self._flush_now()
 
+    # TODO: distinguish conversion/validation failures (bad reading — quarantine it)
+    # from transient I/O failures (retryable) so one poison reading cannot drop the batch
     def _flush_now(self) -> None:
         with self._lock:
             batch = self._buffer

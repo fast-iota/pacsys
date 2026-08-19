@@ -165,6 +165,26 @@ class TestParquetWriter:
         assert table.column("value").to_pylist() == [None]
         assert table.column("int_value").to_pylist() == [1]
 
+    def test_scalar_numpy_int_and_bool(self, tmp_path):
+        """Numpy bool/integer scalars route to int64 column (not float, not TypeError)."""
+        pytest.importorskip("pyarrow")
+        from pacsys.exp._writers import ParquetWriter
+
+        path = tmp_path / "test.parquet"
+        readings = [
+            Reading(drf="Z:ACLTST", value_type=ValueType.SCALAR, value=np.bool_(True), timestamp=TS),
+            Reading(drf="Z:ACLTST", value_type=ValueType.SCALAR, value=np.int64(-7), timestamp=TS),
+            Reading(drf="Z:ACLTST", value_type=ValueType.SCALAR, value=np.uint32(9), timestamp=TS),
+            Reading(drf="Z:ACLTST", value_type=ValueType.SCALAR, value=np.float32(1.5), timestamp=TS),
+        ]
+        writer = ParquetWriter(path)
+        writer.write_readings(readings)
+        writer.close()
+
+        table = _read_parquet(path)
+        assert table.column("int_value").to_pylist() == [1, -7, 9, None]
+        assert table.column("value").to_pylist() == [None, None, None, 1.5]
+
     def test_scalar_array(self, tmp_path):
         """Scalar arrays stored in value_array as list<float64>."""
         pytest.importorskip("pyarrow")
