@@ -342,7 +342,7 @@ class TestRequestIdReuseRace:
     previous life must be discarded (ack-sequence causality)."""
 
     def _complete_request(self, conn, req_id_int):
-        """Run a request to completion so the ID is retired (was: tombstoned)."""
+        """Run a request to completion so its ID is retired."""
         received = []
         ctx = AsyncRequestContext(
             connection=conn,
@@ -951,8 +951,7 @@ class TestUDPProtocol:
 
 
 class TestConnectionLossNotifiesHandlers:
-    """Connection loss must deliver a final DISCONNECTED reply to mult-request
-    consumers instead of silently clearing their handlers (ftp/dpm hang fix)."""
+    """Connection loss delivers a final DISCONNECTED reply to multi-reply consumers."""
 
     def test_connection_lost_delivers_final_disconnected_reply(self):
         conn = _make_tcp_conn()

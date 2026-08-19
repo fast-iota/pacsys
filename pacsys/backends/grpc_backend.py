@@ -650,7 +650,6 @@ class _DaqCore:
                             message=message,
                         )
                     else:
-                        # BUG FIX: missing server response → error, not silent success
                         rpc_results[orig_idx] = WriteResult(
                             drf=drf,
                             error_code=ERR_RETRY,

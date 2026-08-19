@@ -3,7 +3,7 @@ from typing import Literal
 
 RANGE_RE = re.compile("(\\[(\\d*)(?::(\\d*))?\\])|(\\{(\\d*)(?::(\\d*))?\\})" + "$")
 
-# Integer.MIN_VALUE
+# Sentinel for an unbounded byte-range length
 MAXIMUM = -2147483648
 MAX_UPPER_BOUND = 2147483648
 
@@ -25,7 +25,6 @@ def parse_range(raw_string: str | None):
             # [:]
             return ARRAY_RANGE(mode="full")
         if idx2 is None and ":" not in raw_string:
-            # print(f'detected singlet from {raw_string}')
             return ARRAY_RANGE(mode="single", low=idx1, high=idx2)
         return ARRAY_RANGE(mode="std", low=idx1, high=idx2)
     if match.group(4) is not None:
@@ -98,7 +97,7 @@ class BYTE_RANGE:  # noqa: N801 -- established DRF API
                     raise ValueError("mode must be 'full' when offset=0 and length=MAXIMUM")
         self.offset = offset
         self.length = length
-        self.mode = mode  # or ('full' if (low is None and high is None) else 'std')
+        self.mode = mode
 
     def __eq__(self, other):
         if not isinstance(other, BYTE_RANGE):

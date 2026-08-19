@@ -17,7 +17,6 @@ if TYPE_CHECKING:
     from pacsys.backends import Backend
     from pacsys.types import DeviceSpec, Reading, Value
 
-# Alias builtins to avoid shadowing by methods
 builtins_min = min
 builtins_max = max
 
@@ -149,7 +148,7 @@ def read_fresh(
     unique_drfs = list(dict.fromkeys(drfs))
 
     collected: dict[str, list[Reading]] = {drf: [] for drf in unique_drfs}
-    channels_done = 0  # O(1) completion counter
+    channels_done = 0
     error_box: list[Exception] = []
     lock = threading.Lock()
     done = threading.Event()

@@ -36,15 +36,15 @@ from pacsys.dpm_protocol import (
     TimedScalarArray_reply,
     unmarshal_reply,
 )
+from pacsys.drf_utils import ensure_immediate_event
 
 from .connection_sync import ACSYS_PROXY_HOST, AcnetConnectionTCP  # noqa: E402
 from .constants import ACNET_TCP_PORT
 
 logger = logging.getLogger(__name__)
 
-# DPM task name for service discovery
 DPM_TASK = "DPMD"
-DPM_MCAST = "MCAST"
+_DEFAULT_DPM_NODE = "DPM06"
 
 
 @dataclass
@@ -99,7 +99,7 @@ class DPMAcnet:
         Args:
             host: ACNET proxy hostname (default: acsys-proxy.fnal.gov)
             port: ACNET TCP port (default: 6802)
-            dpm_node: Specific DPM node to use (if None, uses service discovery)
+            dpm_node: DPM node to use. Defaults to DPM06.
             trace: Enable packet-level tracing on the ACNET connection
         """
         self._host = host
@@ -111,7 +111,6 @@ class DPMAcnet:
         self._con: AcnetConnectionTCP | None = None
 
         # DPM state
-        self._dpm_task: str | None = None
         self._dpm_node: int | None = None
         self._list_id: int | None = None
         self._active = False
@@ -151,7 +150,12 @@ class DPMAcnet:
             self.close()
             raise
 
-        logger.info("Connected to DPM at %s, list_id=%s", self._dpm_task, self._list_id)
+        logger.info(
+            "Connected to DPM node %s (%s), list_id=%s",
+            self._desired_node or _DEFAULT_DPM_NODE,
+            self._dpm_node,
+            self._list_id,
+        )
 
     def close(self):
         """Close the connection."""
@@ -171,23 +175,16 @@ class DPMAcnet:
 
         self._list_id = None
         self._dpm_node = None
-        self._dpm_task = None
         self._active = False
 
         logger.info("Closed DPM ACNET connection")
 
     def _find_dpm(self):
-        """Find an available DPM server."""
+        """Resolve the configured or default DPM node."""
         assert self._con is not None, "not connected"
-        if self._desired_node:
-            # Use specified node
-            self._dpm_node = self._con.get_node(self._desired_node)
-            logger.debug("Using specified DPM node: %s (%s)", self._desired_node, self._dpm_node)
-        else:
-            # Use known DPM node (DPM06 is known to work)
-            # Service discovery via MCAST can cause issues with multiple ACKs
-            self._dpm_node = self._con.get_node("DPM06")
-            logger.debug("Using DPM06 node: %s", self._dpm_node)
+        node = self._desired_node or _DEFAULT_DPM_NODE
+        self._dpm_node = self._con.get_node(node)
+        logger.debug("Using DPM node %s (%s)", node, self._dpm_node)
 
     def _open_list(self):
         """Open a new DPM list."""
@@ -213,7 +210,6 @@ class DPMAcnet:
                 if isinstance(resp, OpenList_reply):
                     result["list_id"] = resp.list_id
                 else:
-                    # Store for later processing
                     self._handle_dpm_reply(resp)
                     # During the handshake the first reply must be OpenList
                     if not result_event.is_set():
@@ -455,9 +451,7 @@ class DPMAcnet:
         Returns:
             DPMReading with the device value
         """
-        # Add @I for immediate if no event specified
-        if "@" not in drf:
-            drf = f"{drf}@I"
+        drf = ensure_immediate_event(drf)
 
         # Use a unique tag
         tag = hash(drf) & 0x7FFFFFFF

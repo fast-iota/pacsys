@@ -1,7 +1,5 @@
 """Client-side scaling for ACNET devices.
 
-Tested/ported from Java DPM scaling transforms.
-
 Implements primary transforms (raw -> primary) and common transforms
 (primary -> common/engineering units).  Table-lookup and multifunction
 transforms (indices 56, 58, 90, 201) are not supported and raise clear errors.

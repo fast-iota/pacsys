@@ -54,7 +54,8 @@ REPLY_TYPE_DATA = 2
 # Default return period (15 Hz ticks between data replies)
 DEFAULT_RETURN_PERIOD = 3
 
-# Task name counters -- each pool gets a unique RAD50 name (matches Java FTPPool/SnapShotPool)
+# Unique RAD50 names let the front end match each pool with later retrieval
+# and control requests, matching Java FTPPool/SnapShotPool.
 _ftp_counter = itertools.count(1)
 _snap_counter = itertools.count(1)
 
@@ -360,10 +361,9 @@ def build_continuous_setup(
     # (timestamp word + value words: 2 for int16, 3 for int32)
     num_data_words = sum(2 if d.data_length == 2 else 3 for d in devices)
 
-    # Wire encodes a 10us-unit sample period as uint16 (1..65535): legal rates
-    # are ~1.526 Hz to 100 kHz. Validate before dividing so 0/negative/NaN all
-    # raise the same contextual error. Do NOT clamp like Java FTPPool -- it
-    # silently wraps below ~1.53 Hz.
+    # The wire stores a 10us-unit sample period as uint16 (1..65535), limiting
+    # rates to ~1.526 Hz through 100 kHz. Validate before conversion so zero,
+    # negative, NaN, and values that would wrap all fail consistently.
     if not 100_000 / 0x10000 < rate_hz <= 100_000:
         raise ValueError(f"rate_hz={rate_hz} out of range (~1.53 Hz to 100 kHz)")
     sample_period_10us = int(100_000 / rate_hz)
@@ -409,10 +409,9 @@ def _build_arm_trigger_word(
       3..2:   AM (arm modifier, only if AS=3)
       1..0:   AS (arm source: 0=device, 1=immediate, 2=clock, 3=external)
 
-    NOTE: Java SnapShotPool never sends ARM_IMMEDIATELY (1) on the wire --
-    even for immediate arming it uses ARM_CLOCK_EVENTS (2) with all-0xFF
-    events and arm_delay=0.  Comment from Java: "ecbpm doesn't like;
-    other don't care".  We follow the same convention.
+    Java SnapShotPool avoids ARM_IMMEDIATELY (1) because some front ends reject
+    it. Immediate arming is encoded as ARM_CLOCK_EVENTS (2) with all-0xFF
+    events and arm_delay=0; pacsys preserves that wire behavior.
     """
     return (
         (trigger_modifier & 0x3) << 10
@@ -446,9 +445,9 @@ def build_snapshot_setup(
 
     Header is 68 bytes, each device adds 20 bytes.
 
-    The default ``arm_source=2`` (ARM_CLOCK_EVENTS) with all-0xFF arm_events
-    gives immediate arming -- matching Java SnapShotPool which never sends
-    ARM_IMMEDIATELY (1) on the wire ("ecbpm doesn't like; other don't care").
+    The default ``arm_source=2`` (ARM_CLOCK_EVENTS) with all-0xFF ``arm_events``
+    gives immediate arming. This avoids ARM_IMMEDIATELY (1), which some front
+    ends reject.
     For clock-event arming, pass arm_events with literal event numbers, e.g.
     ``b"\\x02" + b"\\xff" * 7`` for TCLK event 0x02.
     """
@@ -1208,7 +1207,7 @@ class SnapshotHandle:
             # READY cannot satisfy the new cycle's wait(). Termination items
             # (None sentinel, is_last) are re-enqueued for the monitor. An
             # update already dequeued by the monitor or still in network
-            # flight can slip through -- not closable client-side.
+            # transit is outside this queue and may be observed after restart.
             keep = []
             while True:
                 try:

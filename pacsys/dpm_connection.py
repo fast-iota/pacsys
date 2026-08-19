@@ -6,7 +6,7 @@ This module provides the foundational TCP connection to DPM with:
 - Length-prefixed message I/O
 - PC binary protocol marshaling/unmarshaling
 
-This is a building block for DPMBackend and other higher-level APIs.
+This is a building block for DPMHTTPBackend and other higher-level APIs.
 
 Protocol Flow:
 1. Connect to acsys-proxy.fnal.gov:6802 via TCP

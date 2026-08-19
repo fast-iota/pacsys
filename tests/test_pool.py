@@ -447,7 +447,6 @@ class TestPoolClose:
             pool.close(drain_timeout=2.0)
             thread.join(timeout=1.0)
 
-            # Connection was returned gracefully during drain
             assert released.is_set()
             assert pool.in_use_count == 0
 
@@ -458,10 +457,8 @@ class TestPoolClose:
         with mock.patch("socket.socket", return_value=create_mock_socket()):
             conn = pool.borrow()  # noqa: F841 -- intentionally not released
 
-            # Short drain timeout, connection never returned
             pool.close(drain_timeout=0.1)
 
-            # Connection was forcibly closed
             assert pool.in_use_count == 0
 
 

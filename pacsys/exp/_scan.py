@@ -84,7 +84,7 @@ def scan(
 
     write_dev = Device(write_drf, backend=be)
 
-    # Save original SETTING value for restore (not READING!)
+    # Read the original setting so it can be restored.
     original: Value | None = None
     if restore:
         original = write_dev.setting(timeout=timeout)

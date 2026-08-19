@@ -5,12 +5,14 @@ DigitalStatus is a frozen value object representing a device's status bit field.
 It is constructed from data already fetched by a backend or Device API -- it does
 no I/O itself.
 
-Two construction paths:
+Construction paths:
   - from_bit_arrays(): from BIT_VALUE + BIT_NAMES + BIT_VALUES (full picture)
   - from_status_dict(): from a BasicStatus reading dict (legacy 5-attribute or gRPC map)
+  - from_devdb_bits(): from device-database bit definitions
+  - from_reading(): from a Reading containing status data
 
 Example usage:
-    # Via Device API (future)
+    # Via Device API
     status = dev.digital_status()
 
     # Manual construction from backend responses

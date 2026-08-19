@@ -422,11 +422,10 @@ class WriteResult:
     facility_code: int = 0
     error_code: int = 0
     message: str | None = None
-    # Verification fields (None if verify not used)
     verified: bool | None = None  # True=readback matched, False=failed, None=no verify
-    readback: Value | None = None  # Last readback value
-    skipped: bool = False  # True if check_first found value already correct
-    attempts: int = 0  # Number of readback attempts made
+    readback: Value | None = None
+    skipped: bool = False
+    attempts: int = 0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "readback", _frozen_value(self.readback))
@@ -640,7 +639,6 @@ class CombinedStream:
         import threading
         import time
 
-        # Non-blocking mode: drain without spawning threads
         if timeout == 0:
             if self.exc is not None:
                 raise self.exc
@@ -657,7 +655,6 @@ class CombinedStream:
                 yield (reading, handle)
             return
 
-        # Blocking mode: feeder threads push into a shared queue
         shared: queue_mod.Queue = queue_mod.Queue()
         stop_event = threading.Event()
         _sentinel = object()
@@ -692,7 +689,6 @@ class CombinedStream:
                 if self.exc is not None:
                     raise self.exc
 
-                # Calculate how long to block
                 if timeout is not None:
                     remaining = timeout - (time.monotonic() - start_time)
                     if remaining <= 0:
@@ -701,7 +697,6 @@ class CombinedStream:
                 else:
                     block_time = 0.5  # periodic check for exc/stopped
 
-                # Block until at least one reading arrives
                 try:
                     item = shared.get(timeout=block_time)
                 except queue_mod.Empty:
@@ -740,7 +735,6 @@ class CombinedStream:
                     heapq.heappush(heap, (ts, counter, reading, handle))
                     counter += 1
 
-                # Yield batch in timestamp order
                 while heap:
                     _, _, reading, handle = heapq.heappop(heap)
                     yield (reading, handle)

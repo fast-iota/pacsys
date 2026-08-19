@@ -94,8 +94,6 @@ _MAX_WRITE_CONNECTIONS = 4  # max concurrent write connections (pooled + in-flig
 
 _SettingPayload = tuple[RawSetting_struct | None, ScaledSetting_struct | None, TextSetting_struct | None]
 
-# Kerberos service principal for DPM
-
 
 def _coerce_setting_float(value: object) -> float:
     if isinstance(value, (SupportsFloat, SupportsIndex)):
@@ -672,7 +670,7 @@ class DPMHTTPBackend(Backend):
     """
     DPM HTTP Backend for ACNET device access.
 
-    Uses TCP/HTTP protocol to communicate with DPM via acsys-proxy.
+    Uses the TCP/PC protocol to communicate with DPM via acsys-proxy.
     Supports multiple independent streaming subscriptions, each with its
     own async TCP connection on a shared asyncio reactor thread.
 
@@ -996,9 +994,7 @@ class DPMHTTPBackend(Backend):
                                 if not reuse_safe:
                                     conn.close()
                     else:
-                        # Boundary-safe decode errors keep connected=True, but the
-                        # list is un-stopped — close so release() discards (async twin
-                        # does the same)
+                        # The decode boundary is intact, but the list is still active.
                         conn.close()
         except (PoolClosedError, PoolExhaustedError, DPMConnectionError, OSError) as e:
             transport_error = e

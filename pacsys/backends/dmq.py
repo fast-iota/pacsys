@@ -82,9 +82,6 @@ def _set_sample_ref_id(sample: object, ref_id: int) -> None:
     setattr(sample, "ref_id", ref_id)
 
 
-# Enable verbose protocol tracing for write channel messages
-TRACE = False
-
 DEFAULT_HOST = os.environ.get("PACSYS_DMQ_HOST", "appsrv2.fnal.gov")
 DEFAULT_PORT = int(os.environ.get("PACSYS_DMQ_PORT", "5672"))
 DEFAULT_VHOST = "/"
@@ -1563,14 +1560,13 @@ class DMQBackend(Backend):
             results[i] = WriteResult(
                 drf=drf, facility_code=FACILITY_ACNET, error_code=ERR_RETRY, message=f"Unmarshal error: {e}"
             )
-            logger.warning("Write result[%s] set to error=-1 for %s", i, drf)
+            logger.warning("Write result[%s] set to error_code=%s for %s", i, ERR_RETRY, drf)
             device_still_has_pending = any(t is tracker for _, _, _, t in session.pending.values())
             if not device_still_has_pending:
                 tracker.device_complete()
             return
 
-        if TRACE:
-            rk = method.routing_key
+        if logger.isEnabledFor(logging.DEBUG):
             rtype = type(reply).__name__
             in_pending = corr_id in session.pending if corr_id else False
             if isinstance(reply, ErrorSample_reply):
@@ -1625,8 +1621,7 @@ class DMQBackend(Backend):
         elif session.pending:
             oldest_key = next(iter(session.pending))
             i, drf, results, tracker = session.pending.pop(oldest_key)
-            if TRACE:
-                logger.debug("Write response matched via FIFO fallback (corr_id=%r)", corr_id)
+            logger.debug("Write response matched via FIFO fallback (corr_id=%r)", corr_id)
         else:
             return
 

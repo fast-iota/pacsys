@@ -209,7 +209,7 @@ class TestFlagsIntegrity:
     def test_toggle_bypass_preserves_flags(self):
         alarm = AnalogAlarm()
         alarm.flags = 0xFFFF  # all bits set
-        alarm.bypass = True  # clear BYPASS bit
+        alarm.bypass = True  # clear the ENABLE bit
         assert alarm.flags == 0xFFFE  # only bit 0 cleared
 
     def test_set_data_length_preserves_flags(self):

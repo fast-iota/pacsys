@@ -92,7 +92,6 @@ def resolve_verify(verify: bool | Verify | None) -> Verify | None:
         return active if active is not None else Verify()
     if isinstance(verify, Verify):
         return verify
-    # verify is None
     active = get_active_verify()
     if active is not None and active.always:
         return active

@@ -29,7 +29,6 @@ from .packet import AcnetRequest, RequestId
 
 logger = logging.getLogger(__name__)
 
-# Re-export for convenience
 __all__ = ["AcnetConnectionTCP", "AcnetConnectionUDP", "AcnetRequestContext", "NodeStats", "ACSYS_PROXY_HOST"]
 
 

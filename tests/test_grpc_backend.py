@@ -485,7 +485,7 @@ class TestWriteOperations:
         assert request.setting[1].device == "M:OUTTMP.CONTROL@N"
 
     def test_write_many_missing_server_response(self, auth_backend_with_mock_stub):
-        """BUG FIX: missing server responses should be errors, not success."""
+        """Missing server statuses produce write errors."""
         backend, mock_stub = auth_backend_with_mock_stub
         mock_stub.Set = mock.AsyncMock(return_value=make_setting_reply([0]))
 
@@ -1209,7 +1209,7 @@ class TestDaqCoreStream:
                 )
             )
 
-        # Pre-sleep guard (line 609) catches stop → no sleep at all
+        # The pre-sleep guard avoids backoff after stop.
         mock_sleep.assert_not_called()
         assert stub.Read.call_count == 1
 
@@ -1298,12 +1298,12 @@ class TestDaqCoreStream:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Logger DRF error handling (review §1.5: errors were converted to ok=True empty)
+# Logger DRF error handling
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 class TestLoggerReadErrors:
-    """Status replies with real errors for logger DRFs must not become ok=True empty arrays."""
+    """Logger status errors remain error readings."""
 
     def test_logger_error_status_surfaced(self, backend_with_mock_stub):
         backend, mock_stub = backend_with_mock_stub

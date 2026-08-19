@@ -230,7 +230,7 @@ class TestBackendValueTypes:
         if self._is_acl(read_backend_cls):
             pytest.skip("ACL does not support all structured value types")
         if self._is_grpc(read_backend_cls):
-            pytest.skip("DPM gRPC server has bug with gRPC synchronization")
+            pytest.skip("Mixed-type batches of this size are not supported by the current DPM gRPC service")
 
         devices = [d[0] for d in DEVICE_TYPES]
         readings = read_backend_cls.get_many(devices, timeout=TIMEOUT_BATCH)
@@ -257,7 +257,6 @@ class TestBackendErrors:
 
     def test_get_nonexistent_returns_error(self, read_backend: Backend):
         """get() returns error Reading for nonexistent device."""
-        time.sleep(0.1)  # DMQ needs cooldown after prior error test
         reading = read_backend.get(NONEXISTENT_DEVICE, timeout=10.0)
         assert not reading.ok
         assert reading.error_code != 0
@@ -759,7 +758,7 @@ class TestBackendWrite:
     @pytest.mark.write
     @requires_write_enabled
     def test_control_mixed(self, write_backend_cls: Backend):
-        """MIXED R/W test."""
+        """Reads and writes remain usable alongside concurrent subscriptions."""
         readings = []
         event = threading.Event()
 

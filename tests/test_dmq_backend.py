@@ -656,7 +656,7 @@ class TestDMQBackendInit:
 
 
 class TestDMQConnectionOpenError:
-    """A failed initial connect must not permanently brick the backend (dmq H1)."""
+    """A failed initial connection must leave the backend available for retry."""
 
     def test_open_error_stops_io_thread_and_allows_retry(self):
         conns = []
@@ -708,7 +708,7 @@ class TestDMQConnectionOpenError:
 
 
 # =============================================================================
-# Job-level INIT errors (plain "R" routing key, no ref_id) — dmq H2
+# Job-level INIT errors (plain "R" routing key, no ref_id)
 # =============================================================================
 
 SECURITY_VIOLATION = -99
@@ -858,7 +858,7 @@ class TestDMQJobLevelErrors:
 
 
 # =============================================================================
-# write_many vs connection loss (dmq H3)
+# write_many vs connection loss
 # =============================================================================
 
 
@@ -1035,7 +1035,7 @@ class TestDMQBackendRead:
             assert readings[1].value == 1.234
 
     def test_get_many_same_device_different_properties(self):
-        """Regression: routing key matching when ref_id is missing."""
+        """Route replies by property when ref_id is missing."""
         replies = [make_double_reply(1.0), make_double_reply(2.0)]
         routing_keys = [f"R.{TEMP_DEVICE}.READING@I", f"R.{TEMP_DEVICE}.SETTING@I"]
         with _mock_dmq_backend(replies, routing_keys) as backend:
@@ -1083,11 +1083,7 @@ class TestDMQBackendRead:
             assert "timeout" in readings[0].message.lower()
 
     def test_read_gss_failure_reports_auth_error(self):
-        """Test that GSS auth failure during read raises ReadError with ERR_RETRY.
-
-        Regression: previously, GSS errors were masked as ERR_TIMEOUT because
-        on_gss_error just called _complete_read without storing the error.
-        """
+        """GSS read failures surface as ERR_RETRY and preserve their cause."""
         factory, mock_conn = create_mock_select_connection_factory([])
         with (
             _mock_gssapi(),

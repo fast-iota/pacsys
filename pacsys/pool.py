@@ -58,8 +58,8 @@ class ConnectionPool:
     Thread-safe connection pool for DPM connections.
 
     Manages a pool of DPMConnection objects with borrow/release semantics.
-    Connections are created lazily on first borrow. Stale connections are
-    handled via retry-on-failure pattern.
+    Connections are created lazily on first borrow. Callers discard failed
+    connections and retry operations as needed.
 
     Thread Safety:
         All methods are thread-safe. Multiple threads can borrow and release
@@ -110,13 +110,11 @@ class ConnectionPool:
         self._pool_size = pool_size
         self._timeout = timeout
 
-        # Pool state
         self._available: list[DPMConnection] = []
         self._in_use: set[DPMConnection] = set()
         self._pending_creates = 0  # Slots reserved for connections being created
         self._closed = False
 
-        # Synchronization
         self._lock = threading.Lock()
         self._condition = threading.Condition(self._lock)
 
@@ -202,15 +200,12 @@ class ConnectionPool:
 
             # Try to get an available connection or reserve a slot for creation
             while not self._available:
-                # Can we create a new connection? Count includes pending creates
                 active_count = len(self._in_use) + self._pending_creates
                 if active_count < self._pool_size:
-                    # Reserve a slot for connection creation (done outside lock)
                     self._pending_creates += 1
                     need_create = True
                     break
 
-                # Pool exhausted, wait for a connection to be released
                 if deadline is not None:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
@@ -227,12 +222,10 @@ class ConnectionPool:
                         f"(pool_size={self._pool_size}, all in use)"
                     )
 
-                # Check if pool was closed while waiting
                 if self._closed:
                     raise PoolClosedError
 
             if not need_create:
-                # Get connection from available pool
                 conn = self._available.pop()
                 self._in_use.add(conn)
                 logger.debug(
@@ -252,7 +245,6 @@ class ConnectionPool:
                 self._condition.notify()  # Wake waiting threads
             raise
 
-        # Add the new connection to in_use set
         with self._condition:
             if self._closed:
                 # Pool was closed while we were creating the connection
@@ -302,7 +294,6 @@ class ConnectionPool:
             Safe to call multiple times with same connection (no-op after first).
         """
         with self._condition:
-            # Ignore if connection not from this pool
             if conn not in self._in_use:
                 logger.debug("Release called for connection not in use (ignoring)")
                 return
@@ -310,10 +301,8 @@ class ConnectionPool:
             self._in_use.discard(conn)
 
             if self._closed:
-                # Pool is closed, close the connection
                 self._close_connection(conn)
             elif conn.connected:
-                # Return to available pool
                 self._available.append(conn)
                 logger.debug(
                     "Released connection, available=%s, in_use=%s",
@@ -321,11 +310,9 @@ class ConnectionPool:
                     len(self._in_use),
                 )
             else:
-                # Connection is dead, don't return to pool
                 self._close_connection(conn)
                 logger.debug("Released dead connection (discarded)")
 
-            # Notify waiters that a connection may be available
             self._condition.notify()
 
     def discard(self, conn: DPMConnection) -> None:
@@ -415,7 +402,6 @@ class ConnectionPool:
 
             self._closed = True
 
-            # Close all available connections
             for conn in self._available:
                 self._close_connection(conn)
             self._available.clear()
@@ -423,7 +409,6 @@ class ConnectionPool:
             # Wake up all waiters so they get PoolClosedError
             self._condition.notify_all()
 
-            # Wait for borrowers to return their connections
             if self._in_use:
                 deadline = time.monotonic() + drain_timeout
                 while self._in_use:
@@ -432,7 +417,6 @@ class ConnectionPool:
                         break
                     self._condition.wait(timeout=remaining)
 
-            # Forcibly close any connections still outstanding
             if self._in_use:
                 logger.warning(
                     "Pool closing with %d connection(s) still in use",

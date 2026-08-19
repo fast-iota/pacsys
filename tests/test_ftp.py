@@ -909,7 +909,7 @@ class TestFTPClientSnapshotSetup:
         ctx.cancel.assert_called_once()
 
     def test_start_snapshot_end_after_setup_cancels(self, mouttmp):
-        """is_last on the setup reply must cancel and raise (previously ignored)."""
+        """is_last on the setup reply cancels the request and raises."""
         ctx = MagicMock()
         conn = MagicMock()
 

@@ -253,7 +253,7 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
                         try:
                             loop.call_soon_threadsafe(_enqueue, reading)
                         except RuntimeError:
-                            pass  # loop closed during shutdown (#3)
+                            pass  # loop closed during shutdown
 
                     def on_error(exc, h):
                         # Transient (retryable) errors leave the handle running;
@@ -418,7 +418,7 @@ class SupervisedServer:
     Args:
         backend: Backend instance to proxy requests to
         port: Port to listen on (default: 50051)
-        host: Host to bind (default: "[::] " for all interfaces)
+        host: Host to bind (default: "[::]" for all interfaces)
         policies: Optional list of Policy instances for access control
         token: Optional bearer token for write authentication.
             When set, clients must send ``JWTAuth(token=...)`` with this

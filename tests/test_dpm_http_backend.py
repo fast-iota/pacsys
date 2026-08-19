@@ -1067,7 +1067,7 @@ class TestGetManyTimeoutConnectionCleanup:
 
 
 # =============================================================================
-# Pooled-connection hygiene (review §1.4: stale-reply desync)
+# Pooled-connection hygiene
 # =============================================================================
 
 
@@ -1203,7 +1203,7 @@ class TestPooledConnectionHygiene:
 
 
 # =============================================================================
-# Subscription connect failure (dpm H1)
+# Subscription connect failure
 # =============================================================================
 
 

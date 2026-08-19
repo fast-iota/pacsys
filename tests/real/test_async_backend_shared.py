@@ -170,10 +170,7 @@ class TestAsyncBackendValueTypes:
     async def test_get_many_all_types(self, async_read_backend_cls: AsyncBackend):
         """get_many() reads all value types in one batch."""
         if self._is_grpc(async_read_backend_cls):
-            pytest.skip(
-                "DPM gRPC server has unsynchronized StreamObserver.onNext() - "
-                "concurrent ACNET callbacks corrupt HTTP/2 framing with 12+ mixed devices"
-            )
+            pytest.skip("Mixed-type batches of this size are not supported by the current DPM gRPC service")
 
         devices = [d[0] for d in DEVICE_TYPES]
         readings = await async_read_backend_cls.get_many(devices, timeout=TIMEOUT_BATCH)
@@ -201,7 +198,6 @@ class TestAsyncBackendErrors:
 
     async def test_get_nonexistent_returns_error(self, async_read_backend_cls: AsyncBackend):
         """get() returns error Reading for nonexistent device."""
-        await asyncio.sleep(0.1)  # cooldown after prior error test
         reading = await async_read_backend_cls.get(NONEXISTENT_DEVICE, timeout=10.0)
         assert not reading.ok
         assert reading.error_code != 0

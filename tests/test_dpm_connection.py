@@ -2,7 +2,6 @@
 Unit tests for DPMConnection class.
 
 These tests use mocking for socket operations - no real network calls.
-For integration tests that actually connect to DPM, see test_dpm_connection.py.
 """
 
 import socket
