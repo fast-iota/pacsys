@@ -5,7 +5,7 @@ import pytest
 from pacsys.digital_status import DigitalStatus
 from pacsys.types import Reading, ValueType
 
-# --- Test data from resources/digital_status_control_notes.txt ---
+# --- Representative digital-status data ---
 
 # Z:ACLTST: raw=2 (0b10), bits: On(0), Ready(1), unused(2), Polarity(3)
 ACLTST_NAMES = ["On", "Ready", "", "Polarity"]

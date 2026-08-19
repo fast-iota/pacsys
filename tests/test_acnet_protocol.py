@@ -561,6 +561,19 @@ class TestLegacyRequestTermination:
             conn._handle_request(acnet_request)
 
 
+class TestDPMAcnetNodeResolution:
+    @pytest.mark.parametrize(("configured", "expected"), [(None, "DPM06"), ("DPM01", "DPM01")])
+    def test_resolves_configured_or_default_node(self, configured, expected):
+        dpm = DPMAcnet(dpm_node=configured)
+        dpm._con = MagicMock()
+        dpm._con.get_node.return_value = 123
+
+        dpm._find_dpm()
+
+        dpm._con.get_node.assert_called_once_with(expected)
+        assert dpm._dpm_node == 123
+
+
 class TestDPMAcnetListState:
     @pytest.fixture
     def dpm(self):
@@ -616,11 +629,25 @@ class TestDPMAcnetListState:
         dpm.stop = MagicMock(side_effect=DPMError(-1, "stop timeout"))
         dpm.close = MagicMock()
 
-        with pytest.raises(TimeoutError, match="Timeout reading M:OUTTMP@I"):
+        with pytest.raises(TimeoutError, match=r"Timeout reading M:OUTTMP\.READING@I"):
             dpm.read("M:OUTTMP", timeout=0)
 
         dpm.close.assert_called_once_with()
-        assert "Failed to stop DPM acquisition after reading M:OUTTMP@I" in caplog.text
+        assert "Failed to stop DPM acquisition after reading M:OUTTMP.READING@I" in caplog.text
+
+    def test_read_uses_parser_for_immediate_event(self, dpm):
+        expected_drf = "M:UTEST.ANALOG@I"
+        tag = hash(expected_drf) & 0x7FFFFFFF
+
+        dpm._active = True
+        dpm._dev_list = {}
+        dpm.add_entry = MagicMock()
+        dpm.readings = MagicMock(return_value=iter([DPMReading(ref_id=tag, data=1.0)]))
+
+        reading = dpm.read("M@UTEST")
+
+        assert reading.data == 1.0
+        dpm.add_entry.assert_called_once_with(tag, expected_drf)
 
     def test_read_propagates_stop_failure_after_success(self, dpm, caplog):
         drf = "M:OUTTMP@I"

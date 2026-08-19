@@ -87,11 +87,6 @@ def _key_head(req) -> str:
     return out
 
 
-def _normalize_drf(drf: str) -> str:
-    """Backward-compatible alias for _base_key."""
-    return _base_key(drf)
-
-
 def _infer_value_type(value: Any) -> ValueType:
     """Infer ValueType from a Python value."""
     if isinstance(value, str):
@@ -442,8 +437,7 @@ class FakeBackend(Backend):
     def _validate_value_type(value: Any, value_type: ValueType | None) -> None:
         """Validate that value matches the declared ValueType.
 
-        Raises TypeError on mismatch so tests fail loudly at setup time
-        rather than silently accepting nonsense.
+        Raises TypeError at setup time when the value does not match the declared type.
         """
         if value_type is None:
             return
@@ -604,19 +598,19 @@ class FakeBackend(Backend):
 
     def was_read(self, drf: str) -> bool:
         """Check if a specific device was read (normalizes DRF for comparison)."""
-        key = _normalize_drf(drf)
-        return any(_normalize_drf(d) == key for d in self._read_history)
+        key = _base_key(drf)
+        return any(_base_key(d) == key for d in self._read_history)
 
     def was_written(self, drf: str) -> bool:
         """Check if a specific device was written (normalizes DRF for comparison)."""
-        key = _normalize_drf(drf)
-        return any(_normalize_drf(d) == key for d, _ in self._write_history)
+        key = _base_key(drf)
+        return any(_base_key(d) == key for d, _ in self._write_history)
 
     def get_written_value(self, drf: str) -> Value | None:
         """Get the value that was written to a device (last write, normalizes DRF)."""
-        key = _normalize_drf(drf)
+        key = _base_key(drf)
         for d, v in reversed(self._write_history):
-            if _normalize_drf(d) == key:
+            if _base_key(d) == key:
                 return v
         return None
 

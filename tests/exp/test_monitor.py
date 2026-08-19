@@ -144,8 +144,7 @@ class TestMonitorCollect:
         t.start()
         mon = Monitor(["M:OUTTMP@p,1000"], backend=fake)
         start = time.monotonic()
-        # timeout bounds the pre-fix behavior (TimeoutError after 5s);
-        # fixed code raises RuntimeError promptly on the stop
+        # Failure must not wait for the collection timeout.
         with pytest.raises(RuntimeError, match="Subscription stopped"):
             mon.collect(count=5, timeout=5.0)
         assert time.monotonic() - start < 3.0

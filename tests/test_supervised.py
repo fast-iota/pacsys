@@ -284,7 +284,7 @@ class TestStreamingRead:
                 assert g_replies[0].index == 1
 
     def test_streaming_read_backend_death_fails_rpc(self, fake_backend):
-        """Fatal subscription death must fail the RPC, not hang it (mcp H3)."""
+        """Fatal subscription death must fail the RPC, not hang it."""
         with SupervisedServer(fake_backend, port=0) as srv:
             with _make_channel(srv) as ch:
                 stub = DAQ_pb2_grpc.DAQStub(ch)

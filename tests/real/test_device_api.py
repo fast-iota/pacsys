@@ -580,8 +580,7 @@ class TestDeviceAlarmWrite:
     @pytest.mark.write
     @requires_write_enabled
     def test_write_analog_alarm_max(self, dpm_write_backend):
-        """Write analog alarm MAX via device.set_analog_alarm() isn't covered;
-        test write to ANALOG field via backend write (mirrors backend test)."""
+        """A field-level MAX write is visible through Device.analog_alarm()."""
         dev = Device("Z:ACLTST", backend=dpm_write_backend)
         alarm = dev.analog_alarm(timeout=TIMEOUT_READ)
         assert isinstance(alarm, dict)

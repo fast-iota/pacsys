@@ -9,14 +9,6 @@ Subclasses provide transport-specific framing:
 The sync wrappers (AcnetConnectionTCP / AcnetConnectionUDP) schedule calls via
 run_coroutine_threadsafe.
 
-Key design decisions:
-- Single event loop: no locks needed - reply_handlers and reply_buffer
-  are only mutated from the event loop.
-- Reply buffering: when ACK+reply arrive in the same TCP batch, the reply
-  is buffered until send_request() registers its handler.
-- Future-based ACK: _cmd_lock serializes commands so only one ACK is ever
-  pending; a single asyncio.Future delivers it.
-
 Example:
     async with AsyncAcnetConnectionTCP("acsys-proxy.fnal.gov") as conn:
         await conn.send_request(node, "DPM", data, reply_handler)
@@ -549,12 +541,12 @@ class AsyncAcnetConnectionBase:
     def _handle_reply(self, reply: AcnetReply):
         """Handle an incoming reply.
 
-        No race condition: if handler isn't registered yet, buffer the reply
-        (acnetd reuses request IDs, so even a "finished" ID may carry a fresh
-        reply for a new request whose handler isn't registered yet).
-        send_request() drains the buffer, discarding pre-ack (stale) entries
-        on ordered transports (TCP only — UDP delivers all buffered replies).
-        All runs on the event loop - no locks needed.
+        If the handler is not registered yet, buffer the reply: acnetd reuses
+        request IDs, so a finished ID may already belong to a new request.
+        send_request() drains the buffer and, on ordered transports, discards
+        entries received before the request ACK. UDP has no cross-socket
+        ordering, so it delivers all buffered replies. The event loop owns all
+        of this state, so no locks are needed.
         """
         self._recv_seq += 1
         context = self._reply_handlers.get(reply.request_id)

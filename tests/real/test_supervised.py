@@ -210,14 +210,9 @@ def _assert_values_equivalent(direct_val, proxied_val, tol):
     elif isinstance(direct_val, str) and isinstance(proxied_val, str):
         assert direct_val == proxied_val, f"string mismatch: direct={direct_val!r}, proxied={proxied_val!r}"
     elif isinstance(direct_val, bytes) and isinstance(proxied_val, bytes):
-        # Known DPM server discrepancy (reported upstream):
-        # - DPM gRPC replier (DPMListGRPC.sendReply) copies the entire ACNET
-        #   data buffer (e.g. 220 bytes for M:OUTTMP)
-        # - DPM HTTP replier (DPMProtocolReplierPC.sendReply) copies only
-        #   whatDaq.length() bytes (e.g. 2 bytes for M:OUTTMP's int16 reading)
-        # The supervised proxy correctly forwards whatever the HTTP backend
-        # returns, so the proxied value will be shorter. Only check that the
-        # proxied bytes are a prefix of the direct bytes.
+        # The direct DPM path exposes the full ACNET backing buffer, while the
+        # HTTP path returns only the logical data length. The proxy forwards
+        # that shorter value, so require it to be a nonempty prefix.
         assert len(proxied_val) > 0, "proxied raw bytes should not be empty"
         assert direct_val[: len(proxied_val)] == proxied_val, (
             f"proxied raw bytes not a prefix of direct: "

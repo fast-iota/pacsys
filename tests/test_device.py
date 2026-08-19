@@ -648,7 +648,7 @@ class TestDeviceFieldValidation:
 
 
 class TestConstructorFieldCarryover:
-    """Explicit field in the constructor DRF must reach the wire (was silently dropped)."""
+    """Constructor DRF fields are preserved in backend requests."""
 
     def test_read_honors_constructor_field(self, fake):
         fake.set_reading("M:OUTTMP.READING.RAW", b"\x01", value_type=ValueType.RAW)

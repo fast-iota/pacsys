@@ -247,7 +247,6 @@ class AsyncDPMHTTPBackend(AsyncBackend):
     # ── Write ─────────────────────────────────────────────────────────────
 
     async def write(self, drf: str, value: Value, timeout: float | None = None) -> WriteResult:
-        # Alarm dict expansion (same pattern as sync DPMHTTPBackend)
         if isinstance(value, dict):
             from pacsys.acnet.errors import ERR_OK
 

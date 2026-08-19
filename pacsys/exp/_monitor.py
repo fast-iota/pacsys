@@ -21,7 +21,6 @@ if TYPE_CHECKING:
 
     from pacsys.backends import Backend
 
-# Alias builtins to avoid shadowing by methods
 builtins_min = min
 builtins_max = max
 
@@ -449,7 +448,6 @@ class Monitor:
             # Grace period: not stale until stale_after elapsed since start
             stale = (now - self._started_mono) >= self._stale_after
         else:
-            # Not started yet
             stale = False
         return ChannelHealth(
             drf=drf,
@@ -666,7 +664,7 @@ class Monitor:
                     time.sleep(min(0.1, max(0, remaining)))
             else:
                 assert count is not None
-                target = count  # narrowed local for the closure
+                target = count
 
                 def satisfied() -> bool:
                     with self._lock:

@@ -1,5 +1,5 @@
 """
-Tests for the Simple API (Phase 6).
+Tests for the simple API.
 
 Tests cover:
 - read() with DRF string and Device object
@@ -450,11 +450,6 @@ class TestACLFactory:
         with pacsys.acl() as backend:
             assert not backend._closed
         assert backend._closed
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Session Tests
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 # ─────────────────────────────────────────────────────────────────────────────

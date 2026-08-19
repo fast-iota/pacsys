@@ -81,7 +81,7 @@ class DataRequest:
 
     def __str__(self):
         return (
-            f"DiscreteRequest[{self.raw_string}] = [{self.device=}] [{self.property=}]"
+            f"DataRequest[{self.raw_string}] = [{self.device=}] [{self.property=}]"
             f" [{self.range=}]"
             f" [{self.field=}]"
             f" [{self.event=}]"
@@ -218,7 +218,7 @@ class DataRequest:
 
     def pretty_print(self):
         return (
-            f"DiscreteRequest[{self.raw_string}]\n [{self.device=}]\n [{self.property=}]\n"
+            f"DataRequest[{self.raw_string}]\n [{self.device=}]\n [{self.property=}]\n"
             f" [{self.range=}]\n"
             f" [{self.field=}]\n"
             f" [{self.event=}]\n"

@@ -63,7 +63,6 @@ class TestAuthenticationInit:
 
     def test_auth_kerberos_no_credentials(self):
         """Test that missing Kerberos credentials raises AuthenticationError."""
-        # This test requires mocking gssapi. Use the mock.
         mock_gssapi = MockGSSAPIModule()
 
         # Override the Credentials method to raise an error
@@ -321,10 +320,10 @@ class TestWriteValueTypes:
 
 
 class TestWriteVerify:
-    """Tests for write verification (now handled at Device layer, not backend)."""
+    """Tests the backend boundary for Device-layer write verification."""
 
     def test_backend_write_has_no_verify_param(self):
-        """Backend.write() no longer accepts verify/tolerance -- verification is Device-layer only."""
+        """Backend.write() rejects Device-layer verification arguments."""
         mock_gssapi = MockGSSAPIModule()
         mock_socket = MockSocketWithReplies(list_id=1, replies=make_write_sequence())
 

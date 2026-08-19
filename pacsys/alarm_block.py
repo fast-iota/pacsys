@@ -59,7 +59,7 @@ class AlarmFlags(IntFlag):
 
     # Common flags (both analog and digital)
     ENABLE = 1 << 0  # Alarm enable: 0=bypassed, 1=active (Java: isEnabled())
-    BYPASS = ENABLE  # Deprecated alias -- use ENABLE
+    BYPASS = ENABLE  # Legacy alias; the set bit means active, not bypassed
     BAD = 1 << 1  # GB: 0=good, 1=bad/alarm
     ABORT = 1 << 2  # AB: 0=no abort, 1=abort on alarm
     ABORT_INHIBIT = 1 << 3  # AI: 0=enabled, 1=inhibited
@@ -495,12 +495,11 @@ class AnalogAlarm(AlarmBlock):
         name = get_device_name(device)
         offset = segment * 20
 
-        # Fetch both raw and structured in parallel
+        # Fetch raw storage and structured engineering values together.
         raw_drf = f"{name}.ANALOG{{{offset}:20}}.RAW@I"
         struct_drf = f"{name}.ANALOG@I"
         readings = be.get_many([raw_drf, struct_drf])
 
-        # Parse raw block
         raw_reading = readings[0]
         if raw_reading.is_error:
             raise DeviceError(raw_drf, raw_reading.facility_code, raw_reading.error_code, raw_reading.message)
@@ -627,12 +626,11 @@ class DigitalAlarm(AlarmBlock):
         name = get_device_name(device)
         offset = segment * 20
 
-        # Fetch both raw and structured in parallel
+        # Fetch raw storage and structured engineering values together.
         raw_drf = f"{name}.DIGITAL{{{offset}:20}}.RAW@I"
         struct_drf = f"{name}.DIGITAL@I"
         readings = be.get_many([raw_drf, struct_drf])
 
-        # Parse raw block
         raw_reading = readings[0]
         if raw_reading.is_error:
             raise DeviceError(raw_drf, raw_reading.facility_code, raw_reading.error_code, raw_reading.message)
@@ -736,16 +734,14 @@ class _AlarmModifyContext:
         name = get_device_name(self._device)
         offset = self._segment * 20
 
-        # Determine property name based on alarm type
         prop = "ANALOG" if self._cls is AnalogAlarm else "DIGITAL"
 
-        # Read both raw and structured in parallel (same connection)
+        # Fetch raw storage and structured engineering values together.
         raw_drf = f"{name}.{prop}{{{offset}:20}}.RAW@I"
         struct_drf = f"{name}.{prop}@I"
 
         readings = backend.get_many([raw_drf, struct_drf])
 
-        # Parse raw block
         raw_reading = readings[0]
         if raw_reading.is_error:
             from pacsys.errors import DeviceError
@@ -762,7 +758,6 @@ class _AlarmModifyContext:
         self._initial_raw = raw_reading.value
         self._block = self._cls.from_bytes(raw_reading.value)
 
-        # Parse structured response
         struct_reading = readings[1]
         if struct_reading.ok and isinstance(struct_reading.value, dict):
             self._structured = struct_reading.value
@@ -783,7 +778,6 @@ class _AlarmModifyContext:
         offset = self._segment * 20
         prop = "ANALOG" if self._cls is AnalogAlarm else "DIGITAL"
 
-        # Determine what changed
         current_raw = self._block.to_bytes()
         raw_changed = current_raw != self._initial_raw
         init_block = self._cls.from_bytes(self._initial_raw)
@@ -793,12 +787,10 @@ class _AlarmModifyContext:
         s = self._block._structured
         init = self._block._initial_structured
         if s is not None and init is not None:
-            # Check if engineering unit values changed
             if self._cls is AnalogAlarm:
                 eng_changed = s.get("minimum") != init.get("minimum") or s.get("maximum") != init.get("maximum")
             elif isinstance(self._block, DigitalAlarm) and isinstance(init_block, DigitalAlarm):
                 eng_changed = self._block.nominal != init_block.nominal or self._block.mask != init_block.mask
-            # Check if any structured flag changed
             for key in ("alarm_enable", "abort", "abort_inhibit"):
                 if s.get(key) != init.get(key):
                     struct_changed = True
@@ -822,13 +814,9 @@ class _AlarmModifyContext:
                 if self._block.limit_type != init_block.limit_type:
                     raw_only_changed = True
 
-        # Decide write strategy
         if raw_only_changed and (eng_changed or struct_changed):
-            # Both raw-only fields and structured values changed.
-            # Write structured first, then patch the fresh raw block.
+            # Apply server transforms before patching raw-only fields.
             self._write_structured(backend, name, prop)
-            # Re-read to get updated raw bytes with new eng values, then
-            # patch raw-only fields on top and write.
             raw_read_drf = f"{name}.{prop}{{{offset}:20}}.RAW@I"
             fresh = backend.read(raw_read_drf)
             if isinstance(fresh, bytes):
@@ -851,16 +839,14 @@ class _AlarmModifyContext:
             if not result.success:
                 raise RuntimeError(f"Failed to write alarm (raw): {result.message}")
         elif raw_only_changed:
-            # Only raw-only fields changed
             raw_drf = f"{name}.{prop}{{{offset}:20}}.RAW@N"
             result = backend.write(raw_drf, current_raw)
             if not result.success:
                 raise RuntimeError(f"Failed to write alarm (raw): {result.message}")
         elif eng_changed or struct_changed:
-            # Use structured write for engineering unit values
             self._write_structured(backend, name, prop)
         elif raw_changed:
-            # Flags changed but not via structured - use structured write anyway
+            # Remaining raw differences are structured flags.
             self._write_structured(backend, name, prop)
 
         return False
@@ -884,8 +870,6 @@ class _AlarmModifyContext:
 
         # Build write value from structured data
         if self._cls is AnalogAlarm:
-            # Write as array: [minimum, maximum] with appropriate flags via separate writes
-            # For now, write the full structured dict
             write_val = {
                 "minimum": s["minimum"],
                 "maximum": s["maximum"],

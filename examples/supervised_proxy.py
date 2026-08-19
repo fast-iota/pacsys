@@ -79,7 +79,7 @@ def configure_logging():
 # -- Main ------------------------------------------------------------------
 
 
-PROXY_TOKEN = "my-supervised-proxy-token"
+PROXY_TOKEN = "my-supervised-proxy-token"  # CHANGEME: replace before use.
 
 
 def parse_args():

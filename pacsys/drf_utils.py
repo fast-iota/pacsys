@@ -1,9 +1,4 @@
-"""
-DRF string utilities using proper parsing.
-
-These functions provide safe DRF manipulation using the drf3 parser
-instead of fragile string splitting.
-"""
+"""Parser-based helpers for canonical DRF manipulation."""
 
 from pacsys.drf3 import parse_request
 from pacsys.drf3.event import ImmediateEvent, NeverEvent, parse_event

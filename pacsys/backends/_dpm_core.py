@@ -16,8 +16,6 @@ from pacsys.acnet.errors import (
 )
 from pacsys.auth import KerberosAuth, _require_gssapi
 from pacsys.backends import summarize_drfs
-
-# Reuse pure helpers from sync backend
 from pacsys.backends.dpm_http import (
     _aggregate_logger_chunks,
     _AsyncDPMConnection,

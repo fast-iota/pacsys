@@ -76,8 +76,8 @@ class Backend(ABC):
         - Or manually call close() when done
 
     Thread Safety:
-        One-shot operations (read, get, get_many) are thread-safe. Each call
-        borrows a connection from an internal pool for its duration.
+        One-shot operations (read, get, get_many) are thread-safe. Connection
+        and synchronization strategies are backend-specific.
     """
 
     @property

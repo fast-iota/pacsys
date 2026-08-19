@@ -10,7 +10,7 @@ logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(name)s - %(leve
 # This example shows traces of two possible authentication types for writing via DPM/HTTP.
 
 # First is based on console class of your account
-# (see ACL `user_info/console_classes`` and `show <>/setting_protection` command)
+# (see ACL `user_info/console_classes` and `show <>/setting_protection` commands)
 with pacsys.dpm(auth=KerberosAuth()) as b:
     print("principal:", b.principal)
     print("no role:", b.write("Z:ACLTST", 45.0))

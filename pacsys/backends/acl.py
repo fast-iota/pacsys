@@ -350,7 +350,7 @@ class ACLBackend(Backend):
         Single:   ``?acl=read+DEVICE/qualifier``
         Batch:    ``?acl=read+DEV1/q1\\;read+DEV2/q2``
 
-        Qualifiers (``/raw``, ``/ftd=evtXX``) must come **after** the device
+        Qualifiers (``/raw``, ``/event='e,XX'``) must come **after** the device
         name - ACL rejects them before the device (CLIB_SYNTAX).
         """
         # The ACL CGI only decodes spaces (+/%20) and quotes (%27) from the

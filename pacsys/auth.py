@@ -105,11 +105,7 @@ class KerberosAuth(Auth):
         return creds
 
     def _inspect_credentials(self):
-        """Acquire and validate credentials; returns (creds, principal string).
-
-        gssapi resolves the cache lazily, so name/lifetime inspection (not just
-        construction) can raise GSSError -- everything stays in one boundary.
-        """
+        """Acquire credentials and validate their principal, realm, and lifetime."""
         gssapi = _require_gssapi()
 
         from pacsys.errors import AuthenticationError

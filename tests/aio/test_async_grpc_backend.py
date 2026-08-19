@@ -174,7 +174,7 @@ class TestAsyncGRPCSubscribe:
 
     @pytest.mark.asyncio
     async def test_subscribe_stream_completion_stops_iteration(self, backend):
-        """Normal stream end (server onCompleted) must terminate readings() (grpc B2)."""
+        """Normal stream end (server onCompleted) must terminate readings()."""
 
         async def fake_stream(drfs, dispatch_fn, stop_check, error_fn):
             dispatch_fn(_make_reading(val=1.0))

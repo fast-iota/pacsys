@@ -137,7 +137,7 @@ class AcnetConnection:
         self._requests_in: dict[ReplyId, AcnetRequest] = {}
         self._requests_in_lock = threading.Lock()
 
-        # Reply buffering (mirrors async_connection pattern)
+        # Replies can arrive before request registration.
         self._reply_buffer: dict[RequestId, list[tuple]] = defaultdict(list)
         self._dead_requests: set[RequestId] = set()
 

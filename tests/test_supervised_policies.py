@@ -115,7 +115,7 @@ class TestDeviceAccessPolicy:
         assert d.ctx.allowed == frozenset({0})
 
     def test_allow_mode_passes_through_non_matching(self):
-        """Allow mode no longer denies non-matching — just doesn't approve them."""
+        """Allow mode passes through nonmatching requests without approving them."""
         p = DeviceAccessPolicy(patterns=["M:*"], mode="allow")
         d = p.check(_ctx(drfs=["G:AMANDA"]))
         assert d.allowed
@@ -551,7 +551,7 @@ class TestSlewRatePolicy:
         assert d.allowed
 
     def test_numpy_scalar_enforced(self):
-        """np.int32 previously bypassed the isinstance check entirely."""
+        """NumPy scalars are subject to slew-rate limits."""
         p = SlewRatePolicy(limits={"M:*": SlewLimit(max_step=5.0)})
         p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", np.int32(0))]))
         d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", np.int32(100))]))

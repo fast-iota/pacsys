@@ -76,7 +76,6 @@ def _get_env_float(name: str, default: float | None = None) -> float | None:
         raise ValueError(f"Environment variable {name} must be a number, got {val!r}") from None
 
 
-# Read environment variables at import time
 _env_dpm_host = os.environ.get("PACSYS_DPM_HOST")
 _env_dpm_port = _get_env_int("PACSYS_DPM_PORT")
 _env_pool_size = _get_env_int("PACSYS_POOL_SIZE")
@@ -89,13 +88,10 @@ _env_devdb_port = _get_env_int("PACSYS_DEVDB_PORT")
 # Global Backend Management
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Thread-safe lock for global backend initialization
 _global_lock = threading.Lock()
 
-# Global lazy-initialized backend (None until first use)
 _global_backend: Optional["Backend"] = None
 
-# Flag to track if backend has been initialized
 _backend_initialized = False
 
 # Valid backend type names
@@ -267,12 +263,10 @@ def _get_global_backend() -> "Backend":
     """
     global _global_backend, _backend_initialized
 
-    # Fast path: already initialized
     if _global_backend is not None:
         return _global_backend
 
     with _global_lock:
-        # Double-check under lock
         if _global_backend is not None:
             return _global_backend
 
@@ -365,7 +359,7 @@ def _get_global_devdb() -> Optional["DevDBClient"]:
         port = _config_devdb_port or _env_devdb_port or 6802
         _global_devdb = DevDBClient(host=host, port=port)
         _devdb_initialized = True
-        # Track for atexit cleanup
+        # DevDB clients share backend atexit cleanup.
         with _live_backends_lock:
             _live_backends.add(_global_devdb)
         return _global_devdb
@@ -626,17 +620,16 @@ def dpm(
 ) -> "DPMHTTPBackend":
     """Create a DPM backend instance with its own connection pool.
 
-    Alias for dpm_http(). Each subscribe() call creates its own TCP
+    Delegates to dpm_http(). Each subscribe() call creates its own TCP
     connection, allowing independent subscriptions.
 
     Args:
         host: DPM proxy hostname (default: acsys-proxy.fnal.gov)
         port: DPM proxy port (default: 6802)
-        pool_size: Connection pool size (default: 4)
+        pool_size: Connection pool size for one-shot reads (default: 4)
         timeout: Default operation timeout in seconds (default: 5.0)
         auth: Authentication object (KerberosAuth for writes)
-        role: Role for authenticated operations (e.g., "testing")
-              Required for write operations.
+        role: Optional role for authenticated operations (e.g., "testing")
         dispatch_mode: How streaming callbacks are dispatched (default: WORKER)
 
     Returns:
@@ -668,7 +661,7 @@ def dpm_http(
 ) -> "DPMHTTPBackend":
     """Create a DPM HTTP backend with independent streaming subscriptions.
 
-    This backend uses TCP/HTTP protocol to communicate with DPM. Each
+    This backend uses the TCP/PC protocol to communicate with DPM. Each
     subscribe() call creates its own TCP connection, allowing truly
     independent subscriptions that can be started/stopped individually.
 
@@ -679,6 +672,7 @@ def dpm_http(
         timeout: Default operation timeout in seconds (default: 5.0)
         auth: Authentication object (KerberosAuth for writes)
         role: Role for authenticated operations (e.g., "testing")
+        dispatch_mode: How streaming callbacks are dispatched (default: WORKER)
 
     Returns:
         DPMHTTPBackend instance
@@ -733,6 +727,7 @@ def grpc(
         port: gRPC server port (env: PACSYS_GRPC_PORT, default: 50051)
         auth: Authentication object (JWTAuth for writes). If None, tries PACSYS_JWT_TOKEN env.
         timeout: Default operation timeout in seconds (default: 5.0)
+        dispatch_mode: How streaming callbacks are dispatched (default: WORKER)
 
     Returns:
         GRPCBackend instance (use as context manager or call close() when done)
@@ -804,6 +799,7 @@ def dmq(
         timeout: Default operation timeout in seconds (default: 10.0)
         auth: KerberosAuth required for all DMQ operations
         write_session_ttl: Idle timeout for write sessions in seconds (default: 600)
+        dispatch_mode: How streaming callbacks are dispatched (default: WORKER)
 
     Returns:
         DMQBackend instance (use as context manager or call close() when done)
@@ -925,7 +921,7 @@ def supervised(
     Args:
         backend: Backend instance to proxy requests to
         port: Port to listen on (default: 50051). Use 0 for OS-assigned.
-        host: Host to bind (default: "[::] " for all interfaces)
+        host: Host to bind (default: "[::]" for all interfaces)
         policies: Optional list of Policy instances for access control
 
     Returns:
@@ -1014,7 +1010,6 @@ def __getattr__(name: str):
     if name in _LAZY_IMPORTS:
         mod = importlib.import_module(_LAZY_IMPORTS[name])
         val = getattr(mod, name)
-        # Cache on module to avoid repeated __getattr__ calls
         globals()[name] = val
         return val
     if name == "acnet":
@@ -1127,6 +1122,3 @@ __all__ = [
     "_get_global_backend",
     "_get_global_devdb",
 ]
-
-# Testing utilities (import explicitly when needed):
-# from pacsys.testing import FakeBackend

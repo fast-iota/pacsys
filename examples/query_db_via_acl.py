@@ -1,3 +1,5 @@
+"""Query account and device metadata through ACL over SSH."""
+
 import pacsys
 
 device_name_list = ["M:OUTTMP"]
