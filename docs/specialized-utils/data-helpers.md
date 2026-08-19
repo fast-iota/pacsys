@@ -89,6 +89,24 @@ with Monitor(["M:OUTTMP@p,1000"]) as mon:
         snap = mon.snapshot()
 ```
 
+### Channel Health
+
+`health()` returns a `ChannelHealth` snapshot per channel (or one channel if `drf` is given): last reading, seconds since it arrived (`gap`), total received count, and a `stale` flag.
+
+Passing `stale_after` to the constructor starts a watchdog that flags a channel stale when no reading arrives for that many seconds (with an initial grace period of `stale_after` after start). Transitions are logged and can trigger callbacks:
+
+```python
+def alarm(drf, health):
+    print(f"{drf} stale, {health.gap:.1f}s since last reading")
+
+with Monitor(["M:OUTTMP@p,1000"], stale_after=5.0, on_stale=alarm, on_recover=print) as mon:
+    ...
+    if mon.health("M:OUTTMP@p,1000").stale:
+        ...
+```
+
+Without `stale_after`, `health()` still works but `stale` is always `False`.
+
 ### Constructor Options
 
 | Parameter | Type | Default | Description |
@@ -96,6 +114,9 @@ with Monitor(["M:OUTTMP@p,1000"]) as mon:
 | `devices` | `list[DeviceSpec]` | required | DRF strings or `Device` objects |
 | `buffer_size` | `int` | `10_000` | Max readings per channel (ring buffer) |
 | `backend` | `Backend` | `None` | Backend to use (global default if `None`) |
+| `stale_after` | `float` | `None` | Seconds without a reading before a channel is flagged stale |
+| `on_stale` | `Callable[[str, ChannelHealth], None]` | `None` | Called when a channel becomes stale |
+| `on_recover` | `Callable[[str, ChannelHealth], None]` | `None` | Called when a stale channel receives data again |
 
 ---
 
