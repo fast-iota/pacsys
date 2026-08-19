@@ -341,6 +341,50 @@ class TestMonitorResultTimedScalarArray:
         assert values.shape == (4, 2)
         np.testing.assert_array_equal(values[0], [0.0, 10.0])
 
+    def _mixed_result(self, dict_first: bool):
+        """Channel mixing dict and bare-ndarray values (DPM alternates these)."""
+        np = pytest.importorskip("numpy")
+        as_dict = Reading(
+            drf="L:DEV",
+            value_type=ValueType.TIMED_SCALAR_ARRAY,
+            value={"data": np.array([1.0, 11.0]), "micros": np.array([100, 200])},
+            timestamp=datetime.now(timezone.utc),
+        )
+        bare = Reading(
+            drf="L:DEV",
+            value_type=ValueType.SCALAR_ARRAY,
+            value=np.array([3.0, 13.0]),
+            timestamp=datetime.now(timezone.utc),
+        )
+        readings = (as_dict, bare) if dict_first else (bare, as_dict)
+        return np, MonitorResult(channels={"L:DEV": ChannelData("L:DEV", readings)})
+
+    @pytest.mark.parametrize("dict_first", [True, False])
+    def test_stats_mixed_shapes(self, dict_first):
+        np, r = self._mixed_result(dict_first)
+        np.testing.assert_array_almost_equal(r.mean("L:DEV"), [2.0, 12.0])
+        np.testing.assert_array_equal(r.min("L:DEV"), [1.0, 11.0])
+        np.testing.assert_array_equal(r.max("L:DEV"), [3.0, 13.0])
+
+    @pytest.mark.parametrize("dict_first", [True, False])
+    def test_to_numpy_mixed_shapes(self, dict_first):
+        np, r = self._mixed_result(dict_first)
+        _, values = r.to_numpy("L:DEV")
+        assert values.shape == (2, 2)
+
+    def test_ragged_arrays_error_names_drf(self):
+        np = pytest.importorskip("numpy")
+        ch = ChannelData(
+            "L:DEV",
+            (
+                Reading(drf="L:DEV", value_type=ValueType.SCALAR_ARRAY, value=np.array([1.0, 2.0])),
+                Reading(drf="L:DEV", value_type=ValueType.SCALAR_ARRAY, value=np.array([])),
+            ),
+        )
+        r = MonitorResult(channels={"L:DEV": ch})
+        with pytest.raises(ValueError, match="L:DEV"):
+            r.mean("L:DEV")
+
 
 class TestMonitorResultToNumpy:
     def test_to_numpy_returns_arrays(self):

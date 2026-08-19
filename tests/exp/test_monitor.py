@@ -222,6 +222,38 @@ class TestMonitorAwaitNext:
         with pytest.raises(RuntimeError, match="not running"):
             mon.await_next("M:OUTTMP@p,1000", timeout=1.0)
 
+    def test_await_next_across_restart(self, fake):
+        """A waiter blocked across stop()/start() either gets the clean not-running
+        error or the new run's reading - never the internal counter error or a hang,
+        even when the new run reaches the old baseline count."""
+        mon = Monitor(["M:OUTTMP@p,1000"], backend=fake)
+        mon.start()
+        for i in range(5):
+            fake.emit_reading("M:OUTTMP@p,1000", float(i))
+        time.sleep(0.05)
+        result = {}
+
+        def waiter():
+            try:
+                result["reading"] = mon.await_next("M:OUTTMP@p,1000", timeout=3.0)
+            except RuntimeError as e:
+                result["exc"] = e
+
+        t = threading.Thread(target=waiter, daemon=True)
+        t.start()
+        time.sleep(0.1)
+        mon.stop()
+        mon.start()
+        for i in range(5):  # exactly the old baseline count
+            fake.emit_reading("M:OUTTMP@p,1000", 100.0 + i)
+        t.join(timeout=4.0)
+        assert not t.is_alive()
+        mon.stop()
+        if "exc" in result:
+            assert "not running" in str(result["exc"])
+        else:
+            assert result["reading"].value >= 100.0
+
 
 class TestMonitorBufferSize:
     def test_ring_buffer_evicts_oldest(self, fake):
@@ -353,6 +385,26 @@ class TestMonitorRestart:
         assert h.last_reading is None
         assert h.last_received_at is None
         assert h.stale is False  # grace period active
+        mon.stop()
+
+    def test_restart_from_on_stale_callback(self, fake):
+        """The documented auto-resubscribe pattern: on_stale restarts the monitor
+        from the watchdog thread itself. Must leave one live watchdog, not zero or two."""
+        restarted = threading.Event()
+
+        def on_stale(drf, h):
+            if not restarted.is_set():
+                mon.stop()
+                mon.start()
+                restarted.set()
+
+        mon = Monitor(["M:OUTTMP@p,1000"], stale_after=0.1, on_stale=on_stale, backend=fake)
+        mon.start()
+        assert restarted.wait(timeout=2.0)
+        time.sleep(0.3)  # let the superseded watchdog exit
+        assert mon.running
+        watchdogs = [t for t in threading.enumerate() if t.name == "pacsys-watchdog" and t.is_alive()]
+        assert len(watchdogs) == 1
         mon.stop()
 
     def test_restart_resets_stale_set(self, fake):
