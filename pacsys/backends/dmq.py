@@ -2094,9 +2094,7 @@ class DMQBackend(Backend):
         except OSError:
             pass
 
-    def _start_subscription_async(
-        self, sub: _SelectSubscription, init_body: bytes, init_headers: dict, init_message_id: str
-    ) -> None:
+    def _start_subscription_async(self, sub: _SelectSubscription, init_body: bytes, init_headers: dict) -> None:
         """Schedule subscription setup on the IO loop (called from main thread)."""
         if self._select_connection is None:
             sub.setup_error = RuntimeError("No connection")
@@ -2104,12 +2102,10 @@ class DMQBackend(Backend):
             return
 
         self._select_connection.ioloop.add_callback_threadsafe(
-            lambda: self._open_channel_for_subscription(sub, init_body, init_headers, init_message_id)
+            lambda: self._open_channel_for_subscription(sub, init_body, init_headers)
         )
 
-    def _open_channel_for_subscription(
-        self, sub: _SelectSubscription, init_body: bytes, init_headers: dict, init_message_id: str
-    ) -> None:
+    def _open_channel_for_subscription(self, sub: _SelectSubscription, init_body: bytes, init_headers: dict) -> None:
         """Open a channel for a subscription (runs in IO thread)."""
         if self._select_connection is None or not self._select_connection.is_open:
             sub.setup_error = RuntimeError("Connection not open")
@@ -2141,7 +2137,7 @@ class DMQBackend(Backend):
                 routing_key="I",
                 body=init_body,
                 properties=pika.BasicProperties(
-                    message_id=init_message_id,
+                    message_id=sub.init_message_id,
                     reply_to=sub.exchange_name,
                     app_id="pacsys",
                     headers=init_headers,
@@ -2360,9 +2356,8 @@ class DMQBackend(Backend):
         req.dataRequest = list(drfs)
         init_body = bytes(req.marshal())
 
-        message_id = str(uuid.uuid4())
-        sub.init_message_id = message_id
-        mic = self._sign_message(ctx, init_body, message_id, reply_to=exchange_name, app_id="pacsys")
+        sub.init_message_id = str(uuid.uuid4())
+        mic = self._sign_message(ctx, init_body, sub.init_message_id, reply_to=exchange_name, app_id="pacsys")
 
         init_headers = {
             "host-address": self._local_ip,
@@ -2379,7 +2374,7 @@ class DMQBackend(Backend):
             self._subscriptions[sub_id] = sub
 
         # Schedule async setup on IO loop
-        self._start_subscription_async(sub, init_body, init_headers, message_id)
+        self._start_subscription_async(sub, init_body, init_headers)
 
         # Wait for setup to complete
         if not sub.setup_complete.wait(timeout=self._timeout):

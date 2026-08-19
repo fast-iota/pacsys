@@ -1,6 +1,7 @@
 """Tests for pacsys.aio module-level convenience API."""
 
 import asyncio
+import functools
 from unittest import mock
 
 import pytest
@@ -47,6 +48,8 @@ def fake_backend():
     backend.get_many = mock.AsyncMock(
         return_value=[Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR, value=72.5, error_code=0)]
     )
+    # read_many delegates to the real ABC implementation (drives the mocked get_many)
+    backend.read_many = functools.partial(aio.AsyncBackend.read_many, backend)
     backend.write = mock.AsyncMock(return_value=WriteResult(drf="M:OUTTMP.SETTING@N"))
     backend.write_many = mock.AsyncMock(return_value=[WriteResult(drf="M:OUTTMP.SETTING@N")])
     backend.close = mock.AsyncMock()

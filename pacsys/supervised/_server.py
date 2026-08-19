@@ -274,7 +274,7 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
                                 item = await asyncio.wait_for(queue.get(), timeout=1.0)
                             except asyncio.TimeoutError:
                                 item = wake  # periodic terminal-state check
-                            if item is wake or not isinstance(item, Reading):
+                            if not isinstance(item, Reading):
                                 if handle.stopped:
                                     if handle.exc is not None:
                                         raise handle.exc
