@@ -1,5 +1,6 @@
 import pytest
 
+import pacsys
 from pacsys.device import Device
 from pacsys.exp._resolve import resolve_backend, resolve_drf
 from pacsys.testing import FakeBackend
@@ -22,3 +23,8 @@ class TestResolveBackend:
     def test_explicit_backend(self):
         fake = FakeBackend()
         assert resolve_backend(fake) is fake
+
+    def test_global_backend(self, monkeypatch):
+        fake = FakeBackend()
+        monkeypatch.setattr(pacsys, "_get_global_backend", lambda: fake)
+        assert resolve_backend() is fake

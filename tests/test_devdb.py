@@ -455,14 +455,12 @@ class TestDigitalStatusFromDevdbBits:
 
 class TestDevDBClientConstruction:
     def test_import_guard(self):
-        """DevDBClient requires gRPC."""
-        # We can construct it since grpc is available in test environment
-        # Just verify the class exists and has expected attributes
-        assert hasattr(DevDBClient, "get_device_info")
-        assert hasattr(DevDBClient, "get_alarm_info")
-        assert hasattr(DevDBClient, "get_alarm_text")
-        assert hasattr(DevDBClient, "close")
-        assert hasattr(DevDBClient, "clear_cache")
+        with (
+            mock.patch("pacsys.devdb.DEVDB_AVAILABLE", False),
+            mock.patch("pacsys.devdb._import_error", "missing grpc"),
+            pytest.raises(ImportError, match="missing grpc"),
+        ):
+            DevDBClient()
 
     def test_closed_client_raises(self):
         """Operations on a closed client raise RuntimeError."""
@@ -912,6 +910,6 @@ class TestCacheMaxSize:
         cache = _TTLCache(ttl=60.0, max_size=2)
         for i in range(100):
             cache.put(f"key{i}", i)
-        # Should not grow beyond max_size + 1 (due to eviction after put)
+        # Eviction runs immediately after each insertion.
         with cache._lock:
             assert len(cache._data) <= 2

@@ -29,11 +29,6 @@ def _float_bits(f: float) -> int:
     return struct.unpack(">I", struct.pack(">f", f))[0]
 
 
-def _approx(a, b, rel=1e-4, abs_tol=1e-6):
-    """Check approximate equality."""
-    return pytest.approx(b, rel=rel, abs=abs_tol) == a
-
-
 # ---- Low-level helpers -------------------------------------------------------
 
 
@@ -219,9 +214,9 @@ class TestPrimaryScale:
         assert _primary_scale(6400, 62, 2) == pytest.approx(1.0)
 
     def test_p64_scaled_to_1(self):
-        # 1-byte: 127/128 ≈ 0.992 (128 sign-extends to -128)
+        # 1-byte midpoint: 64/128 = 0.5
         assert _primary_scale(64, 64, 1) == pytest.approx(0.5)
-        # 2-byte: 32767/32768 ≈ 1.0 (32768 sign-extends to -32768)
+        # 2-byte midpoint: 16384/32768 = 0.5
         assert _primary_scale(16384, 64, 2) == pytest.approx(0.5)
 
     def test_p66_word_positive(self):

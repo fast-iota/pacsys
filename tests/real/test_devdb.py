@@ -93,7 +93,7 @@ class TestGetDeviceInfo:
         devdb.clear_cache("Z:ACLTST")
         r1 = devdb.get_device_info(["Z:ACLTST"])
         r2 = devdb.get_device_info(["Z:ACLTST"])
-        assert r1["Z:ACLTST"].device_index == r2["Z:ACLTST"].device_index
+        assert r1["Z:ACLTST"] is r2["Z:ACLTST"]
 
     def test_g_amanda(self, devdb):
         info = devdb.get_device_info(["G:AMANDA"])["G:AMANDA"]
@@ -112,16 +112,14 @@ class TestGetAlarmInfo:
 
 @requires_devdb
 class TestDigitalStatusViaDevDB:
-    def test_devdb_status_bits_match_3read(self, devdb):
-        """Compare DevDB-accelerated digital_status with 3-read path."""
+    def test_devdb_status_bits_construct_status(self, devdb):
+        """DevDB bit definitions construct a digital status value."""
         from pacsys.digital_status import DigitalStatus
 
         # Get bit definitions from DevDB
         info = devdb.get_device_info(["Z:ACLTST"])["Z:ACLTST"]
         assert info.status_bits is not None
 
-        # We can't run the full comparison without a live backend,
-        # but we can verify the bit definitions are sensible
         for bd in info.status_bits:
             assert bd.short_name  # non-empty name
             assert bd.true_str  # non-empty text

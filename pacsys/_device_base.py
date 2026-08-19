@@ -84,6 +84,21 @@ class _DeviceBase:
     def __init__(self, request: DataRequest):
         object.__setattr__(self, "_request", request)
 
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError(f"{self.__class__.__name__} instances are immutable")
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError(f"{self.__class__.__name__} instances are immutable")
+
+    def __setstate__(
+        self,
+        state: dict[str, object] | tuple[dict[str, object] | None, dict[str, object]],
+    ) -> None:
+        states = state if isinstance(state, tuple) else (state,)
+        for values in states:
+            for name, value in (values or {}).items():
+                object.__setattr__(self, name, value)
+
     @property
     def drf(self) -> str:
         return self._request.to_canonical()

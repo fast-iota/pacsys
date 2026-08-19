@@ -6,6 +6,7 @@ analog_alarm(), digital_alarm(), digital_status(), write(), control(), and
 fluent modifiers (with_backend, with_event, with_range).
 """
 
+import math
 import time
 
 import numpy as np
@@ -67,12 +68,14 @@ class TestDeviceRead:
         dev = ScalarDevice(SCALAR_DEVICE, backend=dpm_http_backend_cls)
         value = dev.read(timeout=TIMEOUT_READ)
         assert isinstance(value, float)
+        assert math.isfinite(value)
         print(f"\n  {dev.name}: {value}")
 
     def test_read_scalar_second_device(self, dpm_http_backend_cls):
         dev = ScalarDevice(SCALAR_DEVICE_2, backend=dpm_http_backend_cls)
         value = dev.read(timeout=TIMEOUT_READ)
         assert isinstance(value, float)
+        assert math.isfinite(value)
 
     def test_read_array(self, dpm_http_backend_cls):
         dev = ArrayDevice(ARRAY_DEVICE, backend=dpm_http_backend_cls)
@@ -85,6 +88,7 @@ class TestDeviceRead:
         dev = ScalarDevice(SCALAR_ELEMENT, backend=dpm_http_backend_cls)
         value = dev.read(timeout=TIMEOUT_READ)
         assert isinstance(value, float)
+        assert math.isfinite(value)
 
     def test_read_raw(self, dpm_http_backend_cls):
         dev = Device(SCALAR_DEVICE, backend=dpm_http_backend_cls)
@@ -141,7 +145,8 @@ class TestDeviceSetting:
     def test_read_setting(self, dpm_http_backend_cls):
         dev = ScalarDevice(SCALAR_DEVICE_3, backend=dpm_http_backend_cls)
         value = dev.setting(timeout=TIMEOUT_READ)
-        assert isinstance(value, (int, float))
+        assert isinstance(value, (int, float)) and not isinstance(value, bool)
+        assert math.isfinite(value)
         print(f"\n  {dev.name} SETTING: {value}")
 
     def test_read_setting_raw(self, dpm_http_backend_cls):
@@ -168,6 +173,8 @@ class TestDeviceGet:
         assert reading.ok
         assert reading.value is not None
         assert reading.value_type == ValueType.SCALAR
+        assert isinstance(reading.value, (int, float)) and not isinstance(reading.value, bool)
+        assert math.isfinite(reading.value)
         print(f"\n  {reading.drf}: {reading.value} ({reading.value_type.name})")
 
     def test_get_has_metadata(self, dpm_http_backend_cls):
@@ -176,6 +183,8 @@ class TestDeviceGet:
         assert reading.ok
         assert reading.name is not None
         assert reading.timestamp is not None
+        assert isinstance(reading.value, (int, float)) and not isinstance(reading.value, bool)
+        assert math.isfinite(reading.value)
 
 
 # =============================================================================
@@ -258,6 +267,7 @@ class TestDeviceSubclasses:
         dev = ScalarDevice(SCALAR_DEVICE, backend=dpm_http_backend_cls)
         value = dev.read(timeout=TIMEOUT_READ)
         assert isinstance(value, float)
+        assert math.isfinite(value)
 
     def test_array_device_returns_ndarray(self, dpm_http_backend_cls):
         dev = ArrayDevice(ARRAY_DEVICE, backend=dpm_http_backend_cls)
@@ -284,7 +294,8 @@ class TestDeviceFluent:
         bound = dev.with_backend(dpm_http_backend_cls)
         assert bound is not dev
         value = bound.read(timeout=TIMEOUT_READ)
-        assert isinstance(value, (int, float))
+        assert isinstance(value, (int, float)) and not isinstance(value, bool)
+        assert math.isfinite(value)
 
     def test_with_event(self, dpm_http_backend_cls):
         dev = ScalarDevice(SCALAR_DEVICE, backend=dpm_http_backend_cls)
@@ -359,21 +370,22 @@ class TestDeviceWrite:
         """Write a different value, verify readback, restore."""
         dev = ScalarDevice(SCALAR_DEVICE_3, backend=dpm_write_backend)
         original = dev.setting(timeout=TIMEOUT_READ)
+        assert isinstance(original, (int, float)) and not isinstance(original, bool)
+        assert math.isfinite(original)
         print(f"\n  Original SETTING: {original}")
+        try:
+            new_value = original + 0.1
+            result = dev.write(new_value, timeout=TIMEOUT_READ)
+            assert result.success
+            print(f"  Write {new_value}: success={result.success}")
 
-        new_value = original + 0.1
-        result = dev.write(new_value, timeout=TIMEOUT_READ)
-        assert result.success
-        print(f"  Write {new_value}: success={result.success}")
-
-        time.sleep(1.0)
-        readback = dev.setting(timeout=TIMEOUT_READ)
-        assert abs(readback - new_value) < 0.01, f"Wrote {new_value}, read back {readback}"
-        print(f"  Readback: {readback}")
-
-        # Restore
-        result2 = dev.write(original, timeout=TIMEOUT_READ)
-        assert result2.success
+            time.sleep(1.0)
+            readback = dev.setting(timeout=TIMEOUT_READ)
+            assert readback == pytest.approx(new_value, abs=0.01)
+            print(f"  Readback: {readback}")
+        finally:
+            result = dev.write(original, timeout=TIMEOUT_READ)
+            assert result.success, f"Restore failed: {result.error_code} {result.message}"
 
     @pytest.mark.write
     @requires_write_enabled
@@ -383,21 +395,21 @@ class TestDeviceWrite:
         original_raw = dev.setting(field="raw", timeout=TIMEOUT_READ)
         assert isinstance(original_raw, bytes)
         print(f"\n  Original raw: {original_raw.hex()}")
+        try:
+            # DEC F_float for 45.0
+            raw_45 = b"\x34\x43\x00\x00"
+            result = dev.write(raw_45, field="raw", timeout=TIMEOUT_READ)
+            assert result.success
 
-        # DEC F_float for 45.0
-        raw_45 = b"\x34\x43\x00\x00"
-        result = dev.write(raw_45, field="raw", timeout=TIMEOUT_READ)
-        assert result.success
-
-        time.sleep(1.0)
-        readback_raw = dev.setting(field="raw", timeout=TIMEOUT_READ)
-        assert readback_raw == raw_45
-        readback_scaled = dev.setting(timeout=TIMEOUT_READ)
-        assert readback_scaled == 45.0
-        print(f"  After raw write: scaled={readback_scaled}")
-
-        # Restore
-        dev.write(original_raw, field="raw", timeout=TIMEOUT_READ)
+            time.sleep(1.0)
+            readback_raw = dev.setting(field="raw", timeout=TIMEOUT_READ)
+            assert readback_raw == raw_45
+            readback_scaled = dev.setting(timeout=TIMEOUT_READ)
+            assert readback_scaled == pytest.approx(45.0)
+            print(f"  After raw write: scaled={readback_scaled}")
+        finally:
+            result = dev.write(original_raw, field="raw", timeout=TIMEOUT_READ)
+            assert result.success, f"Restore failed: {result.error_code} {result.message}"
 
     @pytest.mark.write
     @requires_write_enabled
@@ -405,17 +417,18 @@ class TestDeviceWrite:
         """Device.write(verify=True) reads back the value."""
         dev = ScalarDevice(SCALAR_DEVICE_3, backend=dpm_write_backend)
         original = dev.setting(timeout=TIMEOUT_READ)
-
-        new_value = original + 0.1
-        result = dev.write(new_value, verify=Verify(tolerance=0.01), timeout=TIMEOUT_READ)
-        assert result.success
-        assert result.verified is True
-        assert result.readback is not None
-        assert abs(result.readback - new_value) < 0.01
-        print(f"\n  Verified write: readback={result.readback}, attempts={result.attempts}")
-
-        # Restore
-        dev.write(original, timeout=TIMEOUT_READ)
+        assert isinstance(original, (int, float)) and not isinstance(original, bool)
+        assert math.isfinite(original)
+        try:
+            new_value = original + 0.1
+            result = dev.write(new_value, verify=Verify(tolerance=0.01), timeout=TIMEOUT_READ)
+            assert result.success
+            assert result.verified is True
+            assert result.readback == pytest.approx(new_value, abs=0.01)
+            print(f"\n  Verified write: readback={result.readback}, attempts={result.attempts}")
+        finally:
+            result = dev.write(original, timeout=TIMEOUT_READ)
+            assert result.success, f"Restore failed: {result.error_code} {result.message}"
 
     @pytest.mark.write
     @requires_write_enabled
@@ -423,6 +436,8 @@ class TestDeviceWrite:
         """Verify(check_first=True) skips write when value already matches."""
         dev = ScalarDevice(SCALAR_DEVICE_3, backend=dpm_write_backend)
         current = dev.setting(timeout=TIMEOUT_READ)
+        assert isinstance(current, (int, float)) and not isinstance(current, bool)
+        assert math.isfinite(current)
 
         # Write the same value with check_first
         result = dev.write(current, verify=Verify(check_first=True, tolerance=0.01), timeout=TIMEOUT_READ)
@@ -450,20 +465,19 @@ class TestDeviceControl:
         dev = Device(SCALAR_DEVICE_3, backend=dpm_write_backend)
         initial = dev.digital_status(timeout=TIMEOUT_READ)
         print(f"\n  Initial on={initial.on}")
+        try:
+            result = dev.on(timeout=TIMEOUT_READ)
+            assert result.success
+            time.sleep(1.0)
+            assert dev.status(field="on", timeout=TIMEOUT_READ) is True
 
-        result = dev.on(timeout=TIMEOUT_READ)
-        assert result.success
-        time.sleep(1.0)
-        assert dev.status(field="on", timeout=TIMEOUT_READ) is True
-
-        result = dev.off(timeout=TIMEOUT_READ)
-        assert result.success
-        time.sleep(1.0)
-        assert dev.status(field="on", timeout=TIMEOUT_READ) is False
-
-        # Restore
-        if initial.on:
-            dev.on(timeout=TIMEOUT_READ)
+            result = dev.off(timeout=TIMEOUT_READ)
+            assert result.success
+            time.sleep(1.0)
+            assert dev.status(field="on", timeout=TIMEOUT_READ) is False
+        finally:
+            result = (dev.on if initial.on else dev.off)(timeout=TIMEOUT_READ)
+            assert result.success, f"Restore failed: {result.error_code} {result.message}"
         print(f"  Restored on={initial.on}")
 
     @pytest.mark.write
@@ -472,20 +486,19 @@ class TestDeviceControl:
         """dev.positive() / dev.negative() toggle the positive status bit."""
         dev = Device(SCALAR_DEVICE_3, backend=dpm_write_backend)
         initial = dev.digital_status(timeout=TIMEOUT_READ)
+        try:
+            result = dev.positive(timeout=TIMEOUT_READ)
+            assert result.success
+            time.sleep(1.0)
+            assert dev.status(field="positive", timeout=TIMEOUT_READ) is True
 
-        dev.positive(timeout=TIMEOUT_READ)
-        time.sleep(1.0)
-        assert dev.status(field="positive", timeout=TIMEOUT_READ) is True
-
-        dev.negative(timeout=TIMEOUT_READ)
-        time.sleep(1.0)
-        assert dev.status(field="positive", timeout=TIMEOUT_READ) is False
-
-        # Restore
-        if initial.positive:
-            dev.positive(timeout=TIMEOUT_READ)
-        else:
-            dev.negative(timeout=TIMEOUT_READ)
+            result = dev.negative(timeout=TIMEOUT_READ)
+            assert result.success
+            time.sleep(1.0)
+            assert dev.status(field="positive", timeout=TIMEOUT_READ) is False
+        finally:
+            result = (dev.positive if initial.positive else dev.negative)(timeout=TIMEOUT_READ)
+            assert result.success, f"Restore failed: {result.error_code} {result.message}"
 
     @pytest.mark.write
     @requires_write_enabled
@@ -493,20 +506,19 @@ class TestDeviceControl:
         """dev.ramp() / dev.dc() toggle the ramp status bit."""
         dev = Device(SCALAR_DEVICE_3, backend=dpm_write_backend)
         initial = dev.digital_status(timeout=TIMEOUT_READ)
+        try:
+            result = dev.ramp(timeout=TIMEOUT_READ)
+            assert result.success
+            time.sleep(1.0)
+            assert dev.status(field="ramp", timeout=TIMEOUT_READ) is True
 
-        dev.ramp(timeout=TIMEOUT_READ)
-        time.sleep(1.0)
-        assert dev.status(field="ramp", timeout=TIMEOUT_READ) is True
-
-        dev.dc(timeout=TIMEOUT_READ)
-        time.sleep(1.0)
-        assert dev.status(field="ramp", timeout=TIMEOUT_READ) is False
-
-        # Restore
-        if initial.ramp:
-            dev.ramp(timeout=TIMEOUT_READ)
-        else:
-            dev.dc(timeout=TIMEOUT_READ)
+            result = dev.dc(timeout=TIMEOUT_READ)
+            assert result.success
+            time.sleep(1.0)
+            assert dev.status(field="ramp", timeout=TIMEOUT_READ) is False
+        finally:
+            result = (dev.ramp if initial.ramp else dev.dc)(timeout=TIMEOUT_READ)
+            assert result.success, f"Restore failed: {result.error_code} {result.message}"
 
     @pytest.mark.write
     @requires_write_enabled
@@ -528,16 +540,15 @@ class TestDeviceControl:
         """dev.on(verify=True) verifies STATUS.ON is True after write."""
         dev = Device(SCALAR_DEVICE_3, backend=dpm_write_backend)
         initial_on = dev.status(field="on", timeout=TIMEOUT_READ)
-
-        result = dev.on(verify=True, timeout=TIMEOUT_READ)
-        assert result.success
-        assert result.verified is True
-        assert result.readback is True
-        print(f"\n  on(verify=True): verified={result.verified}, attempts={result.attempts}")
-
-        # Restore
-        if not initial_on:
-            dev.off(timeout=TIMEOUT_READ)
+        try:
+            result = dev.on(verify=True, timeout=TIMEOUT_READ)
+            assert result.success
+            assert result.verified is True
+            assert result.readback is True
+            print(f"\n  on(verify=True): verified={result.verified}, attempts={result.attempts}")
+        finally:
+            result = (dev.on if initial_on else dev.off)(timeout=TIMEOUT_READ)
+            assert result.success, f"Restore failed: {result.error_code} {result.message}"
 
     @pytest.mark.write
     @requires_write_enabled
@@ -551,19 +562,19 @@ class TestDeviceControl:
         dev = Device(SCALAR_DEVICE_3, backend=dpm_write_backend)
         initial = dev.status(field=field, timeout=TIMEOUT_READ)
         print(f"\n  Initial {field}: {initial}")
+        try:
+            result = dev.control(cmd_true, timeout=TIMEOUT_READ)
+            assert result.success
+            time.sleep(1.0)
+            assert dev.status(field=field, timeout=TIMEOUT_READ) is True
 
-        result = dev.control(cmd_true, timeout=TIMEOUT_READ)
-        assert result.success
-        time.sleep(1.0)
-        assert dev.status(field=field, timeout=TIMEOUT_READ) is True
-
-        result = dev.control(cmd_false, timeout=TIMEOUT_READ)
-        assert result.success
-        time.sleep(1.0)
-        assert dev.status(field=field, timeout=TIMEOUT_READ) is False
-
-        # Restore
-        dev.control(cmd_true if initial else cmd_false, timeout=TIMEOUT_READ)
+            result = dev.control(cmd_false, timeout=TIMEOUT_READ)
+            assert result.success
+            time.sleep(1.0)
+            assert dev.status(field=field, timeout=TIMEOUT_READ) is False
+        finally:
+            result = dev.control(cmd_true if initial else cmd_false, timeout=TIMEOUT_READ)
+            assert result.success, f"Restore failed: {result.error_code} {result.message}"
 
 
 # =============================================================================
@@ -585,16 +596,18 @@ class TestDeviceAlarmWrite:
         alarm = dev.analog_alarm(timeout=TIMEOUT_READ)
         assert isinstance(alarm, dict)
         orig_max = alarm["maximum"]
+        assert isinstance(orig_max, (int, float)) and not isinstance(orig_max, bool)
+        assert math.isfinite(orig_max)
         print(f"\n  Original alarm max: {orig_max}")
+        try:
+            new_max = orig_max + 0.5
+            # Use backend.write for field-level alarm write (device API writes whole block)
+            result = dpm_write_backend.write(f"{ANALOG_ALARM_SETPOINT}.MAX", new_max, timeout=TIMEOUT_READ)
+            assert result.success
 
-        new_max = orig_max + 0.5
-        # Use backend.write for field-level alarm write (device API writes whole block)
-        result = dpm_write_backend.write(f"{ANALOG_ALARM_SETPOINT}.MAX", new_max, timeout=TIMEOUT_READ)
-        assert result.success
-
-        time.sleep(1.0)
-        after = dev.analog_alarm(timeout=TIMEOUT_READ)
-        assert after["maximum"] == new_max
-
-        # Restore
-        dpm_write_backend.write(f"{ANALOG_ALARM_SETPOINT}.MAX", orig_max, timeout=TIMEOUT_READ)
+            time.sleep(1.0)
+            after = dev.analog_alarm(timeout=TIMEOUT_READ)
+            assert after["maximum"] == pytest.approx(new_max)
+        finally:
+            result = dpm_write_backend.write(f"{ANALOG_ALARM_SETPOINT}.MAX", orig_max, timeout=TIMEOUT_READ)
+            assert result.success, f"Restore failed: {result.error_code} {result.message}"

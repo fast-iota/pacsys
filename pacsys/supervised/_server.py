@@ -460,6 +460,7 @@ class SupervisedServer:
         self._server: grpc_aio.Server | None = None
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._stop_requested: asyncio.Event | None = None
         self._started = threading.Event()
         self._start_error: BaseException | None = None
 
@@ -474,6 +475,8 @@ class SupervisedServer:
     async def _serve(self):
         """Run the gRPC server on this event loop."""
         server = grpc_aio.server()
+        stop_requested = asyncio.Event()
+        self._stop_requested = stop_requested
         servicer = _DAQServicer(self._backend, self._policies, token=self._token, audit_log=self._audit_log)
         DAQ_pb2_grpc.add_DAQServicer_to_server(servicer, server)
 
@@ -489,9 +492,9 @@ class SupervisedServer:
         self._started.set()
 
         try:
-            await server.wait_for_termination()
-        except asyncio.CancelledError:
-            pass
+            await stop_requested.wait()
+        finally:
+            await server.stop(grace=0)
 
     def _run_loop(self):
         """Thread target: create event loop and run the server."""
@@ -528,25 +531,21 @@ class SupervisedServer:
 
     def stop(self) -> None:
         """Stop the server."""
-        server = self._server
         loop = self._loop
-        if server is not None and loop is not None:
-            # Fire-and-forget: server.stop(0) causes wait_for_termination()
-            # to return, ending the server thread.  We cannot await the
-            # future because the loop closes before it can be resolved.
-            # grace=0 is intentional: grace>0 deadlocks (the loop closes
-            # before the grace period expires, orphaning the future).
+        stop_requested = self._stop_requested
+        if stop_requested is not None and loop is not None:
             try:
-                asyncio.run_coroutine_threadsafe(server.stop(grace=0), loop)
+                loop.call_soon_threadsafe(stop_requested.set)
             except RuntimeError:
                 pass
-            self._server = None
 
         if self._thread is not None:
             self._thread.join(timeout=5.0)
             if not self._thread.is_alive():
                 self._thread = None
                 self._loop = None
+                self._server = None
+                self._stop_requested = None
             else:
                 logger.warning("Server thread did not stop within 5s, resources may be leaked")
 

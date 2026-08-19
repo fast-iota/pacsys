@@ -6,6 +6,7 @@ import json
 from unittest import mock
 
 from pacsys.types import BasicControl, WriteResult
+from pacsys.verify import Verify
 
 
 def _ok_result(drf="M:OUTTMP"):
@@ -199,7 +200,7 @@ class TestControlWrite:
             rc = main()
 
         assert rc == 0
-        # STATUS qualifier preserved — prepare_for_write maps it to CONTROL
+        # The STATUS qualifier is preserved for backend control dispatch.
         backend.write.assert_called_once_with("Z|ACLTST", BasicControl.ON, timeout=5.0)
 
     @mock.patch("pacsys.cli.put.make_backend")
@@ -254,10 +255,9 @@ class TestVerifyPath:
                 rc = main()
 
             assert rc == 0
-            mock_device.assert_called_once()
-            mock_dev.write.assert_called_once()
-            call_kwargs = mock_dev.write.call_args
-            assert call_kwargs is not None
+            mock_device.assert_called_once_with("M:OUTTMP", backend=backend)
+            mock_dev.write.assert_called_once_with(72.5, verify=Verify(), timeout=5.0)
+            backend.write.assert_not_called()
 
     @mock.patch("pacsys.cli.put.make_backend")
     def test_verify_control_never_writes_setting(self, mock_mb):

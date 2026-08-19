@@ -34,6 +34,7 @@ class Device(_DeviceBase):
     """
 
     __slots__ = ("_backend",)
+    _backend: Backend | None
 
     def __init__(self, drf: str, backend: Backend | None = None):
         """Create a device from DRF string.
@@ -46,7 +47,7 @@ class Device(_DeviceBase):
             ValueError: If DRF syntax is invalid (at construction, not read time)
         """
         super().__init__(parse_request(drf))
-        self._backend = backend
+        object.__setattr__(self, "_backend", backend)
 
     # ─── Read Methods ─────────────────────────────────────────────────────
 

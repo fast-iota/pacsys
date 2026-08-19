@@ -179,11 +179,8 @@ class TestConnectionError:
             with mock.patch("sys.argv", ["acget", "M:OUTTMP"]):
                 buf = io.StringIO()
                 err = io.StringIO()
-                try:
-                    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
-                        code = main()
-                except SystemExit as e:
-                    code = e.code
+                with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+                    code = main()
                 assert code == 2
 
 
@@ -259,7 +256,4 @@ class TestArrayWithRange:
                 rc = main()
 
         assert rc == 0
-        output = buf.getvalue()
-        assert "0 1 2" in output
-        # Elements beyond the slice should not appear
-        assert "9" not in output
+        assert buf.getvalue().split("  ")[1] == "0 1 2"

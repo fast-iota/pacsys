@@ -747,9 +747,9 @@ class TestAsyncReadLoop:
         loop = asyncio.new_event_loop()
         conn._pending_ack = loop.create_future()
 
-        if conn._pending_ack and not conn._pending_ack.done():
-            conn._pending_ack.set_exception(AcnetUnavailableError())
+        conn._on_connection_lost()
 
+        assert not conn._connected
         assert conn._pending_ack.done()
         with pytest.raises(AcnetUnavailableError):
             conn._pending_ack.result()

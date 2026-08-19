@@ -453,7 +453,8 @@ class TestFormatWriteResult:
 
         r = self._make_result(verified=True, readback=72.5)
         result = format_write_result(r, fmt="text")
-        assert "verified" in result.lower() or "72.5" in result
+        assert "verified" in result.lower()
+        assert "72.5" in result
 
     def test_terse_ok(self):
         from pacsys.cli._common import format_write_result

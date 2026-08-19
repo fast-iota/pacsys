@@ -11,6 +11,7 @@ Covers:
 - Thread safety
 """
 
+import math
 import threading
 import time
 
@@ -56,7 +57,8 @@ class TestSimpleAPIRead:
     def test_read_scalar_device(self):
         """pacsys.read() returns scalar value."""
         value = pacsys.read(SCALAR_DEVICE, timeout=TIMEOUT_READ)
-        assert isinstance(value, (int, float))
+        assert isinstance(value, (int, float)) and not isinstance(value, bool)
+        assert math.isfinite(value)
         print(f"\n  pacsys.read('{SCALAR_DEVICE}') = {value}")
 
     def test_read_array_device(self):
@@ -70,7 +72,8 @@ class TestSimpleAPIRead:
         """pacsys.read() accepts Device object."""
         device = Device(SCALAR_DEVICE)
         value = pacsys.read(device, timeout=TIMEOUT_READ)
-        assert isinstance(value, (int, float))
+        assert isinstance(value, (int, float)) and not isinstance(value, bool)
+        assert math.isfinite(value)
         print(f"\n  pacsys.read(Device('{SCALAR_DEVICE}')) = {value}")
 
     def test_read_nonexistent_raises_device_error(self):
@@ -96,7 +99,8 @@ class TestSimpleAPIGet:
 
         assert isinstance(reading, Reading)
         assert reading.ok
-        assert reading.value is not None
+        assert isinstance(reading.value, (int, float)) and not isinstance(reading.value, bool)
+        assert math.isfinite(reading.value)
         print(f"\n  pacsys.get('{SCALAR_DEVICE}'):")
         print(f"    value: {reading.value}")
         print(f"    units: {reading.units}")
@@ -106,7 +110,8 @@ class TestSimpleAPIGet:
         device = ScalarDevice(SCALAR_DEVICE)
         reading = pacsys.get(device, timeout=TIMEOUT_READ)
         assert reading.ok
-        assert isinstance(reading.value, (int, float))
+        assert isinstance(reading.value, (int, float)) and not isinstance(reading.value, bool)
+        assert math.isfinite(reading.value)
 
     def test_get_nonexistent_returns_error_reading(self):
         """pacsys.get() returns error Reading without raising."""
@@ -132,6 +137,9 @@ class TestSimpleAPIGetMany:
 
         assert len(readings) == 3
         for i, r in enumerate(readings):
+            assert r.ok
+            assert isinstance(r.value, (int, float)) and not isinstance(r.value, bool)
+            assert math.isfinite(r.value)
             print(f"\n  {devices[i]}: {r.value} (ok={r.ok})")
 
     def test_get_many_with_mixed_device_types(self):
@@ -145,6 +153,10 @@ class TestSimpleAPIGetMany:
 
         assert len(readings) == 3
         assert all(r.ok for r in readings)
+        assert all(
+            isinstance(r.value, (int, float)) and not isinstance(r.value, bool) and math.isfinite(r.value)
+            for r in readings
+        )
 
     def test_get_many_partial_failure(self):
         """pacsys.get_many() handles partial failures gracefully."""
@@ -153,6 +165,8 @@ class TestSimpleAPIGetMany:
 
         assert len(readings) == 2
         assert readings[0].ok
+        assert isinstance(readings[0].value, (int, float)) and not isinstance(readings[0].value, bool)
+        assert math.isfinite(readings[0].value)
         assert not readings[1].ok
 
 
@@ -169,7 +183,8 @@ class TestDeviceAPI:
         """Device.read() uses global backend."""
         device = Device(SCALAR_DEVICE)
         value = device.read(timeout=TIMEOUT_READ)
-        assert isinstance(value, (int, float))
+        assert isinstance(value, (int, float)) and not isinstance(value, bool)
+        assert math.isfinite(value)
         print(f"\n  Device('{SCALAR_DEVICE}').read() = {value}")
 
     def test_device_get(self):
@@ -179,6 +194,8 @@ class TestDeviceAPI:
 
         assert isinstance(reading, Reading)
         assert reading.ok
+        assert isinstance(reading.value, (int, float)) and not isinstance(reading.value, bool)
+        assert math.isfinite(reading.value)
         print(f"\n  Device.get(): value={reading.value}, units={reading.units}")
 
     def test_scalar_device_returns_float(self):
@@ -186,6 +203,7 @@ class TestDeviceAPI:
         device = ScalarDevice(SCALAR_DEVICE)
         value = device.read(timeout=TIMEOUT_READ)
         assert isinstance(value, float)
+        assert math.isfinite(value)
         print(f"\n  ScalarDevice.read() = {value} (type={type(value).__name__})")
 
     def test_array_device_returns_array(self):
@@ -206,7 +224,8 @@ class TestDeviceAPI:
 
         assert immediate.has_event
         value = immediate.read(timeout=TIMEOUT_READ)
-        assert isinstance(value, (int, float))
+        assert isinstance(value, (int, float)) and not isinstance(value, bool)
+        assert math.isfinite(value)
 
     def test_device_properties(self):
         """Device exposes parsed DRF properties."""
@@ -234,7 +253,8 @@ class TestConfiguration:
         pacsys.configure(default_timeout=TIMEOUT_BATCH)
 
         value = pacsys.read(SCALAR_DEVICE)
-        assert value is not None
+        assert isinstance(value, (int, float)) and not isinstance(value, bool)
+        assert math.isfinite(value)
 
     def test_shutdown_allows_reconfigure(self):
         """shutdown() allows reconfiguration."""
@@ -243,7 +263,8 @@ class TestConfiguration:
         pacsys.configure(pool_size=2)
 
         value2 = pacsys.read(SCALAR_DEVICE, timeout=TIMEOUT_READ)
-        assert value2 is not None
+        assert isinstance(value2, (int, float)) and not isinstance(value2, bool)
+        assert math.isfinite(value2)
 
 
 # =============================================================================
@@ -259,27 +280,31 @@ class TestBackendFactories:
         """pacsys.dpm() creates working DPMHTTPBackend."""
         with pacsys.dpm(host=DPM_TEST_HOST, port=DPM_TEST_PORT) as backend:
             value = backend.read(SCALAR_DEVICE, timeout=TIMEOUT_READ)
-            assert isinstance(value, (int, float))
+            assert isinstance(value, (int, float)) and not isinstance(value, bool)
+            assert math.isfinite(value)
             print(f"\n  pacsys.dpm().read() = {value}")
 
     def test_dpm_http_factory_is_alias(self):
         """pacsys.dpm_http() is alias for pacsys.dpm()."""
         with pacsys.dpm_http(host=DPM_TEST_HOST, port=DPM_TEST_PORT) as backend:
             value = backend.read(SCALAR_DEVICE, timeout=TIMEOUT_READ)
-            assert isinstance(value, (int, float))
+            assert isinstance(value, (int, float)) and not isinstance(value, bool)
+            assert math.isfinite(value)
 
     def test_dpm_factory_with_custom_settings(self):
         """pacsys.dpm() accepts custom parameters."""
         with pacsys.dpm(host=DPM_TEST_HOST, port=DPM_TEST_PORT, pool_size=2, timeout=TIMEOUT_BATCH) as backend:
             value = backend.read(SCALAR_DEVICE)
-            assert value is not None
+            assert isinstance(value, (int, float)) and not isinstance(value, bool)
+            assert math.isfinite(value)
 
     def test_acl_factory_creates_backend(self):
         """pacsys.acl() creates working ACLBackend."""
         with pacsys.acl() as backend:
             try:
                 value = backend.read(SCALAR_DEVICE, timeout=TIMEOUT_READ)
-                assert isinstance(value, (int, float))
+                assert isinstance(value, (int, float)) and not isinstance(value, bool)
+                assert math.isfinite(value)
                 print(f"\n  pacsys.acl().read() = {value}")
             except DeviceError as e:
                 if "403" in str(e) or "Forbidden" in str(e):
@@ -302,29 +327,37 @@ class TestGlobalBackendLifecycle:
         assert pacsys._global_backend is None
 
         value = pacsys.read(SCALAR_DEVICE, timeout=TIMEOUT_READ)
-        assert value is not None
+        assert isinstance(value, (int, float)) and not isinstance(value, bool)
+        assert math.isfinite(value)
         assert pacsys._global_backend is not None
 
     def test_backend_reused_across_calls(self):
         """Same backend instance used for multiple calls."""
-        pacsys.read(SCALAR_DEVICE, timeout=TIMEOUT_READ)
+        value1 = pacsys.read(SCALAR_DEVICE, timeout=TIMEOUT_READ)
+        assert isinstance(value1, (int, float)) and not isinstance(value1, bool)
+        assert math.isfinite(value1)
         backend1 = pacsys._global_backend
 
-        pacsys.read(SCALAR_DEVICE, timeout=TIMEOUT_READ)
+        value2 = pacsys.read(SCALAR_DEVICE, timeout=TIMEOUT_READ)
+        assert isinstance(value2, (int, float)) and not isinstance(value2, bool)
+        assert math.isfinite(value2)
         backend2 = pacsys._global_backend
 
         assert backend1 is backend2
 
     def test_shutdown_cleans_up(self):
         """shutdown() closes backend and allows re-init."""
-        pacsys.read(SCALAR_DEVICE, timeout=TIMEOUT_READ)
+        initial = pacsys.read(SCALAR_DEVICE, timeout=TIMEOUT_READ)
+        assert isinstance(initial, (int, float)) and not isinstance(initial, bool)
+        assert math.isfinite(initial)
         assert pacsys._global_backend is not None
 
         pacsys.shutdown()
         assert pacsys._global_backend is None
 
         value = pacsys.read(SCALAR_DEVICE, timeout=TIMEOUT_READ)
-        assert value is not None
+        assert isinstance(value, (int, float)) and not isinstance(value, bool)
+        assert math.isfinite(value)
 
 
 # =============================================================================
@@ -353,6 +386,10 @@ class TestModuleLevelStreaming:
             handle.stop()
 
         assert len(readings) >= 1
+        assert all(
+            isinstance(r.value, (int, float)) and not isinstance(r.value, bool) and math.isfinite(r.value)
+            for r in readings
+        )
         print(f"\n  pacsys.subscribe() received {len(readings)} readings")
 
     def test_subscribe_iterator_mode_global(self):
@@ -360,6 +397,8 @@ class TestModuleLevelStreaming:
         with pacsys.subscribe([PERIODIC_DEVICE]) as handle:
             count = 0
             for reading, _ in handle.readings(timeout=TIMEOUT_STREAM_ITER):
+                assert isinstance(reading.value, (int, float)) and not isinstance(reading.value, bool)
+                assert math.isfinite(reading.value)
                 count += 1
                 print(f"\n  Global subscribe reading: {reading.value}")
                 if count >= 2:
@@ -397,4 +436,8 @@ class TestThreadSafety:
 
         assert len(errors) == 0, f"Errors: {errors}"
         assert len(results) == 5
+        assert all(
+            isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+            for value in results
+        )
         print(f"\n  Concurrent reads: {results}")

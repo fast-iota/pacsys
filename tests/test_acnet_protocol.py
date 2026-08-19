@@ -817,12 +817,8 @@ class TestReplyBuffering:
 
         reply = self._make_reply(42)
 
-        cancel_sent = []
-        conn._send_command = lambda *a, **kw: cancel_sent.append(a)
-
         conn._handle_reply(reply)
 
-        assert len(cancel_sent) == 0
         assert RequestId(42) in conn._reply_buffer
         assert len(conn._reply_buffer[RequestId(42)]) == 1
 
@@ -836,12 +832,27 @@ class TestReplyBuffering:
 
         reply = self._make_reply(42)
 
-        cancel_sent = []
-        conn._send_command = lambda *a, **kw: cancel_sent.append(a)
-
         conn._handle_reply(reply)
 
-        assert len(cancel_sent) == 0
+        assert RequestId(42) not in conn._reply_buffer
+
+    def test_buffer_overflow_marks_request_dead(self):
+        """An unclaimed reply flood is discarded and the request ID is retired."""
+        from pacsys.acnet.connection import _MAX_BUFFERED_REPLIES
+
+        conn = AcnetConnection.__new__(AcnetConnection)
+        conn._requests_out = {}
+        conn._requests_out_lock = threading.Lock()
+        conn._reply_buffer = defaultdict(list)
+        conn._dead_requests = set()
+
+        for _ in range(_MAX_BUFFERED_REPLIES + 1):
+            conn._handle_reply(self._make_reply(42, last=False))
+
+        assert RequestId(42) not in conn._reply_buffer
+        assert RequestId(42) in conn._dead_requests
+
+        conn._handle_reply(self._make_reply(42))
         assert RequestId(42) not in conn._reply_buffer
 
 

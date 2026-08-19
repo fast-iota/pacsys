@@ -108,7 +108,6 @@ class TestCsvWriter:
         assert base64.b64decode(rows[1][2]) == raw
 
     def test_implements_protocol(self):
-        assert isinstance(CsvWriter, type)
         writer = CsvWriter.__new__(CsvWriter)
         assert isinstance(writer, LogWriter)
 
@@ -366,6 +365,21 @@ class TestParquetWriter:
         table = _read_parquet(path)
         result = json.loads(table.column("value_text").to_pylist()[0])
         assert result == status
+
+    def test_digital_alarm(self, tmp_path):
+        """Digital alarm dicts are stored as JSON in value_text."""
+        pytest.importorskip("pyarrow")
+        from pacsys.exp._writers import ParquetWriter
+
+        alarm = {"nominal": 0xAA, "mask": 0xFF, "alarm_enable": True}
+        path = tmp_path / "test.parquet"
+        writer = ParquetWriter(path)
+        writer.write_readings([Reading(drf="Z:ACLTST", value_type=ValueType.DIGITAL_ALARM, value=alarm, timestamp=TS)])
+        writer.close()
+
+        table = _read_parquet(path)
+        assert json.loads(table.column("value_text").to_pylist()[0]) == alarm
+        assert table.column("value_type").to_pylist() == ["digAlarm"]
 
     def test_raw_bytes(self, tmp_path):
         """Raw bytes stored as base64 in value_text."""

@@ -21,10 +21,11 @@ class AsyncDevice(_DeviceBase):
     """Async device wrapper. All I/O methods are async."""
 
     __slots__ = ("_backend",)
+    _backend: AsyncBackend | None
 
     def __init__(self, drf: str, backend: AsyncBackend | None = None):
         super().__init__(parse_request(drf))
-        self._backend = backend
+        object.__setattr__(self, "_backend", backend)
 
     # ─── Read Methods ─────────────────────────────────────────────────────
 

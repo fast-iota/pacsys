@@ -123,10 +123,7 @@ def _run(args, mock_device_cls, *, devdb_return=None):
             with mock.patch("pacsys.cli.info._get_devdb", return_value=devdb_return):
                 with mock.patch("sys.argv", ["acinfo", *args]):
                     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-                        try:
-                            rc = main()
-                        except SystemExit as e:
-                            rc = e.code
+                        rc = main()
     return rc, out.getvalue(), err.getvalue()
 
 
@@ -195,10 +192,7 @@ class TestConnectionError:
         with mock.patch("pacsys.cli.info.make_backend", side_effect=Exception("connection refused")):
             with mock.patch("sys.argv", ["acinfo", "M:OUTTMP"]):
                 with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-                    try:
-                        rc = main()
-                    except SystemExit as e:
-                        rc = e.code
+                    rc = main()
         assert rc == 2
 
 

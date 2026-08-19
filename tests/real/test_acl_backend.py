@@ -8,6 +8,8 @@ NOTE: acl.pl is blocked externally - proxy access will be needed for
 CI/remote testing.
 """
 
+import math
+
 import pytest
 
 from pacsys.backends.acl import ACLBackend
@@ -66,14 +68,16 @@ class TestACLLiveReads:
     def test_read_scalar(self, acl_backend):
         """Read a known scalar device."""
         value = acl_backend.read(SCALAR_DEVICE, timeout=TIMEOUT_READ)
-        assert isinstance(value, (int, float))
+        assert isinstance(value, (int, float)) and not isinstance(value, bool)
+        assert math.isfinite(value)
 
     def test_get_scalar(self, acl_backend):
         """Get returns a Reading with metadata."""
         reading = acl_backend.get(SCALAR_DEVICE, timeout=TIMEOUT_READ)
         assert isinstance(reading, Reading)
         assert reading.ok
-        assert isinstance(reading.value, (int, float))
+        assert isinstance(reading.value, (int, float)) and not isinstance(reading.value, bool)
+        assert math.isfinite(reading.value)
 
     def test_get_many(self, acl_backend):
         """Batch read multiple devices."""
@@ -82,6 +86,11 @@ class TestACLLiveReads:
         assert len(readings) == 2
         ok_count = sum(1 for r in readings if r.ok)
         assert ok_count >= 1, f"Expected at least 1 success, got {ok_count}"
+        assert all(
+            isinstance(r.value, (int, float)) and not isinstance(r.value, bool) and math.isfinite(r.value)
+            for r in readings
+            if r.ok
+        )
 
     def test_get_many_mixed_valid_invalid(self, acl_backend):
         """Batch with valid and invalid devices falls back and isolates errors."""
@@ -90,8 +99,12 @@ class TestACLLiveReads:
         assert len(readings) == 3
         # First and third should succeed, middle should error
         assert readings[0].ok
+        assert isinstance(readings[0].value, (int, float)) and not isinstance(readings[0].value, bool)
+        assert math.isfinite(readings[0].value)
         assert readings[1].is_error
         assert readings[2].ok
+        assert isinstance(readings[2].value, (int, float)) and not isinstance(readings[2].value, bool)
+        assert math.isfinite(readings[2].value)
 
     def test_read_nonexistent_device(self, acl_backend):
         """Reading a nonexistent device should error."""
@@ -101,9 +114,11 @@ class TestACLLiveReads:
     def test_read_alarm_field(self, acl_backend):
         """Read .MAX alarm field - returns numeric value."""
         value = acl_backend.read(f"{SCALAR_DEVICE_3}.MAX", timeout=TIMEOUT_READ)
-        assert isinstance(value, (int, float))
+        assert isinstance(value, (int, float)) and not isinstance(value, bool)
+        assert math.isfinite(value)
 
     def test_read_z_acltst(self, acl_backend):
         """Read the OAC test device Z:ACLTST."""
         value = acl_backend.read(SCALAR_DEVICE_3, timeout=TIMEOUT_READ)
-        assert isinstance(value, (int, float))
+        assert isinstance(value, (int, float)) and not isinstance(value, bool)
+        assert math.isfinite(value)

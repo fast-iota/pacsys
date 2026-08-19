@@ -6,6 +6,7 @@ and class code registry. Uses no network -- all ACNET interactions are mocked.
 """
 
 import struct
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1107,11 +1108,11 @@ class TestSnapshotHandle:
     def test_retrieval_max_dae_class(self):
         """DAE classes have retrieval_max=4096."""
         handle = self._make_handle(snap_class_code=22)  # DAE 1 Hz, max=4096
+        self._serve(handle, (0, self._data_reply()))
         try:
-            # Should NOT raise ValueError for 4096
-            # (will fail at the network level since conn is mocked, but no ValueError)
-            with pytest.raises(Exception, match=r"(?!retrieval_max)"):
-                handle.retrieve(num_points=4096, timeout=0.1)
+            assert handle.retrieve(num_points=4096) == []
+            with pytest.raises(ValueError, match="retrieval_max"):
+                handle.retrieve(num_points=4097)
         finally:
             handle.cancel()
 
@@ -1332,6 +1333,13 @@ class TestSnapshotStateTracking:
         )
         return handle, reply_queue
 
+    @staticmethod
+    def _wait_for_device_state(handle, device_index, expected):
+        deadline = time.monotonic() + 1.0
+        while handle.device_states[device_index] is not expected and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert handle.device_states[device_index] is expected
+
     def test_initial_state_pending(self):
         """Setup reply with FTP_PEND → initial state is PENDING."""
         handle, rq = self._make_handle(per_device_errors=[FTP_PEND])
@@ -1373,16 +1381,12 @@ class TestSnapshotStateTracking:
             # WAIT_EVENT
             data = self._build_status_reply(0, [FTP_WAIT_EVENT])
             rq.put((0, data, False))
-            import time
-
-            time.sleep(0.1)
-            assert handle.device_states[1] == SnapshotState.WAIT_EVENT
+            self._wait_for_device_state(handle, 1, SnapshotState.WAIT_EVENT)
 
             # COLLECTING
             data = self._build_status_reply(0, [FTP_COLLECTING])
             rq.put((0, data, False))
-            time.sleep(0.1)
-            assert handle.device_states[1] == SnapshotState.COLLECTING
+            self._wait_for_device_state(handle, 1, SnapshotState.COLLECTING)
 
             # READY
             data = self._build_status_reply(0, [0])
@@ -1427,11 +1431,8 @@ class TestSnapshotStateTracking:
             # First device becomes ready, second still pending
             data = self._build_status_reply(0, [0, FTP_COLLECTING])
             rq.put((0, data, False))
-            import time
-
-            time.sleep(0.1)
-            assert handle.device_states[1] == SnapshotState.READY
-            assert handle.device_states[2] == SnapshotState.COLLECTING
+            self._wait_for_device_state(handle, 1, SnapshotState.READY)
+            self._wait_for_device_state(handle, 2, SnapshotState.COLLECTING)
             assert handle.state == SnapshotState.COLLECTING
             assert not handle.is_ready
 
@@ -1455,20 +1456,21 @@ class TestSnapshotStateTracking:
     def test_cancel_wakes_waiters(self):
         """cancel() must unblock wait(timeout=None), raising RuntimeError."""
         import threading
-        import time
 
         handle, rq = self._make_handle(per_device_errors=[FTP_PEND])
         result = {}
+        started = threading.Event()
 
         def waiter():
             try:
+                started.set()
                 handle.wait(timeout=None)
             except Exception as e:  # noqa: BLE001
                 result["exc"] = e
 
         t = threading.Thread(target=waiter, daemon=True)
         t.start()
-        time.sleep(0.1)
+        assert started.wait(timeout=1.0)
         handle.cancel()
         t.join(timeout=2.0)
         assert not t.is_alive(), "wait() still blocked after cancel()"
@@ -1550,10 +1552,9 @@ class TestSnapshotStateTracking:
 
             # Send a COLLECTING update -- should be ignored
             data = self._build_status_reply(0, [FTP_COLLECTING])
-            rq.put((0, data, False))
-            import time
-
-            time.sleep(0.1)
+            rq.put((0, data, True))
+            handle._monitor_thread.join(timeout=2.0)
+            assert not handle._monitor_thread.is_alive()
             assert handle.device_states[1] == SnapshotState.READY
         finally:
             handle.cancel()

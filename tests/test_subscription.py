@@ -23,6 +23,18 @@ def handle():
     return BufferedSubscriptionHandle()
 
 
+def _track_next_wait(condition: threading.Condition) -> threading.Event:
+    waiting = threading.Event()
+    original_wait = condition.wait
+
+    def tracked_wait(timeout=None):
+        waiting.set()
+        return original_wait(timeout)
+
+    condition.wait = tracked_wait
+    return waiting
+
+
 # =============================================================================
 # Core dispatch + iteration
 # =============================================================================
@@ -234,6 +246,7 @@ class TestConcurrency:
         """Consumer in a thread receives all readings dispatched by producer."""
         n = 20
         results = []
+        waiting = _track_next_wait(handle._cond)
 
         def consume():
             for reading, _ in handle.readings(timeout=5.0):
@@ -241,10 +254,10 @@ class TestConcurrency:
 
         consumer = threading.Thread(target=consume)
         consumer.start()
+        assert waiting.wait(1.0)
 
         for i in range(n):
             handle._dispatch(make_reading(float(i)))
-            time.sleep(0.002)
         handle._signal_stop()
 
         consumer.join(timeout=5.0)
@@ -254,6 +267,7 @@ class TestConcurrency:
     def test_data_arriving_during_wait(self, handle, make_reading):
         """Reader blocked on empty buffer receives data when dispatched."""
         results = []
+        waiting = _track_next_wait(handle._cond)
 
         def consume():
             for reading, _ in handle.readings(timeout=5.0):
@@ -262,7 +276,7 @@ class TestConcurrency:
         consumer = threading.Thread(target=consume)
         consumer.start()
 
-        time.sleep(0.05)  # let consumer block on empty buffer
+        assert waiting.wait(1.0)
         handle._dispatch(make_reading(42.0))
         handle._signal_stop()
 
@@ -274,6 +288,7 @@ class TestConcurrency:
         """Error signal wakes a consumer blocked on empty buffer."""
         results = []
         exc_caught = []
+        waiting = _track_next_wait(handle._cond)
 
         def consume():
             try:
@@ -285,7 +300,7 @@ class TestConcurrency:
         consumer = threading.Thread(target=consume)
         consumer.start()
 
-        time.sleep(0.05)  # let consumer block
+        assert waiting.wait(1.0)
         handle._signal_error(RuntimeError("injected"))
 
         consumer.join(timeout=5.0)
@@ -297,6 +312,7 @@ class TestConcurrency:
     def test_stop_while_blocked(self, handle):
         """Stop signal wakes a consumer blocked on empty buffer."""
         results = []
+        waiting = _track_next_wait(handle._cond)
 
         def consume():
             for reading, _ in handle.readings(timeout=5.0):
@@ -305,7 +321,7 @@ class TestConcurrency:
         consumer = threading.Thread(target=consume)
         consumer.start()
 
-        time.sleep(0.05)  # let consumer block
+        assert waiting.wait(1.0)
         handle._signal_stop()
 
         consumer.join(timeout=5.0)

@@ -632,6 +632,9 @@ class TestDMQBackendInit:
         with pytest.raises(AuthenticationError, match="DMQ requires KerberosAuth"):
             DMQBackend()
 
+        with pytest.raises(AuthenticationError, match="DMQ requires KerberosAuth, got object"):
+            DMQBackend(auth=object())
+
     def test_backend_init_invalid_host(self):
         """Test that empty host raises ValueError."""
         auth = _create_mock_auth()

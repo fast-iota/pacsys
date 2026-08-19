@@ -5,11 +5,13 @@ Mirrors test_backend_shared.py for async backends (AsyncDPMHTTPBackend, AsyncGRP
 """
 
 import asyncio
+import math
 
 import pytest
 
 from pacsys.aio._backends import AsyncBackend
 from pacsys.aio._subscription import AsyncSubscriptionHandle
+from pacsys.drf3 import parse_request
 from pacsys.drf_utils import strip_event
 from pacsys.errors import DeviceError
 from pacsys.types import BackendCapability, BasicControl, Reading, ValueType
@@ -72,6 +74,7 @@ class TestAsyncBackendRead:
         assert reading.ok, f"Failed to read {SCALAR_DEVICE}: {reading.message}"
         assert reading.value_type == ValueType.SCALAR
         assert isinstance(reading.value, float)
+        assert math.isfinite(reading.value)
         assert reading.timestamp is not None
 
     async def test_get_second_device(self, async_read_backend_cls: AsyncBackend):
@@ -79,6 +82,7 @@ class TestAsyncBackendRead:
 
         assert reading.ok, f"Failed to read {SCALAR_DEVICE_2}: {reading.message}"
         assert isinstance(reading.value, float)
+        assert math.isfinite(reading.value)
 
     async def test_get_array(self, async_read_backend_cls: AsyncBackend):
         reading = await async_read_backend_cls.get(ARRAY_DEVICE, timeout=TIMEOUT_READ)
@@ -94,6 +98,8 @@ class TestAsyncBackendRead:
         assert reading.ok, f"Failed to read {SCALAR_ELEMENT}: {reading.message}"
         assert reading.value_type == ValueType.SCALAR
         assert isinstance(reading.value, (int, float))
+        assert not isinstance(reading.value, bool)
+        assert math.isfinite(reading.value)
 
 
 # =============================================================================
@@ -113,6 +119,7 @@ class TestAsyncBackendBatchReads:
         for i, reading in enumerate(readings):
             assert reading.ok, f"Failed: {devices[i]}: {reading.message}"
             assert isinstance(reading.value, float)
+            assert math.isfinite(reading.value)
 
     async def test_get_many_empty_list(self, async_read_backend_cls: AsyncBackend):
         readings = await async_read_backend_cls.get_many([], timeout=TIMEOUT_READ)
@@ -600,6 +607,7 @@ class TestAsyncBackendWrite:
 
         read1 = await async_write_backend_cls.read(SCALAR_DEVICE_2)
         assert isinstance(read1, float)
+        assert math.isfinite(read1)
         read2 = await async_write_backend_cls.get_many([SCALAR_DEVICE_2, SCALAR_ELEMENT, ARRAY_DEVICE])
         assert all(r.ok for r in read2)
         for _ in range(5):
@@ -617,8 +625,13 @@ class TestAsyncBackendWrite:
         finally:
             await handle.stop()
 
-        assert len(readings) >= 1
-        assert all(r.ok for r in readings if r.name == valid_drf)
+        valid_name = parse_request(valid_drf).device
+        invalid_name = parse_request(invalid_drf).device
+        valid_readings = [r for r in readings if r.name == valid_name]
+        invalid_readings = [r for r in readings if r.name == invalid_name]
+        assert valid_readings and all(r.ok for r in valid_readings)
+        # The dedicated mixed-subscription test waits for delayed DPM_PEND.
+        assert all(not r.ok for r in invalid_readings)
 
         j = 0
         async for r, _ in h1.readings(timeout=TIMEOUT_STREAM_ITER):

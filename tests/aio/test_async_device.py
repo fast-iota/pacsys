@@ -140,10 +140,6 @@ class TestAsyncDeviceFluent:
         await device.with_event("P,1000").status()
         assert backend.reads == ["M:OUTTMP.STATUS.ALL@I", "M:OUTTMP.STATUS.ALL@I"]
 
-    def test_repr(self):
-        device = AsyncDevice("M:OUTTMP")
-        assert "AsyncDevice" in repr(device)
-
     def test_equality(self):
         d1 = AsyncDevice("M:OUTTMP")
         d2 = AsyncDevice("M:OUTTMP")

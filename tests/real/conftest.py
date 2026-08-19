@@ -460,8 +460,8 @@ def reset_async_global_backend():
 
 def _reset_aio_state(aio):
     """Reset all async module-level state (backend + config)."""
-    if aio._global_async_backend is not None:
-        try:
+    try:
+        if aio._global_async_backend is not None:
             import asyncio
 
             loop = asyncio.get_event_loop()
@@ -469,17 +469,18 @@ def _reset_aio_state(aio):
                 aio._retain_background_task(loop.create_task(aio._global_async_backend.close()))
             else:
                 loop.run_until_complete(aio._global_async_backend.close())
-        except Exception:  # noqa: BLE001
-            logger.debug("Failed to reset async backend", exc_info=True)
-    aio._global_async_backend = None
-    aio._async_backend_initialized = False
-    aio._config_backend = None
-    aio._config_auth = None
-    aio._config_role = None
-    aio._config_host = None
-    aio._config_port = None
-    aio._config_pool_size = None
-    aio._config_timeout = None
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to reset async backend")
+    finally:
+        aio._global_async_backend = None
+        aio._async_backend_initialized = False
+        aio._config_backend = None
+        aio._config_auth = None
+        aio._config_role = None
+        aio._config_host = None
+        aio._config_port = None
+        aio._config_pool_size = None
+        aio._config_timeout = None
 
 
 # =============================================================================
