@@ -5,6 +5,7 @@ See class docstrings below for available methods and pytest fixtures.
 """
 
 import queue
+import sys
 import threading
 from collections.abc import Callable, Iterator
 from dataclasses import replace
@@ -116,13 +117,13 @@ def _get_range(drf: str) -> ARRAY_RANGE | BYTE_RANGE | None:
 
 def _copy_arrays(value: Value) -> Value:
     """Copy ndarrays so Reading's freeze never touches the caller's buffer."""
-    if type(value).__module__ == "numpy" or isinstance(value, dict):
-        import numpy as np
-
-        if isinstance(value, np.ndarray):
-            return value.copy()
-        if isinstance(value, dict):
-            return {k: v.copy() if isinstance(v, np.ndarray) else v for k, v in value.items()}
+    np = sys.modules.get("numpy")
+    if np is None:
+        return value
+    if isinstance(value, np.ndarray):
+        return value.copy()
+    if isinstance(value, dict):
+        return {k: v.copy() if isinstance(v, np.ndarray) else v for k, v in value.items()}
     return value
 
 
@@ -820,6 +821,7 @@ class FakeBackend(Backend):
         Returns:
             Pre-configured WriteResult, or success by default
         """
+        value = _copy_arrays(value)  # before history: inspection APIs must not see later caller mutation
         self._write_history.append((drf, value))
         full = _full_key(drf)
         base = _base_key(drf)

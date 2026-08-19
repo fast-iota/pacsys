@@ -19,9 +19,11 @@ def _numeric_elements(value: object) -> list[float] | None:
     """Flatten *value* to its numeric elements; None if any element is non-numeric.
 
     Policies must fail closed: a value they cannot interpret numerically
-    (str, bytes, dict, mixed list, ...) returns None and must be denied for
+    (str, dict, mixed list, ...) returns None and must be denied for
     limited devices, not skipped. Enums (e.g. BasicControl.ON) are commands,
     not setpoints — their ordinals must never pass a numeric range check.
+    Exception: raw bytes block writes (alarm blocks, ramp tables) are
+    structured payloads, not setpoints — callers exempt them explicitly.
     """
     if isinstance(value, enum.Enum):
         return None
@@ -258,6 +260,8 @@ class ValueRangePolicy(Policy):
             bound = self._bound_for(name)
             if bound is None:
                 continue
+            if isinstance(value, (bytes, bytearray)):
+                continue  # raw block write (alarm block, ramp table) — not a setpoint
             elements = _numeric_elements(value)
             if elements is None:
                 return PolicyDecision(
@@ -332,6 +336,8 @@ class SlewRatePolicy(Policy):
                 limit = self._limit_for(name)
                 if limit is None:
                     continue
+                if isinstance(value, (bytes, bytearray)):
+                    continue  # raw block write (alarm block, ramp table) — not a setpoint
                 elements = _numeric_elements(value)
                 if elements is None or len(elements) != 1 or not math.isfinite(elements[0]):
                     # Slew against scalar history is undefined for arrays/text/NaN — fail closed

@@ -43,7 +43,11 @@ def main() -> int:
             return EXIT_USAGE_ERROR
         # BasicControl values target CONTROL property regardless of DRF form
         if isinstance(value, BasicControl):
-            req = parse_request(drf)
+            try:
+                req = parse_request(drf)
+            except ValueError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                return EXIT_USAGE_ERROR
             if not req.is_acnet:
                 print(f"Error: basic control writes require an ACNET device: {drf}", file=sys.stderr)
                 return EXIT_USAGE_ERROR
