@@ -133,12 +133,15 @@ class MonitorResult:
 
         if not vals:
             return None
-        first = vals[0]
-        if isinstance(first, np.ndarray):
-            return vals
-        if isinstance(first, dict) and "data" in first:
-            return [v["data"] for v in vals]
-        return None
+        out = []
+        for v in vals:
+            # DPM alternates dict/ndarray on the same channel (TimedScalarArray with/without micros)
+            if isinstance(v, dict) and "data" in v:
+                v = v["data"]
+            if not isinstance(v, np.ndarray):
+                return None
+            out.append(v)
+        return out
 
     def _try_array_stack(self, drf: DeviceSpec):
         """If channel holds ndarray values, stack into 2D numpy array. Else return None."""
@@ -147,7 +150,10 @@ class MonitorResult:
         arrays = self._unwrap_arrays(self._get_channel(drf).values())
         if arrays is None:
             return None
-        return np.stack(arrays)  # type: ignore[arg-type]
+        try:
+            return np.stack(arrays)
+        except ValueError as e:
+            raise ValueError(f"Cannot stack array readings for {self._resolve(drf)}: {e}") from None
 
     def _numeric_values(self, drf: DeviceSpec) -> list[float]:
         vals = self._get_channel(drf).values()
@@ -302,9 +308,9 @@ class MonitorResult:
                 f"to_numpy() requires numeric channels (SCALAR, SCALAR_ARRAY, TIMED_SCALAR_ARRAY), got {vtype.value}"
             )
         timestamps = np.array([r.timestamp.timestamp() if r.timestamp else 0.0 for r in ok], dtype=np.float64)
-        arrays = self._unwrap_arrays([r.value for r in ok])
-        if arrays is not None:
-            values = np.stack(arrays).astype(np.float64)  # type: ignore[arg-type]
+        stacked = self._try_array_stack(drf)
+        if stacked is not None:
+            values = stacked.astype(np.float64)
         else:
             values = np.array([numeric_value(r.value) for r in ok], dtype=np.float64)
         return timestamps, values
@@ -447,7 +453,9 @@ class Monitor:
     def _watchdog_loop(self) -> None:
         assert self._stale_after is not None
         interval = max(0.1, builtins_min(self._stale_after / 2, 1.0))
-        while self.running:
+        watchdog = threading.current_thread()
+        # Ownership check lets a superseded watchdog exit after a callback-driven restart
+        while self.running and self._watchdog is watchdog:
             now = time.monotonic()
             stale_events: list[tuple[str, ChannelHealth]] = []
             recover_events: list[tuple[str, ChannelHealth]] = []
@@ -468,6 +476,8 @@ class Monitor:
                         self._on_stale(drf, ch)
                     except Exception:
                         logger.exception("on_stale callback failed for %s", drf)
+                if not self.running or self._watchdog is not watchdog:
+                    return  # a callback stopped/restarted the monitor; abandon this batch
             for drf, ch in recover_events:
                 logger.info("channel %s recovered", drf)
                 if self._on_recover:
@@ -475,6 +485,8 @@ class Monitor:
                         self._on_recover(drf, ch)
                     except Exception:
                         logger.exception("on_recover callback failed for %s", drf)
+                if not self.running or self._watchdog is not watchdog:
+                    return
             time.sleep(interval)
 
     def health(self, drf: DeviceSpec | None = None) -> ChannelHealth | dict[str, ChannelHealth]:
@@ -500,9 +512,14 @@ class Monitor:
         if key not in self._counters:
             raise KeyError(f"No channel {key!r}. Available: {list(self._counters)}")
         with self._lock:
-            baseline = self._counters[key]
+            # Identity wait: every backend delivers a fresh Reading instance, and
+            # start() resets counters, so object identity (not counters) marks "new".
+            last = self._latest[key]
             deadline = time.monotonic() + timeout
-            while self._counters[key] == baseline:
+            while True:
+                cur = self._latest[key]
+                if cur is not None and cur is not last:
+                    return cur
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError(f"No new reading on {key!r} within {timeout}s")
@@ -511,19 +528,17 @@ class Monitor:
                 if not self.running:
                     raise RuntimeError("Monitor is not running")
                 self._lock.wait(timeout=builtins_min(remaining, 0.5))
-            reading = self._latest[key]
-            if reading is None:
-                raise RuntimeError(f"Reading counter advanced without a value for {key!r}")
-            return reading
 
     def start(self) -> None:
         """Start collecting readings in the background."""
         if self.running:
             raise RuntimeError("Monitor is already running")
-        # Ensure old watchdog is dead before restarting
-        if self._watchdog is not None:
-            self._watchdog.join(timeout=2.0)
-            self._watchdog = None
+        # Ensure old watchdog is dead before restarting (skip self-join when
+        # restarted from an on_stale callback; the loop's ownership check exits it)
+        watchdog = self._watchdog
+        if watchdog is not None and threading.current_thread() is not watchdog:
+            watchdog.join(timeout=2.0)
+        self._watchdog = None
         # Reset all per-run state
         with self._lock:
             for drf in self._drfs:
