@@ -350,8 +350,7 @@ class Ramp:
             bad = np.where((raw_values < i16.min) | (raw_values > i16.max))[0]
         else:
             # Scaler path: identify bad points from engineering values
-            if scaler is None:
-                raise RuntimeError("Ramp overflow analysis requires a scaler or raw values")
+            assert scaler is not None  # sole raw-less call site is under `if scaler is not None`
             bad = []
             for idx, v in enumerate(self.values):
                 try:

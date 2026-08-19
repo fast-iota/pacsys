@@ -339,16 +339,9 @@ async def read_many(devices: list, timeout: float | None = None):
 
     Returns bare values. Raises ReadError if any device fails.
     """
-    from pacsys.errors import ReadError
-
     drfs = [_resolve_drf(d) for d in devices]
     backend = _get_global_async_backend()
-    readings = await backend.get_many(drfs, timeout=timeout)
-    errors = [r for r in readings if not r.ok]
-    if errors:
-        failed = ", ".join(r.drf for r in errors)
-        raise ReadError(readings, f"Device errors: {failed}")
-    return [r.value for r in readings]
+    return await backend.read_many(drfs, timeout=timeout)
 
 
 async def write(device, value, timeout: float | None = None):

@@ -11,7 +11,7 @@ import sys
 import threading
 import types as _stdlib_types
 import weakref
-from typing import TYPE_CHECKING, Optional, cast
+from typing import TYPE_CHECKING, Optional
 
 from pacsys.auth import Auth, JWTAuth, KerberosAuth
 from pacsys.device import ArrayDevice, Device, ScalarDevice, TextDevice
@@ -498,12 +498,7 @@ def read_many(
     """
     drfs = [_resolve_drf(d) for d in devices]
     backend = _get_global_backend()
-    readings = backend.get_many(drfs, timeout=timeout)  # may raise ReadError
-    errors = [r for r in readings if not r.ok]
-    if errors:
-        failed = ", ".join(r.drf for r in errors)
-        raise ReadError(readings, f"Device errors: {failed}")
-    return [cast("Value", r.value) for r in readings]
+    return backend.read_many(drfs, timeout=timeout)
 
 
 def write(device: DeviceSpec, value: Value, timeout: float | None = None) -> WriteResult:

@@ -98,11 +98,7 @@ _SettingPayload = tuple[RawSetting_struct | None, ScaledSetting_struct | None, T
 
 
 def _coerce_setting_float(value: object) -> float:
-    if isinstance(value, str):
-        return float(value)
-    if isinstance(value, SupportsFloat):
-        return float(value)
-    if isinstance(value, SupportsIndex):
+    if isinstance(value, (SupportsFloat, SupportsIndex)):
         return float(value)
     raise TypeError(f"DPM scaled setting value is not numeric: {type(value).__name__}")
 

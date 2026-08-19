@@ -502,11 +502,11 @@ class _DaqCore:
                     if (
                         value_field == "status"
                         and index not in logger_complete
-                        and _proto_status_to_codes(reply.status)[1] != 0
+                        and (codes := _proto_status_to_codes(reply.status))[1] != 0
                     ):
                         # Real error (bad device, auth failure, ...) — not an
                         # end-of-stream terminator (mirrors _dpm_core Status_reply handling)
-                        facility, error, message = _proto_status_to_codes(reply.status)
+                        facility, error, message = codes
                         results[index] = Reading(
                             drf=drfs[index],
                             facility_code=facility,
