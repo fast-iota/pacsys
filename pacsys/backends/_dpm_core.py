@@ -84,7 +84,7 @@ class _AsyncDpmCore:
         self._mic_message: bytes | None = None
 
     async def connect(self) -> None:
-        conn = _AsyncDPMConnection(self._host, self._port)
+        conn = _AsyncDPMConnection(self._host, self._port, self._timeout)
         await conn.connect()
         self._conn = conn
 
