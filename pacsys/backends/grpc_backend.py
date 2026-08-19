@@ -20,7 +20,7 @@ import numpy as np
 
 from pacsys.acnet.errors import ERR_RETRY, ERR_TIMEOUT, FACILITY_ACNET, normalize_error_code
 from pacsys.auth import Auth, JWTAuth
-from pacsys.backends import Backend, validate_alarm_dict
+from pacsys.backends import Backend, summarize_drfs, validate_alarm_dict
 from pacsys.backends._dispatch import CallbackDispatcher
 from pacsys.backends._subscription import BufferedSubscriptionHandle
 from pacsys.drf3.extra import HISTORICAL_EXTRAS
@@ -746,7 +746,7 @@ class _DaqCore:
                 code = e.code()
                 ec = _grpc_error_code(e)
                 fc = _grpc_facility_code(e)
-                drf_summary = ", ".join(drfs) if len(drfs) <= 5 else f"{', '.join(drfs[:5])} and {len(drfs) - 5} more"
+                drf_summary = summarize_drfs(drfs)
                 exc = DeviceError(
                     drf=drfs[0] if drfs else "?",
                     facility_code=fc,
@@ -771,7 +771,7 @@ class _DaqCore:
                 if stop_check():
                     return
                 target = f"{self._host}:{self._port}"
-                drf_summary = ", ".join(drfs) if len(drfs) <= 5 else f"{', '.join(drfs[:5])} and {len(drfs) - 5} more"
+                drf_summary = summarize_drfs(drfs)
                 exc = DeviceError(
                     drf=drfs[0] if drfs else "?",
                     facility_code=FACILITY_ACNET,

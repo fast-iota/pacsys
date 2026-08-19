@@ -11,7 +11,7 @@ from typing import Any, Protocol, cast, runtime_checkable
 import numpy as np
 
 from pacsys.exp._values import numeric_value
-from pacsys.types import Reading, Value, ValueType
+from pacsys.types import Reading, Value, ValueType, _value_to_json
 
 
 @runtime_checkable
@@ -23,7 +23,6 @@ class LogWriter(Protocol):
 
 
 _ARRAY_TYPES = frozenset({ValueType.SCALAR_ARRAY})
-_JSON_TYPES = frozenset({ValueType.TEXT_ARRAY, ValueType.ANALOG_ALARM, ValueType.DIGITAL_ALARM, ValueType.BASIC_STATUS})
 
 
 def _ndarray_to_list(value: np.ndarray) -> list[Any]:
@@ -80,9 +79,8 @@ def _format_value_str(r: Reading) -> str:
     if r.value_type == ValueType.RAW:
         raw = r.value if isinstance(r.value, (bytes, bytearray)) else str(r.value).encode()
         return base64.b64encode(raw).decode("ascii")
-    if r.value_type in _JSON_TYPES:
-        return json.dumps(r.value)
-    return str(r.value)
+    # JSON types (alarms, status, text arrays) and any future value type — parseable JSON
+    return json.dumps(_value_to_json(r.value))
 
 
 class CsvWriter:
@@ -142,11 +140,8 @@ def _convert_value(r: Reading) -> tuple[float | None, int | None, list[float] | 
         raw = r.value if isinstance(r.value, (bytes, bytearray)) else str(r.value).encode()
         return None, None, None, base64.b64encode(raw).decode("ascii")
 
-    if r.value_type in _JSON_TYPES:
-        return None, None, None, json.dumps(r.value)
-
-    # Unknown type — fall back to string
-    return None, None, None, str(r.value)
+    # JSON types (alarms, status, text arrays) and any future value type — parseable JSON
+    return None, None, None, json.dumps(_value_to_json(r.value))
 
 
 class ParquetWriter:

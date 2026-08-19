@@ -468,6 +468,27 @@ class TestReadingToDict:
         assert "value_type" not in d
 
 
+class TestValueToJson:
+    def test_numpy_bool(self):
+        from pacsys.types import _value_to_json
+
+        result = _value_to_json(np.bool_(True))
+        assert result is True
+        assert isinstance(result, bool)
+
+    def test_bytearray_base64(self):
+        import base64
+
+        from pacsys.types import _value_to_json
+
+        assert _value_to_json(bytearray(b"\x01\x02")) == base64.b64encode(b"\x01\x02").decode("ascii")
+
+    def test_bytearray_infers_raw(self):
+        from pacsys.types import _infer_serialization_type
+
+        assert _infer_serialization_type(bytearray(b"\x01")) == ValueType.RAW
+
+
 class TestWriteResultToDict:
     def test_success_round_trip(self):
         wr = WriteResult(drf="Z:ACLTST", error_code=0)

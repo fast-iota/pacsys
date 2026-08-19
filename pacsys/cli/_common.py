@@ -10,7 +10,7 @@ from typing import Any
 
 import pacsys
 from pacsys.drf_utils import get_device_name
-from pacsys.types import BasicControl, Reading, WriteResult
+from pacsys.types import BasicControl, Reading, WriteResult, _value_to_json
 
 # Exit codes
 EXIT_OK = 0
@@ -179,7 +179,7 @@ def format_value(value: Any, number_format: str | None) -> str:
         if value and all(isinstance(v, bool) for v in value.values()):
             return " ".join(f"{k}={'T' if v else 'F'}" for k, v in value.items())
         # Alarm blocks and other dicts — compact JSON
-        return json.dumps(_json_safe(value), separators=(",", ":"))
+        return json.dumps(_value_to_json(value), separators=(",", ":"))
     if isinstance(value, (bytes, bytearray)):
         return value.hex()
     if isinstance(value, str):
@@ -246,7 +246,7 @@ def format_reading(
         d: dict[str, Any] = {
             "device": device,
             "ok": True,
-            "value": _json_safe(val),
+            "value": _value_to_json(val),
         }
         d["units"] = units or None
         ts = reading.timestamp
@@ -278,7 +278,7 @@ def format_write_result(result: WriteResult, *, fmt: str) -> str:
         if result.verified is not None:
             d["verified"] = result.verified
         if result.readback is not None:
-            d["readback"] = _json_safe(result.readback)
+            d["readback"] = _value_to_json(result.readback)
         return json.dumps(d)
 
     if fmt == "terse":
@@ -303,25 +303,6 @@ def format_write_result(result: WriteResult, *, fmt: str) -> str:
         )
         parts.append(readback_str)
     return "".join(parts)
-
-
-def _json_safe(value: Any) -> Any:
-    """Convert non-JSON-native types for serialization."""
-    if isinstance(value, (bytes, bytearray)):
-        return value.hex()
-    np = sys.modules.get("numpy")
-    if np is not None:
-        if isinstance(value, np.ndarray):
-            return value.tolist()
-        if isinstance(value, np.bool_):
-            return bool(value)
-        if isinstance(value, np.integer):
-            return int(value)
-        if isinstance(value, np.floating):
-            return float(value)
-    if isinstance(value, dict):
-        return {k: _json_safe(v) for k, v in value.items()}
-    return value
 
 
 def install_signal_handlers(cleanup_fn: Callable[[], None]) -> None:

@@ -7,6 +7,7 @@ import time
 from collections.abc import AsyncIterator
 from typing import Any
 
+from pacsys.backends import summarize_drfs
 from pacsys.types import Reading
 
 logger = logging.getLogger(__name__)
@@ -57,12 +58,7 @@ class AsyncSubscriptionHandle:
             self._drop_count += 1
             now = time.monotonic()
             if now - self._last_drop_log >= 5.0:
-                drfs = self._drfs
-                drf_summary = (
-                    (", ".join(drfs) if len(drfs) <= 5 else f"{', '.join(drfs[:5])} and {len(drfs) - 5} more")
-                    if drfs
-                    else "unknown"
-                )
+                drf_summary = summarize_drfs(self._drfs)
                 logger.warning(
                     "Async subscription buffer full (%d), dropped %d readings (devices: %s)",
                     self._maxsize,

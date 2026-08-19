@@ -81,6 +81,19 @@ class TestCsvWriter:
             rows = list(csv.reader(f))
         assert json.loads(rows[1][2]) == status
 
+    def test_csv_alarm_dict_with_numpy_scalar(self, tmp_path):
+        """Alarm dicts with nested numpy scalars serialize as JSON, not TypeError."""
+        path = tmp_path / "test.csv"
+        alarm = {"min": np.float64(1.5), "max": np.float64(9.0), "enabled": np.bool_(True)}
+        r = Reading(drf="M:OUTTMP", value_type=ValueType.ANALOG_ALARM, value=alarm, timestamp=TS)
+        writer = CsvWriter(path)
+        writer.write_readings([r])
+        writer.close()
+
+        with path.open(newline="") as f:
+            rows = list(csv.reader(f))
+        assert json.loads(rows[1][2]) == {"min": 1.5, "max": 9.0, "enabled": True}
+
     def test_csv_raw_bytes_as_base64(self, tmp_path):
         """Raw bytes are serialized as base64."""
         path = tmp_path / "test.csv"
