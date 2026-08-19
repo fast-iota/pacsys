@@ -179,6 +179,45 @@ class TestMonitorTags:
         mon.stop()
 
 
+class TestMonitorRunToken:
+    def test_reading_racing_subscribe_return_is_counted(self, fake):
+        """A delivery arriving before start() assigns self._handle is counted."""
+        mon = Monitor(["M:OUTTMP@p,1000"], backend=fake)
+        orig = fake.subscribe
+
+        def racing_subscribe(drfs, callback=None, **kw):
+            h = orig(drfs, callback=callback, **kw)
+            fake.emit_reading("M:OUTTMP@p,1000", 42.0)
+            deadline = time.monotonic() + 2.0
+            while mon.tags["M:OUTTMP@p,1000"] == 0 and time.monotonic() < deadline:
+                time.sleep(0.01)  # let the dispatcher deliver before subscribe() returns
+            return h
+
+        fake.subscribe = racing_subscribe
+        try:
+            mon.start()
+            assert mon.tags == {"M:OUTTMP@p,1000": 1}
+            assert mon._latest["M:OUTTMP@p,1000"].value == 42.0
+        finally:
+            fake.subscribe = orig
+            mon.stop()
+
+    def test_late_delivery_from_old_run_dropped(self, fake):
+        mon = Monitor(["M:OUTTMP@p,1000"], backend=fake)
+        mon.start()
+        old_token = mon._run_token
+        mon.stop()
+        mon.start()
+        try:
+            from pacsys.types import Reading, ValueType
+
+            stale = Reading(drf="M:OUTTMP@p,1000", value_type=ValueType.SCALAR, value=1.0)
+            mon._on_reading(stale, None, old_token)
+            assert mon.tags == {"M:OUTTMP@p,1000": 0}
+        finally:
+            mon.stop()
+
+
 class TestMonitorAwaitNext:
     def test_await_next_returns_reading(self, fake):
         mon = Monitor(["M:OUTTMP@p,1000"], backend=fake)
