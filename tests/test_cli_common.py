@@ -583,49 +583,17 @@ class TestBaseParser:
         assert args.terse is True
 
 
-class TestJsonSafe:
-    """_json_safe converts numpy types to Python native for JSON."""
+class TestJsonRawValue:
+    """get --json emits RAW values as base64, matching info --json and Reading.to_dict()."""
 
-    def test_numpy_float(self):
-        from pacsys.cli._common import _json_safe
+    def test_raw_reading_base64(self):
+        import base64
 
-        assert _json_safe(np.float64(1.5)) == 1.5
-        assert isinstance(_json_safe(np.float64(1.5)), float)
+        from pacsys.cli._common import format_reading
 
-    def test_numpy_int(self):
-        from pacsys.cli._common import _json_safe
-
-        assert _json_safe(np.int64(42)) == 42
-        assert isinstance(_json_safe(np.int64(42)), int)
-
-    def test_numpy_array(self):
-        from pacsys.cli._common import _json_safe
-
-        arr = np.array([1.0, 2.0, 3.0])
-        result = _json_safe(arr)
-        assert result == [1.0, 2.0, 3.0]
-        assert isinstance(result, list)
-
-    def test_passthrough(self):
-        from pacsys.cli._common import _json_safe
-
-        assert _json_safe(42) == 42
-        assert _json_safe("hello") == "hello"
-        assert _json_safe([1, 2]) == [1, 2]
-
-    def test_bytes(self):
-        from pacsys.cli._common import _json_safe
-
-        assert _json_safe(b"\x00\xff") == "00ff"
-
-    def test_dict_with_numpy(self):
-        from pacsys.cli._common import _json_safe
-
-        d = {"on": np.bool_(True), "value": np.float64(1.5)}
-        result = _json_safe(d)
-        assert result == {"on": True, "value": 1.5}
-        assert isinstance(result["on"], bool)
-        assert isinstance(result["value"], float)
+        r = Reading(drf="M:OUTTMP.RAW", value_type=ValueType.RAW, value=b"\x00\xff")
+        d = json.loads(format_reading(r, fmt="json", number_format=None, array_slice=None))
+        assert d["value"] == base64.b64encode(b"\x00\xff").decode("ascii")
 
 
 class TestResolveAuth:

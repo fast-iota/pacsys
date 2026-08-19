@@ -14,7 +14,8 @@ from pacsys.acnet.errors import (
     parse_error,
     status_message,
 )
-from pacsys.auth import KerberosAuth
+from pacsys.auth import KerberosAuth, _require_gssapi
+from pacsys.backends import summarize_drfs
 
 # Reuse pure helpers from sync backend
 from pacsys.backends.dpm_http import (
@@ -106,13 +107,8 @@ class _AsyncDpmCore:
 
     async def authenticate(self) -> None:
         """Kerberos GSSAPI authentication over the DPM connection."""
-        try:
-            import gssapi
-            from gssapi import exceptions as gssapi_exceptions
-        except ImportError:
-            raise ImportError(
-                "gssapi library required for Kerberos authentication. Install with: pip install pacsys[kerberos]"
-            ) from None
+        gssapi = _require_gssapi()
+        from gssapi import exceptions as gssapi_exceptions
 
         assert self._conn is not None
         if self._auth is None:
@@ -288,7 +284,7 @@ class _AsyncDpmCore:
                         logger.warning(
                             "StartList returned status %d (devices: %s)",
                             reply.status,
-                            ", ".join(drfs[:5]) + (f" and {len(drfs) - 5} more" if len(drfs) > 5 else ""),
+                            summarize_drfs(drfs),
                         )
                         break
                 elif isinstance(reply, ListStatus_reply):
@@ -542,7 +538,7 @@ class _AsyncDpmCore:
                     logger.warning(
                         "StartList returned status %d (devices: %s)",
                         reply.status,
-                        ", ".join(write_drfs[:5]) + (f" and {len(write_drfs) - 5} more" if len(write_drfs) > 5 else ""),
+                        summarize_drfs(write_drfs),
                     )
                     return self._build_write_results(settings, None, add_errors)
             elif isinstance(reply, Status_reply):
@@ -561,9 +557,7 @@ class _AsyncDpmCore:
 
         if received_infos < expected_count or not received_start_list_reply:
             write_drfs = [drf for drf, _ in settings]
-            drf_summary = ", ".join(write_drfs[:5]) + (
-                f" and {len(write_drfs) - 5} more" if len(write_drfs) > 5 else ""
-            )
+            drf_summary = summarize_drfs(write_drfs)
             logger.warning(
                 "Write setup timed out: received %d/%d device infos, StartList_reply=%s (devices: %s)",
                 received_infos,
@@ -739,7 +733,7 @@ class _AsyncDpmCore:
 
                 if isinstance(reply, StartList_reply):
                     if reply.status != 0:
-                        drf_summary = ", ".join(drfs[:5]) + (f" and {len(drfs) - 5} more" if len(drfs) > 5 else "")
+                        drf_summary = summarize_drfs(drfs)
                         logger.warning("StartList returned status %d (devices: %s)", reply.status, drf_summary)
                         error_fn(
                             DPMConnectionError(f"StartList failed (status={reply.status}, devices: {drf_summary})")
@@ -776,12 +770,12 @@ class _AsyncDpmCore:
             pass
         except (asyncio.IncompleteReadError, DPMConnectionError, OSError) as e:
             if not stop_check():
-                drf_summary = ", ".join(drfs) if len(drfs) <= 5 else f"{', '.join(drfs[:5])} and {len(drfs) - 5} more"
+                drf_summary = summarize_drfs(drfs)
                 wrapped = DPMConnectionError(f"{e} (devices: {drf_summary})")
                 wrapped.__cause__ = e
                 error_fn(wrapped)
         except Exception as e:  # noqa: BLE001
             if not stop_check():
-                drf_summary = ", ".join(drfs) if len(drfs) <= 5 else f"{', '.join(drfs[:5])} and {len(drfs) - 5} more"
+                drf_summary = summarize_drfs(drfs)
                 logger.error("Unexpected streaming error: %s (devices: %s)", e, drf_summary)
                 error_fn(e)

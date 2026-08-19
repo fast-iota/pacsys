@@ -3,6 +3,7 @@ Backend abstract base class. See specs/backends.md for backend comparison.
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import cast
 
@@ -22,6 +23,15 @@ from pacsys.types import (
 def timestamp_from_millis(millis: int) -> datetime:
     """Convert timestamp (milliseconds since Unix epoch) to UTC datetime."""
     return datetime.fromtimestamp(millis / 1_000, tz=timezone.utc)
+
+
+def summarize_drfs(drfs: Sequence[str], limit: int = 5) -> str:
+    """Compact DRF list for log messages: first entries plus a count of the rest."""
+    if not drfs:
+        return "unknown"
+    if len(drfs) <= limit:
+        return ", ".join(drfs)
+    return f"{', '.join(drfs[:limit])} and {len(drfs) - limit} more"
 
 
 # Alarm dict key sets shared by DMQ and gRPC backends

@@ -15,6 +15,17 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+def _require_gssapi():
+    """Import and return gssapi, with a helpful error when unavailable or broken."""
+    try:
+        import gssapi
+    except (ImportError, OSError) as e:
+        raise ImportError(
+            "gssapi library required for Kerberos authentication. Install with: pip install pacsys[kerberos]"
+        ) from e
+    return gssapi
+
+
 class Auth(ABC):
     """Base class for authentication credentials.
 
@@ -99,12 +110,7 @@ class KerberosAuth(Auth):
         gssapi resolves the cache lazily, so name/lifetime inspection (not just
         construction) can raise GSSError -- everything stays in one boundary.
         """
-        try:
-            import gssapi
-        except (ImportError, OSError):
-            raise ImportError(
-                "gssapi library required for Kerberos authentication. Install with: pip install pacsys[kerberos]"
-            ) from None
+        gssapi = _require_gssapi()
 
         from pacsys.errors import AuthenticationError
 

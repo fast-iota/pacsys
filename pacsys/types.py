@@ -38,11 +38,11 @@ def _value_to_json(value: object) -> object:
 
         if isinstance(value, np.ndarray):
             return cast("Any", value).tolist()
-        if isinstance(value, (np.integer, np.floating)):
+        if isinstance(value, (np.integer, np.floating, np.bool_)):
             return value.item()
     except ImportError:
         pass
-    if isinstance(value, bytes):
+    if isinstance(value, (bytes, bytearray)):
         return base64.b64encode(value).decode("ascii")
     if isinstance(value, dict):
         return {k: _value_to_json(v) for k, v in value.items()}
@@ -100,7 +100,7 @@ def _infer_serialization_type(value: object) -> "ValueType | None":
             return ValueType.SCALAR_ARRAY
     except ImportError:
         pass
-    if isinstance(value, bytes):
+    if isinstance(value, (bytes, bytearray)):
         return ValueType.RAW
     return None
 

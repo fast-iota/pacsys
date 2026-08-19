@@ -23,8 +23,8 @@ from pika.channel import Channel
 from pika.exceptions import AMQPError
 
 from pacsys.acnet.errors import ERR_OK, ERR_RETRY, ERR_TIMEOUT, FACILITY_ACNET, FACILITY_DMQ
-from pacsys.auth import Auth, KerberosAuth
-from pacsys.backends import Backend, timestamp_from_millis, validate_alarm_dict
+from pacsys.auth import Auth, KerberosAuth, _require_gssapi
+from pacsys.backends import Backend, summarize_drfs, timestamp_from_millis, validate_alarm_dict
 from pacsys.backends._dispatch import CallbackDispatcher
 from pacsys.backends._subscription import BufferedSubscriptionHandle
 from pacsys.backends.dmq_protocol import (
@@ -813,7 +813,7 @@ class DMQBackend(Backend):
             job.exchange_name = exchange_name
             job.queue_name = queue_name
 
-            drf_summary = ", ".join(job.drfs[:5]) + (f" and {len(job.drfs) - 5} more" if len(job.drfs) > 5 else "")
+            drf_summary = summarize_drfs(job.drfs)
 
             try:
                 ctx = self._create_gss_context()
@@ -963,12 +963,7 @@ class DMQBackend(Backend):
             ImportError: If gssapi library is not installed
             AuthenticationError: If context creation fails
         """
-        try:
-            import gssapi
-        except ImportError:
-            raise ImportError(
-                "gssapi library required for Kerberos authentication. Install with: pip install pacsys[kerberos]"
-            ) from None
+        gssapi = _require_gssapi()
 
         try:
             name = gssapi.Name(DMQ_SERVICE_PRINCIPAL, gssapi.NameType.kerberos_principal)

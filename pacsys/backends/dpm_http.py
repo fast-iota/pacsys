@@ -4,6 +4,12 @@ DPM HTTP Backend - primary backend for ACNET device access.
 Uses TCP/PC protocol via acsys-proxy. Connection pool for reads,
 independent TCP connections per subscribe() for streaming.
 See specs/protocols.md and specs/backends.md for protocol details.
+
+TODO: unify with _dpm_core.py (parallel sync/async implementations of the same
+protocol: read/write paths ~83% similar, GSSAPI handshake duplicated, and the
+conn_broken never-re-pool invariant enforced in both). Plan: delegate this sync
+backend to _AsyncDpmCore on the shared reactor thread. Big refactor - needs its
+own branch and a full live-server test pass (royal test flush).
 """
 
 import asyncio
@@ -24,8 +30,8 @@ from pacsys.acnet.errors import (
     parse_error,
     status_message,
 )
-from pacsys.auth import Auth, KerberosAuth
-from pacsys.backends import Backend, timestamp_from_millis
+from pacsys.auth import Auth, KerberosAuth, _require_gssapi
+from pacsys.backends import Backend, summarize_drfs, timestamp_from_millis
 from pacsys.backends._dispatch import CallbackDispatcher
 from pacsys.backends._subscription import BufferedSubscriptionHandle
 from pacsys.dpm_connection import DPM_HANDSHAKE, MAX_MESSAGE_SIZE, DPMConnection, DPMConnectionError
@@ -618,7 +624,7 @@ class _DpmStreamCore:
 
                 if isinstance(reply, StartList_reply):
                     if reply.status != 0:
-                        drf_summary = ", ".join(drfs[:5]) + (f" and {len(drfs) - 5} more" if len(drfs) > 5 else "")
+                        drf_summary = summarize_drfs(drfs)
                         logger.warning("StartList returned status %d (devices: %s)", reply.status, drf_summary)
                         error_fn(
                             DPMConnectionError(f"StartList failed (status={reply.status}, devices: {drf_summary})")
@@ -655,13 +661,13 @@ class _DpmStreamCore:
             pass  # Normal shutdown via task.cancel()
         except (asyncio.IncompleteReadError, DPMConnectionError, OSError) as e:
             if not stop_check():
-                drf_summary = ", ".join(drfs) if len(drfs) <= 5 else f"{', '.join(drfs[:5])} and {len(drfs) - 5} more"
+                drf_summary = summarize_drfs(drfs)
                 wrapped = DPMConnectionError(f"{e} (devices: {drf_summary})")
                 wrapped.__cause__ = e
                 error_fn(wrapped)
         except Exception as e:  # noqa: BLE001
             if not stop_check():
-                drf_summary = ", ".join(drfs) if len(drfs) <= 5 else f"{', '.join(drfs[:5])} and {len(drfs) - 5} more"
+                drf_summary = summarize_drfs(drfs)
                 logger.error("Unexpected streaming error: %s (devices: %s)", e, drf_summary)
                 error_fn(e)
 
@@ -927,9 +933,7 @@ class DPMHTTPBackend(Backend):
                                 device_infos[reply.ref_id] = reply
                         elif isinstance(reply, StartList_reply):
                             if reply.status != 0:
-                                drf_summary = ", ".join(drfs[:5]) + (
-                                    f" and {len(drfs) - 5} more" if len(drfs) > 5 else ""
-                                )
+                                drf_summary = summarize_drfs(drfs)
                                 logger.warning("StartList returned status %d (devices: %s)", reply.status, drf_summary)
                                 break  # No data will arrive
                         elif isinstance(reply, ListStatus_reply):
@@ -1118,13 +1122,8 @@ class DPMHTTPBackend(Backend):
         3. Create GSSAPI context targeting that service, send initial token
         4. Server accepts, optional mutual-auth token exchange
         """
-        try:
-            import gssapi
-            from gssapi import exceptions as gssapi_exceptions
-        except ImportError:
-            raise ImportError(
-                "gssapi library required for Kerberos authentication. Install with: pip install pacsys[kerberos]"
-            ) from None
+        gssapi = _require_gssapi()
+        from gssapi import exceptions as gssapi_exceptions
 
         # Phase 1: request service name with empty token
         auth_req = Authenticate_request()
@@ -1511,9 +1510,7 @@ class DPMHTTPBackend(Backend):
                 received_start_list_reply = True
                 if reply.status != 0:
                     write_drfs = [drf for drf, _ in prepared_settings]
-                    drf_summary = ", ".join(write_drfs[:5]) + (
-                        f" and {len(write_drfs) - 5} more" if len(write_drfs) > 5 else ""
-                    )
+                    drf_summary = summarize_drfs(write_drfs)
                     logger.warning("StartList returned status %d (devices: %s)", reply.status, drf_summary)
                     return None, add_errors
             elif isinstance(reply, Status_reply):
@@ -1532,9 +1529,7 @@ class DPMHTTPBackend(Backend):
 
         if received_infos < expected_count or not received_start_list_reply:
             write_drfs = [drf for drf, _ in prepared_settings]
-            drf_summary = ", ".join(write_drfs[:5]) + (
-                f" and {len(write_drfs) - 5} more" if len(write_drfs) > 5 else ""
-            )
+            drf_summary = summarize_drfs(write_drfs)
             logger.warning(
                 "Write setup timed out: received %d/%d device infos, StartList_reply=%s (devices: %s)",
                 received_infos,
@@ -1830,7 +1825,7 @@ class DPMHTTPBackend(Backend):
             except Exception as e:  # noqa: BLE001
                 if not handle._stopped:
                     drfs = handle._drfs
-                    summary = ", ".join(drfs) if len(drfs) <= 5 else f"{', '.join(drfs[:5])} and {len(drfs) - 5} more"
+                    summary = summarize_drfs(drfs)
                     logger.error("Subscription connection failed for %s: %s", summary, e)
                     handle._dispatch_error(e)
                 return

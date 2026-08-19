@@ -95,22 +95,10 @@ class SSHTimeoutError(SSHError):
 
 
 def _gssapi_username() -> str:
-    """Extract username from Kerberos principal"""
-    try:
-        import gssapi
-    except (ImportError, OSError):
-        raise ImportError(
-            "gssapi library required for GSSAPI SSH auth. Install with: pip install pacsys[kerberos]"
-        ) from None
+    """Username from the validated default Kerberos principal."""
+    from pacsys.auth import KerberosAuth
 
-    from pacsys.errors import AuthenticationError
-
-    try:
-        # gssapi resolves the cache lazily -- name access can raise, not just construction
-        creds = gssapi.Credentials(usage="initiate")
-        principal = str(creds.name)
-    except Exception as e:
-        raise AuthenticationError(f"No valid Kerberos credentials. Run 'kinit' first. Error: {e}") from e
+    _, principal = KerberosAuth()._inspect_credentials()
     return principal.split("@")[0]
 
 
@@ -530,12 +518,9 @@ class SSHClient:
                 if not isinstance(self._auth, KerberosAuth):
                     raise ValueError(f"GSSAPI hops require KerberosAuth, got {type(self._auth).__name__}")
             # Validate GSSAPI is available (fail fast)
-            try:
-                import gssapi  # noqa: F401
-            except (ImportError, OSError) as exc:
-                raise ImportError(
-                    "gssapi library required for GSSAPI SSH auth. Install with: pip install pacsys[kerberos]"
-                ) from exc
+            from pacsys.auth import _require_gssapi
+
+            _require_gssapi()
 
         # Lazy connection state (protected by lock)
         self._lock = threading.Lock()
