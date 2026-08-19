@@ -3,6 +3,7 @@ Core data types - Reading, WriteResult, SubscriptionHandle, CombinedStream.
 """
 
 import base64
+import sys
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -73,14 +74,18 @@ def _value_from_json(
 
 
 def _value_dtype(value: object) -> "str | dict[str, str] | None":
-    """Dtype name(s) of ndarray content in a Value, recorded for exact round-trip."""
+    """Dtype string(s) of ndarray content in a Value, recorded for exact round-trip.
+
+    Uses ``dtype.str`` (e.g. ``'<f8'``, ``'<U2'``) — unlike ``dtype.name``, it is
+    valid ``np.dtype()`` input for every dtype (``'str64'`` is not).
+    """
     try:
         import numpy as np
 
         if isinstance(value, np.ndarray):
-            return value.dtype.name
+            return value.dtype.str
         if isinstance(value, dict):
-            dtypes = {k: v.dtype.name for k, v in value.items() if isinstance(v, np.ndarray)}
+            dtypes = {k: v.dtype.str for k, v in value.items() if isinstance(v, np.ndarray)}
             return cast("dict[str, str]", dtypes) or None
     except ImportError:
         pass
@@ -90,14 +95,17 @@ def _value_dtype(value: object) -> "str | dict[str, str] | None":
 def _infer_serialization_type(value: object) -> "ValueType | None":
     """Serialization tag for a bare Value (WriteResult.readback has no value_type).
 
-    Only types whose JSON form is lossy need a tag: ndarray and bytes. Scalars,
-    str, and lists round-trip as plain JSON and stay untagged.
+    Only types whose JSON form is lossy need a tag: ndarray, ndarray-valued
+    dicts (timed arrays), and bytes. Scalars, str, and lists round-trip as
+    plain JSON and stay untagged.
     """
     try:
         import numpy as np
 
         if isinstance(value, np.ndarray):
             return ValueType.SCALAR_ARRAY
+        if isinstance(value, dict) and value and all(isinstance(v, np.ndarray) for v in value.values()):
+            return ValueType.TIMED_SCALAR_ARRAY
     except ImportError:
         pass
     if isinstance(value, (bytes, bytearray)):
@@ -220,14 +228,19 @@ def _frozen_value(value: object) -> object:
     """
     if isinstance(value, dict):
         return {k: _frozen_value(v) for k, v in value.items()}
-    if type(value).__module__ != "numpy":  # fast bail for None/scalars/str/bytes/list
+    # An ndarray (or subclass, from any module) implies numpy is already
+    # imported — check sys.modules so numpy-less environments never pay for it
+    np = sys.modules.get("numpy")
+    if np is None or not isinstance(value, np.ndarray):
         return value
-    import numpy as np
-
-    if isinstance(value, np.ndarray):
-        if value.base is not None:
-            value = value.copy()
-        value.flags.writeable = False
+    if value.base is not None:
+        value = value.copy()
+    value.flags.writeable = False
+    # MaskedArray: the mask is a separate buffer that also feeds tobytes()/hash.
+    # Freeze the stored _mask — the .mask property returns a fresh view per access
+    mask = getattr(value, "_mask", None)
+    if isinstance(mask, np.ndarray) and mask.ndim:
+        mask.flags.writeable = False
     return value
 
 
@@ -263,7 +276,8 @@ def _values_equal(a: "Value | None", b: "Value | None") -> bool:
                 isinstance(a, np.ndarray)
                 and isinstance(b, np.ndarray)
                 and a.dtype == b.dtype
-                and np.array_equal(a, b, equal_nan=True)
+                # equal_nan for NaN/NaT-capable kinds only; it raises on str/object dtypes
+                and np.array_equal(a, b, equal_nan=a.dtype.kind in "fcmM")
             )
     except ImportError:
         pass

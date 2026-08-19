@@ -62,6 +62,15 @@ class TestSetReading:
         buf[0] = 9.9  # must not raise, must not affect stored reading
         np.testing.assert_array_equal(fake.read("B:HS23T"), [1.0, 2.0, 3.0])
 
+    def test_write_leaves_caller_array_writable(self):
+        """write() copies arrays before the stored Reading freezes them."""
+        fake = FakeBackend()
+        buf = np.array([1.0, 2.0, 3.0])
+        fake.write("Z:ARR", buf)
+        buf[0] = 9.9  # must not raise, must not affect stored reading or history
+        np.testing.assert_array_equal(fake.read("Z:ARR"), [1.0, 2.0, 3.0])
+        np.testing.assert_array_equal(fake.writes[0][1], [1.0, 2.0, 3.0])
+
     def test_emit_reading_leaves_caller_array_writable(self):
         """emit_reading copies arrays so tests can reuse and mutate one buffer."""
         fake = FakeBackend()

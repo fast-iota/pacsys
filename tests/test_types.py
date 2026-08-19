@@ -401,6 +401,33 @@ class TestReadingToDict:
         r2 = Reading.from_dict(r.to_dict())
         assert r2 == r
 
+    def test_unicode_array_round_trip(self):
+        # dtype.str ('<U2') round-trips; dtype.name ('str64') is not valid np.dtype input
+        r = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=np.array(["ab", "cd"]))
+        r2 = Reading.from_dict(r.to_dict())
+        assert r2 == r
+
+    def test_ndarray_subclass_frozen(self):
+        # numpy.ma/numpy.rec subclasses must not slip past the freeze fast-bail
+        r = Reading(
+            drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=np.ma.array([1.0, 2.0], mask=[False, True])
+        )
+        assert not r.value.flags.writeable
+        assert not r.value.mask.flags.writeable  # mask feeds tobytes() -> hash
+
+    def test_user_defined_ndarray_subclass_frozen(self):
+        class Ext(np.ndarray):
+            pass
+
+        r = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=np.array([1.0, 2.0]).view(Ext))
+        assert not r.value.flags.writeable
+
+    def test_datetime_nat_array_reflexive(self):
+        # NaT must compare equal to itself (kinds m/M support equal_nan)
+        v = np.array(["NaT", "2020-01-01"], dtype="datetime64[ns]")
+        r = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=v)
+        assert r == Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=v.copy())
+
     def test_legacy_dict_without_dtype(self):
         # Dicts serialized before value_dtype existed must still deserialize
         r = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=np.array([1, 2], dtype=np.int16))
@@ -542,6 +569,31 @@ class TestWriteResultToDict:
         assert wr == wr2
         assert hash(wr) == hash(wr2)
         assert wr != WriteResult(drf="Z:ACLTST", verified=True, readback=np.array([1.0, 9.0]))
+
+    def test_timed_dict_readback_round_trip(self):
+        import json
+
+        rb = {"data": np.array([1.0, 2.0]), "micros": np.array([3, 4], dtype=np.int64)}
+        wr = WriteResult(drf="Z:ACLTST", verified=True, readback=rb)
+        wr2 = WriteResult.from_dict(json.loads(json.dumps(wr.to_dict())))
+        assert isinstance(wr2.readback["data"], np.ndarray)
+        assert wr2 == wr
+
+    def test_mixed_dict_readback_untagged(self):
+        import json
+
+        # Dicts with non-array members stay untagged: lossy (arrays -> lists) but no corruption
+        wr = WriteResult(drf="Z:ACLTST", verified=True, readback={"data": np.array([1.0]), "label": "beam"})
+        wr2 = WriteResult.from_dict(json.loads(json.dumps(wr.to_dict())))
+        assert wr2.readback["label"] == "beam"
+        assert isinstance(wr2.readback["label"], str)
+
+    def test_string_array_readback_eq(self):
+        # equal_nan must not be passed for non-float dtypes (isnan raises on <U)
+        wr = WriteResult(drf="Z:ACLTST", verified=True, readback=np.array(["x", "y"]))
+        wr2 = WriteResult(drf="Z:ACLTST", verified=True, readback=np.array(["x", "y"]))
+        assert wr == wr2
+        assert wr != WriteResult(drf="Z:ACLTST", verified=True, readback=np.array(["x", "z"]))
 
 
 class TestDeviceMetaToDict:

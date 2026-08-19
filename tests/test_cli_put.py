@@ -110,6 +110,21 @@ class TestNonFiniteValueError:
         mock_mb.assert_not_called()
 
 
+class TestMalformedDrfError:
+    """Malformed DRFs are reported as usage errors, not tracebacks."""
+
+    @mock.patch("pacsys.cli.put.make_backend")
+    def test_malformed_drf_with_control_value_rejected(self, mock_mb):
+        from pacsys.cli.put import main
+
+        err = io.StringIO()
+        with mock.patch("sys.argv", ["acput", "M:OUTTMP{bad}", "on"]), contextlib.redirect_stderr(err):
+            rc = main()
+        assert rc == 2
+        assert "Invalid" in err.getvalue()
+        mock_mb.assert_not_called()
+
+
 class TestJsonOutput:
     """JSON output produces valid JSON with ok field."""
 

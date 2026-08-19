@@ -33,7 +33,12 @@ def main() -> int:
 
     # Reject CONTROL property — it is write-only
     for dev in args.devices:
-        if parse_request(dev).property == DRF_PROPERTY.CONTROL:
+        try:
+            req = parse_request(dev)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return EXIT_USAGE_ERROR
+        if req.property == DRF_PROPERTY.CONTROL:
             print(f"Error: cannot read CONTROL property ({dev}). Use acput to write control commands.", file=sys.stderr)
             return EXIT_USAGE_ERROR
 

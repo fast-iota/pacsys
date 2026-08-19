@@ -212,6 +212,18 @@ class TestRejectControlRead:
         assert rc == 2
         assert "CONTROL" in err.getvalue()
 
+    def test_malformed_drf_rejected(self):
+        """Malformed DRFs are reported as usage errors, not tracebacks."""
+        from pacsys.cli.get import main
+
+        err = io.StringIO()
+        with mock.patch("sys.argv", ["acget", "M:OUTTMP{bad}"]):
+            with contextlib.redirect_stderr(err):
+                rc = main()
+
+        assert rc == 2
+        assert "Invalid" in err.getvalue()
+
     @mock.patch("pacsys.cli.get.make_backend")
     def test_status_qualifier_allowed(self, mock_mb):
         """STATUS (|) is readable — only CONTROL is rejected."""
