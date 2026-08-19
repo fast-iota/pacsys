@@ -6,7 +6,7 @@ import logging
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
@@ -78,6 +78,8 @@ class MonitorResult:
     channels: dict[str, ChannelData]
     started: datetime | None = None
     stopped: datetime | None = None
+    # Memoized per-channel np.stack results (None = non-array channel)
+    _stack_cache: dict[str, np.ndarray | None] = field(default_factory=dict, init=False, repr=False, compare=False)
 
     def __getitem__(self, drf: DeviceSpec) -> ChannelData:
         return self._get_channel(drf)
@@ -144,16 +146,22 @@ class MonitorResult:
         return out
 
     def _try_array_stack(self, drf: DeviceSpec):
-        """If channel holds ndarray values, stack into 2D numpy array. Else return None."""
+        """If channel holds ndarray values, stack into 2D numpy array (memoized). Else return None."""
         import numpy as np
 
+        key = self._resolve(drf)
+        if key in self._stack_cache:
+            return self._stack_cache[key]
         arrays = self._unwrap_arrays(self._get_channel(drf).values())
         if arrays is None:
-            return None
-        try:
-            return np.stack(arrays)
-        except ValueError as e:
-            raise ValueError(f"Cannot stack array readings for {self._resolve(drf)}: {e}") from None
+            stacked = None
+        else:
+            try:
+                stacked = np.stack(arrays)
+            except ValueError as e:
+                raise ValueError(f"Cannot stack array readings for {key}: {e}") from None
+        self._stack_cache[key] = stacked
+        return stacked
 
     def _numeric_values(self, drf: DeviceSpec) -> list[float]:
         vals = self._get_channel(drf).values()

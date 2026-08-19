@@ -290,6 +290,19 @@ class TestMonitorResultArrayValues:
         np.testing.assert_array_equal(r.min("B:IRM"), [0.0, 1.0, 2.0])
         np.testing.assert_array_equal(r.max("B:IRM"), [3.0, 4.0, 5.0])
 
+    def test_stack_memoized_across_stats(self):
+        """All five stats share one np.stack call per channel."""
+        from unittest import mock
+
+        np, r = self._array_result()
+        with mock.patch("numpy.stack", wraps=np.stack) as stack:
+            r.mean("B:IRM")
+            r.std("B:IRM")
+            r.median("B:IRM")
+            r.min("B:IRM")
+            r.max("B:IRM")
+        assert stack.call_count == 1
+
     def test_mean_all_mixed(self):
         """mean() across both scalar and array channels."""
         np = pytest.importorskip("numpy")
