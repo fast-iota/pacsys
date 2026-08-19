@@ -401,11 +401,10 @@ class RemoteProcess:
                 self._buf += data
                 if len(self._buf) > self._MAX_BUF:
                     raise SSHError(f"Buffer exceeded {self._MAX_BUF} bytes waiting for marker {marker!r}")
-            elif self._channel.closed or self._channel.exit_status_ready():
-                if not self._channel.recv_ready():
-                    raise SSHError(
-                        f"Process exited while waiting for marker {marker!r} (buffer tail: {self._buf[-200:]!r})"
-                    )
+            elif (self._channel.closed or self._channel.exit_status_ready()) and not self._channel.recv_ready():
+                raise SSHError(
+                    f"Process exited while waiting for marker {marker!r} (buffer tail: {self._buf[-200:]!r})"
+                )
             else:
                 self._channel.status_event.wait(min(0.05, remaining))
 
@@ -427,9 +426,8 @@ class RemoteProcess:
                 self._buf += data
                 if len(self._buf) > self._MAX_BUF:
                     raise SSHError(f"Buffer exceeded {self._MAX_BUF} bytes in read_for")
-            elif self._channel.closed or self._channel.exit_status_ready():
-                if not self._channel.recv_ready():
-                    break
+            elif (self._channel.closed or self._channel.exit_status_ready()) and not self._channel.recv_ready():
+                break
             else:
                 self._channel.status_event.wait(min(0.05, remaining))
 

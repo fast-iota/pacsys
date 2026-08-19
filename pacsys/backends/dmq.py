@@ -1609,11 +1609,14 @@ class DMQBackend(Backend):
             return
 
         # Job-level INIT failure (ServerJobManager.sendStatus): ErrorSample
-        # correlated to the INIT message_id. Before confirmation any error
-        # is job-level -- writes stay queued until PENDING, so no per-write
-        # responses can exist yet.
-        if isinstance(reply, ErrorSample_reply) and (
-            (corr_id and corr_id == session.init_message_id) or (not corr_id and not session.init_confirmed)
+        # on exact "R" (per-device replies use "R.<drf>"), correlated to the
+        # INIT message_id. Before confirmation any error is job-level --
+        # writes stay queued until PENDING, so no per-write responses can
+        # exist yet.
+        if (
+            rk == "R"
+            and isinstance(reply, ErrorSample_reply)
+            and ((corr_id and corr_id == session.init_message_id) or (not corr_id and not session.init_confirmed))
         ):
             self._fail_session_init(session, reply)
             return

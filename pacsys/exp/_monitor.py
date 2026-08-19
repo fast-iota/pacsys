@@ -414,6 +414,7 @@ class Monitor:
         self._stale_set: set[str] = set()
         self._watchdog: threading.Thread | None = None
         self._started_mono: float | None = None
+        self._run_token: object | None = None
 
     @property
     def running(self) -> bool:
@@ -540,6 +541,7 @@ class Monitor:
             watchdog.join(timeout=2.0)
         self._watchdog = None
         # Reset all per-run state
+        token = object()
         with self._lock:
             for drf in self._drfs:
                 self._buffers[drf].clear()
@@ -547,10 +549,18 @@ class Monitor:
                 self._latest[drf] = None
                 self._received_at[drf] = None
             self._stale_set.clear()
+            self._run_token = token
         self._started = datetime.now(timezone.utc)
         self._started_mono = time.monotonic()
         backend = resolve_backend(self._backend)
-        self._handle = backend.subscribe(self._drfs, callback=self._on_reading)
+        # The token (not handle identity) marks deliveries of this run: the
+        # reactor can invoke the callback before subscribe() returns the handle
+        try:
+            self._handle = backend.subscribe(self._drfs, callback=lambda r, h, t=token: self._on_reading(r, h, t))
+        except BaseException:
+            with self._lock:
+                self._run_token = None
+            raise
         if self._stale_after is not None:
             self._watchdog = threading.Thread(target=self._watchdog_loop, daemon=True, name="pacsys-watchdog")
             self._watchdog.start()
@@ -558,9 +568,14 @@ class Monitor:
     def stop(self) -> None:
         """Stop collecting."""
         if self._handle is not None:
-            self._handle.stop()
-            with self._lock:
-                self._lock.notify_all()
+            # Invalidate the run token after stop() so final in-flight readings
+            # are still counted; guaranteed even if handle.stop() raises
+            try:
+                self._handle.stop()
+            finally:
+                with self._lock:
+                    self._run_token = None
+                    self._lock.notify_all()
         if self._watchdog is not None and threading.current_thread() is not self._watchdog:
             self._watchdog.join(timeout=2.0)
 
@@ -569,10 +584,10 @@ class Monitor:
         with self._lock:
             return sum(len(buf) for buf in self._buffers.values())
 
-    def _on_reading(self, reading: Reading, handle: SubscriptionHandle) -> None:
+    def _on_reading(self, reading: Reading, handle: SubscriptionHandle, token: object) -> None:
         with self._lock:
-            if handle is not self._handle:
-                return  # ignore late deliveries from old subscriptions
+            if token is not self._run_token:
+                return  # ignore late deliveries from old runs
             drf = reading.drf
             if drf in self._buffers:
                 self._buffers[drf].append(reading)

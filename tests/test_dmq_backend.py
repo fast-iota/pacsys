@@ -862,6 +862,44 @@ class TestDMQJobLevelErrors:
 # =============================================================================
 
 
+class TestDMQWriteJobErrorRouting:
+    """Job-level INIT failure detection requires exact 'R' routing key."""
+
+    @staticmethod
+    def _call_handler(routing_key, correlation_id=""):
+        backend = DMQBackend.__new__(DMQBackend)
+        backend._fail_session_init = mock.MagicMock()
+        session = _WriteSession(
+            device=TEMP_DEVICE,
+            init_drf=f"{TEMP_DEVICE}.SETTING@N",
+            channel=None,
+            exchange_name="x",
+            queue_name="q",
+            gss_context=None,
+            last_used=0.0,
+            init_message_id="init-msg-id",
+        )
+        channel = mock.MagicMock()
+        method = mock.MagicMock(routing_key=routing_key, delivery_tag=1)
+        properties = mock.MagicMock(correlation_id=correlation_id)
+        body = make_error_reply(facility_code=17, error_number=-44, message="DIO_SETPRIV")
+        backend._on_write_message(session, channel, method, properties, body)
+        return backend, session
+
+    def test_per_device_error_before_pending_not_job_level(self):
+        """Empty-correlation ErrorSample on 'R.<drf>' pre-PENDING must not fail the session."""
+        backend, session = self._call_handler(f"R.{TEMP_DEVICE}")
+        backend._fail_session_init.assert_not_called()
+
+    def test_job_level_error_on_exact_r_fails_session(self):
+        backend, session = self._call_handler("R")
+        backend._fail_session_init.assert_called_once()
+
+    def test_job_level_error_matched_by_init_message_id(self):
+        backend, session = self._call_handler("R", correlation_id="init-msg-id")
+        backend._fail_session_init.assert_called_once()
+
+
 class TestDMQWriteConnectionLoss:
     """Multi-device write_many must complete per (tracker, device) on connection loss."""
 
