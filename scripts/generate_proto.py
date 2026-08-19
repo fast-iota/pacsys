@@ -23,6 +23,13 @@ IFACE_DIR = ROOT / "interface-definitions"
 PROTO_ROOT = IFACE_DIR / "proto"
 OUTPUT_DIR = ROOT / "pacsys" / "_proto"
 
+# Minimum runtime versions declared in pyproject.toml (keep in sync). protoc stamps
+# its own version into the generated import-time checks; we lower the stamps to
+# these floors so regens with a newer toolchain don't silently ratchet the
+# runtime requirement (generated code is stamp-identical across 6.x / 1.6x-1.7x).
+MIN_PROTOBUF = (6, 30, 0)
+MIN_GRPCIO = "1.66.0"
+
 # Proto files we actually need, relative to IFACE_DIR (must match import paths in .proto files)
 PROTO_FILES = [
     "proto/controls/common/v1/device.proto",
@@ -138,6 +145,37 @@ def patch_module_names():
             pyfile.write_text(patched)
 
 
+def patch_gencode_versions():
+    """Lower the import-time version stamps to the pyproject floors (see MIN_* above)."""
+    major, minor, patch = MIN_PROTOBUF
+    for pyfile in OUTPUT_DIR.rglob("*_pb2.py"):
+        text = pyfile.read_text()
+        patched = re.sub(  # ".*" swallows any prior annotation -> idempotent
+            r"(# Protobuf Python Version: )(\S+).*",
+            rf"\1\2 (gencode lowered to {major}.{minor}.{patch} - APIs are stable across {major}.x)",
+            text,
+        )
+        patched = re.sub(
+            r"(_runtime_version\.ValidateProtobufRuntimeVersion\(\n"
+            r"\s*_runtime_version\.Domain\.PUBLIC,\n)"
+            r"\s*\d+,\n\s*\d+,\n\s*\d+,",
+            rf"\g<1>    {major},\n    {minor},\n    {patch},",
+            patched,
+        )
+        if patched != text:
+            pyfile.write_text(patched)
+
+    for pyfile in OUTPUT_DIR.rglob("*_pb2_grpc.py"):
+        text = pyfile.read_text()
+        patched = re.sub(
+            r"GRPC_GENERATED_VERSION = '[^']+'",
+            f"GRPC_GENERATED_VERSION = '{MIN_GRPCIO}'",
+            text,
+        )
+        if patched != text:
+            pyfile.write_text(patched)
+
+
 def main():
     check_prerequisites()
     print(f"Generating proto files from {IFACE_DIR}")
@@ -145,6 +183,7 @@ def main():
     generate()
     create_init_files()
     patch_module_names()
+    patch_gencode_versions()
 
     generated = list(OUTPUT_DIR.rglob("*_pb2*.py")) + list(OUTPUT_DIR.rglob("*_pb2.pyi"))
     print(f"Generated {len(generated)} files in {OUTPUT_DIR}")
