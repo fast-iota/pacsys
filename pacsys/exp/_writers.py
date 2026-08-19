@@ -123,8 +123,8 @@ def _convert_value(r: Reading) -> tuple[float | None, int | None, list[float] | 
         return None, None, None, None
 
     if r.value_type == ValueType.SCALAR:
-        # int/bool (includes numpy integer via int subclass) → int64 column
-        if isinstance(r.value, int):
+        # bool and integer scalars (Python or numpy) → int64 column
+        if isinstance(r.value, (int, np.bool_, np.integer)):
             return None, int(r.value), None, None
         # float and any numpy floating type → float64 column
         return numeric_value(r.value), None, None, None

@@ -36,7 +36,11 @@ def main() -> int:
     settings = []
     for i in range(0, len(args.pairs), 2):
         drf = args.pairs[i]
-        value = parse_value(args.pairs[i + 1])
+        try:
+            value = parse_value(args.pairs[i + 1])
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return EXIT_USAGE_ERROR
         # BasicControl values target CONTROL property regardless of DRF form
         if isinstance(value, BasicControl):
             req = parse_request(drf)

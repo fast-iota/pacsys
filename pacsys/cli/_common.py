@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import math
 import signal
 import sys
 from collections.abc import Callable
@@ -123,20 +124,28 @@ def parse_value(s: str) -> float | str | list | BasicControl:
     Control names (on/off/reset/...) -> BasicControl enum (case-insensitive).
     Comma-separated all-numeric -> list of floats (array write).
     Otherwise try float, fallback to string (preserves commas in text).
+
+    Raises ValueError on non-finite numeric values (nan/inf, including overflow).
     """
     if "," in s:
         parts = [p.strip() for p in s.split(",")]
         try:
-            return [float(p) for p in parts]
+            values = [float(p) for p in parts]
         except ValueError:
             return s
+        if not all(math.isfinite(v) for v in values):
+            raise ValueError(f"non-finite value not allowed: {s!r}")
+        return values
     ctrl = _BASIC_CONTROL_NAMES.get(s.lower())
     if ctrl is not None:
         return ctrl
     try:
-        return float(s)
+        value = float(s)
     except ValueError:
         return s
+    if not math.isfinite(value):
+        raise ValueError(f"non-finite value not allowed: {s!r}")
+    return value
 
 
 def format_value(value: Any, number_format: str | None) -> str:
@@ -170,7 +179,7 @@ def format_value(value: Any, number_format: str | None) -> str:
         if value and all(isinstance(v, bool) for v in value.values()):
             return " ".join(f"{k}={'T' if v else 'F'}" for k, v in value.items())
         # Alarm blocks and other dicts — compact JSON
-        return json.dumps(value, separators=(",", ":"))
+        return json.dumps(_json_safe(value), separators=(",", ":"))
     if isinstance(value, (bytes, bytearray)):
         return value.hex()
     if isinstance(value, str):

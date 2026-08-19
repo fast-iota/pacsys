@@ -541,8 +541,37 @@ class TestDevDBClientGetDeviceInfo:
         reply.set = [entry]
         client._stub.getDeviceInfo.return_value = reply
 
-        result = client.get_device_info(["X:BOGUS"])
-        assert result == {}
+        with pytest.raises(DeviceError, match="Device not found"):
+            client.get_device_info(["X:BOGUS"])
+        client.close()
+
+    def test_error_entry_still_caches_batch_peers(self):
+        """A batch peer's errMsg raises, but fetched entries are cached first."""
+        client = self._make_client_with_mock_stub()
+
+        good = mock.MagicMock()
+        good.name = "Z:ACLTST"
+        good.WhichOneof.return_value = "device"
+        good.device.device_index = 140013
+        good.device.description = "ACL test device!"
+        good.device.HasField.return_value = False
+
+        bad = mock.MagicMock()
+        bad.name = "X:BOGUS"
+        bad.WhichOneof.return_value = "errMsg"
+        bad.errMsg = "internal error"
+
+        reply = mock.MagicMock()
+        reply.set = [good, bad]
+        client._stub.getDeviceInfo.return_value = reply
+
+        with pytest.raises(DeviceError, match="internal error"):
+            client.get_device_info(["Z:ACLTST", "X:BOGUS"])
+
+        client._stub.getDeviceInfo.reset_mock()
+        result = client.get_device_info(["Z:ACLTST"])
+        assert result["Z:ACLTST"].device_index == 140013
+        client._stub.getDeviceInfo.assert_not_called()
         client.close()
 
     def test_zeroed_response_detected_as_nonexistent(self):

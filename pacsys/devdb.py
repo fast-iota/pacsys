@@ -22,6 +22,8 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar, cast
 
+from pacsys.errors import DeviceError
+
 logger = logging.getLogger(__name__)
 
 _import_error = ""
@@ -395,10 +397,11 @@ class DevDBClient:
             timeout: gRPC timeout in seconds (default: client's configured timeout).
 
         Returns:
-            Dict mapping device name to DeviceInfoResult.
+            Dict mapping device name to DeviceInfoResult. Unknown devices are
+            absent from the result.
 
         Raises:
-            DeviceError: If DevDB returns an error for a device.
+            DeviceError: If DevDB returns an error entry (errMsg) for a device.
             grpc.RpcError: On gRPC transport failure.
         """
         self._check_closed()
@@ -420,6 +423,7 @@ class DevDBClient:
         reply = self._stub.getDeviceInfo(request, timeout=timeout or self._timeout)
 
         pending: dict[str, DeviceInfoResult] = {}
+        error: tuple[str, str] | None = None
         for entry in reply.set:
             which = entry.WhichOneof("result")
             if which == "device":
@@ -436,15 +440,19 @@ class DevDBClient:
                     and info.control is None
                     and info.status_bits is None
                 ):
-                    logger.warning("DevDB: Device '%s' not found", entry.name)
+                    logger.debug("DevDB: Device '%s' not found", entry.name)
                 else:
                     pending[entry.name] = info
-            elif which == "errMsg":
-                logger.warning("DevDB: Error for '%s': %s", entry.name, entry.errMsg)
+            elif which == "errMsg" and error is None:
+                error = (entry.name, entry.errMsg)
 
+        # Cache successful entries even when a batch peer errored
         for name, info in pending.items():
             result[name] = info
             self._cache.put(f"info:{name.upper()}", info)
+
+        if error is not None:
+            raise DeviceError(error[0], 0, -1, error[1])
 
         return result
 
