@@ -477,16 +477,14 @@ class TestParseClassInfoReply:
         assert results[0].ftp == 0
         assert results[0].snap == 0
 
-    def test_overall_error(self):
-        data = struct.pack("<h", -1)  # Negative = error
-        with pytest.raises(AcnetError):
-            parse_class_info_reply(data, 1)
+    @pytest.mark.parametrize("status", [-1, 1])
+    def test_nonzero_overall_status_applies_to_every_device(self, status):
+        results = parse_class_info_reply(struct.pack("<h", status), 2)
 
-    def test_positive_status_not_error(self):
-        """Positive overall status (warning) should not raise."""
-        data = struct.pack("<h", 1) + struct.pack("<hHH", 0, 16, 13)
-        results = parse_class_info_reply(data, 1)
-        assert results[0].ftp == 16
+        assert results == [
+            FTPClassCode(ftp=0, snap=0, error=status),
+            FTPClassCode(ftp=0, snap=0, error=status),
+        ]
 
     def test_truncated(self):
         data = struct.pack("<H", 0)  # no device data
@@ -982,12 +980,13 @@ class TestFTPClientClassCodes:
         assert result.snap == 13
         assert result.error == 0
 
-    def test_get_class_codes_acnet_error(self, mouttmp):
+    @pytest.mark.parametrize("status", [-6, 1])
+    def test_get_class_codes_overall_status(self, mouttmp, status):
         conn = MagicMock()
 
         def fake_request_single(node, task, data, reply_handler, timeout):
             reply = MagicMock()
-            reply.status = -6  # Negative ACNET status = error
+            reply.status = status
             reply.data = b""
             reply.last = True
             reply_handler(reply)
@@ -995,27 +994,34 @@ class TestFTPClientClassCodes:
 
         conn.request_single = fake_request_single
 
-        client = FTPClient(conn)
-        with pytest.raises(AcnetError):
-            client.get_class_codes(node=3018, device=mouttmp)
+        result = FTPClient(conn).get_class_codes(node=3018, device=mouttmp)
 
-    def test_get_class_codes_positive_status_ok(self, mouttmp):
-        """Positive ACNET status (warning/informational) should not raise."""
+        assert result == FTPClassCode(ftp=0, snap=0, error=status)
+
+    @pytest.mark.parametrize("status", [-6, 1])
+    def test_get_class_codes_many_overall_status(self, status):
         conn = MagicMock()
+        devices = [
+            FTPDevice(di=1, pi=12, ssdn=b"\x00" * 8),
+            FTPDevice(di=2, pi=12, ssdn=b"\x00" * 8),
+        ]
 
         def fake_request_single(node, task, data, reply_handler, timeout):
             reply = MagicMock()
-            reply.status = 1  # Positive = informational, not error
-            reply.data = struct.pack("<H", 0) + struct.pack("<HHH", 0, 16, 13)
+            reply.status = status
+            reply.data = b""
             reply.last = True
             reply_handler(reply)
             return MagicMock()
 
         conn.request_single = fake_request_single
 
-        client = FTPClient(conn)
-        result = client.get_class_codes(node=3018, device=mouttmp)
-        assert result.ftp == 16
+        results = FTPClient(conn).get_class_codes_many(node=3018, devices=devices)
+
+        assert results == [
+            FTPClassCode(ftp=0, snap=0, error=status),
+            FTPClassCode(ftp=0, snap=0, error=status),
+        ]
 
 
 class TestFTPClientContinuous:
