@@ -898,6 +898,44 @@ class TestDeviceVerify:
         assert result.skipped is True
         mock_backend.write.assert_not_called()
 
+    def test_control_verify_extracts_basic_status_field(self, mock_backend):
+        mock_backend.read.return_value = {"on": True, "ready": False}
+        dev = Device("Z:ACLTST", backend=mock_backend)
+
+        result = dev.on(verify=Verify(initial_delay=0, retry_delay=0, max_attempts=1))
+
+        assert result.verified is True
+        assert result.readback is True
+
+    def test_control_check_first_does_not_treat_nonempty_status_dict_as_true(self, mock_backend):
+        mock_backend.read.side_effect = [{"on": False}, {"on": True}]
+        dev = Device("Z:ACLTST", backend=mock_backend)
+
+        result = dev.on(verify=Verify(check_first=True, initial_delay=0, retry_delay=0, max_attempts=1))
+
+        assert not result.skipped
+        assert result.verified is True
+        mock_backend.write.assert_called_once()
+
+    def test_control_text_readback_fails_without_boolean_coercion(self, mock_backend):
+        mock_backend.read.return_value = "False"
+        dev = Device("Z:ACLTST", backend=mock_backend)
+
+        result = dev.on(verify=Verify(initial_delay=0, retry_delay=0, max_attempts=1))
+
+        assert result.verified is False
+        assert result.readback == "False"
+
+    def test_control_check_first_text_does_not_skip_write(self, mock_backend):
+        mock_backend.read.side_effect = ["False", True]
+        dev = Device("Z:ACLTST", backend=mock_backend)
+
+        result = dev.on(verify=Verify(check_first=True, initial_delay=0, retry_delay=0, max_attempts=1))
+
+        assert not result.skipped
+        assert result.verified is True
+        mock_backend.write.assert_called_once()
+
     def test_control_verify_unmapped_command_raises(self, fake):
         """Verify raises ValueError for commands without a STATUS field mapping."""
         dev = Device("Z:ACLTST", backend=fake)

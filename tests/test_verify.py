@@ -3,6 +3,7 @@
 import threading
 
 import numpy as np
+import pytest
 
 from pacsys.verify import (
     Verify,
@@ -76,6 +77,42 @@ class TestResolveVerify:
             assert result is ctx
 
 
+class TestVerifyValidation:
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("tolerance", -0.1),
+            ("tolerance", float("nan")),
+            ("tolerance", float("inf")),
+            ("initial_delay", -0.1),
+            ("initial_delay", float("inf")),
+            ("retry_delay", -0.1),
+            ("retry_delay", float("nan")),
+        ],
+    )
+    def test_rejects_invalid_numeric_value(self, field, value):
+        with pytest.raises(ValueError, match=field):
+            Verify(**{field: value})
+
+    @pytest.mark.parametrize("field", ["tolerance", "initial_delay", "retry_delay"])
+    def test_rejects_boolean_numeric_value(self, field):
+        with pytest.raises(TypeError, match=field):
+            Verify(**{field: True})
+
+    @pytest.mark.parametrize("value", [0, -1])
+    def test_rejects_nonpositive_attempts(self, value):
+        with pytest.raises(ValueError, match="max_attempts"):
+            Verify(max_attempts=value)
+
+    @pytest.mark.parametrize("value", [True, 1.5])
+    def test_rejects_noninteger_attempts(self, value):
+        with pytest.raises(TypeError, match="max_attempts"):
+            Verify(max_attempts=value)
+
+    def test_accepts_numpy_integer_attempts(self):
+        assert Verify(max_attempts=np.int64(2)).max_attempts == 2
+
+
 class TestThreadIsolation:
     def test_contexts_are_thread_local(self):
         v_main = Verify(tolerance=1.0)
@@ -120,6 +157,9 @@ class TestValuesMatch:
         assert values_match(True, True)
         assert values_match(False, False)
         assert not values_match(True, False)
+        assert not values_match(True, 1)
+        assert not values_match(0, False)
+        assert values_match(np.bool_(True), True)
 
     def test_strings(self):
         assert values_match("abc", "abc")
@@ -138,7 +178,41 @@ class TestValuesMatch:
         assert values_match(a, b, tolerance=0.1)
         assert not values_match(a, b, tolerance=0.01)
 
+    def test_numpy_tolerance_is_absolute_only(self):
+        assert not values_match(np.array([1e9]), np.array([1e9 + 1]), tolerance=0.0)
+
+    def test_numpy_scalar_uses_numeric_tolerance(self):
+        assert values_match(np.int32(5), 6, tolerance=2.0)
+        assert not values_match(np.int32(5), 8, tolerance=2.0)
+
+    @pytest.mark.parametrize(
+        ("a", "b"),
+        [
+            (np.array([True]), np.array([1])),
+            ([True], [1]),
+        ],
+    )
+    def test_boolean_arrays_are_type_strict(self, a, b):
+        assert not values_match(a, b)
+
+    def test_equal_text_arrays_match_exactly(self):
+        assert values_match(np.array(["a", "b"]), np.array(["a", "b"]))
+        assert not values_match(np.array(["a", "b"]), np.array(["a", "c"]))
+
+    def test_nan_never_matches(self):
+        assert not values_match(float("nan"), float("nan"))
+        assert not values_match(np.array([np.nan]), np.array([np.nan]))
+
+    def test_same_signed_infinity_matches(self):
+        assert values_match(float("inf"), float("inf"))
+        assert values_match(float("-inf"), float("-inf"))
+        assert not values_match(float("inf"), float("-inf"))
+        assert not values_match(float("inf"), 1.0)
+
     def test_numpy_shape_mismatch(self):
         a = np.array([1.0, 2.0])
         b = np.array([1.0, 2.0, 3.0])
         assert not values_match(a, b)
+
+    def test_numpy_broadcast_compatible_shapes_do_not_match(self):
+        assert not values_match(np.array([1.0, 2.0]), np.array([[1.0, 2.0]]))

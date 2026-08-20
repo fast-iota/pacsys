@@ -6,7 +6,7 @@ import pytest
 
 from pacsys.aio._device import AsyncDevice
 from pacsys.testing import AsyncFakeBackend
-from pacsys.types import BasicControl
+from pacsys.types import BasicControl, ValueType
 
 
 class TestAsyncDeviceRead:
@@ -92,6 +92,38 @@ class TestAsyncDeviceWrite:
         with pytest.raises(TypeError, match="control\\(\\)"):
             await device.write(BasicControl.RESET)
         assert fb.writes == []
+
+    @pytest.mark.asyncio
+    async def test_control_verify_extracts_basic_status_field(self):
+        from pacsys.verify import Verify
+
+        fb = AsyncFakeBackend()
+        fb.set_reading(
+            "Z:ACLTST.STATUS.ON",
+            {"on": True, "ready": False},
+            value_type=ValueType.BASIC_STATUS,
+        )
+        device = AsyncDevice("Z:ACLTST", backend=fb)
+
+        result = await device.on(verify=Verify(initial_delay=0, retry_delay=0, max_attempts=1))
+
+        assert result.verified is True
+        assert result.readback is True
+
+    @pytest.mark.asyncio
+    async def test_control_text_readback_fails_without_boolean_coercion(self):
+        from pacsys.verify import Verify
+
+        fb = AsyncFakeBackend()
+        fb.set_reading("Z:ACLTST.STATUS.ON", "False", value_type=ValueType.TEXT)
+        device = AsyncDevice("Z:ACLTST", backend=fb)
+
+        result = await device.on(verify=Verify(check_first=True, initial_delay=0, retry_delay=0, max_attempts=1))
+
+        assert not result.skipped
+        assert result.verified is False
+        assert result.readback == "False"
+        assert fb.was_written("Z:ACLTST.CONTROL")
 
     @pytest.mark.asyncio
     async def test_control_on(self):
