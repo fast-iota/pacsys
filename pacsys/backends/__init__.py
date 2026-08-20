@@ -150,7 +150,8 @@ class Backend(ABC):
 
         Returns:
             Reading object with value, status, timestamp, and metadata.
-            Check reading.is_error for error status.
+            Check ``reading.ok`` before using the value; ``is_error`` and
+            ``is_warning`` classify nonzero statuses.
 
         Raises:
             ValueError: If DRF syntax is invalid
@@ -166,8 +167,8 @@ class Backend(ABC):
             timeout: Total timeout for entire batch (not per-device)
 
         Returns:
-            List of Reading objects in same order as input. Individual
-            devices that fail return Reading with is_error=True.
+            List of Reading objects in the same order as input. Individual
+            devices without usable data return ``Reading.ok == False``.
 
         Raises:
             ValueError: If any DRF syntax is invalid (before network I/O)

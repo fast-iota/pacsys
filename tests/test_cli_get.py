@@ -168,6 +168,50 @@ class TestDeviceErrorInline:
         assert rc == 1
         assert "ERROR" in buf.getvalue()
 
+    @mock.patch("pacsys.cli.get.make_backend")
+    def test_status_only_warning_returns_failure(self, mock_mb):
+        from pacsys.cli.get import main
+
+        backend = mock.MagicMock()
+        backend.get.return_value = _make_reading(value=None, error_code=1, msg="DPM_PEND")
+        mock_mb.return_value = backend
+
+        buf = io.StringIO()
+        with mock.patch("sys.argv", ["acget", "M:OUTTMP"]), contextlib.redirect_stdout(buf):
+            rc = main()
+
+        assert rc == 1
+        assert "DPM_PEND" in buf.getvalue()
+
+    @mock.patch("pacsys.cli.get.make_backend")
+    def test_batched_status_only_warning_returns_failure(self, mock_mb):
+        from pacsys.cli.get import main
+
+        backend = mock.MagicMock()
+        backend.get_many.return_value = [
+            _make_reading(),
+            _make_reading(drf="Z:NOTFND", value=None, error_code=1, msg="DPM_PEND", name="Z:NOTFND"),
+        ]
+        mock_mb.return_value = backend
+
+        with mock.patch("sys.argv", ["acget", "M:OUTTMP", "Z:NOTFND"]):
+            rc = main()
+
+        assert rc == 1
+
+    @mock.patch("pacsys.cli.get.make_backend")
+    def test_warning_with_value_remains_successful(self, mock_mb):
+        from pacsys.cli.get import main
+
+        backend = mock.MagicMock()
+        backend.get.return_value = _make_reading(value=72.5, error_code=1, msg="stale")
+        mock_mb.return_value = backend
+
+        with mock.patch("sys.argv", ["acget", "M:OUTTMP"]):
+            rc = main()
+
+        assert rc == 0
+
 
 class TestConnectionError:
     """Connection error produces exit code 2."""

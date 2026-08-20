@@ -70,7 +70,7 @@ def main() -> int:
                     array_slice=array_slice,
                 )
             )
-            if reading.is_error:
+            if not reading.ok:
                 has_error = True
         else:
             readings = backend.get_many(args.devices, timeout=args.timeout)
@@ -83,7 +83,7 @@ def main() -> int:
                         array_slice=array_slice,
                     )
                 )
-                if reading.is_error:
+                if not reading.ok:
                     has_error = True
     except KeyboardInterrupt:
         return 130

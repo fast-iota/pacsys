@@ -1018,6 +1018,52 @@ class TestDeviceExtra:
         for drf in drfs:
             assert drf.endswith("<-FTP"), f"{drf} missing <-FTP"
 
+    @pytest.mark.parametrize("warning_index", [0, 1, 2])
+    def test_digital_status_rejects_warning_without_value(self, mock_backend, monkeypatch, warning_index):
+        monkeypatch.setattr(Device, "_get_devdb", lambda _self: None)
+        readings = [
+            Reading(drf="Z:ACLTST.STATUS.BIT_VALUE@I", value_type=ValueType.SCALAR, value=2),
+            Reading(
+                drf="Z:ACLTST.STATUS.BIT_NAMES@I",
+                value_type=ValueType.TEXT_ARRAY,
+                value=["On", "Ready"],
+            ),
+            Reading(
+                drf="Z:ACLTST.STATUS.BIT_VALUES@I",
+                value_type=ValueType.TEXT_ARRAY,
+                value=["No", "Yes"],
+            ),
+        ]
+        readings[warning_index] = Reading(
+            drf=readings[warning_index].drf,
+            facility_code=17,
+            error_code=1,
+            message="DPM_PEND",
+        )
+        mock_backend.get_many.return_value = readings
+
+        with pytest.raises(DeviceError) as exc_info:
+            Device("Z:ACLTST", backend=mock_backend).digital_status()
+
+        assert exc_info.value.error_code == 1
+
+    def test_digital_status_devdb_path_rejects_warning_without_value(self, mock_backend, monkeypatch):
+        info = mock.Mock(status_bits=[], ext_status_bits=[])
+        devdb = mock.Mock()
+        devdb.get_device_info.return_value = {"Z:ACLTST": info}
+        monkeypatch.setattr(Device, "_get_devdb", lambda _self: devdb)
+        mock_backend.get.return_value = Reading(
+            drf="Z:ACLTST.STATUS.BIT_VALUE@I",
+            facility_code=17,
+            error_code=1,
+            message="DPM_PEND",
+        )
+
+        with pytest.raises(DeviceError) as exc_info:
+            Device("Z:ACLTST", backend=mock_backend).digital_status()
+
+        assert exc_info.value.error_code == 1
+
     def test_no_extra_omits_suffix(self, fake):
         """Devices without extra don't get a spurious suffix."""
         fake.set_reading("M:OUTTMP.READING", 72.5)

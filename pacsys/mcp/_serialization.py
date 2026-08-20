@@ -22,8 +22,8 @@ def reading_to_dict(reading: Reading) -> dict:
         d["timestamp"] = reading.timestamp.isoformat()
     if reading.cycle is not None:
         d["cycle"] = reading.cycle
-    if reading.is_error:
-        d["error"] = reading.message
+    if not reading.ok:
+        d["error"] = reading.message or f"Read failed (facility={reading.facility_code}, error={reading.error_code})"
     return d
 
 

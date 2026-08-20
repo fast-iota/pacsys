@@ -518,11 +518,11 @@ class FakeBackend(Backend):
         self._errors.pop(base, None)
 
     def set_error(self, drf: str, error_code: int, message: str) -> None:
-        """Pre-configure an error for a device.
+        """Pre-configure a status-only response for a device.
 
         Args:
             drf: Device request string
-            error_code: Negative error code
+            error_code: Nonzero error or warning code
             message: Error message
         """
         full = _full_key(drf)
@@ -705,7 +705,7 @@ class FakeBackend(Backend):
 
         # Check for configured reading
         if reading is not None:
-            if reading.is_error:
+            if not reading.ok:
                 raise DeviceError(
                     drf,
                     reading.facility_code,
@@ -730,7 +730,7 @@ class FakeBackend(Backend):
             timeout: Ignored (for interface compatibility)
 
         Returns:
-            Reading object (may have is_error=True)
+            Reading object (may have ``ok == False``)
         """
         self._read_history.append(drf)
 

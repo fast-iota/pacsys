@@ -387,6 +387,31 @@ class TestSingleDeviceRead:
         assert not reading.ok
         assert "Device not found" in reading.message
 
+    def test_get_positive_status_returns_warning_without_value(self, backend_with_mock_stub):
+        backend, mock_stub = backend_with_mock_stub
+        mock_stub.Read.return_value = AsyncMockIterator(
+            [make_reading_reply(0, error_code=1, error_message="Request pending")]
+        )
+
+        reading = backend.get("M:OUTTMP")
+
+        assert reading.is_warning
+        assert reading.value is None
+        assert not reading.ok
+        assert reading.message == "Request pending"
+
+    def test_read_positive_status_raises_device_error(self, backend_with_mock_stub):
+        backend, mock_stub = backend_with_mock_stub
+        mock_stub.Read.return_value = AsyncMockIterator(
+            [make_reading_reply(0, error_code=1, error_message="Request pending")]
+        )
+
+        with pytest.raises(DeviceError) as exc_info:
+            backend.read("M:OUTTMP")
+
+        assert exc_info.value.error_code == 1
+        assert exc_info.value.message == "Request pending"
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Multiple Device Read Tests

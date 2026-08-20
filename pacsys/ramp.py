@@ -454,7 +454,7 @@ class Ramp:
         drf = cls._make_drf(name, slot)
 
         reading = be.get(drf)
-        if reading.is_error:
+        if not reading.ok:
             raise DeviceError(drf, reading.facility_code, reading.error_code, reading.message)
         if not isinstance(reading.value, bytes):
             raise TypeError(f"Expected bytes, got {type(reading.value).__name__}")
@@ -694,7 +694,7 @@ class _RampModifyContext:
         drf = self._cls._make_drf(name, self._slot)
 
         reading = be.get(drf)
-        if reading.is_error:
+        if not reading.ok:
             raise DeviceError(drf, reading.facility_code, reading.error_code, reading.message)
         if not isinstance(reading.value, bytes):
             raise TypeError(f"Expected bytes, got {type(reading.value).__name__}")
@@ -761,7 +761,7 @@ def read_ramps(
     readings = be.get_many(drfs)
     ramps: list[Ramp] = []
     for reading, name in zip(readings, names, strict=True):
-        if reading.is_error:
+        if not reading.ok:
             raise DeviceError(reading.drf, reading.facility_code, reading.error_code, reading.message)
         if not isinstance(reading.value, bytes):
             raise TypeError(f"Expected bytes for {name}, got {type(reading.value).__name__}")

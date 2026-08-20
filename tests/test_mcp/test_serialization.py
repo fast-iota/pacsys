@@ -66,6 +66,15 @@ def test_none_value_reading():
     assert d["value"] is None
 
 
+def test_status_only_warning_includes_diagnostic():
+    r = Reading(drf="Z:NOTFND", facility_code=17, error_code=1, message="DPM_PEND")
+
+    d = reading_to_dict(r)
+
+    assert d["ok"] is False
+    assert d["error"] == "DPM_PEND"
+
+
 def test_write_result_success():
     wr = WriteResult(drf="Z:ACLTST.SETTING.SCALED@N", error_code=0)
     d = write_result_to_dict(wr)

@@ -406,7 +406,7 @@ def read(device: DeviceSpec, timeout: float | None = None) -> Value:
 
     Raises:
         ValueError: If DRF syntax is invalid
-        DeviceError: If the read fails (status_code < 0)
+        DeviceError: If the read returns no usable data
 
     Note:
         Even if DRF specifies periodic event (@p,1000), only FIRST reading
@@ -430,7 +430,8 @@ def get(device: DeviceSpec, timeout: float | None = None) -> Reading:
 
     Returns:
         Reading object with value, status, timestamp, and metadata.
-        Check reading.is_error for error status.
+        Check ``reading.ok`` before using the value; ``is_error`` and
+        ``is_warning`` classify nonzero statuses.
 
     Raises:
         ValueError: If DRF syntax is invalid

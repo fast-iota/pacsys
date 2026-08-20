@@ -5,6 +5,7 @@ from unittest import mock
 import pytest
 
 from pacsys.aio._device import AsyncDevice
+from pacsys.errors import DeviceError
 from pacsys.testing import AsyncFakeBackend
 from pacsys.types import BasicControl, ValueType
 
@@ -53,6 +54,27 @@ class TestAsyncDeviceRead:
         device = AsyncDevice("M:OUTTMP", backend=AsyncFakeBackend())
         with pytest.raises(ValueError, match="Invalid property"):
             await device.get(prop="nonexistent")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "warning_drf",
+        [
+            "Z:ACLTST.STATUS.BIT_VALUE",
+            "Z:ACLTST.STATUS.BIT_NAMES",
+            "Z:ACLTST.STATUS.BIT_VALUES",
+        ],
+    )
+    async def test_digital_status_rejects_warning_without_value(self, warning_drf):
+        fb = AsyncFakeBackend()
+        fb.set_reading("Z:ACLTST.STATUS.BIT_VALUE", 2)
+        fb.set_reading("Z:ACLTST.STATUS.BIT_NAMES", ["On", "Ready"], value_type=ValueType.TEXT_ARRAY)
+        fb.set_reading("Z:ACLTST.STATUS.BIT_VALUES", ["No", "Yes"], value_type=ValueType.TEXT_ARRAY)
+        fb.set_error(warning_drf, 1, "DPM_PEND")
+
+        with pytest.raises(DeviceError) as exc_info:
+            await AsyncDevice("Z:ACLTST", backend=fb).digital_status()
+
+        assert exc_info.value.error_code == 1
 
     @pytest.mark.asyncio
     async def test_subscribe_with_invalid_prop_raises(self):

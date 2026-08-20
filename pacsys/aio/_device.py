@@ -66,7 +66,7 @@ class AsyncDevice(_DeviceBase):
             timeout=timeout,
         )
         for r in readings:
-            if r.is_error:
+            if not r.ok:
                 raise DeviceError(r.drf, r.facility_code, r.error_code, r.message)
 
         raw_value = readings[0].value

@@ -334,6 +334,17 @@ class TestSetError:
         assert reading.error_code == -42
         assert reading.message == "Device not found"
 
+    def test_positive_status_has_no_usable_value(self):
+        fake = FakeBackend()
+        fake.set_error("Z:NOTFND", 1, "DPM_PEND")
+
+        reading = fake.get("Z:NOTFND")
+        assert reading.is_warning
+        assert not reading.ok
+        with pytest.raises(DeviceError) as exc_info:
+            fake.read("Z:NOTFND")
+        assert exc_info.value.error_code == 1
+
     def test_set_error_overwrites_reading(self):
         """set_error removes any configured reading for same DRF."""
         fake = FakeBackend()

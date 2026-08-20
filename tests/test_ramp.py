@@ -451,11 +451,14 @@ class TestReadWrite:
         assert ramp.device == "B:HS23T"
         assert ramp.slot == 2
 
-    def test_read_error_raises(self, fake_backend):
-        fake_backend.set_error("B:HS23T.SETTING.RAW@I", -1, "Device offline")
+    @pytest.mark.parametrize("status", [-1, 1])
+    def test_read_error_raises(self, fake_backend, status):
+        fake_backend.set_error("B:HS23T.SETTING.RAW@I", status, "Device unavailable")
 
-        with pytest.raises(DeviceError):
+        with pytest.raises(DeviceError) as exc_info:
             _TestRamp.read("B:HS23T", slot=0, backend=fake_backend)
+
+        assert exc_info.value.error_code == status
 
     def test_read_non_bytes_raises(self, fake_backend):
         fake_backend.set_reading("B:HS23T.SETTING.RAW", 42.0)
@@ -557,11 +560,14 @@ class TestModifyContext:
             with _TestRamp.modify("B:HS23T", slot=0, backend=fake_backend) as ramp:
                 ramp.values[0] = 20.0
 
-    def test_modify_error_reading_raises(self, fake_backend):
-        fake_backend.set_error("B:HS23T.SETTING.RAW@I", -1, "Device offline")
-        with pytest.raises(DeviceError):
+    @pytest.mark.parametrize("status", [-1, 1])
+    def test_modify_error_reading_raises(self, fake_backend, status):
+        fake_backend.set_error("B:HS23T.SETTING.RAW@I", status, "Device unavailable")
+        with pytest.raises(DeviceError) as exc_info:
             with _TestRamp.modify("B:HS23T", slot=0, backend=fake_backend) as _ramp:
                 pass
+
+        assert exc_info.value.error_code == status
 
     def test_modify_sub_lsb_change_no_write(self, fake_backend):
         """Sub-LSB change quantizes to same raw bytes - no write."""
@@ -851,12 +857,15 @@ class TestReadRamps:
             assert ramp.values[0] == val
             assert ramp.times[0] == time
 
-    def test_error_raises(self, fake_backend):
+    @pytest.mark.parametrize("status", [-1, 1])
+    def test_error_raises(self, fake_backend, status):
         _setup_devices(fake_backend, ["B:HS23T"])
-        fake_backend.set_error("B:HS24T.SETTING.RAW@I", -1, "Device offline")
+        fake_backend.set_error("B:HS24T.SETTING.RAW@I", status, "Device unavailable")
 
-        with pytest.raises(DeviceError):
+        with pytest.raises(DeviceError) as exc_info:
             read_ramps(_TestRamp, ["B:HS23T", "B:HS24T"], backend=fake_backend)
+
+        assert exc_info.value.error_code == status
 
     def test_read_many_classmethod(self, fake_backend):
         _setup_devices(fake_backend, ["B:HS23T", "B:HS24T"])

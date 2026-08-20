@@ -269,6 +269,8 @@ def _reply_to_readings(reply, drfs: list[str]) -> list[Reading]:
     value_field = reply.WhichOneof("value")
 
     if value_field == "status":
+        # DPM routes nonzero device statuses through receiveStatus(), so this
+        # top-level status reply is mutually exclusive with a data payload.
         facility, error, message = _proto_status_to_codes(reply.status)
         # Status-only reply with code 0 means "success but no data" which is
         # an error for a data acquisition call (downstream expects a value).

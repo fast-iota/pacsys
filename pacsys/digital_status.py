@@ -12,6 +12,8 @@ Construction paths:
   - from_reading(): from a Reading containing status data
 
 Example usage:
+    from pacsys import ReadError
+
     # Via Device API
     status = dev.digital_status()
 
@@ -21,6 +23,8 @@ Example usage:
         "Z:ACLTST.STATUS.BIT_NAMES@I",
         "Z:ACLTST.STATUS.BIT_VALUES@I",
     ])
+    if not all(reading.ok for reading in readings):
+        raise ReadError(readings, "digital status read returned no usable data")
     status = DigitalStatus.from_bit_arrays(
         device="Z:ACLTST",
         raw_value=int(readings[0].value),

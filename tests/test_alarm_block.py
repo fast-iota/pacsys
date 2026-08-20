@@ -13,6 +13,7 @@ from pacsys.alarm_block import (
     DigitalAlarm,
     LimitType,
 )
+from pacsys.errors import DeviceError
 from pacsys.types import ValueType
 
 
@@ -303,6 +304,27 @@ class TestAlarmSegments:
         _, value = fake_backend.writes[0]
         assert isinstance(value, bytes)
         assert AnalogAlarm.from_bytes(value).abort
+
+
+class TestAlarmReadStatus:
+    @pytest.mark.parametrize(("alarm_cls", "prop"), [(AnalogAlarm, "ANALOG"), (DigitalAlarm, "DIGITAL")])
+    def test_read_rejects_warning_without_value(self, alarm_cls, prop, fake_backend):
+        fake_backend.set_error(f"Z:TEST.{prop}{{0:20}}.RAW@I", 1, "DPM_PEND")
+
+        with pytest.raises(DeviceError) as exc_info:
+            alarm_cls.read("Z:TEST", backend=fake_backend)
+
+        assert exc_info.value.error_code == 1
+
+    @pytest.mark.parametrize(("alarm_cls", "prop"), [(AnalogAlarm, "ANALOG"), (DigitalAlarm, "DIGITAL")])
+    def test_modify_rejects_warning_without_value(self, alarm_cls, prop, fake_backend):
+        fake_backend.set_error(f"Z:TEST.{prop}{{0:20}}.RAW@I", 1, "DPM_PEND")
+
+        with pytest.raises(DeviceError) as exc_info:
+            with alarm_cls.modify("Z:TEST", backend=fake_backend):
+                pass
+
+        assert exc_info.value.error_code == 1
 
 
 class TestModifyContext:
