@@ -280,11 +280,16 @@ alarm.ftd = FTD.default()
 
 ## Alarm Segments
 
-Some devices have multiple alarm segments:
+Structured alarm reads and modifications support segment 0 only because the server ignores
+ranges for structured alarm fields. Access additional segments through range-qualified raw
+blocks:
 
 ```python
-alarm0 = AnalogAlarm.read("Z:ACLTST", segment=0)  # Default
-alarm1 = AnalogAlarm.read("Z:ACLTST", segment=1)
+raw = backend.read("Z:ACLTST.ANALOG{20:20}.RAW@I")
+alarm1 = AnalogAlarm.from_bytes(raw)
+
+# Raw writes preserve the segment offset.
+alarm1.write("Z:ACLTST", backend=backend, segment=1)
 ```
 
 ---
