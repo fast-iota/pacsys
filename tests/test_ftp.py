@@ -12,6 +12,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from pacsys.acnet.errors import (
+    ACNET_DISCONNECTED,
+    FTP_BUMPED,
     FTP_COLLECTING,
     FTP_PEND,
     FTP_WAIT_DELAY,
@@ -875,6 +877,30 @@ class TestFTPStream:
         finally:
             stream.stop()
 
+    def test_nonfinal_error_does_not_end_stream(self):
+        import queue as q
+
+        dev = FTPDevice(di=1, pi=12, ssdn=b"\x00" * 8)
+        reply_q = q.Queue()
+        stream = FTPStream(ctx=MagicMock(), devices=[dev], reply_queue=reply_q, setup_statuses=[0])
+        header = struct.pack("<hH", 0, REPLY_TYPE_DATA) + b"\x00" * 4
+        data = header + struct.pack("<hHH", 0, 14, 1) + struct.pack("<Hh", 50, 42)
+        reply_q.put((FTP_BUMPED, b"", False))
+        reply_q.put((0, data, True))
+
+        assert list(stream.readings(timeout=0.1)) == [{1: [FTPDataPoint(timestamp_us=5000, raw_value=42)]}]
+        assert stream.stopped
+
+    def test_nonnegative_final_reply_is_clean_completion(self):
+        import queue as q
+
+        reply_q = q.Queue()
+        stream = FTPStream(ctx=MagicMock(), devices=[], reply_queue=reply_q, setup_statuses=[])
+        reply_q.put((0, struct.pack("<hH", 0, REPLY_TYPE_SETUP), True))
+
+        assert list(stream.readings(timeout=0.1)) == []
+        assert stream.stopped
+
     def test_stop_cancels_context(self):
         import queue as q
 
@@ -1045,6 +1071,30 @@ class TestFTPClientContinuous:
         with pytest.raises(AcnetError, match="Unexpected end"):
             client.start_continuous(node=3018, devices=[mouttmp], rate_hz=1440)
         ctx.cancel.assert_called_once()
+
+    @pytest.mark.parametrize("status", [FTP_BUMPED, ACNET_DISCONNECTED])
+    def test_terminal_error_reaches_stream_reader(self, mouttmp, status):
+        conn = MagicMock()
+
+        def fake_request_multiple(node, task, data, reply_handler, timeout):
+            reply_handler(
+                MagicMock(
+                    status=0,
+                    data=struct.pack("<HHh", 0, REPLY_TYPE_SETUP, 0),
+                    last=False,
+                )
+            )
+            reply_handler(MagicMock(status=status, data=b"", last=True))
+            return MagicMock()
+
+        conn.request_multiple = fake_request_multiple
+
+        stream = FTPClient(conn).start_continuous(node=3018, devices=[mouttmp], rate_hz=1440)
+        with pytest.raises(AcnetError, match="Continuous plot terminated") as exc_info:
+            next(stream.readings(timeout=0.1))
+
+        assert exc_info.value.status == status
+        assert stream.stopped
 
 
 class TestFTPClientSnapshotSetup:
