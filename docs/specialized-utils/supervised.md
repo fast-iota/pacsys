@@ -312,11 +312,11 @@ class BusinessHoursPolicy(Policy):
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `drfs` | `list[str]` | DRF strings in the request |
+| `drfs` | `list[str]` | Fixed DRF strings in the request; policies must not modify them |
 | `rpc_method` | `str` | `"Read"` or `"Set"` |
 | `peer` | `str` | Client address |
 | `metadata` | `dict[str, str]` | gRPC metadata from the call |
-| `values` | `list[tuple[str, object]]` | `[(DRF, value), ...]` — preserves order and duplicates (empty for reads) |
+| `values` | `list[tuple[str, object]]` | `[(DRF, value), ...]` aligned 1:1 with `drfs` (empty for reads); policies may modify values but not tuple DRFs |
 | `raw_request` | `object` | Raw protobuf request message |
 | `allowed` | `frozenset[int]` | Slot indices approved for this operation (all for reads, empty for sets initially) |
 
@@ -342,7 +342,7 @@ class MyWriteGatePolicy(Policy):
 
 ### Request Modification
 
-Policies can modify the request by returning a new `RequestContext` in the `ctx` field of `PolicyDecision`. Use `dataclasses.replace()` to create modified copies — this preserves all fields including `allowed`.
+Policies can modify write values by returning a new `RequestContext` in the `ctx` field of `PolicyDecision`. Use `dataclasses.replace()` to preserve all other fields, including `allowed`. Target DRFs and their order are fixed for the policy chain; retargeting, filtering, or reordering raises before backend I/O. Put namespace routing in a backend wrapper instead of an access policy.
 
 ```python
 from dataclasses import replace
@@ -358,37 +358,6 @@ class ClampPolicy(Policy):
             for drf, val in ctx.values
         ]
         return PolicyDecision(allowed=True, ctx=replace(ctx, values=new_values))
-```
-
-```python
-from dataclasses import replace
-
-class RedirectPolicy(Policy):
-    """Redirect devices matching a prefix to a different prefix.
-
-    Example: route T:OUTTMP (test namespace) to M:OUTTMP (production).
-    Only rewrites ctx.drfs — the server uses drfs as the authoritative
-    target for both reads and writes, so values need not be touched.
-    """
-
-    def __init__(self, from_prefix: str, to_prefix: str):
-        self._from = from_prefix.upper()
-        self._to = to_prefix.upper()
-
-    def _rewrite(self, drf: str) -> str:
-        name = get_device_name(drf)
-        if name.upper().startswith(self._from):
-            return drf.replace(name, self._to + name[len(self._from):], 1)
-        return drf
-
-    def check(self, ctx: RequestContext) -> PolicyDecision:
-        new_drfs = [self._rewrite(d) for d in ctx.drfs]
-        if new_drfs == ctx.drfs:
-            return PolicyDecision(allowed=True)
-        return PolicyDecision(allowed=True, ctx=replace(ctx, drfs=new_drfs))
-
-# Route T: (test) devices to M: (production)
-policies = [RedirectPolicy("T:", "M:")]
 ```
 
 ---

@@ -50,11 +50,11 @@ def _numeric_elements(value: object) -> list[float] | None:
 class RequestContext:
     """Context for a single RPC request, passed to policy checks."""
 
-    drfs: list[str]
+    drfs: list[str]  # Fixed target slots; policies must not modify or reorder
     rpc_method: str  # "Read" or "Set"
     peer: str
     metadata: dict[str, str]
-    values: list[tuple[str, Value]]  # [(DRF, value), ...] — empty for reads
+    values: list[tuple[str, Value]]  # DRFs fixed and aligned with drfs; payloads may change
     raw_request: object  # raw protobuf message
     allowed: frozenset[int] = frozenset()  # slot indices approved for this operation
 
@@ -379,17 +379,42 @@ class SlewRatePolicy(Policy):
         return _ALLOW
 
 
+def _validate_policy_context(policy: Policy, ctx: RequestContext, original_drfs: list[str], rpc_method: str) -> None:
+    """Enforce stable target slots while allowing value transformations."""
+    policy_name = type(policy).__name__
+    if ctx.drfs != original_drfs:
+        raise ValueError(f"{policy_name} modified ctx.drfs; target transformations are not supported")
+
+    valid_slots = frozenset(range(len(original_drfs)))
+    if not ctx.allowed <= valid_slots:
+        raise ValueError(f"{policy_name} produced out-of-range allowed slots")
+
+    if rpc_method == "Read":
+        if ctx.values:
+            raise ValueError(f"{policy_name} added values to a Read request")
+        return
+
+    if len(ctx.values) != len(original_drfs):
+        raise ValueError(
+            f"{policy_name} produced mismatched drfs/values: {len(original_drfs)} drfs vs {len(ctx.values)} values"
+        )
+    if [drf for drf, _ in ctx.values] != original_drfs:
+        raise ValueError(f"{policy_name} modified or reordered value DRFs; target transformations are not supported")
+
+
 def evaluate_policies(policies: list[Policy], ctx: RequestContext) -> PolicyDecision:
     """Evaluate a chain of policies. First denial short-circuits.
 
     Each policy sees the (potentially modified) context from the previous
     policy. The final decision always carries ``ctx`` set to the final context.
     """
+    original_drfs = list(ctx.drfs)
+    rpc_method = ctx.rpc_method
     current = ctx
     for policy in policies:
         decision = policy.check(current)
         if not decision.allowed:
             return decision
-        if decision.ctx is not None:
-            current = decision.ctx
+        current = decision.ctx if decision.ctx is not None else current
+        _validate_policy_context(policy, current, original_drfs, rpc_method)
     return PolicyDecision(allowed=True, ctx=current)

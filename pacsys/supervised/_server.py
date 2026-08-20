@@ -29,29 +29,6 @@ logger = logging.getLogger("pacsys.supervised")
 _STREAM_QUEUE_MAXSIZE = 100_000
 
 
-def _reorder_map(original: list[str], modified: list[str]) -> list[int] | None:
-    """Map original positions to modified positions for index-correct responses.
-
-    Returns None if lists are identical (common fast path).
-    Returns map where map[orig_i] = mod_i, so results[map[i]] is the result
-    for original position i.
-    """
-    if original == modified:
-        return None
-    # Build index of modified DRFs (handle duplicates by tracking used positions)
-    mod_positions: dict[str, list[int]] = {}
-    for i, drf in enumerate(modified):
-        mod_positions.setdefault(drf, []).append(i)
-
-    result = []
-    for orig_drf in original:
-        positions = mod_positions.get(orig_drf)
-        if not positions:
-            raise ValueError(f"Policy removed DRF {orig_drf!r} — filtering is not supported")
-        result.append(positions.pop(0))
-    return result
-
-
 class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
     """DAQ service implementation that proxies to a Backend."""
 
@@ -180,18 +157,15 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
 
         logger.info("rpc=Read peer=%s devices=%s decision=allowed", peer, devices)
         assert decision.ctx is not None
-        final_drfs = decision.ctx.drfs
         start = time.monotonic()
 
         try:
-            if all_oneshot(final_drfs):
+            if all_oneshot(drfs):
                 if isinstance(self._backend, AsyncBackend):
-                    readings = await self._backend.get_many(final_drfs)
+                    readings = await self._backend.get_many(drfs)
                 else:
-                    readings = await asyncio.to_thread(self._backend.get_many, final_drfs)
-                rmap = _reorder_map(drfs, final_drfs)
-                for i in range(len(drfs)):
-                    reading = readings[rmap[i]] if rmap else readings[i]
+                    readings = await asyncio.to_thread(self._backend.get_many, drfs)
+                for i, reading in enumerate(readings):
                     reply_proto = reading_to_proto_reply(reading, i)
                     self._audit_response(seq, peer, "Read", reply_proto)
                     yield reply_proto
@@ -200,21 +174,13 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
             else:
                 item_count = 0
                 # Multimap: backend DRF → original request positions
-                # Keys are final_drfs (what backend returns in reading.drf),
-                # values are original drfs positions for correct client indices
                 drf_indices: dict[str, list[int]] = {}
-                if drfs == final_drfs:
-                    for i, drf in enumerate(drfs):
-                        drf_indices.setdefault(drf, []).append(i)
-                else:
-                    rmap = _reorder_map(drfs, final_drfs)
-                    assert rmap is not None
-                    for i in range(len(drfs)):
-                        drf_indices.setdefault(final_drfs[rmap[i]], []).append(i)
+                for i, drf in enumerate(drfs):
+                    drf_indices.setdefault(drf, []).append(i)
 
                 if isinstance(self._backend, AsyncBackend):
-                    logger.debug("stream peer=%s event=started items=%d", peer, len(final_drfs))
-                    handle = await self._backend.subscribe(final_drfs)
+                    logger.debug("stream peer=%s event=started items=%d", peer, len(drfs))
+                    handle = await self._backend.subscribe(drfs)
                     try:
                         while not context.cancelled():
                             try:
@@ -266,8 +232,8 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
                         except RuntimeError:
                             pass
 
-                    logger.debug("stream peer=%s event=started items=%d", peer, len(final_drfs))
-                    handle = await asyncio.to_thread(self._backend.subscribe, final_drfs, on_reading, on_error)
+                    logger.debug("stream peer=%s event=started items=%d", peer, len(drfs))
+                    handle = await asyncio.to_thread(self._backend.subscribe, drfs, on_reading, on_error)
                     try:
                         while not context.cancelled():
                             try:
@@ -359,23 +325,14 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
 
         try:
             assert decision.ctx is not None
-            if len(decision.ctx.drfs) != len(decision.ctx.values):
-                raise ValueError(
-                    f"Policy produced mismatched drfs/values: "
-                    f"{len(decision.ctx.drfs)} drfs vs {len(decision.ctx.values)} values"
-                )
-            backend_settings = [
-                (drf, val) for drf, (_, val) in zip(decision.ctx.drfs, decision.ctx.values, strict=True)
-            ]
+            backend_settings = list(decision.ctx.values)
 
             if isinstance(self._backend, AsyncBackend):
                 results = await self._backend.write_many(backend_settings)
             else:
                 results = await asyncio.to_thread(self._backend.write_many, backend_settings)
-            rmap = _reorder_map(drfs, decision.ctx.drfs)
             reply = DAQ_pb2.SettingReply()
-            for i in range(len(drfs)):
-                result = results[rmap[i]] if rmap else results[i]
+            for result in results:
                 reply.status.append(write_result_to_proto_status(result))
             elapsed = (time.monotonic() - start) * 1000
             logger.info("rpc=Set peer=%s elapsed_ms=%.1f items=%d", peer, elapsed, len(results))

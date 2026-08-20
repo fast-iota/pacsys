@@ -635,3 +635,47 @@ class TestEvaluatePolicies:
         assert d.allowed
         # Final ctx should have the clamped value
         assert d.ctx.values[0] == ("M:OUTTMP", 100.0)
+
+    def test_target_rewrite_rejected(self):
+        class RetargetPolicy(Policy):
+            def check(self, ctx: RequestContext) -> PolicyDecision:
+                from dataclasses import replace
+
+                return PolicyDecision(allowed=True, ctx=replace(ctx, drfs=["G:AMANDA"]))
+
+        with pytest.raises(ValueError, match="RetargetPolicy modified ctx.drfs"):
+            evaluate_policies([RetargetPolicy()], _ctx(drfs=["M:OUTTMP"]))
+
+    def test_value_drf_reorder_rejected(self):
+        class ReorderValuesPolicy(Policy):
+            def check(self, ctx: RequestContext) -> PolicyDecision:
+                from dataclasses import replace
+
+                return PolicyDecision(allowed=True, ctx=replace(ctx, values=list(reversed(ctx.values))))
+
+        ctx = _ctx(
+            rpc_method="Set",
+            drfs=["M:OUTTMP", "G:AMANDA"],
+            values=[("M:OUTTMP", 1.0), ("G:AMANDA", 2.0)],
+        )
+        with pytest.raises(ValueError, match="ReorderValuesPolicy modified or reordered value DRFs"):
+            evaluate_policies([ReorderValuesPolicy()], ctx)
+
+    def test_in_place_target_mutation_rejected(self):
+        class MutatingPolicy(Policy):
+            def check(self, ctx: RequestContext) -> PolicyDecision:
+                ctx.drfs[0] = "G:AMANDA"
+                return PolicyDecision(allowed=True)
+
+        with pytest.raises(ValueError, match="MutatingPolicy modified ctx.drfs"):
+            evaluate_policies([MutatingPolicy()], _ctx(drfs=["M:OUTTMP"]))
+
+    def test_out_of_range_allowed_slot_rejected(self):
+        class BadAllowedPolicy(Policy):
+            def check(self, ctx: RequestContext) -> PolicyDecision:
+                from dataclasses import replace
+
+                return PolicyDecision(allowed=True, ctx=replace(ctx, allowed=frozenset({1})))
+
+        with pytest.raises(ValueError, match="BadAllowedPolicy produced out-of-range allowed slots"):
+            evaluate_policies([BadAllowedPolicy()], _ctx(drfs=["M:OUTTMP"]))

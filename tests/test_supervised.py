@@ -1060,65 +1060,93 @@ class TestWriteResultToProtoStatus:
         assert status.message == ""
 
 
-# ── Policy Reorder Index Mapping Tests ───────────────────────────────────
+# ── Policy Target Invariant Tests ────────────────────────────────────────
 
 
-class _SwapPolicy(Policy):
-    """Policy that reverses the DRF order to test index mapping."""
+class _RetargetPolicy(Policy):
+    """Invalid policy that changes the target DRFs."""
 
     def check(self, ctx: RequestContext) -> PolicyDecision:
         from dataclasses import replace
 
-        new_ctx = replace(
-            ctx,
-            drfs=list(reversed(ctx.drfs)),
-            values=list(reversed(ctx.values)),
-        )
-        return PolicyDecision(allowed=True, ctx=new_ctx)
+        return PolicyDecision(allowed=True, ctx=replace(ctx, drfs=["Z:REDIRECT"] * len(ctx.drfs)))
 
 
-class TestPolicyReorderIndexMapping:
-    def test_read_reorder_preserves_original_indices(self):
-        """Policy reverses [M:OUTTMP, G:AMANDA] but client gets correct index mapping."""
+class _ReorderValuesPolicy(Policy):
+    """Invalid policy that separates values from their target slots."""
+
+    def check(self, ctx: RequestContext) -> PolicyDecision:
+        from dataclasses import replace
+
+        return PolicyDecision(allowed=True, ctx=replace(ctx, values=list(reversed(ctx.values))))
+
+
+class _ClampPolicy(Policy):
+    """Valid policy that modifies only value payloads."""
+
+    def check(self, ctx: RequestContext) -> PolicyDecision:
+        from dataclasses import replace
+
+        values = [(drf, min(value, 100.0)) for drf, value in ctx.values]
+        return PolicyDecision(allowed=True, ctx=replace(ctx, values=values))
+
+
+class TestPolicyTargetInvariants:
+    def test_read_retarget_rejected_before_backend_call(self):
         fb = FakeBackend()
         fb.set_reading("M:OUTTMP", 72.5)
-        fb.set_reading("G:AMANDA", 42.0)
-        with SupervisedServer(fb, port=0, policies=[_SwapPolicy()]) as srv:
+        with SupervisedServer(fb, port=0, policies=[_RetargetPolicy()]) as srv:
             with _make_channel(srv) as ch:
                 stub = DAQ_pb2_grpc.DAQStub(ch)
                 request = DAQ_pb2.ReadingList()
                 request.drf.append("M:OUTTMP@I")
-                request.drf.append("G:AMANDA@I")
 
-                replies = list(stub.Read(request, timeout=5.0))
-                assert len(replies) == 2
-                by_index = {r.index: r.readings.reading[0].data.scalar for r in replies}
-                # Index 0 = M:OUTTMP (72.5), Index 1 = G:AMANDA (42.0)
-                assert by_index[0] == pytest.approx(72.5)
-                assert by_index[1] == pytest.approx(42.0)
+                with pytest.raises(grpc.RpcError) as exc_info:
+                    list(stub.Read(request, timeout=5.0))
+                assert exc_info.value.code() == grpc.StatusCode.INTERNAL
+                assert fb.reads == []
 
-    def test_set_reorder_preserves_original_indices(self):
-        """Policy reverses settings order but status indices match original request."""
+    def test_stream_retarget_rejected_before_subscription(self):
+        fb = FakeBackend()
+        fb.set_reading("M:OUTTMP", 72.5)
+        with SupervisedServer(fb, port=0, policies=[_RetargetPolicy()]) as srv:
+            with _make_channel(srv) as ch:
+                request = DAQ_pb2.ReadingList()
+                request.drf.append("M:OUTTMP@p,1000")
+
+                with pytest.raises(grpc.RpcError) as exc_info:
+                    list(DAQ_pb2_grpc.DAQStub(ch).Read(request, timeout=5.0))
+                assert exc_info.value.code() == grpc.StatusCode.INTERNAL
+                assert fb._subscriptions == []
+
+    @pytest.mark.parametrize("policy", [_RetargetPolicy(), _ReorderValuesPolicy()])
+    def test_invalid_set_context_never_writes(self, policy):
         fb = FakeBackend()
         fb.set_reading("M:OUTTMP", 72.5)
         fb.set_reading("G:AMANDA", 42.0)
-        fb.set_write_result("M:OUTTMP", success=True)
-        fb.set_write_result("G:AMANDA", success=False, error_code=-1, message="fail")
-        with SupervisedServer(fb, port=0, policies=[_ALLOW_ALL_WRITES, _SwapPolicy()]) as srv:
+        with SupervisedServer(fb, port=0, policies=[_ALLOW_ALL_WRITES, policy]) as srv:
             with _make_channel(srv) as ch:
-                stub = DAQ_pb2_grpc.DAQStub(ch)
                 request = DAQ_pb2.SettingList()
-                s1 = DAQ_pb2.Setting()
-                s1.device = "M:OUTTMP"
-                s1.value.scalar = 80.0
-                request.setting.append(s1)
-                s2 = DAQ_pb2.Setting()
-                s2.device = "G:AMANDA"
-                s2.value.scalar = 50.0
-                request.setting.append(s2)
+                for drf, value in (("M:OUTTMP", 80.0), ("G:AMANDA", 50.0)):
+                    setting = request.setting.add()
+                    setting.device = drf
+                    setting.value.scalar = value
 
-                reply = stub.Set(request, timeout=5.0)
-                assert len(reply.status) == 2
-                # Index 0 = M:OUTTMP (success), Index 1 = G:AMANDA (fail)
+                with pytest.raises(grpc.RpcError) as exc_info:
+                    DAQ_pb2_grpc.DAQStub(ch).Set(request, timeout=5.0)
+                assert exc_info.value.code() == grpc.StatusCode.INTERNAL
+                assert fb.writes == []
+
+    def test_value_only_transformation_is_executed(self):
+        fb = FakeBackend()
+        fb.set_reading("M:OUTTMP", 72.5)
+        with SupervisedServer(fb, port=0, policies=[_ALLOW_ALL_WRITES, _ClampPolicy()]) as srv:
+            with _make_channel(srv) as ch:
+                request = DAQ_pb2.SettingList()
+                setting = request.setting.add()
+                setting.device = "M:OUTTMP"
+                setting.value.scalar = 200.0
+
+                reply = DAQ_pb2_grpc.DAQStub(ch).Set(request, timeout=5.0)
                 assert reply.status[0].status_code == 0
-                assert reply.status[1].status_code == -1
+                assert fb.get_written_value("M:OUTTMP") == 100.0

@@ -1,9 +1,19 @@
 """Integration tests: full tool flow with FakeBackend and policies."""
 
+from dataclasses import replace
+
 import pytest
 
 from pacsys.mcp._tools import tool_read_device, tool_write_device
-from pacsys.supervised._policies import DeviceAccessPolicy, SlewLimit, SlewRatePolicy, ValueRangePolicy
+from pacsys.supervised._policies import (
+    DeviceAccessPolicy,
+    Policy,
+    PolicyDecision,
+    RequestContext,
+    SlewLimit,
+    SlewRatePolicy,
+    ValueRangePolicy,
+)
 from pacsys.testing import FakeBackend
 
 
@@ -90,3 +100,44 @@ def test_write_denied_slew_rate(backend, write_policies):
     w2 = tool_write_device(backend, "Z:ACLTST", 50.0, policies=write_policies)
     assert w2["ok"] is False
     assert "step" in w2["error"].lower() or "slew" in w2["error"].lower()
+
+
+def test_write_executes_transformed_value(backend):
+    class ClampPolicy(Policy):
+        def check(self, ctx: RequestContext) -> PolicyDecision:
+            values = [(drf, min(value, 100.0)) for drf, value in ctx.values]
+            return PolicyDecision(allowed=True, ctx=replace(ctx, values=values))
+
+    policies = [
+        DeviceAccessPolicy(patterns=["Z:ACLTST"], mode="allow", action="set"),
+        ClampPolicy(),
+    ]
+    result = tool_write_device(backend, "Z:ACLTST", 200.0, policies=policies)
+    assert result["ok"] is True
+    assert backend.get_written_value("Z:ACLTST.SETTING") == 100.0
+
+
+def test_write_retarget_is_rejected_before_backend_call(backend):
+    class RetargetPolicy(Policy):
+        def check(self, ctx: RequestContext) -> PolicyDecision:
+            return PolicyDecision(allowed=True, ctx=replace(ctx, drfs=["M:OUTTMP.SETTING@N"]))
+
+    policies = [
+        DeviceAccessPolicy(patterns=["Z:ACLTST"], mode="allow", action="set"),
+        RetargetPolicy(),
+    ]
+    result = tool_write_device(backend, "Z:ACLTST", 42.0, policies=policies)
+    assert result["ok"] is False
+    assert "target transformations" in result["error"]
+    assert backend.writes == []
+
+
+def test_read_revoked_slot_is_denied_before_backend_call(backend):
+    class RevokeReadPolicy(Policy):
+        def check(self, ctx: RequestContext) -> PolicyDecision:
+            return PolicyDecision(allowed=True, ctx=replace(ctx, allowed=frozenset()))
+
+    result = tool_read_device(backend, "M:OUTTMP", [RevokeReadPolicy()])
+    assert result["ok"] is False
+    assert "denied" in result["error"].lower()
+    assert backend.reads == []

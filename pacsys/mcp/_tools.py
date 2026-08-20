@@ -18,6 +18,7 @@ logger = logging.getLogger("pacsys.mcp")
 
 def tool_read_device(backend: Backend, drf: str, policies: list[Policy]) -> dict:
     """Read a device value with policy enforcement. Returns a JSON-safe dict."""
+    final_drf = drf
     if policies:
         ctx = RequestContext(
             drfs=[drf],
@@ -28,13 +29,23 @@ def tool_read_device(backend: Backend, drf: str, policies: list[Policy]) -> dict
             raw_request=None,
             allowed=frozenset({0}),  # reads start approved (match supervised server)
         )
-        decision = evaluate_policies(policies, ctx)
+        try:
+            decision = evaluate_policies(policies, ctx)
+        except ValueError as e:
+            logger.exception("read_device policy failed for drf=%s", drf)
+            return {"ok": False, "name": get_device_name(drf), "drf": drf, "value": None, "error": str(e)}
         if not decision.allowed:
             reason = decision.reason or "Read denied by policy"
             logger.warning("read_device drf=%s denied reason=%s", drf, reason)
             return {"ok": False, "name": get_device_name(drf), "drf": drf, "value": None, "error": reason}
+        assert decision.ctx is not None
+        if 0 not in decision.ctx.allowed:
+            reason = "Read denied by policy"
+            logger.warning("read_device drf=%s denied reason=%s", drf, reason)
+            return {"ok": False, "name": get_device_name(drf), "drf": drf, "value": None, "error": reason}
+        final_drf = decision.ctx.drfs[0]
     try:
-        reading = backend.get(drf)
+        reading = backend.get(final_drf)
         return reading_to_dict(reading)
     except Exception as e:
         logger.exception("read_device failed for drf=%s", drf)
@@ -64,10 +75,14 @@ def tool_write_device(
     )
 
     # Evaluate policies
-    if policies:
-        decision = evaluate_policies(policies, ctx)
-    else:
-        decision = PolicyDecision(allowed=True, ctx=ctx)
+    try:
+        if policies:
+            decision = evaluate_policies(policies, ctx)
+        else:
+            decision = PolicyDecision(allowed=True, ctx=ctx)
+    except ValueError as e:
+        logger.exception("write_device policy failed for drf=%s", write_drf)
+        return {"ok": False, "drf": write_drf, "error": str(e)}
 
     # Check if write was approved by any policy
     final_ctx = decision.ctx if decision.ctx is not None else ctx
@@ -86,12 +101,13 @@ def tool_write_device(
         return {"ok": False, "drf": write_drf, "error": reason}
 
     # Execute write
+    final_drf, final_value = final_ctx.values[0]
     try:
-        result = backend.write(write_drf, value)
+        result = backend.write(final_drf, final_value)
         return write_result_to_dict(result)
     except Exception as e:
-        logger.exception("write_device failed for drf=%s", write_drf)
-        return {"ok": False, "drf": write_drf, "error": str(e)}
+        logger.exception("write_device failed for drf=%s", final_drf)
+        return {"ok": False, "drf": final_drf, "error": str(e)}
 
 
 def tool_device_info(devdb, name: str) -> dict:
