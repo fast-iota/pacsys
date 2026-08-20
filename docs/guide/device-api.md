@@ -170,6 +170,11 @@ result = dev.write(72.5, verify=v)
 result = dev.write(72.5, verify=False)
 ```
 
+`tolerance` is an absolute tolerance; relative tolerance is not applied. Array
+readbacks must have the same shape, booleans only match booleans, and NaN never
+matches. Tolerance and delays must be finite and nonnegative, and
+`max_attempts` must be at least 1.
+
 ### Check First (Skip Redundant Writes)
 
 ```python
@@ -201,6 +206,10 @@ result = dev.on(verify=True)
 # Reads STATUS.ON after writing CONTROL, confirms it's True
 assert result.verified
 ```
+
+Backends may return the full basic-status mapping for that read. Verification
+extracts the mapped field; malformed or custom readbacks are retained verbatim
+and fail the strict boolean comparison.
 
 ### WriteResult Fields
 

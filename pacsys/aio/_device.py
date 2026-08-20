@@ -166,7 +166,7 @@ class AsyncDevice(_DeviceBase):
         timeout: float | None = None,
     ) -> WriteResult:
         """Write CONTROL command."""
-        from pacsys.verify import resolve_verify, values_match
+        from pacsys.verify import _normalize_control_readback, resolve_verify, values_match
 
         v = resolve_verify(verify)
         write_drf = self._build_drf(DRF_PROPERTY.CONTROL, None, "N")
@@ -178,11 +178,11 @@ class AsyncDevice(_DeviceBase):
 
         if v is not None and status_field_name is None:
             raise ValueError(f"Cannot verify control command {command!r}: no STATUS field mapping")
-
         if v is not None and v.check_first and expected is not None:
+            assert status_field_name is not None
             status_field = self._resolve_field(status_field_name, DRF_PROPERTY.STATUS)
             read_drf = v.readback or self._build_drf(DRF_PROPERTY.STATUS, status_field, "I")
-            current = bool(await backend.read(read_drf, timeout))
+            current = _normalize_control_readback(await backend.read(read_drf, timeout), status_field_name)
             if values_match(current, expected, v.tolerance):
                 return WriteResult(drf=write_drf, verified=True, readback=current, skipped=True, attempts=0)
 
@@ -191,21 +191,10 @@ class AsyncDevice(_DeviceBase):
             return result
 
         if v is not None and expected is not None:
+            assert status_field_name is not None
             status_field = self._resolve_field(status_field_name, DRF_PROPERTY.STATUS)
             read_drf = v.readback or self._build_drf(DRF_PROPERTY.STATUS, status_field, "I")
-            vr = await self._verify_readback(result, read_drf, expected, v, timeout)
-            if vr.readback is not None:
-                vr = WriteResult(
-                    drf=vr.drf,
-                    facility_code=vr.facility_code,
-                    error_code=vr.error_code,
-                    message=vr.message,
-                    verified=vr.verified,
-                    readback=bool(vr.readback),
-                    skipped=vr.skipped,
-                    attempts=vr.attempts,
-                )
-            return vr
+            return await self._verify_readback(result, read_drf, expected, v, timeout, readback_field=status_field_name)
 
         return result
 
@@ -312,9 +301,10 @@ class AsyncDevice(_DeviceBase):
         expected: Value,
         v: Verify,
         timeout: float | None,
+        readback_field: str | None = None,
     ) -> WriteResult:
         from pacsys.errors import DeviceError
-        from pacsys.verify import values_match
+        from pacsys.verify import _normalize_control_readback, values_match
 
         backend = self._get_backend()
         await asyncio.sleep(v.initial_delay)
@@ -324,6 +314,8 @@ class AsyncDevice(_DeviceBase):
         for attempt in range(1, v.max_attempts + 1):
             try:
                 last_readback = await backend.read(read_drf, timeout)
+                if readback_field is not None:
+                    last_readback = _normalize_control_readback(last_readback, readback_field)
                 last_error = None
             except DeviceError as e:
                 last_error = e

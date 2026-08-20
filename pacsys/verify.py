@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
+from math import isfinite
+from numbers import Integral, Real
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -42,6 +44,18 @@ class Verify:
     max_attempts: int = 3
     readback: str | None = None
     always: bool = False
+
+    def __post_init__(self) -> None:
+        for name in ("tolerance", "initial_delay", "retry_delay"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, Real):
+                raise TypeError(f"{name} must be a real number")
+            if not isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be finite and non-negative")
+        if isinstance(self.max_attempts, bool) or not isinstance(self.max_attempts, Integral):
+            raise TypeError("max_attempts must be an integer")
+        if self.max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
 
     def __enter__(self) -> Verify:
         _push_verify(self)
@@ -100,18 +114,48 @@ def resolve_verify(verify: bool | Verify | None) -> Verify | None:
 
 def values_match(a: Value, b: Value, tolerance: float = 0.0) -> bool:
     """Compare two values within tolerance."""
-    if isinstance(a, bool) and isinstance(b, bool):
-        return a == b
-    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
-        return abs(a - b) <= tolerance
-    a_arr = isinstance(a, np.ndarray)
-    b_arr = isinstance(b, np.ndarray)
-    if a_arr or b_arr:
+    if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
         try:
-            return bool(np.allclose(np.asarray(a), np.asarray(b), atol=tolerance))
+            a_arr = np.asarray(a)
+            b_arr = np.asarray(b)
+            if a_arr.shape != b_arr.shape:
+                return False
+            a_bool = a_arr.dtype.kind == "b"
+            b_bool = b_arr.dtype.kind == "b"
+            if a_bool or b_bool:
+                return a_bool and b_bool and bool(np.array_equal(a_arr, b_arr))
+            if a_arr.dtype.kind not in "iufc" or b_arr.dtype.kind not in "iufc":
+                return bool(np.array_equal(a_arr, b_arr))
+            return bool(np.allclose(a_arr, b_arr, atol=tolerance, rtol=0.0, equal_nan=False))
         except (TypeError, ValueError):
             return False
-    return a == b
+
+    if isinstance(a, (list, tuple)) or isinstance(b, (list, tuple)):
+        if not isinstance(a, (list, tuple)) or not isinstance(b, (list, tuple)) or len(a) != len(b):
+            return False
+        return all(values_match(x, y, tolerance) for x, y in zip(a, b, strict=True))
+
+    a_scalar: object = a.item() if isinstance(a, np.generic) else a
+    b_scalar: object = b.item() if isinstance(b, np.generic) else b
+
+    a_bool = isinstance(a_scalar, bool)
+    b_bool = isinstance(b_scalar, bool)
+    if a_bool or b_bool:
+        return a_bool and b_bool and a_scalar == b_scalar
+    if isinstance(a_scalar, Real) and isinstance(b_scalar, Real):
+        return bool(np.isclose(a_scalar, b_scalar, atol=tolerance, rtol=0.0, equal_nan=False))
+    try:
+        result = a_scalar == b_scalar
+        return bool(result) if isinstance(result, (bool, np.bool_)) else False
+    except (TypeError, ValueError):
+        return False
+
+
+def _normalize_control_readback(value: Value, field: str) -> Value:
+    """Extract a mapped field from a backend basic-status response."""
+    if isinstance(value, dict) and field in value:
+        return value[field]
+    return value
 
 
 __all__ = ["Verify", "get_active_verify", "resolve_verify", "values_match"]
