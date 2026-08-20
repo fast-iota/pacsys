@@ -34,6 +34,7 @@ from .devices import (
     LOGGER_DEVICE_BAD_NODE,
     LOGGER_DEVICE_EXPLICIT_NODE,
     LOGGER_DEVICE_WITH_EVENT,
+    LOGGER_SINGLE_DEVICE,
     NONEXISTENT_DEVICE,
     NOPROP_DEVICE,
     PERIODIC_DEVICE,
@@ -639,6 +640,15 @@ class TestBackendLogger:
         _skip_if_not_dpm(read_backend)
         reading = read_backend.get(LOGGER_DEVICE_EXPLICIT_NODE, timeout=30.0)
         self._assert_logger_reading(reading, LOGGER_DEVICE_EXPLICIT_NODE)
+
+    def test_get_logger_single(self, read_backend: Backend):
+        """LOGGERSINGLE returns one scalar without a chunk terminator."""
+        _skip_if_not_dpm(read_backend)
+        reading = read_backend.get(LOGGER_SINGLE_DEVICE, timeout=30.0)
+
+        assert reading.ok, f"Failed to read {LOGGER_SINGLE_DEVICE}: {reading.message}"
+        assert reading.value_type == ValueType.SCALAR
+        assert reading.timestamp is not None
 
     def test_get_logger_bad_node_fails(self, read_backend: Backend):
         """get() with a bogus logger name proves DPM parses the 4th param."""

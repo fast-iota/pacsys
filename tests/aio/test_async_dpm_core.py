@@ -6,6 +6,7 @@ from unittest import mock
 import numpy as np
 import pytest
 
+from pacsys.acnet.errors import DAE_LJ_NO_DATA
 from pacsys.backends._dpm_core import _AsyncDpmCore
 from pacsys.backends.dpm_http import _AsyncDPMConnection
 from pacsys.dpm_connection import DPMConnectionError
@@ -534,9 +535,46 @@ def _empty_timed_scalar_array(ref_id):
 
 
 LOGGER_DRF = "M:OUTTMP<-LOGGER:1736942400000:1736946000000"
+LOGGERSINGLE_DRF = "M:OUTTMP<-LOGGERSINGLE:ArkIv:1736942400:60"
 
 
 class TestLoggerRead:
+    @pytest.mark.asyncio
+    async def test_loggersingle_scalar_completes_without_terminator(self, make_core):
+        replies = [
+            _add_ok(1),
+            _add_ok(2),
+            _device_info(1),
+            _device_info(2),
+            _start_ok(),
+            _scalar_reply(1, 71.25),
+            _scalar_reply(2, 72.5),
+        ]
+        core, conn = make_core(replies)
+
+        readings = await core.read_many([LOGGERSINGLE_DRF, "M:OUTTMP"], timeout=1.0)
+
+        assert readings[0].ok
+        assert readings[0].value == 71.25
+        assert readings[0].value_type == ValueType.SCALAR
+        assert readings[1].value == 72.5
+        assert core.connected
+
+    @pytest.mark.asyncio
+    async def test_loggersingle_error_is_preserved(self, make_core):
+        replies = [
+            _add_ok(1),
+            _device_info(1),
+            _start_ok(),
+            _status_err(ref_id=1, status=DAE_LJ_NO_DATA),
+        ]
+        core, conn = make_core(replies)
+
+        readings = await core.read_many([LOGGERSINGLE_DRF], timeout=1.0)
+
+        assert readings[0].facility_code == 66
+        assert readings[0].error_code == -64
+
     @pytest.mark.asyncio
     async def test_logger_accumulates_chunks(self, make_core):
         """Two data chunks + empty terminator -> merged TIMED_SCALAR_ARRAY."""

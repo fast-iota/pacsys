@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pacsys.acnet.errors import make_error
+from pacsys.acnet.errors import DAE_LJ_NO_DATA, make_error
 from pacsys.backends.dpm_http import DPMHTTPBackend, _value_to_setting
 from pacsys.dpm_protocol import ListStatus_reply, Raw_reply, StartList_reply
 from pacsys.errors import AuthenticationError, DeviceError, ReadError
@@ -231,6 +231,83 @@ class TestMultipleDeviceRead:
                 assert readings[1].error_code == -42
             finally:
                 backend.close()
+
+
+# =============================================================================
+# Historical Data Source Tests
+# =============================================================================
+
+
+LOGGERSINGLE_DRF = "M:OUTTMP<-LOGGERSINGLE:ArkIv:1736942400:60"
+
+
+class TestHistoricalReads:
+    def test_loggersingle_mixed_batch_completes_and_reuses_connection(self):
+        replies = [
+            make_add_to_list_reply(ref_id=1, status=0),
+            make_add_to_list_reply(ref_id=2, status=0),
+            make_device_info(ref_id=1),
+            make_device_info(name="G:AMANDA", ref_id=2),
+            make_start_list(),
+            make_scalar_reply(value=71.25, ref_id=1),
+            make_scalar_reply(value=1.234, ref_id=2),
+        ]
+        mock_socket = MockSocketWithReplies(list_id=1, replies=replies)
+
+        with mock.patch("socket.socket", return_value=mock_socket):
+            backend = DPMHTTPBackend()
+            try:
+                readings = backend.get_many([LOGGERSINGLE_DRF, "G:AMANDA"], timeout=1.0)
+                assert backend._get_pool().available_count == 1
+            finally:
+                backend.close()
+
+        assert readings[0].ok
+        assert readings[0].value == 71.25
+        assert readings[0].value_type == ValueType.SCALAR
+        assert readings[1].value == 1.234
+
+    def test_loggersingle_error_is_preserved(self):
+        replies = [
+            make_add_to_list_reply(ref_id=1, status=0),
+            make_device_info(ref_id=1),
+            make_start_list(),
+            make_status_reply(status=DAE_LJ_NO_DATA, ref_id=1),
+        ]
+        mock_socket = MockSocketWithReplies(list_id=1, replies=replies)
+
+        with mock.patch("socket.socket", return_value=mock_socket):
+            with DPMHTTPBackend() as backend:
+                reading = backend.get(LOGGERSINGLE_DRF, timeout=1.0)
+
+        assert reading.facility_code == 66
+        assert reading.error_code == -64
+
+    @pytest.mark.parametrize(
+        "drf",
+        [
+            "M:OUTTMP<-LOGGER:1736942400000:1736946000000",
+            "M:OUTTMP<-LOGGERDURATION:60000",
+        ],
+    )
+    def test_chunked_logger_still_waits_for_terminator(self, drf):
+        replies = [
+            make_add_to_list_reply(ref_id=1, status=0),
+            make_device_info(ref_id=1),
+            make_start_list(),
+            make_scalar_array_reply(values=[1.0, 2.0], ref_id=1),
+            make_scalar_array_reply(values=[3.0], ref_id=1),
+            make_scalar_array_reply(values=[], ref_id=1),
+        ]
+        mock_socket = MockSocketWithReplies(list_id=1, replies=replies)
+
+        with mock.patch("socket.socket", return_value=mock_socket):
+            with DPMHTTPBackend() as backend:
+                reading = backend.get(drf, timeout=1.0)
+
+        assert reading.ok
+        assert reading.value_type == ValueType.SCALAR_ARRAY
+        assert reading.value.tolist() == [1.0, 2.0, 3.0]
 
 
 # =============================================================================

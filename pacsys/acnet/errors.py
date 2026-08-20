@@ -24,6 +24,7 @@ class AcnetFacility(IntEnum):
     FTP = 15  # Fast Time Plot
     DBM = 16  # Database Manager
     DPM = 17  # Data Pool Manager
+    DAE = 66  # Data acquisition engine
     DMQ = 72  # Data Multiplexer Queue (RabbitMQ-based)
 
 
@@ -336,6 +337,10 @@ DPM_INVALID_DATASOURCE = make_error(17, -42)  # Invalid datasource
 DPM_BAD_DATASOURCE_FORMAT = make_error(17, -43)  # Bad datasource format
 DPM_REPLY_OVERFLOW = make_error(17, -44)  # Reply too large
 DPM_INTERNAL_ERROR = make_error(17, -45)  # Internal error
+DPM_NOT_YET = make_error(17, -48)  # Operation or EPICS value type not implemented
+
+# DAE facility errors (Data Acquisition Engine, facility 66)
+DAE_LJ_NO_DATA = make_error(66, -64)  # No logger data in the requested window
 
 # DMQ facility errors (Data Multiplexer Queue, facility 72)
 FACILITY_DMQ = int(AcnetFacility.DMQ)  # 72
@@ -446,6 +451,9 @@ _STATUS_DESCRIPTIONS: dict[int, str] = {
     DPM_INVALID_DATASOURCE: "invalid datasource",
     DPM_REPLY_OVERFLOW: "reply too large, split into smaller requests",
     DPM_INTERNAL_ERROR: "internal DPM error",
+    DPM_NOT_YET: "operation or EPICS value type not implemented",
+    # DAE
+    DAE_LJ_NO_DATA: "no logger data in the requested window",
     # DMQ
     DMQ_INVALID_DATA_TYPE: "invalid data type in setting",
     DMQ_SETTING_DISABLED: "settings disabled",
@@ -463,7 +471,7 @@ def _build_status_names() -> dict[int, str]:
     for name, val in globals().items():
         if isinstance(val, int) and name.isupper() and "_" in name:
             prefix = name.split("_")[0]
-            if prefix in ("ACNET", "DIO", "DPM", "DBM", "DMQ"):
+            if prefix in ("ACNET", "DIO", "DPM", "DBM", "DAE", "DMQ"):
                 names[val] = name
     return names
 

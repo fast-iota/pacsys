@@ -18,6 +18,9 @@ DRF_EXTRA_NAMES = {el.name: el for el in DRF_EXTRA}
 # Extras that provide their own data (historical/file) - no event should be injected
 HISTORICAL_EXTRAS = frozenset({DRF_EXTRA.LOGGER, DRF_EXTRA.LOGGERSINGLE, DRF_EXTRA.LOGGERDURATION})
 
+# Extras whose replies are chunks followed by an empty terminator
+CHUNKED_HISTORICAL_EXTRAS = frozenset({DRF_EXTRA.LOGGER, DRF_EXTRA.LOGGERDURATION})
+
 
 def parse_extra(raw_string: str) -> DRF_EXTRA:
     upper = raw_string.upper()

@@ -20,7 +20,6 @@ from pacsys.backends.dpm_http import (
     _aggregate_logger_chunks,
     _AsyncDPMConnection,
     _device_info_to_meta,
-    _is_logger_drf,
     _reply_to_reading,
     _SettingPayload,
     _value_to_setting,
@@ -44,7 +43,7 @@ from pacsys.dpm_protocol import (
     StopList_request,
     TimedScalarArray_reply,
 )
-from pacsys.drf_utils import ensure_immediate_event, is_immediate_only
+from pacsys.drf_utils import ensure_immediate_event, is_chunked_historical_drf, is_historical_drf, is_immediate_only
 from pacsys.errors import AuthenticationError, ReadError
 from pacsys.types import (
     DeviceMeta,
@@ -222,11 +221,11 @@ class _AsyncDpmCore:
         prepared_drfs = [ensure_immediate_event(drf) for drf in drfs]
         list_id = self.list_id
 
-        # Logger DRFs arrive in 487-point chunks with a final empty chunk.
-        logger_refs: set[int] = set()
+        # Chunked logger DRFs arrive in 487-point chunks with a final empty chunk.
+        chunked_logger_refs: set[int] = set()
         for i, drf in enumerate(prepared_drfs):
-            if _is_logger_drf(drf):
-                logger_refs.add(i + 1)
+            if is_chunked_historical_drf(drf):
+                chunked_logger_refs.add(i + 1)
 
         device_infos: dict[int, DeviceInfo_reply] = {}
         data_replies: dict[int, object] = {}
@@ -242,7 +241,7 @@ class _AsyncDpmCore:
         # Repeating events (@p/@e/...) keep producing replies after the first —
         # a core that carried one must be closed, not re-pooled, or stale replies
         # get attributed to the next borrower's refs.
-        reuse_safe = all((i + 1) in logger_refs or is_immediate_only(d) for i, d in enumerate(prepared_drfs))
+        reuse_safe = all(is_historical_drf(d) or is_immediate_only(d) for d in prepared_drfs)
 
         # Batch AddToList + StartList
         setup_msgs = []
@@ -294,7 +293,7 @@ class _AsyncDpmCore:
                         # a ref-0 Status_reply is the real job-start-failure signal.
                         if reply.status != 0 and job_error is None:
                             job_error = reply.status
-                    elif ref_id in logger_refs:
+                    elif ref_id in chunked_logger_refs:
                         # Error for a logger DRF — record as an error chunk
                         if ref_id not in logger_complete:
                             logger_chunks.setdefault(ref_id, []).append(reply)
@@ -307,7 +306,7 @@ class _AsyncDpmCore:
                     ref_id = reply.ref_id
                     if not (1 <= ref_id <= expected_count):
                         pass  # stale/unknown ref — never count toward expected_count
-                    elif ref_id in logger_refs:
+                    elif ref_id in chunked_logger_refs:
                         is_empty = (
                             isinstance(reply, (TimedScalarArray_reply, ScalarArray_reply)) and len(reply.data) == 0
                         )
@@ -375,7 +374,7 @@ class _AsyncDpmCore:
                         meta=meta,
                     )
                 )
-            elif ref_id in logger_refs:
+            elif ref_id in chunked_logger_refs:
                 if ref_id in logger_complete and chunks:
                     readings.append(_aggregate_logger_chunks(chunks, original_drf, meta))
                 elif ref_id in logger_complete:

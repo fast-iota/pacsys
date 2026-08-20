@@ -45,9 +45,12 @@ from pacsys.acnet.constants import (
     CMD_TASK_PID,
 )
 from pacsys.acnet.errors import (
+    DAE_LJ_NO_DATA,
+    DPM_NOT_YET,
     make_error,
     normalize_error_code,
     parse_error,
+    status_message,
 )
 from pacsys.dpm_protocol import ListStatus_reply, Status_reply
 
@@ -192,6 +195,14 @@ class TestNormalizeErrorCode:
     )
     def test_normalize_error_code(self, input_code, expected):
         assert normalize_error_code(input_code) == expected
+
+    def test_dpm_not_yet_message(self):
+        assert DPM_NOT_YET == make_error(17, -48)
+        assert "not implemented" in status_message(17, -48)
+
+    def test_logger_no_data_message(self):
+        assert DAE_LJ_NO_DATA == make_error(66, -64)
+        assert "no logger data" in status_message(66, -64)
 
 
 class TestRequestReplyIds:

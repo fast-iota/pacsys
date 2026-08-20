@@ -66,8 +66,13 @@ from pacsys.dpm_protocol import (
     TimedScalarArray_reply,
     unmarshal_reply,
 )
-from pacsys.drf3.extra import HISTORICAL_EXTRAS
-from pacsys.drf_utils import ensure_immediate_event, is_immediate_only, prepare_for_write
+from pacsys.drf_utils import (
+    ensure_immediate_event,
+    is_chunked_historical_drf,
+    is_historical_drf,
+    is_immediate_only,
+    prepare_for_write,
+)
 from pacsys.errors import AuthenticationError, DeviceError, ReadError
 from pacsys.pool import ConnectionPool, PoolClosedError, PoolExhaustedError
 from pacsys.types import (
@@ -149,17 +154,6 @@ def _value_to_setting(
     setting.ref_id = ref_id
     setting.data = data
     return None, setting, None
-
-
-def _is_logger_drf(drf: str) -> bool:
-    """Check if DRF routes to a historical/logger data source."""
-    from pacsys.drf3 import parse_request
-
-    try:
-        req = parse_request(drf)
-        return req.extra in HISTORICAL_EXTRAS
-    except ValueError:
-        return False
 
 
 def _aggregate_logger_chunks(chunks: list, drf: str, meta) -> Reading:
@@ -858,12 +852,12 @@ class DPMHTTPBackend(Backend):
 
         prepared_drfs = [ensure_immediate_event(drf) for drf in drfs]
 
-        # Logger DRFs arrive in 487-point chunks with a final empty chunk.
+        # Chunked logger DRFs arrive in 487-point chunks with a final empty chunk.
         # Pre-detect so we accumulate chunks instead of stopping at the first.
-        logger_refs: set[int] = set()
+        chunked_logger_refs: set[int] = set()
         for i, drf in enumerate(prepared_drfs):
-            if _is_logger_drf(drf):
-                logger_refs.add(i + 1)
+            if is_chunked_historical_drf(drf):
+                chunked_logger_refs.add(i + 1)
 
         device_infos: dict[int, DeviceInfo_reply] = {}
         data_replies: dict[int, object] = {}
@@ -877,7 +871,7 @@ class DPMHTTPBackend(Backend):
         # Repeating events (@p/@e/...) keep producing replies after the first —
         # a connection that carried one must be closed, not re-pooled, or stale
         # replies get attributed to the next borrower's refs.
-        reuse_safe = all((i + 1) in logger_refs or is_immediate_only(d) for i, d in enumerate(prepared_drfs))
+        reuse_safe = all(is_historical_drf(d) or is_immediate_only(d) for d in prepared_drfs)
 
         pool = self._get_pool()
         conn_broken = False
@@ -939,7 +933,7 @@ class DPMHTTPBackend(Backend):
                                 # a ref-0 Status_reply is the real job-start-failure signal.
                                 if reply.status != 0 and job_error is None:
                                     job_error = reply.status
-                            elif ref_id in logger_refs:
+                            elif ref_id in chunked_logger_refs:
                                 # Error for a logger DRF — record as an error chunk
                                 if ref_id not in logger_complete:
                                     logger_chunks.setdefault(ref_id, []).append(reply)
@@ -952,7 +946,7 @@ class DPMHTTPBackend(Backend):
                             ref_id = reply.ref_id
                             if not (1 <= ref_id <= expected_count):
                                 pass  # stale/unknown ref — never count toward expected_count
-                            elif ref_id in logger_refs:
+                            elif ref_id in chunked_logger_refs:
                                 # Logger: accumulate chunks; empty chunk = done
                                 is_empty = (
                                     isinstance(reply, (TimedScalarArray_reply, ScalarArray_reply))
@@ -1027,7 +1021,7 @@ class DPMHTTPBackend(Backend):
                 )
                 continue
 
-            if ref_id in logger_refs:
+            if ref_id in chunked_logger_refs:
                 if ref_id in logger_complete and chunks:
                     # Complete logger response with data
                     readings.append(_aggregate_logger_chunks(chunks, original_drf, meta))

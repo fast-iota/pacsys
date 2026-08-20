@@ -23,8 +23,7 @@ from pacsys.auth import Auth, JWTAuth
 from pacsys.backends import Backend, summarize_drfs, validate_alarm_dict
 from pacsys.backends._dispatch import CallbackDispatcher
 from pacsys.backends._subscription import BufferedSubscriptionHandle
-from pacsys.drf3.extra import HISTORICAL_EXTRAS
-from pacsys.drf_utils import prepare_for_write
+from pacsys.drf_utils import is_chunked_historical_drf, prepare_for_write
 from pacsys.errors import AuthenticationError, DeviceError, ReadError
 from pacsys.types import (
     BackendCapability,
@@ -376,17 +375,6 @@ def _aggregate_proto_readings(reading_list, drf: str, now: datetime) -> Reading:
     )
 
 
-def _is_logger_drf(drf: str) -> bool:
-    """Check if DRF routes to a historical/logger data source."""
-    from pacsys.drf3 import parse_request
-
-    try:
-        req = parse_request(drf)
-        return req.extra in HISTORICAL_EXTRAS
-    except ValueError:
-        return False
-
-
 def _merge_logger_readings(chunks: list[Reading], drf: str) -> Reading:
     """Merge multiple logger chunk Readings into a single TIMED_SCALAR_ARRAY."""
     # Propagate error readings immediately instead of silently dropping them
@@ -462,8 +450,8 @@ class _DaqCore:
 
         logger.debug("gRPC async Read request: %s devices", len(drfs))
 
-        # Logger DRFs arrive in 487-point chunks with a final empty chunk.
-        logger_indices = {i for i, drf in enumerate(drfs) if _is_logger_drf(drf)}
+        # Chunked logger DRFs arrive in 487-point chunks with a final empty chunk.
+        chunked_logger_indices = {i for i, drf in enumerate(drfs) if is_chunked_historical_drf(drf)}
         logger_chunks: dict[int, list[Reading]] = {}  # index -> accumulated chunks
         logger_complete: set[int] = set()  # indices that received the terminator
 
@@ -497,7 +485,7 @@ class _DaqCore:
 
                 value_field = reply.WhichOneof("value")
 
-                if index in logger_indices:
+                if index in chunked_logger_indices:
                     # Logger: accumulate chunks; empty readings = done
                     if (
                         value_field == "status"

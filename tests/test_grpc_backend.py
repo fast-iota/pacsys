@@ -1305,6 +1305,34 @@ class TestDaqCoreStream:
 class TestLoggerReadErrors:
     """Logger status errors remain error readings."""
 
+    def test_loggersingle_scalar_completes_without_terminator(self, backend_with_mock_stub):
+        backend, mock_stub = backend_with_mock_stub
+        mock_stub.Read.return_value = AsyncMockIterator(
+            [
+                make_reading_reply(0, scalar_value=71.25),
+                make_reading_reply(1, scalar_value=72.5),
+            ]
+        )
+
+        readings = backend.get_many(["M:OUTTMP<-LOGGERSINGLE:ArkIv:1736942400:60", "M:OUTTMP"])
+
+        assert readings[0].ok
+        assert readings[0].value == 71.25
+        assert readings[0].value_type == ValueType.SCALAR
+        assert readings[1].value == 72.5
+
+    def test_loggersingle_error_is_preserved(self, backend_with_mock_stub):
+        backend, mock_stub = backend_with_mock_stub
+        reply = make_reading_reply(0, error_code=-64, error_message="DAE_LJ_NO_DATA")
+        reply.status.facility_code = 66
+        mock_stub.Read.return_value = AsyncMockIterator([reply])
+
+        readings = backend.get_many(["M:OUTTMP<-LOGGERSINGLE:ArkIv:1736942400:60"])
+
+        assert readings[0].facility_code == 66
+        assert readings[0].error_code == -64
+        assert "DAE_LJ_NO_DATA" in (readings[0].message or "")
+
     def test_logger_error_status_surfaced(self, backend_with_mock_stub):
         backend, mock_stub = backend_with_mock_stub
         mock_stub.Read.return_value = AsyncMockIterator(
