@@ -46,9 +46,13 @@ ALARM_READONLY_KEYS = frozenset({"abort", "alarm_status", "tries_now"})
 def validate_alarm_dict(d: dict) -> str:
     """Validate an alarm dict and return 'analog' or 'digital'.
 
-    Raises ValueError on unknown keys, mixed types, or missing type-specific keys.
+    Raises ValueError on read-only/unknown keys, mixed types, or missing
+    type-specific keys.
     """
-    keys = set(d) - ALARM_READONLY_KEYS
+    keys = set(d)
+    readonly = keys & ALARM_READONLY_KEYS
+    if readonly:
+        raise ValueError(f"Read-only alarm dict keys cannot be written: {readonly}")
     unknown = keys - ALARM_ANALOG_KEYS - ALARM_DIGITAL_KEYS
     if unknown:
         raise ValueError(f"Unknown alarm dict keys: {unknown}")

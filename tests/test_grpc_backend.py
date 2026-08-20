@@ -744,11 +744,10 @@ class TestValueConversion:
         assert proto.digAlarm.alarmEnable is False
         assert proto.digAlarm.triesNeeded == 2
 
-    def test_alarm_dict_skips_readonly_keys(self):
-        d = {"minimum": 1.0, "maximum": 2.0, "alarm_status": True, "abort": False, "tries_now": 5}
-        proto = grpc_backend._value_to_proto_value(d)
-        assert proto.WhichOneof("value") == "anaAlarm"
-        assert proto.anaAlarm.minimum == 1.0
+    @pytest.mark.parametrize("key", ["alarm_status", "abort", "tries_now"])
+    def test_alarm_dict_rejects_readonly_keys(self, key):
+        with pytest.raises(ValueError, match="Read-only alarm dict keys"):
+            grpc_backend._value_to_proto_value({"minimum": 1.0, key: 1})
 
     def test_alarm_dict_unknown_keys_raises(self):
         with pytest.raises(ValueError, match="Unknown alarm dict keys"):

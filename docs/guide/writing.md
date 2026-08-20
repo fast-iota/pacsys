@@ -239,7 +239,8 @@ Allowed keys for analog alarms: `minimum`, `maximum`, `alarm_enable`, `abort_inh
 
 Allowed keys for digital alarms: `nominal`, `mask`, `alarm_enable`, `abort_inhibit`, `tries_needed`.
 
-Unknown keys raise `ValueError`. Boolean values are converted to 0/1 automatically.
+Unknown and read-only keys (`abort`, `alarm_status`, `tries_now`) raise
+`ValueError`. Boolean values are converted to 0/1 automatically.
 
 !!! info "Implementation Detail"
     The DPM protocol used in DPM/HTTP has no structured alarm write message. The dict is expanded to individual per-field writes issued sequentially (alarm fields share a hardware block and would overwrite each other in a batch).

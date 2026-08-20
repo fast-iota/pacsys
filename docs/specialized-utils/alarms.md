@@ -112,7 +112,7 @@ Both alarm types share these properties:
 | `is_active` | `bool` | True if alarm is active (not bypassed) |
 | `bypass` | `bool` | True if bypassed (inverse of `is_active`) |
 | `is_bad` | `bool` | True if currently in alarm state |
-| `abort` | `bool` | Abort flag (AB bit) |
+| `abort` | `bool` | Read-only abort flag (AB bit) |
 | `abort_inhibit` | `bool` | Abort inhibit flag (AI bit) |
 | `abort_enabled` | `bool` | True if alarm can trigger abort |
 | `tries_needed` | `int` | Consecutive bad readings before alarm |
@@ -209,6 +209,10 @@ else:
     print(f"Min (eng units): {alarm.minimum}")
     print(f"Max (eng units): {alarm.maximum}")
 ```
+
+Changing `value1` or `value2` inside `modify()` performs a raw alarm-block
+write. Do not change the corresponding engineering-unit property in the same
+operation.
 
 ### Analog-Specific Properties
 
@@ -356,7 +360,7 @@ The backends handle this differently:
   structured alarm message. Each field triggers a server-side read-modify-write of
   the 20-byte alarm block.
 
-Read-only keys (`alarm_status`, `tries_now`) are silently skipped.
+Read-only keys (`abort`, `alarm_status`, `tries_now`) raise `ValueError`.
 
 See [Writing Guide - Alarm Configuration](../guide/writing.md#alarm-configuration-writes) for details.
 

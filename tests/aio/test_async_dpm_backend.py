@@ -6,7 +6,7 @@ from unittest import mock
 import pytest
 
 from pacsys.acnet.errors import ERR_RETRY
-from pacsys.aio._dpm_http import AsyncDPMHTTPBackend
+from pacsys.aio._dpm_http import AsyncDPMHTTPBackend, _expand_alarm_dict
 from pacsys.auth import KerberosAuth
 from pacsys.dpm_connection import DPMConnectionError
 from pacsys.errors import AuthenticationError, DeviceError, ReadError
@@ -106,6 +106,24 @@ class TestAsyncDPMRead:
 
 
 class TestAsyncDPMWrite:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("key", ["alarm_status", "abort", "tries_now"])
+    async def test_alarm_dict_rejects_readonly_keys(self, key):
+        b = AsyncDPMHTTPBackend(host="localhost", port=6802)
+
+        with pytest.raises(ValueError, match="Read-only alarm dict keys"):
+            await b.write("Z:TEST.ANALOG", {key: 1})
+
+    @pytest.mark.asyncio
+    async def test_alarm_dict_rejects_empty_dict(self):
+        b = AsyncDPMHTTPBackend(host="localhost", port=6802)
+
+        with pytest.raises(ValueError, match="at least one writable key"):
+            await b.write("Z:TEST.ANALOG", {})
+
+    def test_alarm_dict_accepts_shared_only_key(self):
+        assert _expand_alarm_dict("Z:TEST.DIGITAL", {"abort_inhibit": False}) == [("Z:TEST.DIGITAL.ABORT_INHIBIT", 0)]
+
     @pytest.mark.asyncio
     async def test_write_requires_auth(self, backend):
         with pytest.raises(AuthenticationError):
