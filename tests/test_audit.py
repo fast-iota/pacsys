@@ -129,20 +129,6 @@ class TestAuditLogJSON:
         out_entries = [e for e in entries if e["dir"] == "out"]
         assert all(e["seq"] == seq for e in out_entries)
 
-    def test_final_drfs_when_modified(self, tmp_path):
-        """When policies modify DRFs, final_drfs appears in the JSON entry."""
-        path = tmp_path / "audit.jsonl"
-        audit = AuditLog(str(path))
-        original = _ctx(drfs=["T:OUTTMP"])
-        modified = _ctx(drfs=["M:OUTTMP"])
-        decision = PolicyDecision(allowed=True, ctx=modified)
-        audit.log_request(original, decision)
-        audit.close()
-
-        entries = _read_jsonl(path)
-        assert entries[0]["drfs"] == ["T:OUTTMP"]
-        assert entries[0]["final_drfs"] == ["M:OUTTMP"]
-
     def test_no_final_drfs_when_unchanged(self, tmp_path):
         """When DRFs are not modified, final_drfs is absent."""
         path = tmp_path / "audit.jsonl"

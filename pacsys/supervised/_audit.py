@@ -90,8 +90,6 @@ class AuditLog:
                 "allowed": decision.allowed,
                 "reason": decision.reason,
             }
-            if decision.allowed and decision.ctx is not None and decision.ctx.drfs != ctx.drfs:
-                entry["final_drfs"] = decision.ctx.drfs
             self._write_json(entry)
 
             if self._proto_path is not None:
