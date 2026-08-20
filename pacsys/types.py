@@ -26,6 +26,14 @@ else:
     Value = float | int | str | bytes | list | dict
 
 
+def _loaded_numpy_types(*names: str) -> tuple[type, ...]:
+    """Return requested numpy types without importing numpy."""
+    np = sys.modules.get("numpy")
+    if np is None:
+        return ()
+    return tuple(candidate for name in names if isinstance((candidate := getattr(np, name, None)), type))
+
+
 def _value_to_json(value: object) -> object:
     """Convert a Value to a JSON-serializable Python object.
 
@@ -34,15 +42,10 @@ def _value_to_json(value: object) -> object:
     """
     if value is None:
         return None
-    try:
-        import numpy as np
-
-        if isinstance(value, np.ndarray):
-            return cast("Any", value).tolist()
-        if isinstance(value, (np.integer, np.floating, np.bool_)):
-            return value.item()
-    except ImportError:
-        pass
+    if isinstance(value, _loaded_numpy_types("ndarray")):
+        return cast("Any", value).tolist()
+    if isinstance(value, _loaded_numpy_types("integer", "floating", "bool_")):
+        return cast("Any", value).item()
     if isinstance(value, (bytes, bytearray)):
         return base64.b64encode(value).decode("ascii")
     if isinstance(value, dict):
@@ -58,16 +61,13 @@ def _value_from_json(
         return None
     if value_type is None:
         return cast("Value", value)
-    try:
+    if value_type in (ValueType.SCALAR_ARRAY, ValueType.TIMED_SCALAR_ARRAY):
         import numpy as np
 
-        if value_type in (ValueType.SCALAR_ARRAY, ValueType.TIMED_SCALAR_ARRAY):
-            if isinstance(value, dict):
-                dtypes = dtype if isinstance(dtype, dict) else {}
-                return {k: np.array(v, dtype=dtypes.get(k)) for k, v in value.items()}
-            return np.array(value, dtype=dtype if isinstance(dtype, str) else None)
-    except ImportError:
-        pass
+        if isinstance(value, dict):
+            dtypes = dtype if isinstance(dtype, dict) else {}
+            return {k: np.array(v, dtype=dtypes.get(k)) for k, v in value.items()}
+        return np.array(value, dtype=dtype if isinstance(dtype, str) else None)
     if value_type == ValueType.RAW and isinstance(value, str):
         return base64.b64decode(value, validate=True)
     return cast("Value", value)
@@ -79,16 +79,12 @@ def _value_dtype(value: object) -> "str | dict[str, str] | None":
     Uses ``dtype.str`` (e.g. ``'<f8'``, ``'<U2'``) — unlike ``dtype.name``, it is
     valid ``np.dtype()`` input for every dtype (``'str64'`` is not).
     """
-    try:
-        import numpy as np
-
-        if isinstance(value, np.ndarray):
-            return value.dtype.str
-        if isinstance(value, dict):
-            dtypes = {k: v.dtype.str for k, v in value.items() if isinstance(v, np.ndarray)}
-            return cast("dict[str, str]", dtypes) or None
-    except ImportError:
-        pass
+    ndarray_types = _loaded_numpy_types("ndarray")
+    if isinstance(value, ndarray_types):
+        return cast("Any", value).dtype.str
+    if isinstance(value, dict):
+        dtypes = {k: cast("Any", v).dtype.str for k, v in value.items() if isinstance(v, ndarray_types)}
+        return cast("dict[str, str]", dtypes) or None
     return None
 
 
@@ -99,15 +95,16 @@ def _infer_serialization_type(value: object) -> "ValueType | None":
     dicts (timed arrays), and bytes. Scalars, str, and lists round-trip as
     plain JSON and stay untagged.
     """
-    try:
-        import numpy as np
-
-        if isinstance(value, np.ndarray):
-            return ValueType.SCALAR_ARRAY
-        if isinstance(value, dict) and value and all(isinstance(v, np.ndarray) for v in value.values()):
-            return ValueType.TIMED_SCALAR_ARRAY
-    except ImportError:
-        pass
+    ndarray_types = _loaded_numpy_types("ndarray")
+    if isinstance(value, ndarray_types):
+        return ValueType.SCALAR_ARRAY
+    if (
+        ndarray_types
+        and isinstance(value, dict)
+        and value
+        and all(isinstance(v, ndarray_types) for v in value.values())
+    ):
+        return ValueType.TIMED_SCALAR_ARRAY
     if isinstance(value, (bytes, bytearray)):
         return ValueType.RAW
     return None
@@ -230,17 +227,20 @@ def _frozen_value(value: object) -> object:
         return {k: _frozen_value(v) for k, v in value.items()}
     # An ndarray (or subclass, from any module) implies numpy is already
     # imported — check sys.modules so numpy-less environments never pay for it
-    np = sys.modules.get("numpy")
-    if np is None or not isinstance(value, np.ndarray):
+    ndarray_types = _loaded_numpy_types("ndarray")
+    if not isinstance(value, ndarray_types):
         return value
+    value = cast("Any", value)
     if value.base is not None:
         value = value.copy()
     value.flags.writeable = False
     # MaskedArray: the mask is a separate buffer that also feeds tobytes()/hash.
     # Freeze the stored _mask — the .mask property returns a fresh view per access
     mask = getattr(value, "_mask", None)
-    if isinstance(mask, np.ndarray) and mask.ndim:
-        mask.flags.writeable = False
+    if isinstance(mask, ndarray_types):
+        mask = cast("Any", mask)
+        if mask.ndim:
+            mask.flags.writeable = False
     return value
 
 
@@ -248,13 +248,9 @@ def _value_hashable(value: object) -> object:
     """Convert a Value to something hashable for use in __hash__."""
     if value is None:
         return None
-    try:
-        import numpy as np
-
-        if isinstance(value, np.ndarray):
-            return (value.dtype.str, value.tobytes())
-    except ImportError:
-        pass
+    if isinstance(value, _loaded_numpy_types("ndarray")):
+        value = cast("Any", value)
+        return (value.dtype.str, value.tobytes())
     if isinstance(value, dict):
         return tuple(sorted((k, _value_hashable(v)) for k, v in value.items()))
     if isinstance(value, list):
@@ -268,19 +264,19 @@ def _values_equal(a: "Value | None", b: "Value | None") -> bool:
         return True
     if a is None or b is None:
         return False
-    try:
+    ndarray_types = _loaded_numpy_types("ndarray")
+    if isinstance(a, ndarray_types) or isinstance(b, ndarray_types):
+        if not isinstance(a, ndarray_types) or not isinstance(b, ndarray_types):
+            return False
         import numpy as np
 
-        if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
-            return (
-                isinstance(a, np.ndarray)
-                and isinstance(b, np.ndarray)
-                and a.dtype == b.dtype
-                # equal_nan for NaN/NaT-capable kinds only; it raises on str/object dtypes
-                and np.array_equal(a, b, equal_nan=a.dtype.kind in "fcmM")
-            )
-    except ImportError:
-        pass
+        array_a = cast("Any", a)
+        array_b = cast("Any", b)
+        return (
+            array_a.dtype == array_b.dtype
+            # equal_nan for NaN/NaT-capable kinds only; it raises on str/object dtypes
+            and np.array_equal(array_a, array_b, equal_nan=array_a.dtype.kind in "fcmM")
+        )
     if isinstance(a, dict) and isinstance(b, dict):
         return a.keys() == b.keys() and all(_values_equal(a[k], b[k]) for k in a)
     return a == b

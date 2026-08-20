@@ -12,15 +12,15 @@ backend to _AsyncDpmCore on the shared reactor thread. Big refactor - needs its
 own branch and a full live-server test pass (royal test flush).
 """
 
-import asyncio
 import logging
 import socket
 import struct
 import threading
 import time
-from typing import Any, ClassVar, SupportsFloat, SupportsIndex, cast
+from typing import TYPE_CHECKING, Any, ClassVar, SupportsFloat, SupportsIndex, cast
 
-import numpy as np
+if TYPE_CHECKING:
+    import asyncio
 
 from pacsys.acnet.errors import (
     ERR_OK,
@@ -86,6 +86,7 @@ from pacsys.types import (
     Value,
     ValueType,
     WriteResult,
+    _loaded_numpy_types,
 )
 
 logger = logging.getLogger(__name__)
@@ -126,10 +127,11 @@ def _value_to_setting(
     if isinstance(value, dict):
         raise TypeError("write_many() does not support alarm dicts; use write() instead")
 
-    if isinstance(value, np.ndarray):
-        if value.ndim != 1:
+    if isinstance(value, _loaded_numpy_types("ndarray")):
+        array = cast("Any", value)
+        if array.ndim != 1:
             raise TypeError("DPM array settings must be one-dimensional")
-        items = cast("list[object]", cast("Any", value).tolist())
+        items = cast("list[object]", array.tolist())
     elif isinstance(value, (list, tuple)):
         items = list(value)
     else:
@@ -158,6 +160,8 @@ def _value_to_setting(
 
 def _aggregate_logger_chunks(chunks: list, drf: str, meta) -> Reading:
     """Merge multiple logger reply chunks into a single TIMED_SCALAR_ARRAY Reading."""
+    import numpy as np
+
     all_data: list[np.ndarray] = []
     all_micros: list[np.ndarray] = []
     first_ts = None
@@ -208,9 +212,11 @@ def _reply_to_value_and_type(reply) -> tuple[Value | None, ValueType | None]:
     """Extract value and type from a DPM data reply."""
     if isinstance(reply, Scalar_reply):
         return reply.data, ValueType.SCALAR
-    if isinstance(reply, ScalarArray_reply):
-        return np.array(reply.data), ValueType.SCALAR_ARRAY
-    if isinstance(reply, TimedScalarArray_reply):
+    if isinstance(reply, (ScalarArray_reply, TimedScalarArray_reply)):
+        import numpy as np
+
+        if isinstance(reply, ScalarArray_reply):
+            return np.array(reply.data), ValueType.SCALAR_ARRAY
         data = np.array(reply.data)
         if hasattr(reply, "micros") and reply.micros:
             micros = np.array(reply.micros, dtype=np.int64)
@@ -357,6 +363,8 @@ class _AsyncDPMConnection:
 
     async def connect(self) -> None:
         """Connect to DPM, send handshake, read OpenList_reply."""
+        import asyncio
+
         try:
             self._reader, self._writer = await asyncio.wait_for(
                 asyncio.open_connection(self._host, self._port, limit=MAX_MESSAGE_SIZE),
@@ -439,6 +447,8 @@ class _AsyncDPMConnection:
         sends ListStatus_reply heartbeats every ~2s, so if nothing arrives
         within _RECV_TIMEOUT seconds, the connection is presumed dead.
         """
+        import asyncio
+
         if self._reader is None:
             raise DPMConnectionError("Not connected")
         effective_timeout = timeout if timeout is not None else self._RECV_TIMEOUT
@@ -566,6 +576,8 @@ class _DpmStreamCore:
         stop_check,
         error_fn,
     ) -> None:
+        import asyncio
+
         metas: dict[int, DeviceMeta] = {}
         drf_map: dict[int, str] = {}
 
@@ -1027,6 +1039,8 @@ class DPMHTTPBackend(Backend):
                     readings.append(_aggregate_logger_chunks(chunks, original_drf, meta))
                 elif ref_id in logger_complete:
                     # Empty window (terminator received, no data chunks) — valid empty result
+                    import numpy as np
+
                     readings.append(
                         Reading(
                             drf=original_drf,
@@ -1763,6 +1777,8 @@ class DPMHTTPBackend(Backend):
 
     def _start_reactor(self) -> None:
         """Start the reactor thread and event loop. Must hold _reactor_lock."""
+        import asyncio
+
         ready = threading.Event()
         loop_holder: list[asyncio.AbstractEventLoop] = []
 
@@ -1857,6 +1873,8 @@ class DPMHTTPBackend(Backend):
 
         if self._closed:
             raise RuntimeError("Backend is closed")
+
+        import asyncio
 
         self._ensure_reactor()
         assert self._loop is not None
