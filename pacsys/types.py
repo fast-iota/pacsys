@@ -574,6 +574,16 @@ class SubscriptionHandle:
         return False
 
 
+def _reading_timestamp_key(reading: Reading) -> datetime:
+    """Sort missing timestamps first and interpret naive timestamps as UTC."""
+    timestamp = reading.timestamp
+    if timestamp is None:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    if timestamp.tzinfo is None:
+        return timestamp.replace(tzinfo=timezone.utc)
+    return timestamp
+
+
 class CombinedStream:
     """Combines multiple subscriptions into a single iterable stream.
 
@@ -615,6 +625,7 @@ class CombinedStream:
 
         Readings are sorted by timestamp within each batch of available data,
         but global ordering is not guaranteed if streams have different latencies.
+        Naive timestamps are interpreted as UTC; missing timestamps sort first.
 
         Delivery is destructive and at-most-once: readings are prefetched off the
         constituent handles for batching, and prefetched-but-unyielded readings are
@@ -647,7 +658,7 @@ class CombinedStream:
             for sub in self._subscriptions:
                 # Stopped handles may still hold buffered readings -- drain them too
                 for reading, handle in sub.readings(timeout=0):
-                    ts = reading.timestamp or datetime.min.replace(tzinfo=timezone.utc)
+                    ts = _reading_timestamp_key(reading)
                     heapq.heappush(heap, (ts, counter, reading, handle))
                     counter += 1
             while heap:
@@ -716,7 +727,7 @@ class CombinedStream:
                 # Got first reading -- drain all currently available into a heap
                 heap = []
                 reading, handle = item
-                ts = reading.timestamp or datetime.min.replace(tzinfo=timezone.utc)
+                ts = _reading_timestamp_key(reading)
                 heapq.heappush(heap, (ts, counter, reading, handle))
                 counter += 1
 
@@ -731,7 +742,7 @@ class CombinedStream:
                     if isinstance(item, Exception):
                         raise item
                     reading, handle = item
-                    ts = reading.timestamp or datetime.min.replace(tzinfo=timezone.utc)
+                    ts = _reading_timestamp_key(reading)
                     heapq.heappush(heap, (ts, counter, reading, handle))
                     counter += 1
 

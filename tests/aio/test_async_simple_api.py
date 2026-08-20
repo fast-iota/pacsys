@@ -6,6 +6,7 @@ from unittest import mock
 
 import pytest
 
+import pacsys
 from pacsys import aio
 from pacsys.errors import ReadError
 from pacsys.types import Reading, ValueType, WriteResult
@@ -305,6 +306,47 @@ class TestLazyInit:
             val = await aio.read("M:OUTTMP")
 
         assert val == 42.0
+
+    @pytest.mark.asyncio
+    async def test_lazy_dpm_uses_environment_timeout(self, monkeypatch):
+        monkeypatch.setattr(pacsys, "_env_timeout", 30.0)
+
+        with mock.patch("pacsys.aio._dpm_http.AsyncDPMHTTPBackend") as mock_dpm:
+            mock_instance = mock.AsyncMock()
+            mock_instance.read = mock.AsyncMock(return_value=72.5)
+            mock_dpm.return_value = mock_instance
+
+            await aio.read("M:OUTTMP")
+
+        assert mock_dpm.call_args.kwargs["timeout"] == 30.0
+
+    @pytest.mark.asyncio
+    async def test_lazy_grpc_uses_environment_timeout(self, monkeypatch):
+        monkeypatch.setattr(pacsys, "_env_timeout", 30.0)
+        aio.configure(backend="grpc")
+
+        with mock.patch("pacsys.aio._grpc.AsyncGRPCBackend") as mock_grpc:
+            mock_instance = mock.AsyncMock()
+            mock_instance.read = mock.AsyncMock(return_value=42.0)
+            mock_grpc.return_value = mock_instance
+
+            await aio.read("M:OUTTMP")
+
+        assert mock_grpc.call_args.kwargs["timeout"] == 30.0
+
+    @pytest.mark.asyncio
+    async def test_configured_timeout_precedes_environment(self, monkeypatch):
+        monkeypatch.setattr(pacsys, "_env_timeout", 30.0)
+        aio.configure(timeout=2.0)
+
+        with mock.patch("pacsys.aio._dpm_http.AsyncDPMHTTPBackend") as mock_dpm:
+            mock_instance = mock.AsyncMock()
+            mock_instance.read = mock.AsyncMock(return_value=72.5)
+            mock_dpm.return_value = mock_instance
+
+            await aio.read("M:OUTTMP")
+
+        assert mock_dpm.call_args.kwargs["timeout"] == 2.0
 
     @pytest.mark.asyncio
     async def test_backend_reused_on_subsequent_calls(self):

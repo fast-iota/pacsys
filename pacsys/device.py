@@ -120,7 +120,7 @@ class Device(_DeviceBase):
             if field is not None:
                 raise ValueError("field requires prop to be specified")
             return self._get_backend().get(self.drf, timeout)
-        p = DRF_PROPERTY[prop.upper()]
+        p = self._parse_prop(prop)
         resolved = self._resolve_field(field, p)
         drf = self._build_drf(p, resolved, "I")
         return self._get_backend().get(drf, timeout)
@@ -384,7 +384,7 @@ class Device(_DeviceBase):
                 raise ValueError("field requires prop to be specified")
             p = DRF_PROPERTY.READING
         else:
-            p = DRF_PROPERTY[prop.upper()]
+            p = self._parse_prop(prop)
         resolved_field = self._resolve_field(field, p)
 
         # Resolve event
@@ -423,7 +423,7 @@ class Device(_DeviceBase):
                 raise ValueError("field requires prop to be specified")
             p = DRF_PROPERTY.READING
         else:
-            p = DRF_PROPERTY[prop.upper()]
+            p = self._parse_prop(prop)
         resolved_field = self._resolve_field(field, p)
 
         if event is not None:

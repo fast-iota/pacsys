@@ -850,9 +850,10 @@ class FTPStream:
                 return
 
     def stop(self):
-        """Cancel the FTP stream."""
+        """Cancel the FTP stream and wake a consumer blocked on the queue."""
         if not self._stopped:
             self._stopped = True
+            self._reply_queue.put(None)
             try:
                 self._ctx.cancel()
             except Exception as e:  # noqa: BLE001

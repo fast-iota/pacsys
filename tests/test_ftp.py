@@ -739,6 +739,36 @@ class TestFTPStream:
         ctx.cancel.assert_called_once()
         assert stream.stopped
 
+    def test_stop_wakes_blocked_reader(self):
+        import queue as q
+        import threading
+
+        entered_get = threading.Event()
+
+        class NotifyingQueue(q.Queue):
+            def get(self, *args, **kwargs):
+                entered_get.set()
+                return super().get(*args, **kwargs)
+
+        stream = FTPStream(ctx=MagicMock(), devices=[], reply_queue=NotifyingQueue(), setup_statuses=[])
+        errors = []
+
+        def consume():
+            try:
+                list(stream.readings(timeout=30))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        thread = threading.Thread(target=consume, daemon=True)
+        thread.start()
+        assert entered_get.wait(timeout=1)
+
+        stream.stop()
+        thread.join(timeout=2)
+
+        assert not thread.is_alive()
+        assert errors == []
+
     def test_context_manager(self):
         import queue as q
 

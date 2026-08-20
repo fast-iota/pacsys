@@ -109,6 +109,10 @@ def _validate_device_name(drf: str) -> None:
         raise ValueError(
             f"Expected bare device name, got explicit property in {drf!r}. Pass only the device name (e.g. 'B:HS23T')."
         )
+    if req.field_explicit:
+        raise ValueError(
+            f"Expected bare device name, got explicit field in {drf!r}. Pass only the device name (e.g. 'B:HS23T')."
+        )
     if req.range is not None:
         raise ValueError(
             f"Expected bare device name, got range in {drf!r}. Pass only the device name (e.g. 'B:HS23T')."

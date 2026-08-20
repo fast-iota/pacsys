@@ -183,6 +183,21 @@ class TestConnectionError:
                     code = main()
                 assert code == 2
 
+    def test_read_runtime_error_exit_code(self):
+        from pacsys.cli.get import main
+
+        backend = mock.MagicMock()
+        backend.get.side_effect = RuntimeError("read failed")
+        with (
+            mock.patch("pacsys.cli.get.make_backend", return_value=backend),
+            mock.patch("sys.argv", ["acget", "M:OUTTMP"]),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            code = main()
+
+        assert code == 1
+        backend.close.assert_called_once_with()
+
 
 class TestRejectControlRead:
     """Reading CONTROL property is rejected — it is write-only."""

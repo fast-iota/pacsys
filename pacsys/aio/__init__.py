@@ -125,7 +125,7 @@ def configure(
         host: Server hostname
         port: Server port
         pool_size: Connection pool size (DPM only, default: 4)
-        timeout: Default timeout in seconds (default: 5.0)
+        timeout: Default timeout in seconds (default: from PACSYS_TIMEOUT or 5.0)
         auth: Authentication object (KerberosAuth for DPM, JWTAuth for gRPC),
               or "krb" as shortcut for KerberosAuth()
         role: Role for authenticated operations (DPM only)
@@ -269,7 +269,9 @@ def _get_global_async_backend() -> AsyncBackend:
     # would disable the cross-loop guard above.
     owner_loop = asyncio.get_running_loop()
 
-    timeout = _config_timeout if _config_timeout is not None else 5.0
+    from pacsys import _env_timeout
+
+    timeout = _config_timeout if _config_timeout is not None else (_env_timeout if _env_timeout is not None else 5.0)
     backend_type = _config_backend if _config_backend is not None else "dpm"
 
     if backend_type == "dpm":

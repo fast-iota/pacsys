@@ -4,6 +4,7 @@ import asyncio
 import struct
 import threading
 from collections import defaultdict
+from dataclasses import FrozenInstanceError
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -213,6 +214,19 @@ class TestRequestReplyIds:
         reply_id = ReplyId.from_client_and_id(0x0901, 0x1234)
         assert reply_id.value == 0x09011234
 
+    def test_ids_are_immutable_dictionary_keys(self):
+        request_id = RequestId(1)
+        reply_id = ReplyId(2)
+        ids = {request_id: "request", reply_id: "reply"}
+
+        with pytest.raises(FrozenInstanceError):
+            request_id.id = 3
+        with pytest.raises(FrozenInstanceError):
+            reply_id.value = 4
+
+        assert ids[RequestId(1)] == "request"
+        assert ids[ReplyId(2)] == "reply"
+
 
 class TestPacketParsing:
     """Tests for ACNET packet parsing."""
@@ -295,6 +309,19 @@ class TestPacketParsing:
         """Test that short packets raise an error."""
         with pytest.raises(ValueError, match="too short"):
             AcnetPacket.parse(b"short")
+
+    @pytest.mark.parametrize("declared_length", [17, 19])
+    def test_invalid_declared_packet_length_raises(self, declared_length):
+        raw = bytearray(self._make_packet(ACNET_FLG_RPY))
+        struct.pack_into("<H", raw, 16, declared_length)
+
+        with pytest.raises(ValueError, match="Bad packet length"):
+            AcnetPacket.parse(bytes(raw))
+
+    def test_available_bytes_may_exceed_declared_length(self):
+        raw = self._make_packet(ACNET_FLG_RPY) + b"padding"
+        packet = AcnetPacket.parse(raw)
+        assert packet.data == b"padding"
 
     def test_server_task_name(self):
         """Test getting server task name from packet."""

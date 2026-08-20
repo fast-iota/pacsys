@@ -48,6 +48,18 @@ class TestAsyncDeviceRead:
         val = await device.status(field="raw")
         assert val == 0xFF
 
+    @pytest.mark.asyncio
+    async def test_get_with_invalid_prop_raises(self):
+        device = AsyncDevice("M:OUTTMP", backend=AsyncFakeBackend())
+        with pytest.raises(ValueError, match="Invalid property"):
+            await device.get(prop="nonexistent")
+
+    @pytest.mark.asyncio
+    async def test_subscribe_with_invalid_prop_raises(self):
+        device = AsyncDevice("M:OUTTMP", backend=AsyncFakeBackend())
+        with pytest.raises(ValueError, match="Invalid property"):
+            await device.subscribe(prop="nonexistent", event="p,1000")
+
 
 class TestAsyncDeviceWrite:
     @pytest.mark.asyncio

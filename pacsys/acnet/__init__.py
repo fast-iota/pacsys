@@ -43,7 +43,7 @@ Example (TCP - async via acsys-proxy):
     from pacsys.acnet import AsyncAcnetConnectionTCP
 
     async with AsyncAcnetConnectionTCP("acsys-proxy.fnal.gov") as conn:
-        async def handle_reply(reply):
+        def handle_reply(reply):
             print(f"Got reply: status={reply.status}")
 
         await conn.send_request(

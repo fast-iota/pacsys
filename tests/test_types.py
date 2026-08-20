@@ -214,6 +214,23 @@ class TestCombinedStream:
         h1.stop()
         h2.stop()
 
+    def test_nonblocking_orders_missing_naive_and_aware_timestamps(self):
+        fake = FakeBackend()
+        h1 = fake.subscribe(["M:OUTTMP"])
+        h2 = fake.subscribe(["G:AMANDA"])
+        h3 = fake.subscribe(["Z:ACLTST"])
+
+        h1._put_reading(Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR, value=1.0))
+        naive_timestamp = datetime(2025, 1, 1, tzinfo=timezone.utc).replace(tzinfo=None)
+        fake.emit_reading("G:AMANDA", 2.0, timestamp=naive_timestamp)
+        fake.emit_reading("Z:ACLTST", 3.0, timestamp=datetime(2025, 1, 1, 0, 0, 1, tzinfo=timezone.utc))
+
+        results = list(CombinedStream([h1, h2, h3]).readings(timeout=0))
+        assert [reading.value for reading, _ in results] == [1.0, 2.0, 3.0]
+        h1.stop()
+        h2.stop()
+        h3.stop()
+
     def test_nonblocking_drains_stopped_subs(self):
         # Stopped handles may still hold buffered readings; nonblocking mode
         # must drain them (FakeSubscriptionHandle discards its buffer on stop,
@@ -309,6 +326,25 @@ class TestCombinedStream:
         assert len(results) == 2
         assert results[0][0].value == 20.0  # earlier timestamp first
         assert results[1][0].value == 10.0
+
+    def test_blocking_sorts_mixed_timestamp_awareness(self):
+        fake = FakeBackend()
+        h1 = fake.subscribe(["M:OUTTMP"])
+        h2 = fake.subscribe(["G:AMANDA"])
+
+        fake.emit_reading("G:AMANDA", 10.0, timestamp=datetime(2025, 1, 1, 0, 0, 1, tzinfo=timezone.utc))
+        naive_timestamp = datetime(2025, 1, 1, tzinfo=timezone.utc).replace(tzinfo=None)
+        fake.emit_reading("M:OUTTMP", 20.0, timestamp=naive_timestamp)
+
+        def stop_later():
+            time.sleep(0.05)
+            h1.stop()
+            h2.stop()
+
+        threading.Thread(target=stop_later, daemon=True).start()
+
+        results = list(CombinedStream([h1, h2]).readings(timeout=2))
+        assert [reading.value for reading, _ in results] == [20.0, 10.0]
 
     def test_blocking_timeout_expires(self):
         fake = FakeBackend()

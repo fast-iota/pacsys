@@ -571,6 +571,8 @@ class AcnetConnection:
                 packet = AcnetPacket.parse(data)
                 self._handle_packet(packet)
 
+            except (ValueError, struct.error) as e:
+                logger.warning("Error parsing ACNET packet: %s", e)
             except OSError:
                 if not self._stop_event.is_set():
                     logger.warning("Socket error in data thread for %s", self.name)
