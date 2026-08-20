@@ -392,6 +392,8 @@ Variable data per device:
 
 **Error handling**: Only negative values in the header `error` field indicate errors. Positive values (including `FTP_COLLECTING`) are informational. Per-device errors use `!= 0` (any non-zero skips that device's data for this reply).
 
+A terminal reply with a negative ACNET packet status is an abnormal stream termination. The reader raises that status instead of treating it as normal end-of-stream; explicit client cancellation remains a clean stop.
+
 The data offsets are absolute within the current ACNET reply. A successful data reply must contain the full per-device header and every point declared by each count; a short payload is malformed, not a partial batch. Extra trailing bytes are allowed.
 
 **Timestamps**: Unsigned 16-bit values with 100 microsecond resolution, reset on each TCLK event 0x02 (which occurs every 5 seconds). Multiply by 100 to convert to microseconds.

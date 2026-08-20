@@ -852,7 +852,7 @@ class FTPStream:
                 logger.warning("FTP data reply error: status=%s", status)
                 if is_last:
                     self._stopped = True
-                    return
+                    raise AcnetError(status, "Continuous plot terminated")
                 continue
 
             batch = parse_continuous_data_reply(data, self._devices)
@@ -1445,10 +1445,7 @@ class FTPClient:
                 setup_event.set()
             else:
                 # Subsequent replies are data
-                if reply.last and reply.status < 0:
-                    reply_queue.put(None)  # sentinel
-                else:
-                    reply_queue.put((reply.status, reply.data, reply.last))
+                reply_queue.put((reply.status, reply.data, reply.last))
 
         ctx = self._connection.request_multiple(
             node=node,
