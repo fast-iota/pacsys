@@ -184,6 +184,7 @@ def _ftp_status_to_state(composite_status: int, is_first_reply: bool = False) ->
         return SnapshotState.ERROR
     if composite_status == 0:
         return SnapshotState.PENDING if is_first_reply else SnapshotState.READY
+    # Old FRIG cryogenic front ends emitted 0x0002/0x0F02 here; the DAE ignored them.
     return _FTP_STATUS_TO_STATE.get(composite_status, SnapshotState.ERROR)
 
 
