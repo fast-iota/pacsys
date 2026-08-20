@@ -24,6 +24,7 @@ from .errors import (
     ACNET_UTIME,
     FACILITY_FTP,
     FTP_COLLECTING,
+    FTP_ENDOFDATA,
     FTP_PEND,
     FTP_WAIT_DELAY,
     FTP_WAIT_EVENT,
@@ -751,6 +752,8 @@ def parse_snapshot_data_reply(
         raise ValueError(f"Snapshot data reply too short: {len(data)} bytes")
 
     error = struct.unpack_from("<h", data, 0)[0]
+    if error == FTP_ENDOFDATA:
+        return []
     if error < 0:
         raise AcnetError(error, "Snapshot retrieve failed")
     if len(data) < 4:
@@ -1150,8 +1153,12 @@ class SnapshotHandle:
         except queue.Empty:
             raise AcnetTimeoutError(int(timeout * 1000)) from None
 
+        if status == FTP_ENDOFDATA:
+            return []
         if status < 0:
             raise AcnetError(status, "Snapshot retrieve failed")
+        if len(data) >= 2 and struct.unpack_from("<h", data, 0)[0] == FTP_ENDOFDATA:
+            return []
 
         points = parse_snapshot_data_reply(
             data,

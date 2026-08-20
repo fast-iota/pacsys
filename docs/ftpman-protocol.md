@@ -520,6 +520,8 @@ Per point (variable):
 
 A nonnegative retrieve reply must contain every point declared by `num_points_returned`. A negative FTP-level status may be only two bytes. Extra trailing bytes after the declared points are allowed.
 
+`FTP_ENDOFDATA` is clean sequential exhaustion and returns an empty page. Older front-ends may place it in either the terminal ACNET packet status or the payload status; neither form advances the client's metadata-record state.
+
 **Post-trigger retrieval**: Data can be retrieved while collection is still in progress. Pre-trigger requires waiting until all data is collected.
 
 ### Restart / Reset (Typecode 5)

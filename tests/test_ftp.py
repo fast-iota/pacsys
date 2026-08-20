@@ -15,6 +15,7 @@ from pacsys.acnet.errors import (
     ACNET_DISCONNECTED,
     FTP_BUMPED,
     FTP_COLLECTING,
+    FTP_ENDOFDATA,
     FTP_PEND,
     FTP_WAIT_DELAY,
     FTP_WAIT_EVENT,
@@ -741,6 +742,11 @@ class TestParseSnapshotDataReply:
         with pytest.raises(AcnetError):
             parse_snapshot_data_reply(struct.pack("<h", -15), dev)
 
+    def test_two_byte_end_of_data(self):
+        dev = FTPDevice(di=1, pi=12, ssdn=b"\x00" * 8)
+
+        assert parse_snapshot_data_reply(struct.pack("<h", FTP_ENDOFDATA), dev) == []
+
     def test_success_with_timestamps(self):
         dev = FTPDevice(di=1, pi=12, ssdn=b"\x00" * 8)
         data = struct.pack("<hH", 0, 2)
@@ -1407,6 +1413,22 @@ class TestSnapshotHandle:
             with pytest.raises(AcnetError):
                 handle.retrieve()
             assert [p.raw_value for p in handle.retrieve()] == [100]
+        finally:
+            handle.cancel()
+
+    @pytest.mark.parametrize(
+        ("status", "payload"),
+        [
+            (FTP_ENDOFDATA, b""),
+            (0, struct.pack("<hH", FTP_ENDOFDATA, 1) + struct.pack("<Hh", 10, 100)),
+        ],
+    )
+    def test_end_of_data_is_empty_without_consuming_metadata(self, status, payload):
+        handle = self._make_handle(snap_class_code=13)
+        self._serve(handle, (status, payload))
+        try:
+            assert handle.retrieve() == []
+            assert handle._metadata_consumed == set()
         finally:
             handle.cancel()
 
