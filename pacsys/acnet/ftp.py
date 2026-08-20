@@ -194,20 +194,21 @@ def _parse_status_update_states(data: bytes, num_devices: int) -> list[int]:
     [18B per device: error(2) + ref_point(4) + arm_sec(4) + arm_nsec(4) + reserved(4)]
 
     Returns list of per-device composite status codes (signed 16-bit).
-    Returns empty list if the reply is too short to parse.
     """
-    if len(data) < 24:
-        return []
+    if len(data) < 2:
+        raise ValueError(f"Snapshot status reply too short: {len(data)} bytes")
 
     overall = struct.unpack_from("<h", data, 0)[0]
     if overall < 0:
         return [overall] * num_devices
 
+    expected = 24 + 18 * num_devices
+    if len(data) < expected:
+        raise ValueError(f"Truncated snapshot status reply: expected {expected} bytes, got {len(data)}")
+
     statuses = []
     offset = 24  # skip 2B overall + 22B new-protocol header
     for _ in range(num_devices):
-        if offset + 2 > len(data):
-            break
         status = struct.unpack_from("<h", data, offset)[0]
         statuses.append(status)
         offset += 18  # each per-device block is 18 bytes
@@ -604,23 +605,27 @@ def parse_continuous_data_reply(
     Timestamps are relative to the last TCLK 0x02 event and wrap every
     ~5 seconds.  See :class:`FTPDataPoint` for details.
     """
-    if len(data) < 8:
-        return {}
+    if len(data) < 2:
+        raise ValueError(f"Continuous data reply too short: {len(data)} bytes")
 
     error = struct.unpack_from("<h", data, 0)[0]
-    reply_type = struct.unpack_from("<H", data, 2)[0]
-
-    if error < 0 or reply_type != REPLY_TYPE_DATA:
+    if error < 0:
         return {}
+    if len(data) < 4:
+        raise ValueError(f"Continuous data reply too short: {len(data)} bytes")
+
+    reply_type = struct.unpack_from("<H", data, 2)[0]
+    if reply_type != REPLY_TYPE_DATA:
+        return {}
+    expected_header = 8 + 6 * len(devices)
+    if len(data) < expected_header:
+        raise ValueError(f"Truncated continuous data reply header: expected {expected_header} bytes, got {len(data)}")
 
     # Skip 4 reserved bytes at offset 4
     results: dict[int, list[FTPDataPoint]] = {}
     hdr_offset = 8  # past error(2) + type(2) + reserved(4)
 
     for dev in devices:
-        if hdr_offset + 6 > len(data):
-            break
-
         dev_error = struct.unpack_from("<h", data, hdr_offset)[0]
         hdr_offset += 2
 
@@ -637,13 +642,16 @@ def parse_continuous_data_reply(
 
         # index is an absolute byte offset into the reply data buffer
         point_size = 2 + dev.data_length  # timestamp(2) + value(2 or 4)
+        expected_end = index + num_points * point_size
+        if expected_end > len(data):
+            raise ValueError(
+                f"Truncated continuous data for device {dev.di}: "
+                f"offset {index}, {num_points} points require {expected_end} bytes, got {len(data)}"
+            )
         points = []
 
         cursor = index
         for _ in range(num_points):
-            if cursor + point_size > len(data):
-                break
-
             ts = struct.unpack_from("<H", data, cursor)[0]
             cursor += 2
 
@@ -683,6 +691,10 @@ def parse_snapshot_setup_reply(data: bytes, num_devices: int) -> SnapshotSetupRe
     if len(data) < 24:
         raise ValueError(f"Snapshot setup reply too short: {len(data)} bytes")
 
+    expected = 24 + 18 * num_devices
+    if len(data) < expected:
+        raise ValueError(f"Truncated snapshot setup reply: expected {expected} bytes, got {len(data)}")
+
     arm_trigger_word = struct.unpack_from("<H", data, 2)[0]
     sample_rate_hz = struct.unpack_from("<I", data, 4)[0]
     arm_delay = struct.unpack_from("<I", data, 8)[0]
@@ -695,8 +707,6 @@ def parse_snapshot_setup_reply(data: bytes, num_devices: int) -> SnapshotSetupRe
     offset = 24
 
     for _ in range(num_devices):
-        if offset + 18 > len(data):
-            break
         dev_error = struct.unpack_from("<h", data, offset)[0]
         ref_point = struct.unpack_from("<I", data, offset + 2)[0]
         arm_sec = struct.unpack_from("<I", data, offset + 6)[0]
@@ -737,25 +747,29 @@ def parse_snapshot_data_reply(
             arm time / metadata, not real data).  Nearly all snapshot classes
             require this -- see ``SnapClassInfo.skip_first_point``.
     """
-    if len(data) < 4:
-        return []
+    if len(data) < 2:
+        raise ValueError(f"Snapshot data reply too short: {len(data)} bytes")
 
     error = struct.unpack_from("<h", data, 0)[0]
     if error < 0:
         raise AcnetError(error, "Snapshot retrieve failed")
+    if len(data) < 4:
+        raise ValueError(f"Snapshot data reply too short: {len(data)} bytes")
 
     num_points = struct.unpack_from("<H", data, 2)[0]
     if num_points == 0:
         return []
 
     point_size = (2 + device.data_length) if has_timestamps else device.data_length
+    expected = 4 + num_points * point_size
+    if len(data) < expected:
+        raise ValueError(
+            f"Truncated snapshot data reply: expected {expected} bytes for {num_points} points, got {len(data)}"
+        )
     offset = 4
     points = []
 
     for i in range(num_points):
-        if offset + point_size > len(data):
-            break
-
         if has_timestamps:
             ts = struct.unpack_from("<H", data, offset)[0]
             offset += 2
@@ -911,6 +925,7 @@ class SnapshotHandle:
         self._snap_class_info = get_snap_class_info(snap_class_code) if snap_class_code else None
         self._cancelled = False
         self._stream_ended = False  # set by monitor's finally; read/write only under _lock
+        self._monitor_error: Exception | None = None
         self._lock = threading.Lock()
         self._metadata_consumed: set[int] = set()
 
@@ -949,8 +964,10 @@ class SnapshotHandle:
         """Background thread: read status updates and track device states."""
         try:
             self._monitor_loop_inner()
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
             logger.exception("Snapshot monitor error for %s", self._task_name)
+            with self._lock:
+                self._monitor_error = e
         finally:
             # Stream ended: devices that never reached a terminal state can no
             # longer progress -- mark ERROR so wait() raises instead of hanging
@@ -1050,6 +1067,8 @@ class SnapshotHandle:
         if self._cancelled:
             raise RuntimeError("Snapshot has been cancelled")
         with self._lock:
+            if self._monitor_error is not None:
+                raise self._monitor_error
             for dev in self._devices:
                 if self._device_states[dev.di] == SnapshotState.ERROR:
                     err = self._device_errors.get(dev.di, 0)

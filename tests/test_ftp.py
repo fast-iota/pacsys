@@ -516,6 +516,31 @@ class TestParseContinuousFirstReply:
 
 
 class TestParseContinuousDataReply:
+    @pytest.mark.parametrize("data", [b"", b"\x00", b"\x00\x00", b"\x00\x00\x02"])
+    def test_nonnegative_short_header_rejected(self, data):
+        dev = FTPDevice(di=1, pi=12, ssdn=b"\x00" * 8)
+
+        with pytest.raises(ValueError, match="too short"):
+            parse_continuous_data_reply(data, [dev])
+
+    def test_two_byte_negative_error_is_clean_no_data(self):
+        dev = FTPDevice(di=1, pi=12, ssdn=b"\x00" * 8)
+
+        assert parse_continuous_data_reply(struct.pack("<h", -5), [dev]) == {}
+
+    def test_complete_non_data_reply_is_ignored(self):
+        dev = FTPDevice(di=1, pi=12, ssdn=b"\x00" * 8)
+
+        assert parse_continuous_data_reply(struct.pack("<hH", 0, REPLY_TYPE_SETUP), [dev]) == {}
+
+    @pytest.mark.parametrize("length", [4, 7, 13])
+    def test_truncated_data_header_rejected(self, length):
+        dev = FTPDevice(di=1, pi=12, ssdn=b"\x00" * 8)
+        data = (struct.pack("<hH", 0, REPLY_TYPE_DATA) + b"\x00" * 10)[:length]
+
+        with pytest.raises(ValueError, match="header"):
+            parse_continuous_data_reply(data, [dev])
+
     def test_with_data_points(self):
         """Parse a data reply with 2 data points for 1 device (2-byte values)."""
         dev = FTPDevice(di=1, pi=12, ssdn=b"\x00" * 8, data_length=2)
@@ -583,6 +608,46 @@ class TestParseContinuousDataReply:
         result = parse_continuous_data_reply(data, [dev])
         assert result[1][0] == FTPDataPoint(timestamp_us=5000, raw_value=123456)
 
+    def test_declared_points_must_fit_current_reply(self):
+        dev = FTPDevice(di=1, pi=12, ssdn=b"\x00" * 8)
+        header = struct.pack("<hH", 0, REPLY_TYPE_DATA) + b"\x00" * 4
+        per_dev = struct.pack("<hHH", 0, 14, 2)
+        data = header + per_dev + struct.pack("<Hh", 50, 42)
+
+        with pytest.raises(ValueError, match="Truncated continuous data"):
+            parse_continuous_data_reply(data, [dev])
+
+    def test_out_of_reply_index_rejected(self):
+        dev = FTPDevice(di=1, pi=12, ssdn=b"\x00" * 8)
+        header = struct.pack("<hH", 0, REPLY_TYPE_DATA) + b"\x00" * 4
+        data = header + struct.pack("<hHH", 0, 100, 1)
+
+        with pytest.raises(ValueError, match="offset 100"):
+            parse_continuous_data_reply(data, [dev])
+
+    def test_overlapping_in_bounds_indices_are_accepted(self):
+        devices = [
+            FTPDevice(di=1, pi=12, ssdn=b"\x00" * 8),
+            FTPDevice(di=2, pi=12, ssdn=b"\x00" * 8),
+        ]
+        header = struct.pack("<hH", 0, REPLY_TYPE_DATA) + b"\x00" * 4
+        shared_index = 8 + 6 * len(devices)
+        records = struct.pack("<hHH", 0, shared_index, 1) * len(devices)
+        point = struct.pack("<Hh", 50, 42)
+
+        result = parse_continuous_data_reply(header + records + point, devices)
+
+        assert result[1] == result[2] == [FTPDataPoint(timestamp_us=5000, raw_value=42)]
+
+    def test_trailing_bytes_are_allowed(self):
+        dev = FTPDevice(di=1, pi=12, ssdn=b"\x00" * 8)
+        header = struct.pack("<hH", 0, REPLY_TYPE_DATA) + b"\x00" * 4
+        data = header + struct.pack("<hHH", 0, 14, 1) + struct.pack("<Hh", 50, 42) + b"extra"
+
+        result = parse_continuous_data_reply(data, [dev])
+
+        assert result[1] == [FTPDataPoint(timestamp_us=5000, raw_value=42)]
+
 
 class TestParseSnapshotSetupReply:
     def _build_setup_reply(self, error=0, arm_word=0x21, rate=1440, delay=0, npts=2048, devices=None):
@@ -617,6 +682,17 @@ class TestParseSnapshotSetupReply:
         with pytest.raises(AcnetError):
             parse_snapshot_setup_reply(data, 1)
 
+    def test_two_byte_error(self):
+        with pytest.raises(AcnetError):
+            parse_snapshot_setup_reply(struct.pack("<h", -5), 1)
+
+    @pytest.mark.parametrize("length", [0, 1, 2, 23])
+    def test_nonnegative_short_header_rejected(self, length):
+        data = (struct.pack("<h", 0) + b"\x00" * 21)[:length]
+
+        with pytest.raises(ValueError, match="too short"):
+            parse_snapshot_setup_reply(data, 1)
+
     def test_positive_error_not_raised(self):
         """Positive status (informational) should not raise."""
         data = self._build_setup_reply(error=1)
@@ -631,8 +707,38 @@ class TestParseSnapshotSetupReply:
         assert reply.per_device_ref_points == [100, 0]
         assert reply.per_device_arm_time == [(1000, 500), (0, 0)]
 
+    def test_truncated_device_record_rejected(self):
+        data = self._build_setup_reply()[:-1]
+
+        with pytest.raises(ValueError, match="Truncated snapshot setup"):
+            parse_snapshot_setup_reply(data, 1)
+
+    def test_missing_declared_device_record_rejected(self):
+        data = self._build_setup_reply()
+
+        with pytest.raises(ValueError, match="expected 60 bytes"):
+            parse_snapshot_setup_reply(data, 2)
+
+    def test_trailing_bytes_are_allowed(self):
+        reply = parse_snapshot_setup_reply(self._build_setup_reply() + b"extra", 1)
+
+        assert reply.per_device_errors == [0]
+
 
 class TestParseSnapshotDataReply:
+    @pytest.mark.parametrize("data", [b"", b"\x00", b"\x00\x00", b"\x00\x00\x01"])
+    def test_nonnegative_short_header_rejected(self, data):
+        dev = FTPDevice(di=1, pi=12, ssdn=b"\x00" * 8)
+
+        with pytest.raises(ValueError, match="too short"):
+            parse_snapshot_data_reply(data, dev)
+
+    def test_two_byte_error(self):
+        dev = FTPDevice(di=1, pi=12, ssdn=b"\x00" * 8)
+
+        with pytest.raises(AcnetError):
+            parse_snapshot_data_reply(struct.pack("<h", -15), dev)
+
     def test_success_with_timestamps(self):
         dev = FTPDevice(di=1, pi=12, ssdn=b"\x00" * 8)
         data = struct.pack("<hH", 0, 2)
@@ -699,6 +805,30 @@ class TestParseSnapshotDataReply:
         points = parse_snapshot_data_reply(data, dev, skip_first_point=True)
         assert len(points) == 0
 
+    @pytest.mark.parametrize("has_timestamps", [True, False])
+    def test_declared_points_must_be_complete(self, has_timestamps):
+        dev = FTPDevice(di=1, pi=12, ssdn=b"\x00" * 8)
+        point = struct.pack("<Hh", 10, 100) if has_timestamps else struct.pack("<h", 100)
+        data = struct.pack("<hH", 0, 2) + point
+
+        with pytest.raises(ValueError, match="Truncated snapshot data"):
+            parse_snapshot_data_reply(data, dev, has_timestamps=has_timestamps)
+
+    def test_skipped_metadata_point_must_be_complete(self):
+        dev = FTPDevice(di=1, pi=12, ssdn=b"\x00" * 8)
+        data = struct.pack("<hH", 0, 1) + b"\x00\x00"
+
+        with pytest.raises(ValueError, match="Truncated snapshot data"):
+            parse_snapshot_data_reply(data, dev, skip_first_point=True)
+
+    def test_trailing_bytes_are_allowed(self):
+        dev = FTPDevice(di=1, pi=12, ssdn=b"\x00" * 8)
+        data = struct.pack("<hH", 0, 1) + struct.pack("<Hh", 10, 100) + b"extra"
+
+        points = parse_snapshot_data_reply(data, dev)
+
+        assert points == [FTPDataPoint(timestamp_us=1000, raw_value=100)]
+
 
 # =============================================================================
 # FTPStream tests
@@ -729,6 +859,21 @@ class TestFTPStream:
         batches = list(stream.readings(timeout=0.5))
         assert len(batches) == 1
         assert 1 in batches[0]
+
+    def test_readings_propagates_truncated_reply(self):
+        import queue as q
+
+        dev = FTPDevice(di=1, pi=12, ssdn=b"\x00" * 8)
+        reply_q = q.Queue()
+        stream = FTPStream(ctx=MagicMock(), devices=[dev], reply_queue=reply_q, setup_statuses=[0])
+        header = struct.pack("<hH", 0, REPLY_TYPE_DATA) + b"\x00" * 4
+        reply_q.put((0, header + struct.pack("<hHH", 0, 14, 1), False))
+
+        try:
+            with pytest.raises(ValueError, match="Truncated continuous data"):
+                next(stream.readings(timeout=0.5))
+        finally:
+            stream.stop()
 
     def test_stop_cancels_context(self):
         import queue as q
@@ -1303,15 +1448,32 @@ class TestParseStatusUpdateStates:
 
     def test_overall_error_propagated(self):
         """Negative overall error is returned for all devices."""
-        data = struct.pack("<h", -241)
-        # Pad to 24B minimum header
-        data += b"\x00" * 22
-        states = _parse_status_update_states(data, 3)
+        states = _parse_status_update_states(struct.pack("<h", -241), 3)
         assert states == [-241, -241, -241]
 
-    def test_too_short_returns_empty(self):
-        assert _parse_status_update_states(b"\x00", 1) == []
-        assert _parse_status_update_states(b"\x00" * 10, 1) == []
+    @pytest.mark.parametrize("length", [0, 1, 2, 10, 23])
+    def test_nonnegative_short_header_rejected(self, length):
+        data = (struct.pack("<h", 0) + b"\x00" * 21)[:length]
+
+        with pytest.raises(ValueError, match="too short|Truncated"):
+            _parse_status_update_states(data, 1)
+
+    def test_truncated_device_record_rejected(self):
+        data = self._build_status_reply(0, [FTP_PEND])[:-1]
+
+        with pytest.raises(ValueError, match="Truncated snapshot status"):
+            _parse_status_update_states(data, 1)
+
+    def test_missing_declared_device_record_rejected(self):
+        data = self._build_status_reply(0, [FTP_PEND])
+
+        with pytest.raises(ValueError, match="expected 60 bytes"):
+            _parse_status_update_states(data, 2)
+
+    def test_trailing_bytes_are_allowed(self):
+        data = self._build_status_reply(0, [FTP_PEND]) + b"extra"
+
+        assert _parse_status_update_states(data, 1) == [FTP_PEND]
 
 
 class TestSnapshotStateTracking:
@@ -1445,6 +1607,15 @@ class TestSnapshotStateTracking:
             data = self._build_status_reply(0, [-241])
             rq.put((0, data, False))
             with pytest.raises(AcnetError):
+                handle.wait(timeout=2.0)
+        finally:
+            handle.cancel()
+
+    def test_monitor_propagates_truncated_status_reply(self):
+        handle, rq = self._make_handle(per_device_errors=[FTP_PEND])
+        try:
+            rq.put((0, struct.pack("<h", 0), False))
+            with pytest.raises(ValueError, match="Truncated snapshot status"):
                 handle.wait(timeout=2.0)
         finally:
             handle.cancel()
