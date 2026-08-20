@@ -392,6 +392,8 @@ Variable data per device:
 
 **Error handling**: Only negative values in the header `error` field indicate errors. Positive values (including `FTP_COLLECTING`) are informational. Per-device errors use `!= 0` (any non-zero skips that device's data for this reply).
 
+The data offsets are absolute within the current ACNET reply. A successful data reply must contain the full per-device header and every point declared by each count; a short payload is malformed, not a partial batch. Extra trailing bytes are allowed.
+
 **Timestamps**: Unsigned 16-bit values with 100 microsecond resolution, reset on each TCLK event 0x02 (which occurs every 5 seconds). Multiply by 100 to convert to microseconds.
 
 ## Snapshot Plot (Typecodes 7, 8, 5)
@@ -475,6 +477,8 @@ Per device (18B):
 
 **Short error replies**: If the front-end rejects the request outright, it may return only the 2-byte error field with no further data. Always check the error before attempting to parse the full reply.
 
+For a nonnegative status, setup and later status replies contain the complete 24-byte header plus one complete 18-byte record per requested device. A short successful reply is malformed rather than a partial device result; extra trailing bytes are allowed.
+
 **Per-device status**: Positive values are informational and expected:
 
 | Status | Meaning |
@@ -511,6 +515,8 @@ Per point (variable):
 ```
 
 **Timestamps**: Whether timestamps are included depends on the snapshot class code. Classes like Quick Digitizer (code 16) and Swift Digitizer (code 19) return raw values only. Check `SnapClassInfo.has_timestamps` for the device's class.
+
+A nonnegative retrieve reply must contain every point declared by `num_points_returned`. A negative FTP-level status may be only two bytes. Extra trailing bytes after the declared points are allowed.
 
 **Post-trigger retrieval**: Data can be retrieved while collection is still in progress. Pre-trigger requires waiting until all data is collected.
 
@@ -626,6 +632,8 @@ FTPMAN replies have two levels of error checking:
 2. **FTP-level error** (first 2 bytes of payload): The FE-level status. When the front-end rejects a request, this may be the only data returned (just 2 bytes).
 
 Always check error fields before attempting to parse reply data.
+
+After a nonnegative FTP-level status, require the complete fixed and count-declared payload. The original protocol document and the older DAE reply builders (`FtpCollector`, `SnapCollector`, and `SnapShotPool`) construct replies atomically; they do not define continuation fragments for missing records or points.
 
 ### acnetd Task Restrictions
 
