@@ -14,7 +14,12 @@ from pacsys.drf3 import (
     parse_range,
     parse_request,
 )
-from pacsys.drf_utils import ensure_immediate_event, prepare_for_write
+from pacsys.drf_utils import (
+    ensure_immediate_event,
+    is_chunked_historical_drf,
+    is_historical_drf,
+    prepare_for_write,
+)
 
 _NO_RANGE = parse_range(None)
 
@@ -292,6 +297,8 @@ def test_to_qualified_rejects_epics():
         ("M:OUTTMP<-FTP", "M:OUTTMP.READING@I<-FTP"),
         ("Z:ACLTST<-REDIR:N@UALL", "Z:ACLTST.READING@I<-REDIR:N@UALL"),
         ("M:OUTTMP<-LOGGER", "M:OUTTMP<-LOGGER"),
+        ("M:OUTTMP<-LOGGERDURATION:60000", "M:OUTTMP<-LOGGERDURATION:60000"),
+        ("M:OUTTMP<-LOGGERSINGLE:ArkIv:1736942400:60", "M:OUTTMP<-LOGGERSINGLE:ArkIv:1736942400:60"),
         ("M:OUTTMP@p,100H<-FTP", "M:OUTTMP@p,100H<-FTP"),
         # EPICS: append @I (server would otherwise subscribe), never inject .READING
         ("SR:BPM:01:X", "SR:BPM:01:X@I"),
@@ -301,6 +308,16 @@ def test_to_qualified_rejects_epics():
 )
 def test_ensure_immediate_event(drf, expected):
     assert ensure_immediate_event(drf) == expected
+
+
+def test_historical_reply_classification():
+    logger = "M:OUTTMP<-LOGGER:1736942400000:1736946000000"
+    duration = "M:OUTTMP<-LOGGERDURATION:60000"
+    single = "M:OUTTMP<-LOGGERSINGLE:ArkIv:1736942400:60"
+
+    assert all(is_historical_drf(drf) for drf in (logger, duration, single))
+    assert all(is_chunked_historical_drf(drf) for drf in (logger, duration))
+    assert not is_chunked_historical_drf(single)
 
 
 @pytest.mark.parametrize(

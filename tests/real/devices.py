@@ -309,6 +309,7 @@ LOGGER_DEVICE_WITH_EVENT = "M:OUTTMP@P,1000,true<-LOGGER:1736942400000:173694600
 # (DPM auto-selects best logger when omitted; see LoggerConfigCache.bestLoggers)
 LOGGER_DEVICE_EXPLICIT_NODE = "M:OUTTMP<-LOGGER:1736942400000:1736946000000:ArkIv"
 LOGGER_DEVICE_BAD_NODE = "M:OUTTMP<-LOGGER:1736942400000:1736946000000:BOGUSLOGGER99"
+LOGGER_SINGLE_DEVICE = "M:OUTTMP<-LOGGERSINGLE:ArkIv:1736944200:60"
 
 # =============================================================================
 # Alarm Value Transformations

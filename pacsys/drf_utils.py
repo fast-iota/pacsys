@@ -2,7 +2,7 @@
 
 from pacsys.drf3 import parse_request
 from pacsys.drf3.event import ImmediateEvent, NeverEvent, parse_event
-from pacsys.drf3.extra import HISTORICAL_EXTRAS
+from pacsys.drf3.extra import CHUNKED_HISTORICAL_EXTRAS, HISTORICAL_EXTRAS
 
 
 def ensure_immediate_event(drf: str) -> str:
@@ -35,6 +35,22 @@ def is_immediate_only(drf: str) -> bool:
     """
     ev = parse_request(drf).event
     return ev is not None and ev.mode == "I"
+
+
+def is_historical_drf(drf: str) -> bool:
+    """True if the DRF uses a bounded historical data source."""
+    try:
+        return parse_request(drf).extra in HISTORICAL_EXTRAS
+    except ValueError:
+        return False
+
+
+def is_chunked_historical_drf(drf: str) -> bool:
+    """True if the historical source ends with an empty reply."""
+    try:
+        return parse_request(drf).extra in CHUNKED_HISTORICAL_EXTRAS
+    except ValueError:
+        return False
 
 
 def get_device_name(drf: str) -> str:
