@@ -160,7 +160,7 @@ class Device(_DeviceBase):
                 info = None
             if info is not None and info.status_bits is not None:
                 reading = backend.get(f"{name}.STATUS.BIT_VALUE@I{extra}", timeout)
-                if reading.is_error:
+                if not reading.ok:
                     raise DeviceError(reading.drf, reading.facility_code, reading.error_code, reading.message)
                 raw_value = reading.value
                 if not isinstance(raw_value, (int, float)):
@@ -182,7 +182,7 @@ class Device(_DeviceBase):
             timeout=timeout,
         )
         for r in readings:
-            if r.is_error:
+            if not r.ok:
                 raise DeviceError(r.drf, r.facility_code, r.error_code, r.message)
 
         raw_value = readings[0].value

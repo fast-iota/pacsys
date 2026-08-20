@@ -35,12 +35,14 @@ pip install -e ".[dev]"
 
     # With metadata
     reading = pacsys.get("M:OUTTMP")
-    print(f"{reading.value} {reading.units}")  # e.g. "72.5 DegF"
+    if reading.ok:
+        print(f"{reading.value} {reading.units}")  # e.g. "72.5 DegF"
 
     # Multiple devices at once
     readings = pacsys.get_many(["M:OUTTMP", "G:AMANDA"])
     for r in readings:
-        print(f"{r.name}: {r.value}")
+        if r.ok:
+            print(f"{r.name}: {r.value}")
     ```
 
 === "Async"
@@ -54,15 +56,19 @@ pip install -e ".[dev]"
 
     # With metadata
     reading = await pacsys.get("M:OUTTMP")
-    print(f"{reading.value} {reading.units}")  # e.g. "72.5 DegF"
+    if reading.ok:
+        print(f"{reading.value} {reading.units}")  # e.g. "72.5 DegF"
 
     # Multiple devices at once
     readings = await pacsys.get_many(["M:OUTTMP", "G:AMANDA"])
     for r in readings:
-        print(f"{r.name}: {r.value}")
+        if r.ok:
+            print(f"{r.name}: {r.value}")
     ```
 
-`read()` raises `DeviceError` on failure. `get()` returns a `Reading` object you can inspect with `reading.is_error`.
+`read()` raises `DeviceError` when no usable value is returned. `get()` returns a
+`Reading`; check `reading.ok` before using its value, and use `is_error` or
+`is_warning` to classify a nonzero status.
 
 :material-arrow-right: [Reading Guide](guide/reading.md) - all property types, value types, error handling
 

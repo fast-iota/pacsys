@@ -24,12 +24,12 @@ print(f"Temperature: {value}")
 ```python
 reading = pacsys.get("M:OUTTMP")
 
-print(f"Value: {reading.value} {reading.units}")
-print(f"Timestamp: {reading.timestamp}")
-print(f"Type: {reading.value_type}")
-
-if reading.is_error:
-    print(f"Error: [{reading.facility_code},{reading.error_code}] {reading.message}")
+if reading.ok:
+    print(f"Value: {reading.value} {reading.units}")
+    print(f"Timestamp: {reading.timestamp}")
+    print(f"Type: {reading.value_type}")
+else:
+    print(f"No data: [{reading.facility_code},{reading.error_code}] {reading.message}")
 ```
 
 Using the Device API, you can get a full `Reading` for any property:
@@ -78,7 +78,8 @@ for reading in readings:
         print(f"{reading.name}: ERROR - {reading.message}")
 ```
 
-Results are returned in the same order as the input list. Devices that time out get a Reading with `is_error=True`.
+Results are returned in the same order as the input list. Check `reading.ok`
+before using each value; status-only warnings such as `DPM_PEND` are not usable.
 
 ---
 
@@ -238,10 +239,11 @@ except DeviceError as e:
 
 # Option 2: inspect Reading status
 reading = pacsys.get("Z:NOTFND")
-if reading.is_error:
-    print(f"Error: {reading.message}")
+if not reading.ok:
+    kind = "Warning" if reading.is_warning else "Error"
+    print(f"{kind}: {reading.message}")
 elif reading.is_warning:
-    print(f"Warning (data may be stale): {reading.value}")
+    print(f"Warning with data: {reading.value}")
 else:
     print(f"Value: {reading.value}")
 ```

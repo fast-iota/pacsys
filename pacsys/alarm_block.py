@@ -504,7 +504,7 @@ class AnalogAlarm(AlarmBlock):
         readings = be.get_many([raw_drf, struct_drf])
 
         raw_reading = readings[0]
-        if raw_reading.is_error:
+        if not raw_reading.ok:
             raise DeviceError(raw_drf, raw_reading.facility_code, raw_reading.error_code, raw_reading.message)
         if not isinstance(raw_reading.value, bytes):
             raise TypeError(f"Expected bytes, got {type(raw_reading.value).__name__}")
@@ -638,7 +638,7 @@ class DigitalAlarm(AlarmBlock):
         readings = be.get_many([raw_drf, struct_drf])
 
         raw_reading = readings[0]
-        if raw_reading.is_error:
+        if not raw_reading.ok:
             raise DeviceError(raw_drf, raw_reading.facility_code, raw_reading.error_code, raw_reading.message)
         if not isinstance(raw_reading.value, bytes):
             raise TypeError(f"Expected bytes, got {type(raw_reading.value).__name__}")
@@ -727,7 +727,7 @@ class _AlarmModifyContext:
         readings = backend.get_many([raw_drf, struct_drf])
 
         raw_reading = readings[0]
-        if raw_reading.is_error:
+        if not raw_reading.ok:
             from pacsys.errors import DeviceError
 
             raise DeviceError(
