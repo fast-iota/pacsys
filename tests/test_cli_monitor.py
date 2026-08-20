@@ -153,6 +153,20 @@ class TestCountLimitsOutput:
         lines = [ln for ln in buf.getvalue().strip().splitlines() if ln.strip()]
         assert len(lines) == 3
 
+    @mock.patch("pacsys.cli.monitor.make_backend")
+    def test_nonpositive_count_fails_before_backend_creation(self, mock_mb):
+        from pacsys.cli.monitor import main
+
+        for count in ("0", "-1"):
+            err = io.StringIO()
+            with mock.patch("sys.argv", ["acmonitor", "-n", count, "M:OUTTMP"]):
+                with contextlib.redirect_stderr(err):
+                    rc = main()
+
+            assert rc == 2
+            assert "at least 1" in err.getvalue()
+        mock_mb.assert_not_called()
+
 
 class TestDefaultEventAppended:
     """subscribe() called with @p,1000 appended when no event in DRF."""

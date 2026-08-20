@@ -31,7 +31,7 @@ from .constants import (
 )
 
 
-@dataclass
+@dataclass(frozen=True)
 class RequestId:
     """Identifier for an outgoing request."""
 
@@ -46,7 +46,7 @@ class RequestId:
         return False
 
 
-@dataclass
+@dataclass(frozen=True)
 class ReplyId:
     """Identifier for an incoming request (used when sending replies)."""
 
@@ -151,6 +151,9 @@ class AcnetPacket:
         client_task_id = struct.unpack_from("<H", data, 12)[0]
         msg_id = struct.unpack_from("<H", data, 14)[0]
         length = struct.unpack_from("<H", data, 16)[0]
+
+        if length < ACNET_HEADER_SIZE or length > len(data):
+            raise ValueError(f"Bad packet length: declared {length}, got {len(data)} bytes")
 
         # Extract payload
         payload = data[ACNET_HEADER_SIZE:]

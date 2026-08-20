@@ -19,7 +19,13 @@ def main() -> int:
     parser = base_parser("Read ACNET device values")
     parser.add_argument("devices", nargs="+", metavar="DEVICE", help="DRF device string(s)")
     parser.add_argument("-f", "--number-format", default=None, help="Python format spec")
-    parser.add_argument("-r", "--range", dest="array_range", default=None, help="array slice")
+    parser.add_argument(
+        "-r",
+        "--range",
+        dest="array_range",
+        default=None,
+        help="array slice: N, A:B, or A:B:C (use -r=-5: for a negative-start range)",
+    )
     args = parser.parse_args()
 
     # Parse array slice
@@ -83,7 +89,7 @@ def main() -> int:
         return 130
     except Exception as e:  # noqa: BLE001
         print(f"Error: {e}", file=sys.stderr)
-        return EXIT_USAGE_ERROR
+        return EXIT_DEVICE_ERROR
     finally:
         backend.close()
 

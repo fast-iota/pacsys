@@ -13,7 +13,7 @@ from pacsys.drf3.field import (
     DRF_FIELD,
     parse_field,
 )
-from pacsys.drf3.property import DRF_PROPERTY
+from pacsys.drf3.property import DRF_PROPERTY, parse_property
 from pacsys.drf3.range import ARRAY_RANGE
 from pacsys.types import BasicControl
 
@@ -140,6 +140,13 @@ class _DeviceBase:
         if self._request.extra is not None:
             out += f"<-{self._request.extra_raw}"
         return out
+
+    def _parse_prop(self, prop: str) -> DRF_PROPERTY:
+        """Resolve a property argument using the DRF parser's aliases."""
+        try:
+            return parse_property(prop)
+        except (AttributeError, ValueError):
+            raise ValueError(f"Invalid property {prop!r} for {self.name}") from None
 
     def _resolve_field(self, field: str | None, prop: DRF_PROPERTY) -> DRF_FIELD | None:
         if field is None:

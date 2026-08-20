@@ -244,8 +244,18 @@ class TestDeviceReadOperations:
 
     def test_get_with_invalid_prop_raises(self, fake):
         dev = Device("M:OUTTMP", backend=fake)
-        with pytest.raises(KeyError):
+        with pytest.raises(ValueError, match="Invalid property"):
             dev.get(prop="nonexistent")
+
+    def test_get_accepts_property_alias(self, fake):
+        dev = Device("M:OUTTMP", backend=fake)
+        dev.get(prop="set")
+        assert ".SETTING" in fake.reads[-1]
+
+    def test_get_rejects_field_as_property(self, fake):
+        dev = Device("M:OUTTMP", backend=fake)
+        with pytest.raises(ValueError, match="Invalid property"):
+            dev.get(prop="raw")
 
     def test_read_with_timeout(self, fake):
         fake.set_reading("M:OUTTMP.READING", 72.5)
@@ -1072,6 +1082,11 @@ class TestDeviceSubscribe:
         assert "@p,1000" in drf
         handle.stop()
 
+    def test_subscribe_with_invalid_prop_raises(self, fake):
+        dev = Device("M:OUTTMP", backend=fake)
+        with pytest.raises(ValueError, match="Invalid property"):
+            dev.subscribe(prop="nonexistent", event="p,1000")
+
     def test_subscribe_with_prop_and_field(self, fake):
         """subscribe(prop='status', field='on') builds correct DRF."""
         dev = Device("M:OUTTMP", backend=fake)
@@ -1205,6 +1220,11 @@ class TestDeviceSubscribe:
 
 
 class TestDeviceAwaitNext:
+    def test_await_next_with_invalid_prop_raises(self, fake):
+        dev = Device("M:OUTTMP", backend=fake)
+        with pytest.raises(ValueError, match="Invalid property"):
+            dev.await_next(prop="nonexistent", event="p,1000")
+
     def test_await_next_returns_reading(self, fake):
         import threading
         import time

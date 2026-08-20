@@ -23,6 +23,11 @@ class TestParseSlice:
 
         assert parse_slice("-1") == slice(-1, None)
 
+    def test_negative_single_index_selects_one_element(self):
+        from pacsys.cli._common import parse_slice
+
+        assert list(range(10))[parse_slice("-5")] == [5]
+
     def test_start_stop(self):
         from pacsys.cli._common import parse_slice
 
@@ -337,6 +342,31 @@ class TestFormatReading:
         # Should only show first 3 elements
         assert result == "0 1 2"
 
+    def test_list_array_slicing(self):
+        from pacsys.cli._common import format_reading
+
+        reading = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=list(range(5)))
+        result = format_reading(reading, fmt="terse", number_format=None, array_slice=slice(1, 3))
+        assert result == "1 2"
+
+    def test_timed_array_slicing_preserves_reading(self):
+        from pacsys.cli._common import format_reading
+
+        reading = Reading(
+            drf="M:OUTTMP",
+            value_type=ValueType.TIMED_SCALAR_ARRAY,
+            value={"data": np.arange(5.0), "micros": np.arange(5) * 1000},
+        )
+        original_value = reading.value
+
+        terse = format_reading(reading, fmt="terse", number_format=None, array_slice=slice(1, 3))
+        formatted = json.loads(format_reading(reading, fmt="json", number_format=None, array_slice=slice(1, 3)))
+
+        assert terse == "1 2"
+        assert formatted["value"] == {"data": [1.0, 2.0], "micros": [1000, 2000]}
+        assert reading.value is original_value
+        assert len(reading.value["data"]) == 5
+
     def test_number_format(self):
         from pacsys.cli._common import format_reading
 
@@ -513,6 +543,21 @@ class TestMakeBackend:
         _, kwargs = mock_dmq.call_args
         assert kwargs["auth"] is mock_kerb.return_value
 
+    def test_missing_explicit_jwt_never_falls_back_to_kerberos(self):
+        from pacsys.cli._common import make_backend
+
+        args = self._make_args(backend="dmq", auth="jwt")
+        with (
+            mock.patch("pacsys.JWTAuth.from_env", return_value=None),
+            mock.patch("pacsys.KerberosAuth") as mock_kerb,
+            mock.patch("pacsys.dmq") as mock_dmq,
+            pytest.raises(ValueError, match="PACSYS_JWT_TOKEN"),
+        ):
+            make_backend(args)
+
+        mock_kerb.assert_not_called()
+        mock_dmq.assert_not_called()
+
     @mock.patch("pacsys.acl")
     def test_acl_backend(self, mock_acl):
         from pacsys.cli._common import make_backend
@@ -620,6 +665,13 @@ class TestResolveAuth:
         result = _resolve_auth("jwt")
         mock_jwt.from_env.assert_called_once()
         assert result is mock_jwt.from_env.return_value
+
+    @mock.patch("pacsys.JWTAuth.from_env", return_value=None)
+    def test_jwt_missing_raises(self, _mock_from_env):
+        from pacsys.cli._common import _resolve_auth
+
+        with pytest.raises(ValueError, match="PACSYS_JWT_TOKEN"):
+            _resolve_auth("jwt")
 
     def test_unknown_raises(self):
         from pacsys.cli._common import _resolve_auth

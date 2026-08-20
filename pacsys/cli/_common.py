@@ -10,7 +10,7 @@ from typing import Any
 
 import pacsys
 from pacsys.drf_utils import get_device_name
-from pacsys.types import BasicControl, Reading, WriteResult, _value_to_json
+from pacsys.types import BasicControl, Reading, ValueType, WriteResult, _value_to_json
 
 # Exit codes
 EXIT_OK = 0
@@ -74,7 +74,10 @@ def _resolve_auth(auth_str: str | None):
     if auth_str == "kerberos":
         return pacsys.KerberosAuth()
     if auth_str == "jwt":
-        return pacsys.JWTAuth.from_env()
+        auth = pacsys.JWTAuth.from_env()
+        if auth is None:
+            raise ValueError("auth=jwt requested but PACSYS_JWT_TOKEN is not set")
+        return auth
     raise ValueError(f"Unknown auth type: {auth_str!r}")
 
 
@@ -94,8 +97,8 @@ def parse_slice(s: str) -> slice:
             idx = int(s)
         except ValueError:
             raise ValueError(f"Invalid slice: {s!r}") from None
-        if idx < 0:
-            return slice(idx, None)
+        if idx == -1:
+            return slice(-1, None)
         return slice(idx, idx + 1)
     if len(parts) > 3:
         raise ValueError(f"Invalid slice: {s!r}")
@@ -236,8 +239,16 @@ def format_reading(
     # Get displayable value
     val = reading.value
     np = sys.modules.get("numpy")
-    if array_slice is not None and np is not None and isinstance(val, np.ndarray):
-        val = val[array_slice]
+    if array_slice is not None:
+        if np is not None and isinstance(val, np.ndarray) or isinstance(val, list):
+            val = val[array_slice]
+        elif reading.value_type == ValueType.TIMED_SCALAR_ARRAY and isinstance(val, dict):
+            val = {
+                key: item[array_slice]
+                if isinstance(item, list) or (np is not None and isinstance(item, np.ndarray))
+                else item
+                for key, item in val.items()
+            }
 
     formatted = format_value(val, number_format)
     units = reading.units

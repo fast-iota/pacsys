@@ -125,6 +125,19 @@ class TestMalformedDrfError:
         assert "Invalid" in err.getvalue()
         mock_mb.assert_not_called()
 
+    @mock.patch("pacsys.cli.put.make_backend")
+    def test_malformed_drf_with_verify_rejected(self, mock_mb):
+        from pacsys.cli.put import main
+
+        err = io.StringIO()
+        with mock.patch("sys.argv", ["acput", "--verify", "M:OUTTMP{bad}", "5"]):
+            with contextlib.redirect_stderr(err):
+                rc = main()
+
+        assert rc == 2
+        assert "Invalid" in err.getvalue()
+        mock_mb.assert_not_called()
+
 
 class TestJsonOutput:
     """JSON output produces valid JSON with ok field."""
@@ -182,6 +195,21 @@ class TestConnectionError:
             except SystemExit as e:
                 rc = e.code
             assert rc == 2
+
+    def test_write_runtime_error_exit_code(self):
+        from pacsys.cli.put import main
+
+        backend = mock.MagicMock()
+        backend.write.side_effect = RuntimeError("write failed")
+        with (
+            mock.patch("pacsys.cli.put.make_backend", return_value=backend),
+            mock.patch("sys.argv", ["acput", "M:OUTTMP", "72.5"]),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            rc = main()
+
+        assert rc == 1
+        backend.close.assert_called_once_with()
 
 
 class TestControlWrite:

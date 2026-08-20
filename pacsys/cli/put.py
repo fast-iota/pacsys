@@ -37,17 +37,13 @@ def main() -> int:
     for i in range(0, len(args.pairs), 2):
         drf = args.pairs[i]
         try:
+            req = parse_request(drf)
             value = parse_value(args.pairs[i + 1])
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
             return EXIT_USAGE_ERROR
         # BasicControl values target CONTROL property regardless of DRF form
         if isinstance(value, BasicControl):
-            try:
-                req = parse_request(drf)
-            except ValueError as e:
-                print(f"Error: {e}", file=sys.stderr)
-                return EXIT_USAGE_ERROR
             if not req.is_acnet:
                 print(f"Error: basic control writes require an ACNET device: {drf}", file=sys.stderr)
                 return EXIT_USAGE_ERROR
@@ -101,7 +97,7 @@ def main() -> int:
         return 130
     except Exception as e:  # noqa: BLE001
         print(f"Error: {e}", file=sys.stderr)
-        return EXIT_USAGE_ERROR
+        return EXIT_DEVICE_ERROR
     finally:
         backend.close()
 

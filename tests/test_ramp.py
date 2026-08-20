@@ -818,6 +818,10 @@ class TestRampDeviceSlot:
         with pytest.raises(ValueError, match="bare device name"):
             _TestRamp.read("B:HS23T.SETTING", backend=fake_backend)
 
+    def test_read_rejects_explicit_field(self, fake_backend):
+        with pytest.raises(ValueError, match="bare device name"):
+            _TestRamp.read("B:HS23T.RAW", backend=fake_backend)
+
     def test_write_rejects_non_simple_drf(self, fake_backend):
         ramp = _TestRamp(values=np.zeros(64), times=np.zeros(64))
         with pytest.raises(ValueError, match="bare device name"):
@@ -885,6 +889,10 @@ class TestReadRamps:
     def test_rejects_drf_with_range(self, fake_backend):
         with pytest.raises(ValueError, match="bare device name"):
             read_ramps(_TestRamp, ["B:HS23T[0:10]"], backend=fake_backend)
+
+    def test_rejects_drf_with_field(self, fake_backend):
+        with pytest.raises(ValueError, match="bare device name"):
+            read_ramps(_TestRamp, ["B:HS23T.PRIMARY"], backend=fake_backend)
 
     def test_read_from_nonzero_slot(self, fake_backend):
         """Batched read uses the correct slot offset in each DRF."""

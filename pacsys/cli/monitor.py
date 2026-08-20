@@ -30,10 +30,20 @@ def main() -> int:
     parser = base_parser("Monitor ACNET device readings (streaming)")
     parser.add_argument("devices", nargs="+", metavar="DEVICE")
     parser.add_argument("-f", "--number-format", default=None)
-    parser.add_argument("-r", "--range", dest="array_range", default=None)
+    parser.add_argument(
+        "-r",
+        "--range",
+        dest="array_range",
+        default=None,
+        help="array slice: N, A:B, or A:B:C (use -r=-5: for a negative-start range)",
+    )
     parser.add_argument("-n", "--count", type=int, default=None)
     parser.add_argument("-s", "--timestamp-format", choices=["iso", "epoch", "relative"], default="iso")
     args = parser.parse_args()
+
+    if args.count is not None and args.count < 1:
+        print("Count must be at least 1", file=sys.stderr)
+        return EXIT_USAGE_ERROR
 
     # Parse array slice
     array_slice = None
