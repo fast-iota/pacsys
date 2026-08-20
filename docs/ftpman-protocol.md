@@ -34,7 +34,10 @@ with AcnetConnectionTCP() as conn:
     dev = FTPDevice(di=27235, pi=12, ssdn=b"\x00\x00B\x00?!\x00\x00")  # M:OUTTMP
 
     codes = ftp.get_class_codes(node, dev)
-    print(f"FTP class: {codes.ftp}, Snapshot class: {codes.snap}")
+    if codes.error:
+        print(f"Class lookup failed: {codes.error}")
+    else:
+        print(f"FTP class: {codes.ftp}, Snapshot class: {codes.snap}")
     # => FTP class: 16, Snapshot class: 13
 ```
 
@@ -279,9 +282,11 @@ Per device (12B):
 [2B: error (signed)]       Overall status
 Per device (6B):
     [2B: error (signed)]   Per-device status
-    [2B: FTP class code]   Continuous plot class (0 = unsupported)
-    [2B: SNP class code]   Snapshot class (0 = unsupported)
+    [2B: FTP class code]   Continuous plot class (0 = unsupported on success)
+    [2B: SNP class code]   Snapshot class (0 = unsupported on success)
 ```
+
+A nonzero ACNET packet status or payload overall status applies to every requested device. In that case each result has `ftp=0`, `snap=0`, and the nonzero `error`; no per-device records are parsed. These zero class fields mean the lookup result is unknown, not that the device is unsupported. Class zero means unsupported only when `error == 0`.
 
 ### FTP Class Codes (Continuous)
 

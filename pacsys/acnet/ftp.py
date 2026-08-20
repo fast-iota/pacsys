@@ -82,9 +82,9 @@ def _next_snap_task_name() -> int:
 class FTPClassCode:
     """Result of a class code query for a device."""
 
-    ftp: int  # FTP class code (11-23, or 0=unsupported)
-    snap: int  # Snapshot class code (11-28, or 0=unsupported)
-    error: int  # 0 on success
+    ftp: int  # FTP class code (11-23); 0 means unsupported only when error == 0
+    snap: int  # Snapshot class code (11-28); 0 means unsupported only when error == 0
+    error: int  # Nonzero means class codes are unavailable
 
 
 @dataclass(frozen=True)
@@ -535,6 +535,10 @@ def build_snapshot_control(subtype: int, task_name: int = 0) -> bytes:
 # =============================================================================
 
 
+def _class_code_error_results(status: int, num_devices: int) -> list[FTPClassCode]:
+    return [FTPClassCode(ftp=0, snap=0, error=status) for _ in range(num_devices)]
+
+
 def parse_class_info_reply(data: bytes, num_devices: int) -> list[FTPClassCode]:
     """Parse class code query reply.
 
@@ -550,8 +554,8 @@ def parse_class_info_reply(data: bytes, num_devices: int) -> list[FTPClassCode]:
     overall_status = struct.unpack_from("<h", data, offset)[0]
     offset += 2
 
-    if overall_status < 0:
-        raise AcnetError(overall_status, "Class info request failed")
+    if overall_status != 0:
+        return _class_code_error_results(overall_status, num_devices)
 
     for _ in range(num_devices):
         if offset + 6 > len(data):
@@ -1368,8 +1372,8 @@ class FTPClient:
         except queue.Empty:
             raise AcnetTimeoutError(int(timeout * 1000)) from None
 
-        if status < 0:
-            raise AcnetError(status, "Class code query failed")
+        if status != 0:
+            return _class_code_error_results(status, 1)[0]
 
         results = parse_class_info_reply(data, 1)
         return results[0]
@@ -1401,8 +1405,8 @@ class FTPClient:
         except queue.Empty:
             raise AcnetTimeoutError(int(timeout * 1000)) from None
 
-        if status < 0:
-            raise AcnetError(status, "Class code query failed")
+        if status != 0:
+            return _class_code_error_results(status, len(devices))
 
         return parse_class_info_reply(data, len(devices))
 
