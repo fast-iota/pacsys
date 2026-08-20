@@ -7,6 +7,7 @@ from pacsys.acnet.errors import ERR_RETRY, FACILITY_ACNET
 from pacsys.aio._backends import AsyncBackend
 from pacsys.aio._subscription import AsyncSubscriptionHandle, _callback_feeder
 from pacsys.auth import KerberosAuth
+from pacsys.backends import ALARM_READONLY_KEYS
 from pacsys.backends._dpm_core import _AsyncDpmCore
 from pacsys.backends.dpm_http import _value_to_setting
 from pacsys.dpm_connection import DPMConnectionError
@@ -63,10 +64,15 @@ def _expand_alarm_dict(drf: str, alarm_dict: dict) -> list[tuple[str, Value]]:
     else:
         raise ValueError(f"Cannot write dict to {prop.name} property (DRF: {drf})")
 
-    writable = set(field_map) | {"abort", "alarm_status", "tries_now"}
-    bad_keys = set(alarm_dict) - writable
+    keys = set(alarm_dict)
+    readonly = keys & ALARM_READONLY_KEYS
+    if readonly:
+        raise ValueError(f"Read-only alarm dict keys cannot be written: {readonly}")
+    bad_keys = keys - set(field_map)
     if bad_keys:
         raise ValueError(f"Unknown {prop_name} alarm keys: {bad_keys}")
+    if not keys:
+        raise ValueError("Alarm dict must include at least one writable key")
 
     base = get_device_name(drf)
     pairs: list[tuple[str, Value]] = []
@@ -251,8 +257,6 @@ class AsyncDPMHTTPBackend(AsyncBackend):
             from pacsys.acnet.errors import ERR_OK
 
             pairs = _expand_alarm_dict(drf, value)
-            if not pairs:
-                return WriteResult(drf=drf, error_code=ERR_OK)
             for field_drf, field_val in pairs:
                 results = await self.write_many([(field_drf, field_val)], timeout=timeout)
                 if not results[0].success:

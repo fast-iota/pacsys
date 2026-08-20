@@ -138,7 +138,7 @@ class TestAnalogAlarm:
         """Test serialize/deserialize preserves raw values."""
         alarm = AnalogAlarm()
         alarm.is_active = True
-        alarm.abort = True
+        alarm.flags |= AlarmFlags.ABORT
         alarm.abort_inhibit = False
         alarm.data_type = DataType.FLOAT
         alarm.limit_type = LimitType.MIN_MAX
@@ -252,19 +252,22 @@ class TestEngineeringUnits:
         with pytest.raises(ValueError, match="No structured data"):
             alarm.minimum = 10.0
 
-    def test_flag_setters_sync_structured(self):
-        """Flag setters should update _structured when present."""
+    def test_writable_flag_setters_sync_structured(self):
+        """Writable flag setters should update _structured when present."""
         alarm = AnalogAlarm()
         alarm._structured = {"alarm_enable": True, "abort": False, "abort_inhibit": False}
 
         alarm.bypass = True  # sets is_active = False
         assert alarm._structured["alarm_enable"] is False
 
-        alarm.abort = True
-        assert alarm._structured["abort"] is True
-
         alarm.abort_inhibit = True
         assert alarm._structured["abort_inhibit"] is True
+
+    def test_abort_is_read_only(self):
+        alarm = AnalogAlarm()
+
+        with pytest.raises(AttributeError):
+            alarm.abort = True
 
 
 class TestAlarmSegments:
@@ -291,6 +294,15 @@ class TestAlarmSegments:
     def test_raw_write_supports_nonzero_segment(self, alarm, prop, fake_backend):
         alarm.write("Z:TEST", backend=fake_backend, segment=2)
         assert fake_backend.writes[0][0] == f"Z:TEST.{prop}{{40:20}}.RAW@N"
+
+    def test_raw_write_preserves_abort_flag(self, fake_backend):
+        alarm = AnalogAlarm(flags=AlarmFlags.ABORT)
+
+        alarm.write("Z:TEST", backend=fake_backend)
+
+        _, value = fake_backend.writes[0]
+        assert isinstance(value, bytes)
+        assert AnalogAlarm.from_bytes(value).abort
 
 
 class TestModifyContext:
@@ -357,6 +369,7 @@ class TestModifyContext:
         assert "ANALOG" in drf
         assert isinstance(value, dict)  # structured write
         assert value["maximum"] == 200.0
+        assert "abort" not in value
 
     def test_modify_detects_ftd_change_uses_raw(self, fake_backend):
         """Changing FTD should trigger raw write."""
@@ -387,6 +400,57 @@ class TestModifyContext:
         drf, value = writes[0]
         assert ".RAW" in drf
         assert isinstance(value, bytes)
+
+    @pytest.mark.parametrize(("field", "changed"), [("value1", 20.0), ("value2", 200.0)])
+    def test_modify_analog_raw_value_change_uses_raw(self, fake_backend, field, changed):
+        alarm_data = AnalogAlarm()
+        alarm_data.data_type = DataType.FLOAT
+        alarm_data.value1 = 10.0
+        alarm_data.value2 = 100.0
+        fake_backend.set_reading("Z:TEST.ANALOG{0:20}.RAW@I", alarm_data.to_bytes(), value_type=ValueType.RAW)
+        fake_backend.set_analog_alarm("Z:TEST.ANALOG@I", _analog_structured())
+
+        with AnalogAlarm.modify("Z:TEST", backend=fake_backend) as alarm:
+            setattr(alarm, field, changed)
+
+        assert len(fake_backend.writes) == 1
+        drf, value = fake_backend.writes[0]
+        assert drf == "Z:TEST.ANALOG{0:20}.RAW@N"
+        assert isinstance(value, bytes)
+        assert getattr(AnalogAlarm.from_bytes(value), field) == pytest.approx(changed)
+
+    @pytest.mark.parametrize(("raw_field", "eng_field"), [("value1", "minimum"), ("value2", "maximum")])
+    def test_modify_rejects_same_analog_limit_in_raw_and_engineering_units(self, fake_backend, raw_field, eng_field):
+        alarm_data = AnalogAlarm()
+        alarm_data.data_type = DataType.FLOAT
+        fake_backend.set_reading("Z:TEST.ANALOG{0:20}.RAW@I", alarm_data.to_bytes(), value_type=ValueType.RAW)
+        fake_backend.set_analog_alarm("Z:TEST.ANALOG@I", _analog_structured())
+
+        with pytest.raises(ValueError, match="Cannot change both"):
+            with AnalogAlarm.modify("Z:TEST", backend=fake_backend) as alarm:
+                setattr(alarm, raw_field, 20.0)
+                setattr(alarm, eng_field, 40.0)
+
+        assert fake_backend.writes == []
+
+    @pytest.mark.parametrize("field", ["data_length", "data_type"])
+    def test_modify_rejects_engineering_limits_with_format_change(self, fake_backend, field):
+        alarm_data = AnalogAlarm()
+        alarm_data.data_type = DataType.SIGNED_INT
+        alarm_data.data_length = DataLength.BYTES_2
+        fake_backend.set_reading("Z:TEST.ANALOG{0:20}.RAW@I", alarm_data.to_bytes(), value_type=ValueType.RAW)
+        fake_backend.set_analog_alarm("Z:TEST.ANALOG@I", _analog_structured())
+
+        with pytest.raises(ValueError, match="engineering limits"):
+            with AnalogAlarm.modify("Z:TEST", backend=fake_backend) as alarm:
+                alarm.maximum = 200.0
+                setattr(
+                    alarm,
+                    field,
+                    DataLength.BYTES_4 if field == "data_length" else DataType.FLOAT,
+                )
+
+        assert fake_backend.writes == []
 
     @pytest.mark.parametrize(("field", "changed"), [("nominal", 0xABCD), ("mask", 0x00FF)])
     def test_modify_digital_value_change_uses_current_block(self, fake_backend, field, changed):
@@ -505,6 +569,68 @@ class TestModifyContext:
         assert patched._min_value_raw == pytest.approx(12.0)
         assert patched._max_value_raw == pytest.approx(104.0)
         assert patched.ftd == FTD.periodic_hz(10.0)
+
+    def test_modify_combined_analog_patches_only_changed_raw_limit(self, fake_backend):
+        initial = AnalogAlarm()
+        initial.data_type = DataType.FLOAT
+        initial.value1 = 10.0
+        initial.value2 = 100.0
+        raw_read_drf = "Z:TEST.ANALOG{0:20}.RAW@I"
+        fake_backend.set_reading(raw_read_drf, initial.to_bytes(), value_type=ValueType.RAW)
+        fake_backend.set_analog_alarm("Z:TEST.ANALOG@I", _analog_structured())
+
+        fresh = AnalogAlarm.from_bytes(initial.to_bytes())
+        fresh.value1 = 12.0
+        fresh.value2 = 104.0
+        with AnalogAlarm.modify("Z:TEST", backend=fake_backend) as alarm:
+            alarm.value1 = 20.0
+            alarm.maximum = 220.0
+            fake_backend.set_reading(raw_read_drf, fresh.to_bytes(), value_type=ValueType.RAW)
+
+        _, structured = fake_backend.writes[0]
+        assert isinstance(structured, dict)
+        assert structured["maximum"] == 220.0
+        _, raw_value = fake_backend.writes[1]
+        assert isinstance(raw_value, bytes)
+        patched = AnalogAlarm.from_bytes(raw_value)
+        assert patched.value1 == pytest.approx(20.0)
+        assert patched.value2 == pytest.approx(104.0)
+
+    def test_modify_combined_change_requires_fresh_raw_bytes(self, fake_backend, monkeypatch):
+        initial = AnalogAlarm()
+        raw_read_drf = "Z:TEST.ANALOG{0:20}.RAW@I"
+        fake_backend.set_reading(raw_read_drf, initial.to_bytes(), value_type=ValueType.RAW)
+        fake_backend.set_analog_alarm("Z:TEST.ANALOG@I", _analog_structured())
+
+        with pytest.raises(TypeError, match="Expected bytes, got float"):
+            with AnalogAlarm.modify("Z:TEST", backend=fake_backend) as alarm:
+                alarm.maximum = 200.0
+                alarm.ftd = FTD.periodic_hz(10.0)
+                monkeypatch.setattr(fake_backend, "read", lambda *_args, **_kwargs: 1.0)
+
+        assert len(fake_backend.writes) == 1
+        assert isinstance(fake_backend.writes[0][1], dict)
+
+    def test_modify_combined_change_preserves_direct_abort_flag(self, fake_backend):
+        initial = AnalogAlarm()
+        initial.data_type = DataType.FLOAT
+        raw_read_drf = "Z:TEST.ANALOG{0:20}.RAW@I"
+        fake_backend.set_reading(raw_read_drf, initial.to_bytes(), value_type=ValueType.RAW)
+        fake_backend.set_analog_alarm("Z:TEST.ANALOG@I", _analog_structured())
+
+        fresh = AnalogAlarm.from_bytes(initial.to_bytes())
+        fresh.value2 = 104.0
+        with AnalogAlarm.modify("Z:TEST", backend=fake_backend) as alarm:
+            alarm.flags |= AlarmFlags.ABORT
+            alarm.maximum = 220.0
+            fake_backend.set_reading(raw_read_drf, fresh.to_bytes(), value_type=ValueType.RAW)
+
+        assert len(fake_backend.writes) == 2
+        _, raw_value = fake_backend.writes[1]
+        assert isinstance(raw_value, bytes)
+        patched = AnalogAlarm.from_bytes(raw_value)
+        assert patched.abort
+        assert patched.value2 == pytest.approx(104.0)
 
     def test_modify_no_change_no_write(self, fake_backend):
         """No changes should result in no writes."""

@@ -31,7 +31,7 @@ from pacsys.acnet.errors import (
     status_message,
 )
 from pacsys.auth import Auth, KerberosAuth, _require_gssapi
-from pacsys.backends import Backend, summarize_drfs, timestamp_from_millis
+from pacsys.backends import ALARM_READONLY_KEYS, Backend, summarize_drfs, timestamp_from_millis
 from pacsys.backends._dispatch import CallbackDispatcher
 from pacsys.backends._subscription import BufferedSubscriptionHandle
 from pacsys.dpm_connection import DPM_HANDSHAKE, MAX_MESSAGE_SIZE, DPMConnection, DPMConnectionError
@@ -1369,11 +1369,15 @@ class DPMHTTPBackend(Backend):
         else:
             raise ValueError(f"Cannot write dict to {prop.name} property (DRF: {drf})")
 
-        # Validate keys
-        writable = set(field_map) | {"abort", "alarm_status", "tries_now"}  # read-only keys are silently skipped
-        bad_keys = set(alarm_dict) - writable
+        keys = set(alarm_dict)
+        readonly = keys & ALARM_READONLY_KEYS
+        if readonly:
+            raise ValueError(f"Read-only alarm dict keys cannot be written: {readonly}")
+        bad_keys = keys - set(field_map)
         if bad_keys:
             raise ValueError(f"Unknown {prop_name} alarm keys: {bad_keys}")
+        if not keys:
+            raise ValueError("Alarm dict must include at least one writable key")
 
         base = get_device_name(drf)
         pairs: list[tuple[str, Value]] = []
@@ -1400,8 +1404,6 @@ class DPMHTTPBackend(Backend):
         # later field to overwrite the earlier one.
         if isinstance(value, dict):
             pairs = self._expand_alarm_dict(drf, value)
-            if not pairs:
-                return WriteResult(drf=drf, error_code=ERR_OK)
             for field_drf, field_val in pairs:
                 results = self.write_many([(field_drf, field_val)], timeout=timeout)
                 if not results[0].success:

@@ -1488,16 +1488,12 @@ class TestDictToAlarmSample:
         assert sample.value.mask == 0x0F
         assert sample.value.alarm_enable is False
 
-    def test_readonly_keys_skipped(self):
+    @pytest.mark.parametrize("key", ["alarm_status", "abort", "tries_now"])
+    def test_readonly_keys_rejected(self, key):
         from pacsys.backends.dmq import _dict_to_alarm_sample
 
-        sample = _dict_to_alarm_sample(
-            {"minimum": 1.0, "maximum": 2.0, "alarm_status": True, "abort": False, "tries_now": 5},
-            ref_id=1,
-            timestamp_ms=0,
-        )
-        assert isinstance(sample, AnalogAlarmSample_reply)
-        assert sample.value.minimum == 1.0
+        with pytest.raises(ValueError, match="Read-only alarm dict keys"):
+            _dict_to_alarm_sample({"minimum": 1.0, key: 1}, ref_id=1, timestamp_ms=0)
 
     def test_unknown_keys_raises(self):
         from pacsys.backends.dmq import _dict_to_alarm_sample

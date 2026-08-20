@@ -90,6 +90,28 @@ class TestValueToSetting:
             backend.close()
 
 
+class TestAlarmDictExpansion:
+    @pytest.mark.parametrize("key", ["alarm_status", "abort", "tries_now"])
+    def test_rejects_readonly_keys(self, key):
+        backend = DPMHTTPBackend.__new__(DPMHTTPBackend)
+
+        with pytest.raises(ValueError, match="Read-only alarm dict keys"):
+            backend.write("Z:TEST.ANALOG", {key: 1})
+
+    def test_rejects_empty_dict(self):
+        backend = DPMHTTPBackend.__new__(DPMHTTPBackend)
+
+        with pytest.raises(ValueError, match="at least one writable key"):
+            backend.write("Z:TEST.ANALOG", {})
+
+    def test_accepts_shared_only_dict_when_property_identifies_type(self):
+        backend = DPMHTTPBackend.__new__(DPMHTTPBackend)
+
+        assert backend._expand_alarm_dict("Z:TEST.ANALOG", {"alarm_enable": True}) == [
+            ("Z:TEST.ANALOG.ALARM_ENABLE", 1)
+        ]
+
+
 # =============================================================================
 # Single Device Read Tests
 # =============================================================================

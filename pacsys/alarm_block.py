@@ -278,14 +278,8 @@ class AlarmBlock:
 
     @property
     def abort(self) -> bool:
-        """Abort flag (AB bit)."""
+        """Read-only abort flag (AB bit)."""
         return self._get_flag(AlarmFlags.ABORT)
-
-    @abort.setter
-    def abort(self, value: bool) -> None:
-        self._set_flag(AlarmFlags.ABORT, value)
-        if self._structured is not None:
-            self._structured["abort"] = value
 
     @property
     def abort_inhibit(self) -> bool:
@@ -708,29 +702,6 @@ class _AlarmModifyContext:
     Raw write is required for fields not in structured response (ftd, fe_data, etc.).
     """
 
-    # Fields available in structured response (can be written via structured write)
-    _STRUCTURED_FIELDS = frozenset(
-        {
-            "is_active",
-            "bypass",
-            "abort",
-            "abort_inhibit",
-            "tries_needed",
-            # min/max handled specially via engineering units
-        }
-    )
-
-    # Fields only in raw block (require raw write)
-    _RAW_ONLY_FIELDS = frozenset(
-        {
-            "ftd",
-            "fe_data",
-            "data_length",
-            "limit_type",
-            "data_type",
-        }
-    )
-
     def __init__(self, cls, device: str, backend: Backend | None, segment: int):
         self._cls = cls
         self._device = device
@@ -795,58 +766,97 @@ class _AlarmModifyContext:
         raw_changed = current_raw != self._initial_raw
         init_block = self._cls.from_bytes(self._initial_raw)
 
-        eng_changed = False
+        value1_eng_changed = False
+        value2_eng_changed = False
         struct_changed = self._block.tries_needed != init_block.tries_needed
         s = self._block._structured
         init = self._block._initial_structured
         if s is not None and init is not None:
             if self._cls is AnalogAlarm:
-                eng_changed = s.get("minimum") != init.get("minimum") or s.get("maximum") != init.get("maximum")
+                value1_eng_changed = s.get("minimum") != init.get("minimum")
+                value2_eng_changed = s.get("maximum") != init.get("maximum")
             elif isinstance(self._block, DigitalAlarm) and isinstance(init_block, DigitalAlarm):
-                eng_changed = self._block.nominal != init_block.nominal or self._block.mask != init_block.mask
-            for key in ("alarm_enable", "abort", "abort_inhibit"):
+                value1_eng_changed = self._block.nominal != init_block.nominal
+                value2_eng_changed = self._block.mask != init_block.mask
+            for key in ("alarm_enable", "abort_inhibit"):
                 if s.get(key) != init.get(key):
                     struct_changed = True
                     break
+        eng_changed = value1_eng_changed or value2_eng_changed
 
         if s is None:
             if raw_changed:
                 self._write_structured(backend, name, prop)
             return False
 
-        # Check if raw-only fields changed (ftd, fe_data, etc.)
-        raw_only_changed = False
-        if raw_changed:
-            if self._block.ftd.to_word() != init_block.ftd.to_word():
-                raw_only_changed = True
-            if self._block.fe_data != init_block.fe_data:
-                raw_only_changed = True
-            if self._block.data_length != init_block.data_length:
-                raw_only_changed = True
-            if isinstance(self._block, AnalogAlarm) and isinstance(init_block, AnalogAlarm):
-                if self._block.limit_type != init_block.limit_type:
-                    raw_only_changed = True
+        value1_raw_changed = False
+        value2_raw_changed = False
+        if isinstance(self._block, AnalogAlarm) and isinstance(init_block, AnalogAlarm):
+            value1_raw_changed = self._block.value1_raw != init_block.value1_raw
+            value2_raw_changed = self._block.value2_raw != init_block.value2_raw
+            if value1_raw_changed and value1_eng_changed:
+                raise ValueError("Cannot change both raw value1 and engineering minimum")
+            if value2_raw_changed and value2_eng_changed:
+                raise ValueError("Cannot change both raw value2 and engineering maximum")
+
+        data_length_changed = self._block.data_length != init_block.data_length
+        data_type_changed = (
+            isinstance(self._block, AnalogAlarm)
+            and isinstance(init_block, AnalogAlarm)
+            and self._block.data_type != init_block.data_type
+        )
+        if eng_changed and (data_length_changed or data_type_changed):
+            raise ValueError("Cannot change engineering limits with data_length or data_type")
+
+        ftd_changed = self._block.ftd.to_word() != init_block.ftd.to_word()
+        fe_data_changed = self._block.fe_data != init_block.fe_data
+        tries_now_changed = self._block.tries_now != init_block.tries_now
+        changed_flags = self._block.flags ^ init_block.flags
+        structured_flag_mask = 0
+        if s is not None and init is not None:
+            if s.get("alarm_enable") != init.get("alarm_enable"):
+                structured_flag_mask |= int(AlarmFlags.ENABLE)
+            if s.get("abort_inhibit") != init.get("abort_inhibit"):
+                structured_flag_mask |= int(AlarmFlags.ABORT_INHIBIT)
+        raw_flag_mask = changed_flags & ~structured_flag_mask
+        raw_only_changed = any(
+            (
+                raw_flag_mask,
+                ftd_changed,
+                fe_data_changed,
+                tries_now_changed,
+                value1_raw_changed,
+                value2_raw_changed,
+            )
+        )
 
         if raw_only_changed and (eng_changed or struct_changed):
             # Apply server transforms before patching raw-only fields.
             self._write_structured(backend, name, prop)
             raw_read_drf = f"{name}.{prop}{{{offset}:20}}.RAW@I"
             fresh = backend.read(raw_read_drf)
-            if isinstance(fresh, bytes):
-                patched = self._cls.from_bytes(fresh)
-            else:
-                patched = self._cls.from_bytes(current_raw)
-            # Keep fresh analog value bytes from the server-side transform.
-            patched.ftd = self._block.ftd
-            patched.fe_data = self._block.fe_data
-            patched.data_length = self._block.data_length
-            patched.tries_needed = self._block.tries_needed
-            # Digital values depend on data_length, so apply them afterward.
+            if not isinstance(fresh, bytes):
+                raise TypeError(f"Expected bytes, got {type(fresh).__name__}")
+            patched = self._cls.from_bytes(fresh)
+            patched.flags = (patched.flags & ~raw_flag_mask) | (self._block.flags & raw_flag_mask)
+            if ftd_changed:
+                patched.ftd = self._block.ftd
+            if fe_data_changed:
+                patched.fe_data = self._block.fe_data
+            if tries_now_changed:
+                patched.tries_now = self._block.tries_now
+            if self._block.tries_needed != init_block.tries_needed:
+                patched.tries_needed = self._block.tries_needed
             if isinstance(self._block, DigitalAlarm) and isinstance(patched, DigitalAlarm):
-                patched.nominal = self._block.nominal
-                patched.mask = self._block.mask
-            if isinstance(self._block, AnalogAlarm) and isinstance(patched, AnalogAlarm):
-                patched.limit_type = self._block.limit_type
+                if value1_eng_changed:
+                    patched.nominal = self._block.nominal
+                if value2_eng_changed:
+                    patched.mask = self._block.mask
+            elif isinstance(self._block, AnalogAlarm) and isinstance(patched, AnalogAlarm):
+                if value1_raw_changed:
+                    patched.value1_raw = self._block.value1_raw
+                if value2_raw_changed:
+                    patched.value2_raw = self._block.value2_raw
             raw_write_drf = f"{name}.{prop}{{{offset}:20}}.RAW@N"
             result = backend.write(raw_write_drf, patched.to_bytes())
             if not result.success:
@@ -887,7 +897,6 @@ class _AlarmModifyContext:
                 "minimum": s["minimum"],
                 "maximum": s["maximum"],
                 "alarm_enable": s["alarm_enable"],
-                "abort": s["abort"],
                 "abort_inhibit": s["abort_inhibit"],
                 "tries_needed": self._block.tries_needed,
             }
@@ -897,7 +906,6 @@ class _AlarmModifyContext:
                 "nominal": self._block.nominal,
                 "mask": self._block.mask,
                 "alarm_enable": s["alarm_enable"],
-                "abort": s["abort"],
                 "abort_inhibit": s["abort_inhibit"],
                 "tries_needed": self._block.tries_needed,
             }
