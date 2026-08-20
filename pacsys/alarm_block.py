@@ -42,6 +42,13 @@ def _get_backend(backend: Backend | None) -> Backend:
     return _get_global_backend()
 
 
+def _require_structured_segment(segment: int) -> None:
+    if segment != 0:
+        raise ValueError(
+            "Structured alarm access supports only segment=0; use raw alarm-block access for other segments"
+        )
+
+
 __all__ = [
     "AlarmFlags",
     "DataLength",
@@ -488,6 +495,8 @@ class AnalogAlarm(AlarmBlock):
             DeviceError: If device has no analog alarm (DBM_NOPROP) or other error
             TypeError: If response is not bytes
         """
+        _require_structured_segment(segment)
+
         from pacsys.drf_utils import get_device_name
         from pacsys.errors import DeviceError
 
@@ -546,6 +555,7 @@ class AnalogAlarm(AlarmBlock):
             backend: Optional backend. If None, uses global default.
             segment: Alarm segment index (default 0)
         """
+        _require_structured_segment(segment)
         return _AlarmModifyContext(cls, device, backend, segment)
 
     def __repr__(self) -> str:
@@ -619,6 +629,8 @@ class DigitalAlarm(AlarmBlock):
             DeviceError: If device has no digital alarm (DBM_NOPROP) or other error
             TypeError: If response is not bytes
         """
+        _require_structured_segment(segment)
+
         from pacsys.drf_utils import get_device_name
         from pacsys.errors import DeviceError
 
@@ -677,6 +689,7 @@ class DigitalAlarm(AlarmBlock):
             backend: Optional backend. If None, uses global default.
             segment: Alarm segment index (default 0)
         """
+        _require_structured_segment(segment)
         return _AlarmModifyContext(cls, device, backend, segment)
 
     def __repr__(self) -> str:

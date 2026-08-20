@@ -267,6 +267,32 @@ class TestEngineeringUnits:
         assert alarm._structured["abort_inhibit"] is True
 
 
+class TestAlarmSegments:
+    @pytest.mark.parametrize("alarm_cls", [AnalogAlarm, DigitalAlarm])
+    def test_structured_read_rejects_nonzero_segment_before_io(self, alarm_cls, fake_backend):
+        with pytest.raises(ValueError, match="supports only segment=0"):
+            alarm_cls.read("Z:TEST", backend=fake_backend, segment=1)
+
+        assert fake_backend.reads == []
+        assert fake_backend.writes == []
+
+    @pytest.mark.parametrize("alarm_cls", [AnalogAlarm, DigitalAlarm])
+    def test_modify_rejects_nonzero_segment_immediately(self, alarm_cls, fake_backend):
+        with pytest.raises(ValueError, match="supports only segment=0"):
+            alarm_cls.modify("Z:TEST", backend=fake_backend, segment=1)
+
+        assert fake_backend.reads == []
+        assert fake_backend.writes == []
+
+    @pytest.mark.parametrize(
+        ("alarm", "prop"),
+        [(AnalogAlarm(), "ANALOG"), (DigitalAlarm(), "DIGITAL")],
+    )
+    def test_raw_write_supports_nonzero_segment(self, alarm, prop, fake_backend):
+        alarm.write("Z:TEST", backend=fake_backend, segment=2)
+        assert fake_backend.writes[0][0] == f"Z:TEST.{prop}{{40:20}}.RAW@N"
+
+
 class TestModifyContext:
     """Test _AlarmModifyContext read-modify-write pattern."""
 
