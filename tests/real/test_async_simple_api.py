@@ -29,6 +29,7 @@ from .devices import (
     TIMEOUT_READ,
     TIMEOUT_STREAM_EVENT,
     TIMEOUT_STREAM_ITER,
+    assert_valid_scalar,
     requires_dpm_http,
     requires_grpc,
 )
@@ -66,7 +67,7 @@ class TestAsyncSimpleAPIRead:
 
     async def test_read_scalar_device(self):
         value = await aio.read(SCALAR_DEVICE, timeout=TIMEOUT_READ)
-        assert isinstance(value, (int, float))
+        assert_valid_scalar(value)
 
     async def test_read_array_device(self):
         value = await aio.read(ARRAY_DEVICE, timeout=TIMEOUT_READ)
@@ -76,7 +77,7 @@ class TestAsyncSimpleAPIRead:
     async def test_read_with_device_object(self):
         device = AsyncDevice(SCALAR_DEVICE)
         value = await aio.read(device, timeout=TIMEOUT_READ)
-        assert isinstance(value, (int, float))
+        assert_valid_scalar(value)
 
     async def test_read_nonexistent_raises(self):
         with pytest.raises(DeviceError) as exc_info:
@@ -99,13 +100,13 @@ class TestAsyncSimpleAPIGet:
 
         assert isinstance(reading, Reading)
         assert reading.ok
-        assert reading.value is not None
+        assert_valid_scalar(reading.value)
 
     async def test_get_with_device_object(self):
         device = AsyncDevice(SCALAR_DEVICE)
         reading = await aio.get(device, timeout=TIMEOUT_READ)
         assert reading.ok
-        assert isinstance(reading.value, (int, float))
+        assert_valid_scalar(reading.value)
 
     async def test_get_nonexistent_returns_error_reading(self):
         reading = await aio.get(NONEXISTENT_DEVICE, timeout=TIMEOUT_READ)
@@ -128,6 +129,9 @@ class TestAsyncSimpleAPIGetMany:
         readings = await aio.get_many(devices, timeout=TIMEOUT_READ)
 
         assert len(readings) == 3
+        assert all(r.ok for r in readings)
+        for reading in readings:
+            assert_valid_scalar(reading.value)
 
     async def test_get_many_mixed_device_types(self):
         devices = [SCALAR_DEVICE, AsyncDevice(SCALAR_ELEMENT), AsyncDevice(SCALAR_DEVICE_2)]
@@ -135,6 +139,8 @@ class TestAsyncSimpleAPIGetMany:
 
         assert len(readings) == 3
         assert all(r.ok for r in readings)
+        for reading in readings:
+            assert_valid_scalar(reading.value)
 
     async def test_get_many_partial_failure(self):
         devices = [SCALAR_DEVICE, NONEXISTENT_DEVICE]
@@ -142,6 +148,7 @@ class TestAsyncSimpleAPIGetMany:
 
         assert len(readings) == 2
         assert readings[0].ok
+        assert_valid_scalar(readings[0].value)
         assert not readings[1].ok
 
 
@@ -158,14 +165,14 @@ class TestAsyncConfiguration:
     async def test_configure_before_use(self):
         aio.configure(timeout=TIMEOUT_BATCH)
         value = await aio.read(SCALAR_DEVICE)
-        assert value is not None
+        assert_valid_scalar(value)
 
     async def test_shutdown_allows_reconfigure(self):
         await aio.read(SCALAR_DEVICE, timeout=TIMEOUT_READ)
         await aio.shutdown()
         aio.configure(timeout=TIMEOUT_BATCH)
         value = await aio.read(SCALAR_DEVICE)
-        assert value is not None
+        assert_valid_scalar(value)
 
 
 # =============================================================================
@@ -181,13 +188,13 @@ class TestAsyncBackendFactories:
     async def test_dpm_factory(self):
         async with aio.dpm(host=DPM_TEST_HOST, port=DPM_TEST_PORT) as backend:
             value = await backend.read(SCALAR_DEVICE, timeout=TIMEOUT_READ)
-            assert isinstance(value, (int, float))
+            assert_valid_scalar(value)
 
     @requires_grpc
     async def test_grpc_factory(self):
         async with aio.grpc() as backend:
             value = await backend.read(SCALAR_DEVICE, timeout=TIMEOUT_READ)
-            assert isinstance(value, (int, float))
+            assert_valid_scalar(value)
 
 
 # =============================================================================
@@ -204,7 +211,7 @@ class TestAsyncGlobalBackendLifecycle:
         assert aio._global_async_backend is None
 
         value = await aio.read(SCALAR_DEVICE, timeout=TIMEOUT_READ)
-        assert value is not None
+        assert_valid_scalar(value)
         assert aio._global_async_backend is not None
 
     async def test_backend_reused_across_calls(self):
@@ -224,7 +231,7 @@ class TestAsyncGlobalBackendLifecycle:
         assert aio._global_async_backend is None
 
         value = await aio.read(SCALAR_DEVICE, timeout=TIMEOUT_READ)
-        assert value is not None
+        assert_valid_scalar(value)
 
 
 # =============================================================================
@@ -254,12 +261,15 @@ class TestAsyncModuleLevelStreaming:
             await handle.stop()
 
         assert len(readings) >= 1
+        for reading in readings:
+            assert_valid_scalar(reading.value)
 
     async def test_subscribe_iterator_mode(self):
         handle = await aio.subscribe([PERIODIC_DEVICE])
         async with handle:
             count = 0
             async for reading, _ in handle.readings(timeout=TIMEOUT_STREAM_ITER):
+                assert_valid_scalar(reading.value)
                 count += 1
                 if count >= 2:
                     break
@@ -281,4 +291,5 @@ class TestAsyncConcurrency:
         results = await asyncio.gather(*[aio.read(SCALAR_DEVICE, timeout=TIMEOUT_READ) for _ in range(5)])
 
         assert len(results) == 5
-        assert all(isinstance(v, (int, float)) for v in results)
+        for value in results:
+            assert_valid_scalar(value)

@@ -34,6 +34,7 @@ from .devices import (
     requires_dpm_http,
     requires_kerberos,
     requires_write_enabled,
+    wait_for_readback,
 )
 
 
@@ -379,13 +380,20 @@ class TestDeviceWrite:
             assert result.success
             print(f"  Write {new_value}: success={result.success}")
 
-            time.sleep(1.0)
-            readback = dev.setting(timeout=TIMEOUT_READ)
-            assert readback == pytest.approx(new_value, abs=0.01)
+            readback = wait_for_readback(
+                lambda: dev.setting(timeout=TIMEOUT_READ),
+                lambda value: value == pytest.approx(new_value, abs=0.01),
+                description=f"{dev.name} setting={new_value}",
+            )
             print(f"  Readback: {readback}")
         finally:
             result = dev.write(original, timeout=TIMEOUT_READ)
             assert result.success, f"Restore failed: {result.error_code} {result.message}"
+            wait_for_readback(
+                lambda: dev.setting(timeout=TIMEOUT_READ),
+                lambda value: value == pytest.approx(original, abs=0.01),
+                description=f"restore {dev.name} setting={original}",
+            )
 
     @pytest.mark.write
     @requires_write_enabled
@@ -401,15 +409,22 @@ class TestDeviceWrite:
             result = dev.write(raw_45, field="raw", timeout=TIMEOUT_READ)
             assert result.success
 
-            time.sleep(1.0)
-            readback_raw = dev.setting(field="raw", timeout=TIMEOUT_READ)
-            assert readback_raw == raw_45
+            wait_for_readback(
+                lambda: dev.setting(field="raw", timeout=TIMEOUT_READ),
+                lambda value: value == raw_45,
+                description=f"{dev.name} raw setting={raw_45.hex()}",
+            )
             readback_scaled = dev.setting(timeout=TIMEOUT_READ)
             assert readback_scaled == pytest.approx(45.0)
             print(f"  After raw write: scaled={readback_scaled}")
         finally:
             result = dev.write(original_raw, field="raw", timeout=TIMEOUT_READ)
             assert result.success, f"Restore failed: {result.error_code} {result.message}"
+            wait_for_readback(
+                lambda: dev.setting(field="raw", timeout=TIMEOUT_READ),
+                lambda value: value == original_raw,
+                description=f"restore {dev.name} raw setting",
+            )
 
     @pytest.mark.write
     @requires_write_enabled
@@ -429,6 +444,11 @@ class TestDeviceWrite:
         finally:
             result = dev.write(original, timeout=TIMEOUT_READ)
             assert result.success, f"Restore failed: {result.error_code} {result.message}"
+            wait_for_readback(
+                lambda: dev.setting(timeout=TIMEOUT_READ),
+                lambda value: value == pytest.approx(original, abs=0.01),
+                description=f"restore {dev.name} setting={original}",
+            )
 
     @pytest.mark.write
     @requires_write_enabled
@@ -464,20 +484,32 @@ class TestDeviceControl:
         """dev.on() / dev.off() toggle the on status bit."""
         dev = Device(SCALAR_DEVICE_3, backend=dpm_write_backend)
         initial = dev.digital_status(timeout=TIMEOUT_READ)
+        assert isinstance(initial.on, bool)
         print(f"\n  Initial on={initial.on}")
         try:
             result = dev.on(timeout=TIMEOUT_READ)
             assert result.success
-            time.sleep(1.0)
-            assert dev.status(field="on", timeout=TIMEOUT_READ) is True
+            wait_for_readback(
+                lambda: dev.status(field="on", timeout=TIMEOUT_READ),
+                lambda value: value is True,
+                description=f"{dev.name} on",
+            )
 
             result = dev.off(timeout=TIMEOUT_READ)
             assert result.success
-            time.sleep(1.0)
-            assert dev.status(field="on", timeout=TIMEOUT_READ) is False
+            wait_for_readback(
+                lambda: dev.status(field="on", timeout=TIMEOUT_READ),
+                lambda value: value is False,
+                description=f"{dev.name} off",
+            )
         finally:
             result = (dev.on if initial.on else dev.off)(timeout=TIMEOUT_READ)
             assert result.success, f"Restore failed: {result.error_code} {result.message}"
+            wait_for_readback(
+                lambda: dev.status(field="on", timeout=TIMEOUT_READ),
+                lambda value: value is initial.on,
+                description=f"restore {dev.name} on={initial.on}",
+            )
         print(f"  Restored on={initial.on}")
 
     @pytest.mark.write
@@ -486,19 +518,31 @@ class TestDeviceControl:
         """dev.positive() / dev.negative() toggle the positive status bit."""
         dev = Device(SCALAR_DEVICE_3, backend=dpm_write_backend)
         initial = dev.digital_status(timeout=TIMEOUT_READ)
+        assert isinstance(initial.positive, bool)
         try:
             result = dev.positive(timeout=TIMEOUT_READ)
             assert result.success
-            time.sleep(1.0)
-            assert dev.status(field="positive", timeout=TIMEOUT_READ) is True
+            wait_for_readback(
+                lambda: dev.status(field="positive", timeout=TIMEOUT_READ),
+                lambda value: value is True,
+                description=f"{dev.name} positive",
+            )
 
             result = dev.negative(timeout=TIMEOUT_READ)
             assert result.success
-            time.sleep(1.0)
-            assert dev.status(field="positive", timeout=TIMEOUT_READ) is False
+            wait_for_readback(
+                lambda: dev.status(field="positive", timeout=TIMEOUT_READ),
+                lambda value: value is False,
+                description=f"{dev.name} negative",
+            )
         finally:
             result = (dev.positive if initial.positive else dev.negative)(timeout=TIMEOUT_READ)
             assert result.success, f"Restore failed: {result.error_code} {result.message}"
+            wait_for_readback(
+                lambda: dev.status(field="positive", timeout=TIMEOUT_READ),
+                lambda value: value is initial.positive,
+                description=f"restore {dev.name} positive={initial.positive}",
+            )
 
     @pytest.mark.write
     @requires_write_enabled
@@ -506,19 +550,31 @@ class TestDeviceControl:
         """dev.ramp() / dev.dc() toggle the ramp status bit."""
         dev = Device(SCALAR_DEVICE_3, backend=dpm_write_backend)
         initial = dev.digital_status(timeout=TIMEOUT_READ)
+        assert isinstance(initial.ramp, bool)
         try:
             result = dev.ramp(timeout=TIMEOUT_READ)
             assert result.success
-            time.sleep(1.0)
-            assert dev.status(field="ramp", timeout=TIMEOUT_READ) is True
+            wait_for_readback(
+                lambda: dev.status(field="ramp", timeout=TIMEOUT_READ),
+                lambda value: value is True,
+                description=f"{dev.name} ramp",
+            )
 
             result = dev.dc(timeout=TIMEOUT_READ)
             assert result.success
-            time.sleep(1.0)
-            assert dev.status(field="ramp", timeout=TIMEOUT_READ) is False
+            wait_for_readback(
+                lambda: dev.status(field="ramp", timeout=TIMEOUT_READ),
+                lambda value: value is False,
+                description=f"{dev.name} dc",
+            )
         finally:
             result = (dev.ramp if initial.ramp else dev.dc)(timeout=TIMEOUT_READ)
             assert result.success, f"Restore failed: {result.error_code} {result.message}"
+            wait_for_readback(
+                lambda: dev.status(field="ramp", timeout=TIMEOUT_READ),
+                lambda value: value is initial.ramp,
+                description=f"restore {dev.name} ramp={initial.ramp}",
+            )
 
     @pytest.mark.write
     @requires_write_enabled
@@ -529,7 +585,6 @@ class TestDeviceControl:
         assert result.success
         print(f"\n  RESET: success={result.success}")
 
-        time.sleep(1.0)
         status = dev.status(timeout=TIMEOUT_READ)
         assert isinstance(status, dict)
         assert "on" in status
@@ -540,6 +595,7 @@ class TestDeviceControl:
         """dev.on(verify=True) verifies STATUS.ON is True after write."""
         dev = Device(SCALAR_DEVICE_3, backend=dpm_write_backend)
         initial_on = dev.status(field="on", timeout=TIMEOUT_READ)
+        assert isinstance(initial_on, bool)
         try:
             result = dev.on(verify=True, timeout=TIMEOUT_READ)
             assert result.success
@@ -549,6 +605,11 @@ class TestDeviceControl:
         finally:
             result = (dev.on if initial_on else dev.off)(timeout=TIMEOUT_READ)
             assert result.success, f"Restore failed: {result.error_code} {result.message}"
+            wait_for_readback(
+                lambda: dev.status(field="on", timeout=TIMEOUT_READ),
+                lambda value: value is initial_on,
+                description=f"restore {dev.name} on={initial_on}",
+            )
 
     @pytest.mark.write
     @requires_write_enabled
@@ -561,20 +622,32 @@ class TestDeviceControl:
         """Toggle control pair via device.control() and verify status."""
         dev = Device(SCALAR_DEVICE_3, backend=dpm_write_backend)
         initial = dev.status(field=field, timeout=TIMEOUT_READ)
+        assert isinstance(initial, bool)
         print(f"\n  Initial {field}: {initial}")
         try:
             result = dev.control(cmd_true, timeout=TIMEOUT_READ)
             assert result.success
-            time.sleep(1.0)
-            assert dev.status(field=field, timeout=TIMEOUT_READ) is True
+            wait_for_readback(
+                lambda: dev.status(field=field, timeout=TIMEOUT_READ),
+                lambda value: value is True,
+                description=f"{dev.name} {field}=True",
+            )
 
             result = dev.control(cmd_false, timeout=TIMEOUT_READ)
             assert result.success
-            time.sleep(1.0)
-            assert dev.status(field=field, timeout=TIMEOUT_READ) is False
+            wait_for_readback(
+                lambda: dev.status(field=field, timeout=TIMEOUT_READ),
+                lambda value: value is False,
+                description=f"{dev.name} {field}=False",
+            )
         finally:
             result = dev.control(cmd_true if initial else cmd_false, timeout=TIMEOUT_READ)
             assert result.success, f"Restore failed: {result.error_code} {result.message}"
+            wait_for_readback(
+                lambda: dev.status(field=field, timeout=TIMEOUT_READ),
+                lambda value: value is initial,
+                description=f"restore {dev.name} {field}={initial}",
+            )
 
 
 # =============================================================================
@@ -605,9 +678,16 @@ class TestDeviceAlarmWrite:
             result = dpm_write_backend.write(f"{ANALOG_ALARM_SETPOINT}.MAX", new_max, timeout=TIMEOUT_READ)
             assert result.success
 
-            time.sleep(1.0)
-            after = dev.analog_alarm(timeout=TIMEOUT_READ)
-            assert after["maximum"] == pytest.approx(new_max)
+            wait_for_readback(
+                lambda: dev.analog_alarm(timeout=TIMEOUT_READ),
+                lambda value: value["maximum"] == pytest.approx(new_max),
+                description=f"{dev.name} alarm maximum={new_max}",
+            )
         finally:
             result = dpm_write_backend.write(f"{ANALOG_ALARM_SETPOINT}.MAX", orig_max, timeout=TIMEOUT_READ)
             assert result.success, f"Restore failed: {result.error_code} {result.message}"
+            wait_for_readback(
+                lambda: dev.analog_alarm(timeout=TIMEOUT_READ),
+                lambda value: value["maximum"] == pytest.approx(orig_max),
+                description=f"restore {dev.name} alarm maximum={orig_max}",
+            )

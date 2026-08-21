@@ -41,6 +41,7 @@ from .devices import (
     TIMEOUT_STREAM_ITER,
     requires_kerberos,
     requires_write_enabled,
+    wait_for_readback_async,
 )
 
 # =============================================================================
@@ -490,21 +491,23 @@ class TestAsyncBackendWrite:
         read_drf = strip_event(SCALAR_SETPOINT)
         original = await async_write_backend_cls.read(read_drf, timeout=TIMEOUT_READ)
 
-        new_value = original + 0.1
-        result = await async_write_backend_cls.write(SCALAR_SETPOINT, new_value, timeout=TIMEOUT_READ)
-        assert result.success
-
-        await asyncio.sleep(0.5)
-        readback = await async_write_backend_cls.read(read_drf, timeout=TIMEOUT_READ)
-        assert abs(readback - new_value) < 0.01, f"Write did not take effect: wrote {new_value}, read back {readback}"
-
-        # Restore original value
-        result2 = await async_write_backend_cls.write(SCALAR_SETPOINT, original, timeout=TIMEOUT_READ)
-        assert result2.success
-
-        await asyncio.sleep(0.5)
-        restored = await async_write_backend_cls.read(read_drf, timeout=TIMEOUT_READ)
-        assert abs(restored - original) < 0.01, f"Restore failed: wrote {original}, read back {restored}"
+        try:
+            new_value = original + 0.1
+            result = await async_write_backend_cls.write(SCALAR_SETPOINT, new_value, timeout=TIMEOUT_READ)
+            assert result.success
+            await wait_for_readback_async(
+                lambda: async_write_backend_cls.read(read_drf, timeout=TIMEOUT_READ),
+                lambda value: value == pytest.approx(new_value, abs=0.01),
+                description=f"setting={new_value}",
+            )
+        finally:
+            result = await async_write_backend_cls.write(SCALAR_SETPOINT, original, timeout=TIMEOUT_READ)
+            assert result.success, f"Restore failed: {result.error_code} {result.message}"
+            await wait_for_readback_async(
+                lambda: async_write_backend_cls.read(read_drf, timeout=TIMEOUT_READ),
+                lambda value: value == pytest.approx(original, abs=0.01),
+                description=f"restore setting={original}",
+            )
 
     @pytest.mark.write
     @requires_write_enabled
@@ -515,23 +518,23 @@ class TestAsyncBackendWrite:
         assert isinstance(original_raw, bytes)
         assert len(original_raw) > 0
 
-        new_value = original_scaled + 1.0
-        result = await async_write_backend_cls.write(SCALAR_SETPOINT, new_value, timeout=TIMEOUT_READ)
-        assert result.success
-
-        await asyncio.sleep(0.5)
-        new_raw = await async_write_backend_cls.read(SCALAR_SETPOINT_RAW, timeout=TIMEOUT_READ)
-        assert new_raw != original_raw, (
-            f"Raw bytes unchanged after scaled write: {original_raw.hex()} -> {new_raw.hex()}"
-        )
-
-        # Restore
-        result2 = await async_write_backend_cls.write(SCALAR_SETPOINT, original_scaled, timeout=TIMEOUT_READ)
-        assert result2.success
-
-        await asyncio.sleep(0.5)
-        restored_raw = await async_write_backend_cls.read(SCALAR_SETPOINT_RAW, timeout=TIMEOUT_READ)
-        assert restored_raw == original_raw, f"Restore failed: expected {original_raw.hex()}, got {restored_raw.hex()}"
+        try:
+            new_value = original_scaled + 1.0
+            result = await async_write_backend_cls.write(SCALAR_SETPOINT, new_value, timeout=TIMEOUT_READ)
+            assert result.success
+            await wait_for_readback_async(
+                lambda: async_write_backend_cls.read(SCALAR_SETPOINT_RAW, timeout=TIMEOUT_READ),
+                lambda value: value != original_raw,
+                description="raw setting change",
+            )
+        finally:
+            result = await async_write_backend_cls.write(SCALAR_SETPOINT, original_scaled, timeout=TIMEOUT_READ)
+            assert result.success, f"Restore failed: {result.error_code} {result.message}"
+            await wait_for_readback_async(
+                lambda: async_write_backend_cls.read(SCALAR_SETPOINT_RAW, timeout=TIMEOUT_READ),
+                lambda value: value == original_raw,
+                description="restore raw setting",
+            )
 
     @pytest.mark.write
     @requires_write_enabled
@@ -543,28 +546,33 @@ class TestAsyncBackendWrite:
         reading = await async_write_backend_cls.get(STATUS_CONTROL_DEVICE, timeout=TIMEOUT_READ)
         assert reading.ok, f"Failed to read status: {reading.message}"
         initial = reading.value.get(field)
+        assert isinstance(initial, bool)
 
-        # Set TRUE
-        result = await async_write_backend_cls.write(STATUS_CONTROL_DEVICE, cmd_true, timeout=TIMEOUT_READ)
-        assert result.success
+        try:
+            result = await async_write_backend_cls.write(STATUS_CONTROL_DEVICE, cmd_true, timeout=TIMEOUT_READ)
+            assert result.success
+            await wait_for_readback_async(
+                lambda: async_write_backend_cls.get(STATUS_CONTROL_DEVICE, timeout=TIMEOUT_READ),
+                lambda value: value.ok and value.value.get(field) is True,
+                description=f"{field}=True after {cmd_true.name}",
+            )
 
-        await asyncio.sleep(0.5)
-        status = await async_write_backend_cls.get(STATUS_CONTROL_DEVICE, timeout=TIMEOUT_READ)
-        assert status.ok, f"Failed to read status after {cmd_true.name}: {status.message}"
-        assert status.value.get(field) is True, f"Expected {field}=True after {cmd_true.name}"
-
-        # Set FALSE
-        result = await async_write_backend_cls.write(STATUS_CONTROL_DEVICE, cmd_false, timeout=TIMEOUT_READ)
-        assert result.success
-
-        await asyncio.sleep(0.5)
-        status = await async_write_backend_cls.get(STATUS_CONTROL_DEVICE, timeout=TIMEOUT_READ)
-        assert status.ok, f"Failed to read status after {cmd_false.name}: {status.message}"
-        assert status.value.get(field) is False, f"Expected {field}=False after {cmd_false.name}"
-
-        # Restore
-        restore = cmd_true if initial else cmd_false
-        await async_write_backend_cls.write(STATUS_CONTROL_DEVICE, restore, timeout=TIMEOUT_READ)
+            result = await async_write_backend_cls.write(STATUS_CONTROL_DEVICE, cmd_false, timeout=TIMEOUT_READ)
+            assert result.success
+            await wait_for_readback_async(
+                lambda: async_write_backend_cls.get(STATUS_CONTROL_DEVICE, timeout=TIMEOUT_READ),
+                lambda value: value.ok and value.value.get(field) is False,
+                description=f"{field}=False after {cmd_false.name}",
+            )
+        finally:
+            restore = cmd_true if initial else cmd_false
+            result = await async_write_backend_cls.write(STATUS_CONTROL_DEVICE, restore, timeout=TIMEOUT_READ)
+            assert result.success, f"Restore failed: {result.error_code} {result.message}"
+            await wait_for_readback_async(
+                lambda: async_write_backend_cls.get(STATUS_CONTROL_DEVICE, timeout=TIMEOUT_READ),
+                lambda value: value.ok and value.value.get(field) is initial,
+                description=f"restore {field}={initial}",
+            )
 
     @pytest.mark.write
     @requires_write_enabled
@@ -573,7 +581,6 @@ class TestAsyncBackendWrite:
         result = await async_write_backend_cls.write(STATUS_CONTROL_DEVICE, CONTROL_RESET, timeout=TIMEOUT_READ)
         assert result.success
 
-        await asyncio.sleep(0.5)
         status = await async_write_backend_cls.get(STATUS_CONTROL_DEVICE, timeout=TIMEOUT_READ)
         assert status.ok, f"Failed to read status after RESET: {status.message}"
         assert isinstance(status.value, dict)
@@ -617,8 +624,6 @@ class TestAsyncBackendWrite:
             assert all(r.ok for r in read3)
             w = await async_write_backend_cls.write(STATUS_CONTROL_DEVICE, BasicControl.NEGATIVE, timeout=TIMEOUT_READ)
             assert w.ok
-
-        await asyncio.sleep(1.0)
 
         try:
             await asyncio.wait_for(event.wait(), timeout=TIMEOUT_STREAM_EVENT)

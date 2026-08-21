@@ -7,7 +7,6 @@ get(), write(), control(), and fluent modifiers (with_backend, with_event, with_
 Mirrors test_device_api.py for async code.
 """
 
-import asyncio
 import math
 
 import pytest
@@ -33,6 +32,7 @@ from .devices import (
     requires_dpm_http,
     requires_kerberos,
     requires_write_enabled,
+    wait_for_readback_async,
 )
 
 
@@ -296,12 +296,19 @@ class TestAsyncDeviceWrite:
                 result = await dev.write(new_value, timeout=TIMEOUT_READ)
                 assert result.success
 
-                await asyncio.sleep(1.0)
-                readback = await dev.setting(timeout=TIMEOUT_READ)
-                assert readback == pytest.approx(new_value, abs=0.01)
+                await wait_for_readback_async(
+                    lambda: dev.setting(timeout=TIMEOUT_READ),
+                    lambda value: value == pytest.approx(new_value, abs=0.01),
+                    description=f"{dev.name} setting={new_value}",
+                )
             finally:
                 result = await dev.write(original, timeout=TIMEOUT_READ)
                 assert result.success, f"Restore failed: {result.error_code} {result.message}"
+                await wait_for_readback_async(
+                    lambda: dev.setting(timeout=TIMEOUT_READ),
+                    lambda value: value == pytest.approx(original, abs=0.01),
+                    description=f"restore {dev.name} setting={original}",
+                )
         finally:
             await backend.close()
 
@@ -324,6 +331,11 @@ class TestAsyncDeviceWrite:
             finally:
                 result = await dev.write(original, timeout=TIMEOUT_READ)
                 assert result.success, f"Restore failed: {result.error_code} {result.message}"
+                await wait_for_readback_async(
+                    lambda: dev.setting(timeout=TIMEOUT_READ),
+                    lambda value: value == pytest.approx(original, abs=0.01),
+                    description=f"restore {dev.name} setting={original}",
+                )
         finally:
             await backend.close()
 
@@ -360,14 +372,21 @@ class TestAsyncDeviceWrite:
                 result = await dev.write(raw_45, field="raw", timeout=TIMEOUT_READ)
                 assert result.success
 
-                await asyncio.sleep(1.0)
-                readback_raw = await dev.setting(field="raw", timeout=TIMEOUT_READ)
-                assert readback_raw == raw_45
+                await wait_for_readback_async(
+                    lambda: dev.setting(field="raw", timeout=TIMEOUT_READ),
+                    lambda value: value == raw_45,
+                    description=f"{dev.name} raw setting={raw_45.hex()}",
+                )
                 readback_scaled = await dev.setting(timeout=TIMEOUT_READ)
                 assert readback_scaled == pytest.approx(45.0)
             finally:
                 result = await dev.write(original_raw, field="raw", timeout=TIMEOUT_READ)
                 assert result.success, f"Restore failed: {result.error_code} {result.message}"
+                await wait_for_readback_async(
+                    lambda: dev.setting(field="raw", timeout=TIMEOUT_READ),
+                    lambda value: value == original_raw,
+                    description=f"restore {dev.name} raw setting",
+                )
         finally:
             await backend.close()
 
@@ -379,19 +398,31 @@ class TestAsyncDeviceWrite:
         try:
             dev = AsyncDevice(SCALAR_DEVICE_3, backend=backend)
             initial_on = await dev.status(field="on", timeout=TIMEOUT_READ)
+            assert isinstance(initial_on, bool)
             try:
                 result = await dev.on(timeout=TIMEOUT_READ)
                 assert result.success
-                await asyncio.sleep(1.0)
-                assert await dev.status(field="on", timeout=TIMEOUT_READ) is True
+                await wait_for_readback_async(
+                    lambda: dev.status(field="on", timeout=TIMEOUT_READ),
+                    lambda value: value is True,
+                    description=f"{dev.name} on",
+                )
 
                 result = await dev.off(timeout=TIMEOUT_READ)
                 assert result.success
-                await asyncio.sleep(1.0)
-                assert await dev.status(field="on", timeout=TIMEOUT_READ) is False
+                await wait_for_readback_async(
+                    lambda: dev.status(field="on", timeout=TIMEOUT_READ),
+                    lambda value: value is False,
+                    description=f"{dev.name} off",
+                )
             finally:
                 result = await (dev.on if initial_on else dev.off)(timeout=TIMEOUT_READ)
                 assert result.success, f"Restore failed: {result.error_code} {result.message}"
+                await wait_for_readback_async(
+                    lambda: dev.status(field="on", timeout=TIMEOUT_READ),
+                    lambda value: value is initial_on,
+                    description=f"restore {dev.name} on={initial_on}",
+                )
         finally:
             await backend.close()
 
@@ -403,19 +434,31 @@ class TestAsyncDeviceWrite:
         try:
             dev = AsyncDevice(SCALAR_DEVICE_3, backend=backend)
             initial_positive = await dev.status(field="positive", timeout=TIMEOUT_READ)
+            assert isinstance(initial_positive, bool)
             try:
                 result = await dev.positive(timeout=TIMEOUT_READ)
                 assert result.success
-                await asyncio.sleep(1.0)
-                assert await dev.status(field="positive", timeout=TIMEOUT_READ) is True
+                await wait_for_readback_async(
+                    lambda: dev.status(field="positive", timeout=TIMEOUT_READ),
+                    lambda value: value is True,
+                    description=f"{dev.name} positive",
+                )
 
                 result = await dev.negative(timeout=TIMEOUT_READ)
                 assert result.success
-                await asyncio.sleep(1.0)
-                assert await dev.status(field="positive", timeout=TIMEOUT_READ) is False
+                await wait_for_readback_async(
+                    lambda: dev.status(field="positive", timeout=TIMEOUT_READ),
+                    lambda value: value is False,
+                    description=f"{dev.name} negative",
+                )
             finally:
                 result = await (dev.positive if initial_positive else dev.negative)(timeout=TIMEOUT_READ)
                 assert result.success, f"Restore failed: {result.error_code} {result.message}"
+                await wait_for_readback_async(
+                    lambda: dev.status(field="positive", timeout=TIMEOUT_READ),
+                    lambda value: value is initial_positive,
+                    description=f"restore {dev.name} positive={initial_positive}",
+                )
         finally:
             await backend.close()
 
@@ -427,19 +470,31 @@ class TestAsyncDeviceWrite:
         try:
             dev = AsyncDevice(SCALAR_DEVICE_3, backend=backend)
             initial_ramp = await dev.status(field="ramp", timeout=TIMEOUT_READ)
+            assert isinstance(initial_ramp, bool)
             try:
                 result = await dev.ramp(timeout=TIMEOUT_READ)
                 assert result.success
-                await asyncio.sleep(1.0)
-                assert await dev.status(field="ramp", timeout=TIMEOUT_READ) is True
+                await wait_for_readback_async(
+                    lambda: dev.status(field="ramp", timeout=TIMEOUT_READ),
+                    lambda value: value is True,
+                    description=f"{dev.name} ramp",
+                )
 
                 result = await dev.dc(timeout=TIMEOUT_READ)
                 assert result.success
-                await asyncio.sleep(1.0)
-                assert await dev.status(field="ramp", timeout=TIMEOUT_READ) is False
+                await wait_for_readback_async(
+                    lambda: dev.status(field="ramp", timeout=TIMEOUT_READ),
+                    lambda value: value is False,
+                    description=f"{dev.name} dc",
+                )
             finally:
                 result = await (dev.ramp if initial_ramp else dev.dc)(timeout=TIMEOUT_READ)
                 assert result.success, f"Restore failed: {result.error_code} {result.message}"
+                await wait_for_readback_async(
+                    lambda: dev.status(field="ramp", timeout=TIMEOUT_READ),
+                    lambda value: value is initial_ramp,
+                    description=f"restore {dev.name} ramp={initial_ramp}",
+                )
         finally:
             await backend.close()
 
@@ -453,7 +508,6 @@ class TestAsyncDeviceWrite:
             result = await dev.reset(timeout=TIMEOUT_READ)
             assert result.success
 
-            await asyncio.sleep(1.0)
             status = await dev.status(timeout=TIMEOUT_READ)
             assert isinstance(status, dict)
             assert "on" in status
@@ -468,6 +522,7 @@ class TestAsyncDeviceWrite:
         try:
             dev = AsyncDevice(SCALAR_DEVICE_3, backend=backend)
             initial_on = await dev.status(field="on", timeout=TIMEOUT_READ)
+            assert isinstance(initial_on, bool)
             try:
                 result = await dev.on(verify=True, timeout=TIMEOUT_READ)
                 assert result.success
@@ -476,6 +531,11 @@ class TestAsyncDeviceWrite:
             finally:
                 result = await (dev.on if initial_on else dev.off)(timeout=TIMEOUT_READ)
                 assert result.success, f"Restore failed: {result.error_code} {result.message}"
+                await wait_for_readback_async(
+                    lambda: dev.status(field="on", timeout=TIMEOUT_READ),
+                    lambda value: value is initial_on,
+                    description=f"restore {dev.name} on={initial_on}",
+                )
         finally:
             await backend.close()
 
@@ -509,11 +569,18 @@ class TestAsyncDeviceAlarmWrite:
                 result = await backend.write(f"{ANALOG_ALARM_SETPOINT}.MAX", new_max, timeout=TIMEOUT_READ)
                 assert result.success
 
-                await asyncio.sleep(1.0)
-                after = await dev.analog_alarm(timeout=TIMEOUT_READ)
-                assert after["maximum"] == pytest.approx(new_max)
+                await wait_for_readback_async(
+                    lambda: dev.analog_alarm(timeout=TIMEOUT_READ),
+                    lambda value: value["maximum"] == pytest.approx(new_max),
+                    description=f"{dev.name} alarm maximum={new_max}",
+                )
             finally:
                 result = await backend.write(f"{ANALOG_ALARM_SETPOINT}.MAX", orig_max, timeout=TIMEOUT_READ)
                 assert result.success, f"Restore failed: {result.error_code} {result.message}"
+                await wait_for_readback_async(
+                    lambda: dev.analog_alarm(timeout=TIMEOUT_READ),
+                    lambda value: value["maximum"] == pytest.approx(orig_max),
+                    description=f"restore {dev.name} alarm maximum={orig_max}",
+                )
         finally:
             await backend.close()

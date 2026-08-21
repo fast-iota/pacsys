@@ -13,7 +13,6 @@ This file contains DPM HTTP-specific tests:
 
 import math
 import threading
-import time
 
 import pytest
 
@@ -39,6 +38,7 @@ from .devices import (
     requires_dpm_http,
     requires_kerberos,
     requires_write_enabled,
+    wait_for_readback,
 )
 
 
@@ -147,8 +147,11 @@ class TestDPMHTTPBackendWrite:
                     result = backend.write(SCALAR_SETPOINT_RAW, raw_bytes, timeout=TIMEOUT_READ)
                     assert result.success, f"Write {raw_bytes.hex()} failed: {result.error_code} {result.message}"
 
-                    time.sleep(1.0)
-                    readback_raw = backend.read(SCALAR_SETPOINT_RAW, timeout=TIMEOUT_READ)
+                    readback_raw = wait_for_readback(
+                        lambda: backend.read(SCALAR_SETPOINT_RAW, timeout=TIMEOUT_READ),
+                        lambda value, expected=raw_bytes: value == expected,
+                        description=f"raw setting={raw_bytes.hex()}",
+                    )
                     readback_scaled = backend.read(read_drf, timeout=TIMEOUT_READ)
                     assert readback_raw == raw_bytes, (
                         f"Raw mismatch: wrote {raw_bytes.hex()}, read {readback_raw.hex()}"
@@ -157,6 +160,11 @@ class TestDPMHTTPBackendWrite:
             finally:
                 result = backend.write(SCALAR_SETPOINT_RAW, original_raw, timeout=TIMEOUT_READ)
                 assert result.success, f"Restore failed: {result.error_code} {result.message}"
+                wait_for_readback(
+                    lambda: backend.read(SCALAR_SETPOINT_RAW, timeout=TIMEOUT_READ),
+                    lambda value: value == original_raw,
+                    description="restore raw setting",
+                )
         finally:
             backend.close()
 
@@ -177,14 +185,21 @@ class TestDPMHTTPBackendWrite:
                 result = backend.write(f"{alarm_drf}.MAX", new_max, timeout=TIMEOUT_READ)
                 assert result.success
 
-                time.sleep(1.0)
-                after = backend.get(alarm_drf, timeout=TIMEOUT_READ)
+                after = wait_for_readback(
+                    lambda: backend.get(alarm_drf, timeout=TIMEOUT_READ),
+                    lambda value: value.ok and value.value["maximum"] == pytest.approx(new_max),
+                    description=f"alarm maximum={new_max}",
+                )
                 assert after.ok
-                assert after.value["maximum"] == pytest.approx(new_max)
                 assert after.value["minimum"] == pytest.approx(reading.value["minimum"])
             finally:
                 result = backend.write(f"{alarm_drf}.MAX", orig_max, timeout=TIMEOUT_READ)
                 assert result.success, f"Restore failed: {result.error_code} {result.message}"
+                wait_for_readback(
+                    lambda: backend.get(alarm_drf, timeout=TIMEOUT_READ),
+                    lambda value: value.ok and value.value["maximum"] == pytest.approx(orig_max),
+                    description=f"restore alarm maximum={orig_max}",
+                )
         finally:
             backend.close()
 
@@ -198,28 +213,38 @@ class TestDPMHTTPBackendWrite:
             reading = backend.get(alarm_drf, timeout=TIMEOUT_READ)
             assert reading.ok, f"Failed to read alarm: {reading.message}"
             orig_inhibit = reading.value["abort_inhibit"]
+            assert isinstance(orig_inhibit, bool)
             try:
                 # Enable bypass
                 result = backend.write(f"{alarm_drf}.ABORT_INHIBIT", 1, timeout=TIMEOUT_READ)
                 assert result.success
 
-                time.sleep(1.0)
-                after_on = backend.get(alarm_drf, timeout=TIMEOUT_READ)
+                after_on = wait_for_readback(
+                    lambda: backend.get(alarm_drf, timeout=TIMEOUT_READ),
+                    lambda value: value.ok and value.value["abort_inhibit"] is True,
+                    description="alarm bypass enabled",
+                )
                 assert after_on.ok
-                assert after_on.value["abort_inhibit"] is True
 
                 # Disable bypass
                 result = backend.write(f"{alarm_drf}.ABORT_INHIBIT", 0, timeout=TIMEOUT_READ)
                 assert result.success
 
-                time.sleep(1.0)
-                after_off = backend.get(alarm_drf, timeout=TIMEOUT_READ)
+                after_off = wait_for_readback(
+                    lambda: backend.get(alarm_drf, timeout=TIMEOUT_READ),
+                    lambda value: value.ok and value.value["abort_inhibit"] is False,
+                    description="alarm bypass disabled",
+                )
                 assert after_off.ok
-                assert after_off.value["abort_inhibit"] is False
             finally:
                 restore = 1 if orig_inhibit else 0
                 result = backend.write(f"{alarm_drf}.ABORT_INHIBIT", restore, timeout=TIMEOUT_READ)
                 assert result.success, f"Restore failed: {result.error_code} {result.message}"
+                wait_for_readback(
+                    lambda: backend.get(alarm_drf, timeout=TIMEOUT_READ),
+                    lambda value: value.ok and value.value["abort_inhibit"] is orig_inhibit,
+                    description=f"restore alarm bypass={orig_inhibit}",
+                )
         finally:
             backend.close()
 
@@ -244,24 +269,34 @@ class TestDeviceDigitalStatus:
         try:
             dev = Device("Z:ACLTST", backend=backend)
             initial = dev.digital_status(timeout=TIMEOUT_READ)
+            assert isinstance(initial.on, bool)
             try:
                 # Turn ON and verify via digital_status
                 result = backend.write(STATUS_CONTROL_DEVICE, BasicControl.ON, timeout=TIMEOUT_READ)
                 assert result.success
-                time.sleep(1.0)
-                after_on = dev.digital_status(timeout=TIMEOUT_READ)
-                assert after_on.on is True, f"Expected on=True, got {after_on.on}"
+                wait_for_readback(
+                    lambda: dev.digital_status(timeout=TIMEOUT_READ),
+                    lambda value: value.on is True,
+                    description="digital status on",
+                )
 
                 # Turn OFF and verify
                 result = backend.write(STATUS_CONTROL_DEVICE, BasicControl.OFF, timeout=TIMEOUT_READ)
                 assert result.success
-                time.sleep(1.0)
-                after_off = dev.digital_status(timeout=TIMEOUT_READ)
-                assert after_off.on is False, f"Expected on=False, got {after_off.on}"
+                wait_for_readback(
+                    lambda: dev.digital_status(timeout=TIMEOUT_READ),
+                    lambda value: value.on is False,
+                    description="digital status off",
+                )
             finally:
                 restore = BasicControl.ON if initial.on else BasicControl.OFF
                 result = backend.write(STATUS_CONTROL_DEVICE, restore, timeout=TIMEOUT_READ)
                 assert result.success, f"Restore failed: {result.error_code} {result.message}"
+                wait_for_readback(
+                    lambda: dev.digital_status(timeout=TIMEOUT_READ),
+                    lambda value: value.on is initial.on,
+                    description=f"restore digital status on={initial.on}",
+                )
         finally:
             backend.close()
 

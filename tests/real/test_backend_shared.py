@@ -53,6 +53,7 @@ from .devices import (
     TIMEOUT_STREAM_ITER,
     requires_kerberos,
     requires_write_enabled,
+    wait_for_readback,
 )
 
 
@@ -682,21 +683,23 @@ class TestBackendWrite:
         read_drf = strip_event(SCALAR_SETPOINT)
         original = write_backend_cls.read(read_drf, timeout=TIMEOUT_READ)
 
-        new_value = original + 0.1
-        result = write_backend_cls.write(SCALAR_SETPOINT, new_value, timeout=TIMEOUT_READ)
-        assert result.success
-
-        time.sleep(0.5)
-        readback = write_backend_cls.read(read_drf, timeout=TIMEOUT_READ)
-        assert abs(readback - new_value) < 0.01, f"Write did not take effect: wrote {new_value}, read back {readback}"
-
-        # Restore original value
-        result2 = write_backend_cls.write(SCALAR_SETPOINT, original, timeout=TIMEOUT_READ)
-        assert result2.success
-
-        time.sleep(0.5)
-        restored = write_backend_cls.read(read_drf, timeout=TIMEOUT_READ)
-        assert abs(restored - original) < 0.01, f"Restore failed: wrote {original}, read back {restored}"
+        try:
+            new_value = original + 0.1
+            result = write_backend_cls.write(SCALAR_SETPOINT, new_value, timeout=TIMEOUT_READ)
+            assert result.success
+            wait_for_readback(
+                lambda: write_backend_cls.read(read_drf, timeout=TIMEOUT_READ),
+                lambda value: value == pytest.approx(new_value, abs=0.01),
+                description=f"setting={new_value}",
+            )
+        finally:
+            result = write_backend_cls.write(SCALAR_SETPOINT, original, timeout=TIMEOUT_READ)
+            assert result.success, f"Restore failed: {result.error_code} {result.message}"
+            wait_for_readback(
+                lambda: write_backend_cls.read(read_drf, timeout=TIMEOUT_READ),
+                lambda value: value == pytest.approx(original, abs=0.01),
+                description=f"restore setting={original}",
+            )
 
     @pytest.mark.write
     @requires_write_enabled
@@ -707,23 +710,23 @@ class TestBackendWrite:
         assert isinstance(original_raw, bytes)
         assert len(original_raw) > 0
 
-        new_value = original_scaled + 1.0
-        result = write_backend_cls.write(SCALAR_SETPOINT, new_value, timeout=TIMEOUT_READ)
-        assert result.success
-
-        time.sleep(0.5)
-        new_raw = write_backend_cls.read(SCALAR_SETPOINT_RAW, timeout=TIMEOUT_READ)
-        assert new_raw != original_raw, (
-            f"Raw bytes unchanged after scaled write: {original_raw.hex()} -> {new_raw.hex()}"
-        )
-
-        # Restore
-        result2 = write_backend_cls.write(SCALAR_SETPOINT, original_scaled, timeout=TIMEOUT_READ)
-        assert result2.success
-
-        time.sleep(0.5)
-        restored_raw = write_backend_cls.read(SCALAR_SETPOINT_RAW, timeout=TIMEOUT_READ)
-        assert restored_raw == original_raw, f"Restore failed: expected {original_raw.hex()}, got {restored_raw.hex()}"
+        try:
+            new_value = original_scaled + 1.0
+            result = write_backend_cls.write(SCALAR_SETPOINT, new_value, timeout=TIMEOUT_READ)
+            assert result.success
+            wait_for_readback(
+                lambda: write_backend_cls.read(SCALAR_SETPOINT_RAW, timeout=TIMEOUT_READ),
+                lambda value: value != original_raw,
+                description="raw setting change",
+            )
+        finally:
+            result = write_backend_cls.write(SCALAR_SETPOINT, original_scaled, timeout=TIMEOUT_READ)
+            assert result.success, f"Restore failed: {result.error_code} {result.message}"
+            wait_for_readback(
+                lambda: write_backend_cls.read(SCALAR_SETPOINT_RAW, timeout=TIMEOUT_READ),
+                lambda value: value == original_raw,
+                description="restore raw setting",
+            )
 
     @pytest.mark.write
     @requires_write_enabled
@@ -735,28 +738,33 @@ class TestBackendWrite:
         reading = write_backend_cls.get(STATUS_CONTROL_DEVICE, timeout=TIMEOUT_READ)
         assert reading.ok, f"Failed to read status: {reading.message}"
         initial = reading.value.get(field)
+        assert isinstance(initial, bool)
 
-        # Set TRUE
-        result = write_backend_cls.write(STATUS_CONTROL_DEVICE, cmd_true, timeout=TIMEOUT_READ)
-        assert result.success
+        try:
+            result = write_backend_cls.write(STATUS_CONTROL_DEVICE, cmd_true, timeout=TIMEOUT_READ)
+            assert result.success
+            wait_for_readback(
+                lambda: write_backend_cls.get(STATUS_CONTROL_DEVICE, timeout=TIMEOUT_READ),
+                lambda value: value.ok and value.value.get(field) is True,
+                description=f"{field}=True after {cmd_true.name}",
+            )
 
-        time.sleep(0.5)
-        status = write_backend_cls.get(STATUS_CONTROL_DEVICE, timeout=TIMEOUT_READ)
-        assert status.ok, f"Failed to read status after {cmd_true.name}: {status.message}"
-        assert status.value.get(field) is True, f"Expected {field}=True after {cmd_true.name}"
-
-        # Set FALSE
-        result = write_backend_cls.write(STATUS_CONTROL_DEVICE, cmd_false, timeout=TIMEOUT_READ)
-        assert result.success
-
-        time.sleep(0.5)
-        status = write_backend_cls.get(STATUS_CONTROL_DEVICE, timeout=TIMEOUT_READ)
-        assert status.ok, f"Failed to read status after {cmd_false.name}: {status.message}"
-        assert status.value.get(field) is False, f"Expected {field}=False after {cmd_false.name}"
-
-        # Restore
-        restore = cmd_true if initial else cmd_false
-        write_backend_cls.write(STATUS_CONTROL_DEVICE, restore, timeout=TIMEOUT_READ)
+            result = write_backend_cls.write(STATUS_CONTROL_DEVICE, cmd_false, timeout=TIMEOUT_READ)
+            assert result.success
+            wait_for_readback(
+                lambda: write_backend_cls.get(STATUS_CONTROL_DEVICE, timeout=TIMEOUT_READ),
+                lambda value: value.ok and value.value.get(field) is False,
+                description=f"{field}=False after {cmd_false.name}",
+            )
+        finally:
+            restore = cmd_true if initial else cmd_false
+            result = write_backend_cls.write(STATUS_CONTROL_DEVICE, restore, timeout=TIMEOUT_READ)
+            assert result.success, f"Restore failed: {result.error_code} {result.message}"
+            wait_for_readback(
+                lambda: write_backend_cls.get(STATUS_CONTROL_DEVICE, timeout=TIMEOUT_READ),
+                lambda value: value.ok and value.value.get(field) is initial,
+                description=f"restore {field}={initial}",
+            )
 
     @pytest.mark.write
     @requires_write_enabled
@@ -765,7 +773,6 @@ class TestBackendWrite:
         result = write_backend_cls.write(STATUS_CONTROL_DEVICE, CONTROL_RESET, timeout=TIMEOUT_READ)
         assert result.success
 
-        time.sleep(0.5)
         status = write_backend_cls.get(STATUS_CONTROL_DEVICE, timeout=TIMEOUT_READ)
         assert status.ok, f"Failed to read status after RESET: {status.message}"
         assert isinstance(status.value, dict)
@@ -805,8 +812,6 @@ class TestBackendWrite:
             assert all(r.ok for r in read3)
             write = write_backend_cls.write(STATUS_CONTROL_DEVICE, BasicControl.NEGATIVE, timeout=TIMEOUT_READ)
             assert write.ok
-
-        time.sleep(1.0)
 
         try:
             event.wait(timeout=TIMEOUT_STREAM_EVENT)

@@ -13,7 +13,6 @@ This file contains DMQ-specific tests:
 
 import math
 import threading
-import time
 
 import pytest
 
@@ -34,6 +33,7 @@ from .devices import (
     requires_dmq,
     requires_kerberos,
     requires_write_enabled,
+    wait_for_readback,
 )
 
 
@@ -204,17 +204,21 @@ class TestDMQBackendWrite:
                     result = backend.write(SCALAR_SETPOINT_RAW, val, timeout=TIMEOUT_READ)
                     assert result.success, f"Write {val} failed: {result.error_code} {result.message}"
 
-                    time.sleep(1.0)
+                    wait_for_readback(
+                        lambda: backend.read(read_drf, timeout=TIMEOUT_READ),
+                        lambda value, expected=val: value == pytest.approx(float(expected)),
+                        description=f"scaled setting={val}",
+                    )
                     raw = backend.read(SCALAR_SETPOINT_RAW, timeout=TIMEOUT_READ)
                     assert isinstance(raw, bytes)
-                    scaled = backend.read(read_drf, timeout=TIMEOUT_READ)
-                    assert scaled == pytest.approx(float(val))
             finally:
                 # DMQ rejects byte writes, so restore the exact engineering value.
                 result = backend.write(SCALAR_SETPOINT, original_scaled, timeout=TIMEOUT_READ)
                 assert result.success, f"Restore failed: {result.error_code} {result.message}"
-                time.sleep(1.0)
-                restored = backend.read(read_drf, timeout=TIMEOUT_READ)
-                assert restored == pytest.approx(original_scaled)
+                wait_for_readback(
+                    lambda: backend.read(read_drf, timeout=TIMEOUT_READ),
+                    lambda value: value == pytest.approx(original_scaled),
+                    description=f"restore scaled setting={original_scaled}",
+                )
         finally:
             backend.close()
