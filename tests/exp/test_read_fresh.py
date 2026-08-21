@@ -1,7 +1,7 @@
 """Tests for read_fresh."""
 
 import threading
-import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 import pytest
@@ -156,31 +156,53 @@ def fake():
     return FakeBackend()
 
 
+@contextmanager
+def _emit_after_subscriptions(fake, drfs, emit):
+    waiting = threading.Event()
+    subscribed = []
+    errors: list[BaseException] = []
+
+    def run():
+        try:
+            waiting.set()
+            subscribed.extend(fake.wait_for_subscription(drf) for drf in drfs)
+            if all(subscribed):
+                emit()
+        except BaseException as error:  # noqa: BLE001
+            errors.append(error)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    assert waiting.wait(timeout=1.0)
+    try:
+        yield
+    finally:
+        thread.join(timeout=2.0)
+        assert not thread.is_alive()
+        if errors:
+            raise errors[0]
+        assert subscribed == [True] * len(drfs)
+
+
 class TestReadFresh:
     def test_basic(self, fake):
-        def emitter():
-            time.sleep(0.02)
+        def emit():
             fake.emit_reading("M:OUTTMP@p,1000", 72.5)
 
-        t = threading.Thread(target=emitter, daemon=True)
-        t.start()
-        results = read_fresh(["M:OUTTMP@p,1000"], timeout=1.0, backend=fake)
+        with _emit_after_subscriptions(fake, ["M:OUTTMP@p,1000"], emit):
+            results = read_fresh(["M:OUTTMP@p,1000"], timeout=1.0, backend=fake)
         assert len(results) == 1
         assert results[0].value == 72.5
 
     def test_multiple_channels(self, fake):
-        def emitter():
-            time.sleep(0.02)
+        drfs = ["M:OUTTMP@p,1000", "G:AMANDA@p,1000"]
+
+        def emit():
             fake.emit_reading("M:OUTTMP@p,1000", 72.5)
             fake.emit_reading("G:AMANDA@p,1000", 1.5)
 
-        t = threading.Thread(target=emitter, daemon=True)
-        t.start()
-        results = read_fresh(
-            ["M:OUTTMP@p,1000", "G:AMANDA@p,1000"],
-            timeout=1.0,
-            backend=fake,
-        )
+        with _emit_after_subscriptions(fake, drfs, emit):
+            results = read_fresh(drfs, timeout=1.0, backend=fake)
         assert len(results) == 2
         assert results[0].value == 72.5
         assert results[1].value == 1.5
@@ -192,18 +214,16 @@ class TestReadFresh:
     def test_default_event_applied(self, fake):
         """default_event is applied to DRFs without events."""
 
-        def emitter():
-            time.sleep(0.02)
+        def emit():
             fake.emit_reading("M:OUTTMP.READING@p,1000", 72.5)
 
-        t = threading.Thread(target=emitter, daemon=True)
-        t.start()
-        results = read_fresh(
-            ["M:OUTTMP"],
-            default_event="p,1000",
-            timeout=1.0,
-            backend=fake,
-        )
+        with _emit_after_subscriptions(fake, ["M:OUTTMP.READING@p,1000"], emit):
+            results = read_fresh(
+                ["M:OUTTMP"],
+                default_event="p,1000",
+                timeout=1.0,
+                backend=fake,
+            )
         assert results[0].value == 72.5
 
     def test_empty_devices_raises(self, fake):
@@ -211,86 +231,57 @@ class TestReadFresh:
             read_fresh([], backend=fake)
 
     def test_preserves_order(self, fake):
-        def emitter():
-            time.sleep(0.02)
+        drfs = ["A:DEV@p,1000", "B:DEV@p,1000"]
+
+        def emit():
             # Emit in reverse order
             fake.emit_reading("B:DEV@p,1000", 2.0)
             fake.emit_reading("A:DEV@p,1000", 1.0)
 
-        t = threading.Thread(target=emitter, daemon=True)
-        t.start()
-        results = read_fresh(
-            ["A:DEV@p,1000", "B:DEV@p,1000"],
-            timeout=1.0,
-            backend=fake,
-        )
+        with _emit_after_subscriptions(fake, drfs, emit):
+            results = read_fresh(drfs, timeout=1.0, backend=fake)
         assert results[0].value == 1.0
         assert results[1].value == 2.0
-
-    def test_collects_all_readings(self, fake):
-        """With count=1, extra readings are still stored."""
-
-        def emitter():
-            time.sleep(0.02)
-            fake.emit_reading("M:OUTTMP@p,1000", 72.5)
-            fake.emit_reading("M:OUTTMP@p,1000", 99.0)
-            time.sleep(0.02)  # let second arrive
-
-        t = threading.Thread(target=emitter, daemon=True)
-        t.start()
-        results = read_fresh(["M:OUTTMP@p,1000"], timeout=1.0, backend=fake)
-        assert isinstance(results[0], FreshResult)
-        assert results[0].value is not None  # has at least one
 
 
 class TestReadFreshMultiCount:
     def test_count_collects_multiple(self, fake):
-        def emitter():
-            time.sleep(0.02)
+        def emit():
             for i in range(5):
                 fake.emit_reading("M:OUTTMP@p,1000", float(i))
-                time.sleep(0.01)
 
-        t = threading.Thread(target=emitter, daemon=True)
-        t.start()
-        results = read_fresh(["M:OUTTMP@p,1000"], count=5, timeout=2.0, backend=fake)
+        with _emit_after_subscriptions(fake, ["M:OUTTMP@p,1000"], emit):
+            results = read_fresh(["M:OUTTMP@p,1000"], count=5, timeout=2.0, backend=fake)
         assert len(results) == 1
         assert isinstance(results[0], FreshResult)
         assert len(results[0]) >= 5
         assert results[0].requested_count == 5
 
     def test_count_1_default(self, fake):
-        def emitter():
-            time.sleep(0.02)
+        def emit():
             fake.emit_reading("M:OUTTMP@p,1000", 72.5)
 
-        t = threading.Thread(target=emitter, daemon=True)
-        t.start()
-        results = read_fresh(["M:OUTTMP@p,1000"], timeout=1.0, backend=fake)
+        with _emit_after_subscriptions(fake, ["M:OUTTMP@p,1000"], emit):
+            results = read_fresh(["M:OUTTMP@p,1000"], timeout=1.0, backend=fake)
         assert isinstance(results[0], FreshResult)
         assert results[0].value == 72.5
         assert results[0].requested_count == 1
 
     def test_count_timeout_raises(self, fake):
-        def emitter():
-            time.sleep(0.02)
+        def emit():
             fake.emit_reading("M:OUTTMP@p,1000", 1.0)  # only 1
 
-        t = threading.Thread(target=emitter, daemon=True)
-        t.start()
-        with pytest.raises(TimeoutError):
-            read_fresh(["M:OUTTMP@p,1000"], count=10, timeout=0.2, backend=fake)
+        with _emit_after_subscriptions(fake, ["M:OUTTMP@p,1000"], emit):
+            with pytest.raises(TimeoutError):
+                read_fresh(["M:OUTTMP@p,1000"], count=10, timeout=0.2, backend=fake)
 
     def test_stats_on_fresh_result(self, fake):
-        def emitter():
-            time.sleep(0.02)
+        def emit():
             for v in [10.0, 20.0, 30.0]:
                 fake.emit_reading("M:OUTTMP@p,1000", v)
-                time.sleep(0.01)
 
-        t = threading.Thread(target=emitter, daemon=True)
-        t.start()
-        results = read_fresh(["M:OUTTMP@p,1000"], count=3, timeout=2.0, backend=fake)
+        with _emit_after_subscriptions(fake, ["M:OUTTMP@p,1000"], emit):
+            results = read_fresh(["M:OUTTMP@p,1000"], count=3, timeout=2.0, backend=fake)
         assert results[0].mean() == pytest.approx(20.0)
 
     def test_count_zero_raises(self, fake):

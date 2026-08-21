@@ -11,7 +11,6 @@ With writes:
 """
 
 import math
-import time
 
 import grpc
 import pytest
@@ -57,6 +56,7 @@ from .devices import (
     requires_grpc,
     requires_kerberos,
     requires_write_enabled,
+    wait_for_readback,
 )
 
 
@@ -431,16 +431,19 @@ class TestSupervisedProxyWrite:
             status = _stub_write(stub, SCALAR_SETPOINT, new_val)
             assert status == 0, f"Write failed: status_code={status}"
 
-            time.sleep(1.0)
-            readback = _stub_read_scalar(stub, read_drf)
-            assert readback == pytest.approx(new_val, abs=0.01)
+            wait_for_readback(
+                lambda: _stub_read_scalar(stub, read_drf),
+                lambda value: value == pytest.approx(new_val, abs=0.01),
+                description=f"proxied setting={new_val}",
+            )
         finally:
             status = _stub_write(stub, SCALAR_SETPOINT, original)
             assert status == 0, f"Restore failed: status_code={status}"
-            time.sleep(1.0)
-
-        restored = _stub_read_scalar(stub, read_drf)
-        assert restored == pytest.approx(original, abs=0.01)
+            wait_for_readback(
+                lambda: _stub_read_scalar(stub, read_drf),
+                lambda value: value == pytest.approx(original, abs=0.01),
+                description=f"restore proxied setting={original}",
+            )
 
     def test_write_changes_raw(self, write_proxy):
         """Write scaled value, verify raw bytes change, restore."""
@@ -456,16 +459,19 @@ class TestSupervisedProxyWrite:
             status = _stub_write(stub, SCALAR_SETPOINT, new_val)
             assert status == 0
 
-            time.sleep(1.0)
-            new_raw = _stub_read_raw(stub, SCALAR_SETPOINT_RAW)
-            assert new_raw != original_raw, "Raw bytes unchanged after write"
+            wait_for_readback(
+                lambda: _stub_read_raw(stub, SCALAR_SETPOINT_RAW),
+                lambda value: value != original_raw,
+                description="proxied raw setting change",
+            )
         finally:
             status = _stub_write(stub, SCALAR_SETPOINT_RAW, original_raw)
             assert status == 0, f"Restore failed: status_code={status}"
-            time.sleep(1.0)
-
-        restored_raw = _stub_read_raw(stub, SCALAR_SETPOINT_RAW)
-        assert restored_raw == original_raw
+            wait_for_readback(
+                lambda: _stub_read_raw(stub, SCALAR_SETPOINT_RAW),
+                lambda value: value == original_raw,
+                description="restore proxied raw setting",
+            )
 
     @pytest.mark.parametrize(
         ("cmd_true", "cmd_false", "field"),
@@ -477,25 +483,35 @@ class TestSupervisedProxyWrite:
         stub = write_proxy
         initial_status = _stub_read_status(stub, STATUS_CONTROL_DEVICE)
         initial = initial_status.get(field)
+        assert initial in {"True", "False"}
 
         try:
             # Set TRUE
             status = _stub_write(stub, STATUS_CONTROL_DEVICE, cmd_true)
             assert status == 0, f"Control {cmd_true} failed"
-            time.sleep(1.0)
-            st = _stub_read_status(stub, STATUS_CONTROL_DEVICE)
-            assert st.get(field) == "True", f"Expected {field}=True after {cmd_true}, got {st.get(field)}"
+            wait_for_readback(
+                lambda: _stub_read_status(stub, STATUS_CONTROL_DEVICE),
+                lambda value: value.get(field) == "True",
+                description=f"proxied {field}=True",
+            )
 
             # Set FALSE
             status = _stub_write(stub, STATUS_CONTROL_DEVICE, cmd_false)
             assert status == 0, f"Control {cmd_false} failed"
-            time.sleep(1.0)
-            st = _stub_read_status(stub, STATUS_CONTROL_DEVICE)
-            assert st.get(field) == "False", f"Expected {field}=False after {cmd_false}, got {st.get(field)}"
+            wait_for_readback(
+                lambda: _stub_read_status(stub, STATUS_CONTROL_DEVICE),
+                lambda value: value.get(field) == "False",
+                description=f"proxied {field}=False",
+            )
         finally:
             restore = cmd_true if initial == "True" else cmd_false
             status = _stub_write(stub, STATUS_CONTROL_DEVICE, restore)
             assert status == 0, f"Restore failed: status_code={status}"
+            wait_for_readback(
+                lambda: _stub_read_status(stub, STATUS_CONTROL_DEVICE),
+                lambda value: value.get(field) == initial,
+                description=f"restore proxied {field}={initial}",
+            )
 
     def test_control_reset(self, write_proxy):
         """RESET command succeeds and status is readable afterwards."""
@@ -503,7 +519,6 @@ class TestSupervisedProxyWrite:
         status = _stub_write(stub, STATUS_CONTROL_DEVICE, CONTROL_RESET)
         assert status == 0, f"RESET failed: status_code={status}"
 
-        time.sleep(1.0)
         st = _stub_read_status(stub, STATUS_CONTROL_DEVICE)
         assert "on" in st, f"Status missing 'on' key after RESET: {st}"
 

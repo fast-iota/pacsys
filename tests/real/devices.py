@@ -10,13 +10,20 @@ This module is the SINGLE SOURCE OF TRUTH for:
 All real tests should import from this module.
 """
 
+import asyncio
+import math
 import os
 import socket
+import time
+from collections.abc import Awaitable, Callable
+from typing import TypeVar
 
 import pytest
 
 from pacsys.acnet.errors import ERR_TIMEOUT
 from pacsys.types import BasicControl, Reading, ValueType
+
+_T = TypeVar("_T")
 
 # =============================================================================
 # DPM Test Server
@@ -484,6 +491,50 @@ requires_write_enabled = pytest.mark.skipif(
 # =============================================================================
 # Timing Helpers
 # =============================================================================
+
+
+def assert_valid_scalar(value: object) -> None:
+    """Assert a live scalar is numeric, non-boolean, and finite."""
+    assert isinstance(value, (int, float)) and not isinstance(value, bool)
+    assert math.isfinite(value)
+
+
+def wait_for_readback(
+    read: Callable[[], _T],
+    matches: Callable[[_T], bool],
+    *,
+    description: str,
+    timeout: float = 2.0,
+) -> _T:
+    """Poll a read until it matches or fail with the last value."""
+    deadline = time.monotonic() + timeout
+    while True:
+        value = read()
+        if matches(value):
+            return value
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            pytest.fail(f"Timed out waiting for {description}; last value: {value!r}")
+        time.sleep(min(0.05, remaining))
+
+
+async def wait_for_readback_async(
+    read: Callable[[], Awaitable[_T]],
+    matches: Callable[[_T], bool],
+    *,
+    description: str,
+    timeout: float = 2.0,
+) -> _T:
+    """Async counterpart to wait_for_readback()."""
+    deadline = time.monotonic() + timeout
+    while True:
+        value = await read()
+        if matches(value):
+            return value
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            pytest.fail(f"Timed out waiting for {description}; last value: {value!r}")
+        await asyncio.sleep(min(0.05, remaining))
 
 
 def assert_fast_response(elapsed: float, operation: str, threshold: float = EXPECTED_FAST_RESPONSE):
