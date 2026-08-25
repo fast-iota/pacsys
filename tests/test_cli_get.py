@@ -8,6 +8,7 @@ from unittest import mock
 
 import numpy as np
 
+from pacsys.errors import ReadError
 from pacsys.types import DeviceMeta, Reading, ValueType
 
 
@@ -81,6 +82,33 @@ class TestMultipleDevices:
         assert "G:AMANDA" in output
         assert "72.5" in output
         assert "1.23" in output
+
+    @mock.patch("pacsys.cli.get.make_backend")
+    def test_partial_timeout_prints_all_readings(self, mock_mb):
+        from pacsys.cli.get import main
+
+        readings = [
+            _make_reading(drf="M:OUTTMP", value=72.5, name="M:OUTTMP"),
+            _make_reading(drf="Z:NOTFND", value=None, error_code=-1, msg="Request timeout", name="Z:NOTFND"),
+        ]
+        backend = mock.MagicMock()
+        backend.get_many.side_effect = ReadError(readings, "Request timeout")
+        mock_mb.return_value = backend
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with (
+            mock.patch("sys.argv", ["acget", "M:OUTTMP", "Z:NOTFND"]),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
+            rc = main()
+
+        assert rc == 1
+        assert "M:OUTTMP" in out.getvalue()
+        assert "72.5" in out.getvalue()
+        assert "Z:NOTFND" in out.getvalue()
+        assert "Request timeout" in err.getvalue()
 
 
 class TestTerseOutput:

@@ -13,6 +13,7 @@ from pacsys.cli._common import (
 )
 from pacsys.drf3 import parse_request
 from pacsys.drf3.property import DRF_PROPERTY
+from pacsys.errors import ReadError
 
 
 def main() -> int:
@@ -87,6 +88,18 @@ def main() -> int:
                     has_error = True
     except KeyboardInterrupt:
         return 130
+    except ReadError as e:
+        for reading in e.readings:
+            print(
+                format_reading(
+                    reading,
+                    fmt=fmt,
+                    number_format=args.number_format,
+                    array_slice=array_slice,
+                )
+            )
+        print(f"Error: {e}", file=sys.stderr)
+        return EXIT_DEVICE_ERROR
     except Exception as e:  # noqa: BLE001
         print(f"Error: {e}", file=sys.stderr)
         return EXIT_DEVICE_ERROR
