@@ -1,9 +1,11 @@
+import json
 from types import SimpleNamespace
 from unittest import mock
 
 import pytest
 
 from pacsys.mcp._tools import tool_device_info, tool_read_device, tool_write_device
+from pacsys.supervised._audit import AuditLog
 from pacsys.supervised._policies import (
     DeviceAccessPolicy,
     ValueRangePolicy,
@@ -70,6 +72,25 @@ def test_write_device_denied_by_range(backend):
     assert result["ok"] is False
     assert "outside range" in result["error"].lower()
     assert not backend.was_written("Z:ACLTST.SETTING")
+
+
+def test_write_audit_records_allowed_and_denied_values(backend, tmp_path):
+    path = tmp_path / "mcp-audit.jsonl"
+    audit = AuditLog(str(path))
+    policies = [
+        DeviceAccessPolicy(patterns=["Z:ACLTST"], mode="allow", action="set"),
+        ValueRangePolicy(limits={"Z:ACLTST": (0.0, 50.0)}),
+    ]
+
+    assert tool_write_device(backend, "Z:ACLTST", 42.0, policies, audit)["ok"] is True
+    assert tool_write_device(backend, "Z:ACLTST", 999.0, policies, audit)["ok"] is False
+    audit.close()
+
+    entries = [json.loads(line) for line in path.read_text().splitlines()]
+    assert [(entry["allowed"], entry["values"][0]["value"]) for entry in entries] == [
+        (True, 42.0),
+        (False, 999.0),
+    ]
 
 
 def test_write_device_unknown_device(backend):

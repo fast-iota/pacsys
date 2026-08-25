@@ -19,6 +19,8 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+from pacsys.types import _value_to_json
+
 from ._policies import PolicyDecision, RequestContext
 
 logger = logging.getLogger(__name__)
@@ -69,7 +71,7 @@ class AuditLog:
         self._log_responses = log_responses
         self._flush_interval = flush_interval
         self._lock = threading.Lock()
-        self._json_file = None
+        self._json_file = self._path.open("a")  # noqa: SIM115
         self._proto_file = None
         self._writes_since_flush = 0
         self._seq = 0
@@ -90,6 +92,8 @@ class AuditLog:
                 "allowed": decision.allowed,
                 "reason": decision.reason,
             }
+            if ctx.values:
+                entry["values"] = [{"drf": drf, "value": _value_to_json(value)} for drf, value in ctx.values]
             self._write_json(entry)
 
             if self._proto_path is not None:

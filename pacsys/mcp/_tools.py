@@ -4,6 +4,7 @@ import logging
 
 from pacsys.backends import Backend
 from pacsys.drf_utils import get_device_name, prepare_for_write
+from pacsys.supervised._audit import AuditLog
 from pacsys.supervised._policies import (
     Policy,
     PolicyDecision,
@@ -14,6 +15,15 @@ from pacsys.supervised._policies import (
 from ._serialization import reading_to_dict, write_result_to_dict
 
 logger = logging.getLogger("pacsys.mcp")
+
+
+def _audit_write(audit_log: AuditLog | None, ctx: RequestContext, decision: PolicyDecision) -> None:
+    if audit_log is None:
+        return
+    try:
+        audit_log.log_request(ctx, decision)
+    except Exception:  # noqa: BLE001
+        logger.exception("write_device audit failed for drf=%s", ctx.drfs[0])
 
 
 def tool_read_device(backend: Backend, drf: str, policies: list[Policy]) -> dict:
@@ -57,7 +67,7 @@ def tool_write_device(
     drf: str,
     value: float | str | list,
     policies: list[Policy],
-    audit_log=None,
+    audit_log: AuditLog | None = None,
 ) -> dict:
     """Write a device value with policy enforcement. Returns a JSON-safe dict."""
     write_drf = prepare_for_write(drf)
@@ -82,12 +92,14 @@ def tool_write_device(
             decision = PolicyDecision(allowed=True, ctx=ctx)
     except ValueError as e:
         logger.exception("write_device policy failed for drf=%s", write_drf)
+        _audit_write(audit_log, ctx, PolicyDecision(allowed=False, reason=str(e)))
         return {"ok": False, "drf": write_drf, "error": str(e)}
 
     # Check if write was approved by any policy
     final_ctx = decision.ctx if decision.ctx is not None else ctx
     if not decision.allowed:
         reason = decision.reason or "Write denied by policy"
+        _audit_write(audit_log, ctx, PolicyDecision(allowed=False, reason=reason))
         logger.warning("write_device drf=%s device=%s denied reason=%s", write_drf, device_name, reason)
         return {"ok": False, "drf": write_drf, "error": reason}
 
@@ -97,10 +109,12 @@ def tool_write_device(
             reason = "No policy explicitly allows write operations"
         else:
             reason = f"No write policy approves: {device_name}"
+        _audit_write(audit_log, ctx, PolicyDecision(allowed=False, reason=reason))
         logger.warning("write_device drf=%s device=%s denied reason=%s", write_drf, device_name, reason)
         return {"ok": False, "drf": write_drf, "error": reason}
 
     # Execute write
+    _audit_write(audit_log, ctx, PolicyDecision(allowed=True, ctx=final_ctx))
     final_drf, final_value = final_ctx.values[0]
     try:
         result = backend.write(final_drf, final_value)

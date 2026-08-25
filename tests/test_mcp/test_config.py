@@ -14,6 +14,22 @@ def test_default_config():
     assert cfg.audit_log is None
 
 
+@pytest.mark.parametrize(
+    ("data", "error_type", "match"),
+    [
+        (
+            {"policies": {"write_devices": ["Z:ACLTST"], "value_range": {"Z:ACLTST": [0, 1]}}},
+            ValueError,
+            "value_range",
+        ),
+        ({"policies": {"write_devices": "Z:*"}}, TypeError, "must be an array"),
+    ],
+)
+def test_unsafe_policy_config_fails_closed(data, error_type, match):
+    with pytest.raises(error_type, match=match):
+        MCPConfig.from_dict(data)
+
+
 @pytest.mark.skipif(sys.version_info < (3, 11), reason="tomllib requires 3.11+")
 def test_load_from_toml_string():
     import tomllib
@@ -70,3 +86,10 @@ def test_build_policies_full():
     assert isinstance(policies[0], DeviceAccessPolicy)
     assert isinstance(policies[1], ValueRangePolicy)
     assert isinstance(policies[2], SlewRatePolicy)
+
+
+def test_transport_options_are_validated_after_overrides():
+    with pytest.raises(ValueError, match="only valid"):
+        MCPConfig(port=9090).finalized()
+
+    assert MCPConfig(transport="sse").finalized().port == 8000
