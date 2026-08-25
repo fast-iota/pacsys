@@ -88,20 +88,32 @@ class AsyncSubscriptionHandle:
     # -- Consumer API ----------------------------------------------------------
 
     async def readings(self, timeout: float | None = None) -> AsyncIterator[tuple[Reading, "AsyncSubscriptionHandle"]]:
+        """Yield buffered readings within one total wall-clock window."""
+        if self._callback_task is not None:
+            raise RuntimeError("Cannot iterate subscription with callback; readings are pushed to callback")
+
+        async for item in self._readings(timeout):
+            yield item
+
+    async def _readings(self, timeout: float | None = None) -> AsyncIterator[tuple[Reading, "AsyncSubscriptionHandle"]]:
+        deadline = None if timeout is None else time.monotonic() + timeout
         while True:
-            # Stop sentinel may not have been enqueued if queue was full
-            if self._stopped and self._queue.empty():
-                if self._exc is not None:
-                    raise self._exc
-                return
-            try:
-                item = await asyncio.wait_for(self._queue.get(), timeout=timeout)
-            except asyncio.TimeoutError:
+            if self._queue.empty():
                 if self._stopped:
+                    if self._exc is not None:
+                        raise self._exc
+                    return
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    return
+                try:
+                    item = await asyncio.wait_for(self._queue.get(), timeout=remaining)
+                except asyncio.TimeoutError:
                     if self._exc is not None:
                         raise self._exc from None
                     return
-                raise
+            else:
+                item = self._queue.get_nowait()
             if item is None:
                 if self._exc is not None:
                     raise self._exc
@@ -162,7 +174,7 @@ async def _callback_feeder(handle: AsyncSubscriptionHandle, callback, on_error) 
     is_async_err = inspect.iscoroutinefunction(on_error) if on_error else False
 
     try:
-        async for reading, h in handle.readings():
+        async for reading, h in handle._readings():
             try:
                 if is_async_cb:
                     await callback(reading, h)

@@ -46,13 +46,50 @@ class TestAsyncSubscriptionHandle:
         assert results == [1.0]
 
     @pytest.mark.asyncio
-    async def test_timeout(self):
+    async def test_timeout_is_total_window_and_returns_normally(self, make_reading):
         from pacsys.aio._subscription import AsyncSubscriptionHandle
 
         handle = AsyncSubscriptionHandle()
-        with pytest.raises(asyncio.TimeoutError):
-            async for _ in handle.readings(timeout=0.05):
-                pass
+
+        async def produce():
+            while True:
+                handle._dispatch(make_reading(1.0))
+                await asyncio.sleep(0.01)
+
+        async def consume():
+            return sum([1 async for _ in handle.readings(timeout=0.05)])
+
+        producer = asyncio.create_task(produce())
+        try:
+            readings = await asyncio.wait_for(consume(), timeout=0.2)
+        finally:
+            producer.cancel()
+            await asyncio.gather(producer, return_exceptions=True)
+        assert readings > 0
+
+    @pytest.mark.asyncio
+    async def test_timeout_zero_drains_buffer(self, make_reading):
+        from pacsys.aio._subscription import AsyncSubscriptionHandle
+
+        handle = AsyncSubscriptionHandle()
+        handle._dispatch(make_reading(1.0))
+        handle._dispatch(make_reading(2.0))
+
+        readings = [reading.value async for reading, _ in handle.readings(timeout=0)]
+        assert readings == [1.0, 2.0]
+
+    @pytest.mark.asyncio
+    async def test_callback_mode_cannot_iterate(self):
+        from pacsys.aio._subscription import AsyncSubscriptionHandle, _callback_feeder
+
+        handle = AsyncSubscriptionHandle()
+        handle._callback_task = asyncio.create_task(_callback_feeder(handle, lambda reading, h: None, None))
+        try:
+            with pytest.raises(RuntimeError, match="Cannot iterate subscription with callback"):
+                async for _ in handle.readings():
+                    pass
+        finally:
+            await handle.stop()
 
     @pytest.mark.asyncio
     async def test_overflow_drops(self, make_reading):
