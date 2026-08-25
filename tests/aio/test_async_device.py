@@ -1,5 +1,6 @@
 """Tests for AsyncDevice."""
 
+import asyncio
 from unittest import mock
 
 import pytest
@@ -106,6 +107,33 @@ class TestAsyncDeviceWrite:
         v = Verify(initial_delay=0.0, retry_delay=0.0)
         result = await device.write(72.5, verify=v)
         assert result.verified
+
+    @pytest.mark.asyncio
+    async def test_verify_context_does_not_skip_sibling_task_write(self):
+        from pacsys.verify import Verify
+
+        backend = AsyncFakeBackend()
+        backend.set_reading("M:VERIFY.SETTING", 123.0)
+        context_entered = asyncio.Event()
+        release_context = asyncio.Event()
+
+        async def hold_context():
+            with Verify(always=True, check_first=True, readback="M:VERIFY.SETTING@I"):
+                context_entered.set()
+                await release_context.wait()
+
+        async def write_sibling():
+            await context_entered.wait()
+            try:
+                return await AsyncDevice("M:TARGET", backend=backend).write(123.0)
+            finally:
+                release_context.set()
+
+        _, result = await asyncio.gather(hold_context(), write_sibling())
+
+        assert result.success
+        assert not result.skipped
+        assert backend.was_written("M:TARGET.SETTING")
 
     @pytest.mark.asyncio
     async def test_write_rejects_basic_control(self):

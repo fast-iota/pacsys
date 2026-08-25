@@ -3,12 +3,12 @@ Verify - write-and-verify configuration for Device write operations.
 
 Verify instances configure how a write is verified by reading back the value
 after writing. They can be used directly, as context managers (to set defaults
-for a block of code), or via the thread-local context stack.
+for a block of code), or via the task-local context stack.
 """
 
 from __future__ import annotations
 
-import threading
+from contextvars import ContextVar
 from dataclasses import dataclass
 from math import isfinite
 from numbers import Integral, Real
@@ -66,26 +66,23 @@ class Verify:
         return False
 
 
-# Thread-local context stack
-_local = threading.local()
+# Immutable values keep inherited asyncio task contexts independent.
+_verify_stack: ContextVar[tuple[Verify, ...]] = ContextVar("pacsys_verify_stack", default=())
 
 
 def _push_verify(v: Verify) -> None:
-    stack = getattr(_local, "stack", None)
-    if stack is None:
-        _local.stack = stack = []
-    stack.append(v)
+    _verify_stack.set((*_verify_stack.get(), v))
 
 
 def _pop_verify() -> None:
-    stack = getattr(_local, "stack", None)
+    stack = _verify_stack.get()
     if stack:
-        stack.pop()
+        _verify_stack.set(stack[:-1])
 
 
 def get_active_verify() -> Verify | None:
-    """Return the current Verify from the thread-local stack, or None."""
-    stack = getattr(_local, "stack", None)
+    """Return the current Verify from the task-local stack, or None."""
+    stack = _verify_stack.get()
     return stack[-1] if stack else None
 
 

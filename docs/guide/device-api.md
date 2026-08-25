@@ -197,6 +197,9 @@ with Verify(always=True, tolerance=0.1):
     dev.write(90.0, verify=False)  # explicitly disabled
 ```
 
+Verification contexts are isolated between threads and concurrent asyncio
+tasks. A child task created inside the block inherits its defaults.
+
 ### Control Verification
 
 Control commands verify by reading the corresponding STATUS field:
