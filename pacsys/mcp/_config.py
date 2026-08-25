@@ -23,7 +23,7 @@ logger = logging.getLogger("pacsys.mcp")
 
 _TOP_LEVEL_KEYS = frozenset({"server", "policies"})
 _SERVER_KEYS = frozenset({"transport", "port", "role", "audit_log"})
-_POLICY_KEYS = frozenset({"write_devices", "value_ranges", "slew_rates"})
+_POLICY_KEYS = frozenset({"write_devices", "value_ranges", "slew_rates", "allow_raw"})
 _SLEW_KEYS = frozenset({"max_step", "max_rate"})
 
 
@@ -56,6 +56,7 @@ class MCPConfig:
     write_devices: list[str] = field(default_factory=list)
     value_ranges: dict[str, tuple[float, float]] = field(default_factory=dict)
     slew_rates: dict[str, dict] = field(default_factory=dict)
+    allow_raw: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.transport not in ("stdio", "sse"):
@@ -72,6 +73,11 @@ class MCPConfig:
             hint = '; use an array such as ["Z:*"]' if isinstance(self.write_devices, str) else ""
             raise TypeError(f"policies.write_devices must be an array of device patterns{hint}")
         write_devices = [_nonempty_string(pattern, "policies.write_devices entry") for pattern in self.write_devices]
+
+        if not isinstance(self.allow_raw, (list, tuple)):
+            hint = '; use an array such as ["B:HS*"]' if isinstance(self.allow_raw, str) else ""
+            raise TypeError(f"policies.allow_raw must be an array of device patterns{hint}")
+        allow_raw = [_nonempty_string(pattern, "policies.allow_raw entry") for pattern in self.allow_raw]
 
         if not isinstance(self.value_ranges, dict):
             raise TypeError("policies.value_ranges must be a TOML table")
@@ -113,6 +119,7 @@ class MCPConfig:
         object.__setattr__(self, "write_devices", write_devices)
         object.__setattr__(self, "value_ranges", value_ranges)
         object.__setattr__(self, "slew_rates", slew_rates)
+        object.__setattr__(self, "allow_raw", allow_raw)
 
     def finalized(self) -> "MCPConfig":
         """Validate transport-specific options after CLI overrides."""
@@ -140,6 +147,7 @@ class MCPConfig:
             write_devices=policies.get("write_devices", []),
             value_ranges=policies.get("value_ranges", {}),
             slew_rates=policies.get("slew_rates", {}),
+            allow_raw=policies.get("allow_raw", []),
         )
 
 
@@ -160,12 +168,12 @@ def build_policies(cfg: MCPConfig) -> list[Policy]:
         policies.append(DeviceAccessPolicy(patterns=cfg.write_devices, mode="allow", action="set"))
 
     if cfg.value_ranges:
-        policies.append(ValueRangePolicy(limits=cfg.value_ranges))
+        policies.append(ValueRangePolicy(limits=cfg.value_ranges, allow_raw=cfg.allow_raw))
 
     if cfg.slew_rates:
         limits = {}
         for dev, params in cfg.slew_rates.items():
             limits[dev] = SlewLimit(**params)
-        policies.append(SlewRatePolicy(limits=limits))
+        policies.append(SlewRatePolicy(limits=limits, allow_raw=cfg.allow_raw))
 
     return policies
