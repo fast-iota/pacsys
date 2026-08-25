@@ -41,6 +41,8 @@ class DataLogger:
         self._flush_interval = flush_interval
         self._backend = backend
         self._lock = threading.Lock()
+        self._lifecycle_lock = threading.Lock()
+        self._writer_lock = threading.Lock()
         self._buffer: list[Reading] = []
         self._handle: SubscriptionHandle | None = None
         self._flush_thread: threading.Thread | None = None
@@ -62,34 +64,94 @@ class DataLogger:
 
     def start(self) -> None:
         """Start logging."""
-        if self._closed:
-            raise RuntimeError("DataLogger has been stopped and writer is closed; create a new instance")
-        if self.running:
-            raise RuntimeError("DataLogger is already running")
-        self._stopped = False
-        self._last_error = None
-        self._stop_event.clear()
-        be = resolve_backend(self._backend)
-        self._handle = be.subscribe(self._drfs, callback=self._on_reading)
-        self._flush_thread = threading.Thread(target=self._flush_loop, daemon=True)
-        self._flush_thread.start()
+        with self._lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("DataLogger has been stopped and writer is closed; create a new instance")
+            if self.running or (self._flush_thread is not None and self._flush_thread.is_alive()):
+                raise RuntimeError("DataLogger is already running")
+            with self._lock:
+                self._stopped = False
+                self._last_error = None
+            self._stop_event.clear()
+            be = resolve_backend(self._backend)
+            try:
+                self._handle = be.subscribe(self._drfs, callback=self._on_reading)
+                self._flush_thread = threading.Thread(target=self._flush_loop, daemon=True)
+                self._flush_thread.start()
+            except BaseException:
+                if self._handle is not None:
+                    try:
+                        self._handle.stop()
+                    except Exception:  # noqa: BLE001
+                        logger.exception("Error stopping subscription after DataLogger start failure")
+                self._handle = None
+                self._flush_thread = None
+                self._stop_event.set()
+                with self._lock:
+                    self._stopped = True
+                raise
 
     def stop(self) -> None:
         """Stop logging and flush remaining data."""
-        self._stopped = True
-        self._stop_event.set()
-        if self._handle is not None:
-            self._handle.stop()
-        if self._flush_thread is not None:
-            self._flush_thread.join(timeout=5.0)
-        self._flush_now()
-        self._writer.close()
-        self._closed = True
+        with self._lifecycle_lock:
+            if self._closed:
+                return
+            with self._lock:
+                self._stopped = True
+            self._stop_event.set()
+            handle_error = None
+            if self._handle is not None:
+                try:
+                    self._handle.stop()
+                except Exception as exc:  # noqa: BLE001
+                    handle_error = exc
+                    with self._lock:
+                        self._last_error = exc
+                    logger.exception("Error stopping DataLogger subscription")
+            if self._flush_thread is not None:
+                if self._flush_thread is threading.current_thread():
+                    error = RuntimeError("DataLogger cannot be stopped from its flush worker")
+                    with self._lock:
+                        self._last_error = error
+                    raise error
+                self._flush_thread.join(timeout=5.0)
+                if self._flush_thread.is_alive():
+                    error = RuntimeError("DataLogger flush worker did not stop; writer left open")
+                    with self._lock:
+                        self._last_error = error
+                    logger.error("%s", error)
+                    raise error
+
+            dropped = 0
+            while True:
+                with self._lock:
+                    if not self._buffer:
+                        break
+                dropped += self._flush_now()
+
+            if handle_error is not None:
+                raise RuntimeError("DataLogger subscription did not stop; writer left open") from handle_error
+
+            try:
+                with self._writer_lock:
+                    self._writer.close()
+            except Exception as exc:
+                with self._lock:
+                    self._last_error = exc
+                logger.exception("Error closing data logger writer")
+                raise
+
+            self._closed = True
+            self._handle = None
+            self._flush_thread = None
+            if dropped:
+                error = RuntimeError(f"Dropped {dropped} readings while stopping DataLogger")
+                raise error from self._last_error
 
     def _on_reading(self, reading: Reading, handle: SubscriptionHandle) -> None:
-        if self._stopped:
-            return
         with self._lock:
+            if self._stopped:
+                return
             self._buffer.append(reading)
 
     def _flush_loop(self) -> None:
@@ -98,21 +160,26 @@ class DataLogger:
 
     # TODO: distinguish conversion/validation failures (bad reading — quarantine it)
     # from transient I/O failures (retryable) so one poison reading cannot drop the batch
-    def _flush_now(self) -> None:
+    def _flush_now(self) -> int:
+        """Flush one buffered batch and return the number of dropped readings."""
         with self._lock:
             batch = self._buffer
             self._buffer = []
         if batch:
             try:
-                self._writer.write_readings(batch)
-                self._retry_count = 0
+                with self._writer_lock:
+                    self._writer.write_readings(batch)
+                with self._lock:
+                    self._retry_count = 0
             except Exception as exc:
-                self._retry_count += 1
-                self._last_error = exc
-                if self._retry_count < self._max_retries:
-                    with self._lock:
+                with self._lock:
+                    self._retry_count += 1
+                    self._last_error = exc
+                    attempt = self._retry_count
+                    if attempt < self._max_retries:
                         self._buffer = batch + self._buffer
-                    logger.exception("Error writing readings (attempt %d/%d)", self._retry_count, self._max_retries)
+                if attempt < self._max_retries:
+                    logger.exception("Error writing readings (attempt %d/%d)", attempt, self._max_retries)
                 else:
                     logger.error(
                         "Dropping %d readings after %d failed attempts: %s",
@@ -120,12 +187,20 @@ class DataLogger:
                         self._max_retries,
                         exc,
                     )
-                    self._retry_count = 0
+                    with self._lock:
+                        self._retry_count = 0
+                    return len(batch)
+        return 0
 
     def __enter__(self) -> DataLogger:
         self.start()
         return self
 
-    def __exit__(self, *args) -> bool:
-        self.stop()
+    def __exit__(self, exc_type, exc_value, traceback) -> bool:
+        try:
+            self.stop()
+        except Exception:  # noqa: BLE001
+            if exc_type is None:
+                raise
+            logger.exception("DataLogger shutdown failed while handling another exception")
         return False
