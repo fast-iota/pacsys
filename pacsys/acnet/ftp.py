@@ -607,7 +607,7 @@ def parse_continuous_data_reply(
 ) -> dict[int, list[FTPDataPoint]]:
     """Parse a data reply (reply_type=2) from continuous plot.
 
-    Returns {device_di: [FTPDataPoint, ...]} for devices that had data.
+    Returns {device_index: [FTPDataPoint, ...]} for list entries with data.
     The `index` field from the FE is an absolute byte offset into the reply.
 
     Timestamps are relative to the last TCLK 0x02 event and wrap every
@@ -633,7 +633,7 @@ def parse_continuous_data_reply(
     results: dict[int, list[FTPDataPoint]] = {}
     hdr_offset = 8  # past error(2) + type(2) + reserved(4)
 
-    for dev in devices:
+    for device_index, dev in enumerate(devices):
         dev_error = struct.unpack_from("<h", data, hdr_offset)[0]
         hdr_offset += 2
 
@@ -673,7 +673,7 @@ def parse_continuous_data_reply(
             points.append(FTPDataPoint(timestamp_us=ts * 100, raw_value=val))
 
         if points:
-            results[dev.di] = points
+            results[device_index] = points
 
     return results
 
@@ -813,8 +813,8 @@ class FTPStream:
         client = FTPClient(connection)
         with client.start_continuous(node, devices) as stream:
             for batch in stream.readings(timeout=1.0):
-                for di, points in batch.items():
-                    print(f"Device {di}: {len(points)} points")
+                for device_index, points in batch.items():
+                    print(f"Device {device_index}: {len(points)} points")
     """
 
     def __init__(
@@ -840,7 +840,7 @@ class FTPStream:
         return self._stopped
 
     def readings(self, timeout: float = 1.0):
-        """Yield dicts of {device_di: [FTPDataPoint, ...]} per reply.
+        """Yield dicts of {device_index: [FTPDataPoint, ...]} per reply.
 
         Blocks up to `timeout` seconds waiting for each reply.
         Stops iteration when the stream is stopped or connection ends.
@@ -939,21 +939,21 @@ class SnapshotHandle:
         self._lock = threading.Lock()
         self._metadata_consumed: set[int] = set()
 
-        # State tracking: keyed by device di
+        # State tracking uses setup-list position, which is unique on the wire.
         self._ready_event = threading.Event()
         self._device_states: dict[int, SnapshotState] = {}
         self._device_errors: dict[int, int] = {}
 
         # Initialize states from setup reply (first reply uses CAMAC quirk)
-        for i, dev in enumerate(self._devices):
+        for i in range(len(self._devices)):
             if i < len(setup_reply.per_device_errors):
                 status = setup_reply.per_device_errors[i]
                 state = _ftp_status_to_state(status, is_first_reply=True)
             else:
                 state = SnapshotState.PENDING
-            self._device_states[dev.di] = state
+            self._device_states[i] = state
             if state == SnapshotState.ERROR:
-                self._device_errors[dev.di] = setup_reply.per_device_errors[i]
+                self._device_errors[i] = setup_reply.per_device_errors[i]
 
         if self._all_terminal():
             self._ready_event.set()
@@ -987,10 +987,10 @@ class SnapshotHandle:
             with self._lock:
                 self._stream_ended = True
                 if not self._cancelled:
-                    for dev in self._devices:
-                        if self._device_states[dev.di] not in (SnapshotState.READY, SnapshotState.ERROR):
-                            self._device_states[dev.di] = SnapshotState.ERROR
-                            self._device_errors[dev.di] = ACNET_DISCONNECTED
+                    for i in range(len(self._devices)):
+                        if self._device_states[i] not in (SnapshotState.READY, SnapshotState.ERROR):
+                            self._device_states[i] = SnapshotState.ERROR
+                            self._device_errors[i] = ACNET_DISCONNECTED
             self._ready_event.set()
 
     def _monitor_loop_inner(self):
@@ -1007,10 +1007,10 @@ class SnapshotHandle:
 
             if status < 0:
                 with self._lock:
-                    for dev in self._devices:
-                        if self._device_states[dev.di] != SnapshotState.READY:
-                            self._device_states[dev.di] = SnapshotState.ERROR
-                            self._device_errors[dev.di] = status
+                    for i in range(len(self._devices)):
+                        if self._device_states[i] != SnapshotState.READY:
+                            self._device_states[i] = SnapshotState.ERROR
+                            self._device_errors[i] = status
                     self._ready_event.set()
                 if is_last:
                     break
@@ -1019,16 +1019,14 @@ class SnapshotHandle:
             per_device = _parse_status_update_states(data, len(self._devices))
 
             with self._lock:
-                for i, dev in enumerate(self._devices):
-                    if i >= len(per_device):
-                        break
+                for i in range(len(per_device)):
                     # Don't downgrade a terminal state
-                    if self._device_states[dev.di] in (SnapshotState.READY, SnapshotState.ERROR):
+                    if self._device_states[i] in (SnapshotState.READY, SnapshotState.ERROR):
                         continue
                     new_state = _ftp_status_to_state(per_device[i], is_first_reply=False)
-                    self._device_states[dev.di] = new_state
+                    self._device_states[i] = new_state
                     if new_state == SnapshotState.ERROR:
-                        self._device_errors[dev.di] = per_device[i]
+                        self._device_errors[i] = per_device[i]
 
                 if self._all_terminal():
                     self._ready_event.set()
@@ -1056,7 +1054,7 @@ class SnapshotHandle:
 
     @property
     def device_states(self) -> dict[int, SnapshotState]:
-        """Per-device state dict keyed by device index (di)."""
+        """Per-device state dict keyed by setup-list position."""
         with self._lock:
             return dict(self._device_states)
 
@@ -1079,10 +1077,10 @@ class SnapshotHandle:
         with self._lock:
             if self._monitor_error is not None:
                 raise self._monitor_error
-            for dev in self._devices:
-                if self._device_states[dev.di] == SnapshotState.ERROR:
-                    err = self._device_errors.get(dev.di, 0)
-                    raise AcnetError(err, f"Snapshot device {dev.di} failed")
+            for i, dev in enumerate(self._devices):
+                if self._device_states[i] == SnapshotState.ERROR:
+                    err = self._device_errors.get(i, 0)
+                    raise AcnetError(err, f"Snapshot device {i} (di={dev.di}) failed")
         return True
 
     # ----- Existing API -----
@@ -1216,9 +1214,9 @@ class SnapshotHandle:
             # No ack: the FE may or may not have restarted. State is
             # indeterminate -- fail loudly rather than report stale readiness.
             with self._lock:
-                for dev in self._devices:
-                    self._device_states[dev.di] = SnapshotState.ERROR
-                    self._device_errors[dev.di] = ACNET_UTIME
+                for i in range(len(self._devices)):
+                    self._device_states[i] = SnapshotState.ERROR
+                    self._device_errors[i] = ACNET_UTIME
                 self._ready_event.set()
             raise AcnetTimeoutError(int(timeout * 1000)) from None
 
@@ -1253,9 +1251,9 @@ class SnapshotHandle:
             for item in keep:
                 self._reply_queue.put(item)
             self._ready_event.clear()
-            for dev in self._devices:
-                self._device_states[dev.di] = SnapshotState.PENDING
-                self._device_errors.pop(dev.di, None)
+            for i in range(len(self._devices)):
+                self._device_states[i] = SnapshotState.PENDING
+                self._device_errors.pop(i, None)
             self._metadata_consumed.clear()
 
     def reset_pointers(self, timeout: float = 5.0):
@@ -1332,7 +1330,7 @@ class FTPClient:
             # Continuous stream
             with ftp.start_continuous(node, [device]) as stream:
                 for batch in stream.readings(timeout=1.0):
-                    for di, points in batch.items():
+                    for device_index, points in batch.items():
                         print(f"{len(points)} points")
     """
 

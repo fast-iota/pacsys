@@ -53,13 +53,17 @@ with AcnetConnectionTCP() as conn:
 
     with ftp.start_continuous(node, [dev], rate_hz=1440) as stream:
         for batch in stream.readings(timeout=1.0):
-            for di, points in batch.items():
+            for device_index, points in batch.items():
                 for pt in points:
-                    print(f"Device {di}: ts={pt.timestamp_us} us, val={pt.raw_value}")
-                    # => Device 27235: ts=10000 us, val=42
-                    # => Device 27235: ts=10700 us, val=45
+                    print(f"Device {device_index}: ts={pt.timestamp_us} us, val={pt.raw_value}")
+                    # => Device 0: ts=10000 us, val=42
+                    # => Device 0: ts=10700 us, val=45
                     # => ...
 ```
+
+Continuous batches and `SnapshotHandle.device_states` are keyed by zero-based
+position in the setup device list. This remains unambiguous when multiple list
+entries refer to the same device index, property, or offset.
 
 ### Immediate Snapshot
 

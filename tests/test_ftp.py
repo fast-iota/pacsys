@@ -562,10 +562,9 @@ class TestParseContinuousDataReply:
         data = header + per_dev + point1 + point2
         result = parse_continuous_data_reply(data, [dev])
 
-        assert 1 in result
-        assert len(result[1]) == 2
-        assert result[1][0] == FTPDataPoint(timestamp_us=10000, raw_value=42)
-        assert result[1][1] == FTPDataPoint(timestamp_us=20000, raw_value=-5)
+        assert len(result[0]) == 2
+        assert result[0][0] == FTPDataPoint(timestamp_us=10000, raw_value=42)
+        assert result[0][1] == FTPDataPoint(timestamp_us=20000, raw_value=-5)
 
     def test_device_error_skipped(self):
         """Devices with errors should be skipped."""
@@ -595,8 +594,7 @@ class TestParseContinuousDataReply:
         point = struct.pack("<Hh", 50, 42)
         data = header + per_dev + point
         result = parse_continuous_data_reply(data, [dev])
-        assert 1 in result
-        assert result[1][0].raw_value == 42
+        assert result[0][0].raw_value == 42
 
     def test_4byte_values(self):
         """Parse 4-byte integer values."""
@@ -607,7 +605,7 @@ class TestParseContinuousDataReply:
         point = struct.pack("<Hi", 50, 123456)  # ts=50, 4-byte val=123456
         data = header + per_dev + point
         result = parse_continuous_data_reply(data, [dev])
-        assert result[1][0] == FTPDataPoint(timestamp_us=5000, raw_value=123456)
+        assert result[0][0] == FTPDataPoint(timestamp_us=5000, raw_value=123456)
 
     def test_declared_points_must_fit_current_reply(self):
         dev = FTPDevice(di=1, pi=12, ssdn=b"\x00" * 8)
@@ -638,7 +636,25 @@ class TestParseContinuousDataReply:
 
         result = parse_continuous_data_reply(header + records + point, devices)
 
-        assert result[1] == result[2] == [FTPDataPoint(timestamp_us=5000, raw_value=42)]
+        assert result[0] == result[1] == [FTPDataPoint(timestamp_us=5000, raw_value=42)]
+
+    def test_duplicate_device_indices_remain_distinct_list_entries(self):
+        devices = [
+            FTPDevice(di=100, pi=12, ssdn=b"\x00" * 8),
+            FTPDevice(di=100, pi=13, ssdn=b"\x00" * 8),
+        ]
+        header = struct.pack("<hH", 0, REPLY_TYPE_DATA) + b"\x00" * 4
+        data_start = 8 + 6 * len(devices)
+        records = struct.pack("<hHH", 0, data_start, 1)
+        records += struct.pack("<hHH", 0, data_start + 4, 1)
+        points = struct.pack("<HhHh", 10, 111, 20, 222)
+
+        result = parse_continuous_data_reply(header + records + points, devices)
+
+        assert result == {
+            0: [FTPDataPoint(timestamp_us=1000, raw_value=111)],
+            1: [FTPDataPoint(timestamp_us=2000, raw_value=222)],
+        }
 
     def test_trailing_bytes_are_allowed(self):
         dev = FTPDevice(di=1, pi=12, ssdn=b"\x00" * 8)
@@ -647,7 +663,7 @@ class TestParseContinuousDataReply:
 
         result = parse_continuous_data_reply(data, [dev])
 
-        assert result[1] == [FTPDataPoint(timestamp_us=5000, raw_value=42)]
+        assert result[0] == [FTPDataPoint(timestamp_us=5000, raw_value=42)]
 
 
 class TestParseSnapshotSetupReply:
@@ -864,7 +880,7 @@ class TestFTPStream:
 
         batches = list(stream.readings(timeout=0.5))
         assert len(batches) == 1
-        assert 1 in batches[0]
+        assert 0 in batches[0]
 
     def test_readings_propagates_truncated_reply(self):
         import queue as q
@@ -892,7 +908,7 @@ class TestFTPStream:
         reply_q.put((FTP_BUMPED, b"", False))
         reply_q.put((0, data, True))
 
-        assert list(stream.readings(timeout=0.1)) == [{1: [FTPDataPoint(timestamp_us=5000, raw_value=42)]}]
+        assert list(stream.readings(timeout=0.1)) == [{0: [FTPDataPoint(timestamp_us=5000, raw_value=42)]}]
         assert stream.stopped
 
     def test_nonnegative_final_reply_is_clean_completion(self):
@@ -1604,18 +1620,18 @@ class TestSnapshotStateTracking:
         return handle, reply_queue
 
     @staticmethod
-    def _wait_for_device_state(handle, device_index, expected):
+    def _wait_for_device_state(handle, list_index, expected):
         deadline = time.monotonic() + 1.0
-        while handle.device_states[device_index] is not expected and time.monotonic() < deadline:
+        while handle.device_states[list_index] is not expected and time.monotonic() < deadline:
             time.sleep(0.005)
-        assert handle.device_states[device_index] is expected
+        assert handle.device_states[list_index] is expected
 
     def test_initial_state_pending(self):
         """Setup reply with FTP_PEND → initial state is PENDING."""
         handle, rq = self._make_handle(per_device_errors=[FTP_PEND])
         try:
             assert handle.state == SnapshotState.PENDING
-            assert handle.device_states[1] == SnapshotState.PENDING
+            assert handle.device_states[0] == SnapshotState.PENDING
             assert not handle.is_ready
         finally:
             handle.cancel()
@@ -1640,7 +1656,7 @@ class TestSnapshotStateTracking:
             assert handle.wait(timeout=2.0)
             assert handle.state == SnapshotState.READY
             assert handle.is_ready
-            assert handle.device_states[1] == SnapshotState.READY
+            assert handle.device_states[0] == SnapshotState.READY
         finally:
             handle.cancel()
 
@@ -1651,12 +1667,12 @@ class TestSnapshotStateTracking:
             # WAIT_EVENT
             data = self._build_status_reply(0, [FTP_WAIT_EVENT])
             rq.put((0, data, False))
-            self._wait_for_device_state(handle, 1, SnapshotState.WAIT_EVENT)
+            self._wait_for_device_state(handle, 0, SnapshotState.WAIT_EVENT)
 
             # COLLECTING
             data = self._build_status_reply(0, [FTP_COLLECTING])
             rq.put((0, data, False))
-            self._wait_for_device_state(handle, 1, SnapshotState.COLLECTING)
+            self._wait_for_device_state(handle, 0, SnapshotState.COLLECTING)
 
             # READY
             data = self._build_status_reply(0, [0])
@@ -1710,8 +1726,8 @@ class TestSnapshotStateTracking:
             # First device becomes ready, second still pending
             data = self._build_status_reply(0, [0, FTP_COLLECTING])
             rq.put((0, data, False))
-            self._wait_for_device_state(handle, 1, SnapshotState.READY)
-            self._wait_for_device_state(handle, 2, SnapshotState.COLLECTING)
+            self._wait_for_device_state(handle, 0, SnapshotState.READY)
+            self._wait_for_device_state(handle, 1, SnapshotState.COLLECTING)
             assert handle.state == SnapshotState.COLLECTING
             assert not handle.is_ready
 
@@ -1721,6 +1737,21 @@ class TestSnapshotStateTracking:
             assert handle.wait(timeout=2.0)
             assert handle.state == SnapshotState.READY
             assert handle.is_ready
+        finally:
+            handle.cancel()
+
+    def test_duplicate_device_indices_track_each_list_entry(self):
+        devices = [
+            FTPDevice(di=1, pi=12, ssdn=b"\x00" * 8),
+            FTPDevice(di=1, pi=13, ssdn=b"\x00" * 8),
+        ]
+        handle, rq = self._make_handle(devices=devices)
+        try:
+            rq.put((0, self._build_status_reply(0, [0, -241]), False))
+
+            with pytest.raises(AcnetError):
+                handle.wait(timeout=2.0)
+            assert handle.device_states == {0: SnapshotState.READY, 1: SnapshotState.ERROR}
         finally:
             handle.cancel()
 
@@ -1765,8 +1796,8 @@ class TestSnapshotStateTracking:
             rq.put((0, data, True))  # server ends stream while device is waiting
             with pytest.raises(AcnetError):
                 handle.wait(timeout=2.0)
-            assert handle.device_states[1] == SnapshotState.ERROR
-            assert handle._device_errors[1] == ACNET_DISCONNECTED
+            assert handle.device_states[0] == SnapshotState.ERROR
+            assert handle._device_errors[0] == ACNET_DISCONNECTED
         finally:
             handle.cancel()
 
@@ -1802,8 +1833,8 @@ class TestSnapshotStateTracking:
             handle.restart()
         # Monitor's terminal cleanup must stand: wait() raises instead of hanging
         assert handle._ready_event.is_set()
-        assert handle.device_states[1] == SnapshotState.ERROR
-        assert handle._device_errors[1] == ACNET_DISCONNECTED
+        assert handle.device_states[0] == SnapshotState.ERROR
+        assert handle._device_errors[0] == ACNET_DISCONNECTED
         with pytest.raises(AcnetError):
             handle.wait(timeout=1.0)
 
@@ -1834,7 +1865,7 @@ class TestSnapshotStateTracking:
             rq.put((0, data, True))
             handle._monitor_thread.join(timeout=2.0)
             assert not handle._monitor_thread.is_alive()
-            assert handle.device_states[1] == SnapshotState.READY
+            assert handle.device_states[0] == SnapshotState.READY
         finally:
             handle.cancel()
 

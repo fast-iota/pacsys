@@ -72,8 +72,8 @@ class TestFTPRead:
             # Grab the first non-empty batch
             points = []
             for batch in stream.readings(timeout=2.0):
-                if MOUTTMP_DI in batch:
-                    points = batch[MOUTTMP_DI]
+                if 0 in batch:
+                    points = batch[0]
                     break
 
             assert points, "Expected at least one FTP data point"
