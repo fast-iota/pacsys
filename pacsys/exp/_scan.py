@@ -98,8 +98,12 @@ def scan(
             wr = write_dev.write(sv, verify=verify, timeout=timeout)
             all_write_results.append(wr)
 
-            if not wr.ok:
-                logger.warning("Write failed at value %s: %s", sv, wr.message)
+            if not wr.confirmed:
+                if wr.ok:
+                    detail = wr.message or f"readback={wr.readback!r}"
+                    logger.warning("Write verification failed at value %s: %s", sv, detail)
+                else:
+                    logger.warning("Write failed at value %s: %s", sv, wr.message)
                 break
 
             if settle > 0:

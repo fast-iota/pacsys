@@ -288,6 +288,28 @@ class TestVerifyPath:
             backend.write.assert_not_called()
 
     @mock.patch("pacsys.cli.put.make_backend")
+    def test_verify_failure_returns_device_error(self, mock_mb):
+        from pacsys.cli.put import main
+
+        backend = mock.MagicMock()
+        mock_mb.return_value = backend
+
+        with mock.patch("pacsys.device.Device") as mock_device:
+            mock_device.return_value.write.return_value = WriteResult(
+                drf="M:OUTTMP.SETTING@N",
+                verified=False,
+                readback=70.0,
+            )
+
+            buf = io.StringIO()
+            with mock.patch("sys.argv", ["acput", "--verify", "M:OUTTMP", "72.5"]), contextlib.redirect_stdout(buf):
+                rc = main()
+
+        assert rc == 1
+        assert "verify FAILED" in buf.getvalue()
+        backend.close.assert_called_once()
+
+    @mock.patch("pacsys.cli.put.make_backend")
     def test_verify_control_never_writes_setting(self, mock_mb):
         """acput DEV reset --verify must go through control() (.CONTROL@N), never .SETTING@N."""
         from pacsys.cli.put import main

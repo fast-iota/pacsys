@@ -553,6 +553,21 @@ class TestValueToJson:
 
 
 class TestWriteResultToDict:
+    @pytest.mark.parametrize(
+        ("error_code", "verified", "expected"),
+        [
+            (0, None, True),
+            (0, True, True),
+            (0, False, False),
+            (-1, None, False),
+            (-1, True, False),
+        ],
+    )
+    def test_confirmed(self, error_code, verified, expected):
+        wr = WriteResult(drf="Z:ACLTST", error_code=error_code, verified=verified)
+        assert wr.confirmed is expected
+        assert "confirmed" not in wr.to_dict()
+
     def test_success_round_trip(self):
         wr = WriteResult(drf="Z:ACLTST", error_code=0)
         d = wr.to_dict()

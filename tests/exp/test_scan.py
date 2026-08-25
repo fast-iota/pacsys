@@ -7,7 +7,8 @@ import pytest
 
 from pacsys.exp._scan import ScanResult, _build_values, _read_step, scan
 from pacsys.testing import FakeBackend
-from pacsys.types import Reading, ValueType
+from pacsys.types import Reading, ValueType, WriteResult
+from pacsys.verify import Verify
 
 
 @pytest.fixture
@@ -73,6 +74,33 @@ class TestScan:
         assert len(result.readings) == 3
         assert len(result.write_results) == 3
         assert all(wr.ok for wr in result.write_results)
+
+    def test_verification_failure_stops_before_reading(self, fake):
+        write_device = mock.Mock()
+        write_device.setting.return_value = 42.0
+        write_device.write.side_effect = [
+            WriteResult(drf="Z:ACLTST.SETTING@N", verified=True, readback=1.0),
+            WriteResult(drf="Z:ACLTST.SETTING@N", verified=False, readback=0.0),
+            WriteResult(drf="Z:ACLTST.SETTING@N"),
+        ]
+
+        with mock.patch("pacsys.device.Device", return_value=write_device):
+            result = scan(
+                write_device="Z:ACLTST",
+                read_devices=["M:OUTTMP"],
+                values=[1.0, 2.0, 3.0],
+                settle=0,
+                verify=Verify(initial_delay=0, retry_delay=0),
+                backend=fake,
+            )
+
+        assert result.set_values == [1.0, 2.0]
+        assert len(result.write_results) == 2
+        assert result.write_results[-1].verified is False
+        assert len(result.readings) == 1
+        assert fake.reads == ["M:OUTTMP"]
+        assert result.restored
+        assert write_device.write.call_args_list[-1] == mock.call(42.0, timeout=None)
 
     def test_restores_original_setting(self, fake):
         fake.set_reading("Z:ACLTST.SETTING", 42.0)

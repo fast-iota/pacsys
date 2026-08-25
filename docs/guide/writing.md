@@ -271,10 +271,12 @@ from pacsys import Device, Verify
 
 dev = Device("Z:ACLTST", backend=backend)
 result = dev.write(45.0, verify=Verify(tolerance=0.1))
-print(result.verified)  # True if readback matched
+print(result.confirmed)  # True if the write succeeded and readback matched
 ```
 
 Note: verification is a `Device.write()` feature, not a backend `write()` feature. Backend `write()` methods do not accept `verify` or `tolerance` parameters.
+`WriteResult.success` reports backend write acceptance; `WriteResult.confirmed`
+also requires requested verification to succeed.
 
 ---
 

@@ -49,7 +49,7 @@ print(f"{reading.value} {reading.units}")  # e.g. "72.5 DegF"
 
 # Write with automatic readback verification
 result = dev.write(72.5, verify=Verify(tolerance=0.5))
-assert result.verified
+assert result.confirmed
 
 # Control commands with shortcuts
 dev.on()

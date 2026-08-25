@@ -464,6 +464,11 @@ class WriteResult:
         """Alias for ok."""
         return self.ok
 
+    @property
+    def confirmed(self) -> bool:
+        """True if the write succeeded and requested verification did not fail."""
+        return self.ok and self.verified is not False
+
     def to_dict(self) -> dict:
         """Serialize to a JSON-safe dict. Round-trippable via ``WriteResult.from_dict()``."""
         d: dict = {
