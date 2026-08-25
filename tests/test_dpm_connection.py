@@ -6,6 +6,7 @@ These tests use mocking for socket operations - no real network calls.
 
 import socket
 import struct
+import time
 from unittest import mock
 
 import pytest
@@ -408,6 +409,39 @@ class TestTimeoutHandling:
                 conn.recv_message(timeout=2.0)
             # Connection must be dead — stream is corrupted
             assert not conn.connected
+
+    def test_recv_timeout_is_shared_by_prefix_and_body(self):
+        body = bytes(Scalar_reply().marshal())
+
+        class DelayedSocket:
+            def __init__(self):
+                self.timeout = 5.0
+                self.chunks = [struct.pack(">I", len(body)), body]
+
+            def gettimeout(self):
+                return self.timeout
+
+            def settimeout(self, timeout):
+                self.timeout = timeout
+
+            def recv(self, _size):
+                delay = 0.02
+                if self.timeout is not None and self.timeout < delay:
+                    time.sleep(self.timeout)
+                    raise TimeoutError("recv timeout")
+                time.sleep(delay)
+                return self.chunks.pop(0)
+
+        conn = DPMConnection()
+        conn._socket = DelayedSocket()
+        conn._connected = True
+
+        started = time.monotonic()
+        with pytest.raises(TimeoutError, match="Receive timeout"):
+            conn.recv_message(timeout=0.03)
+
+        assert time.monotonic() - started < 0.1
+        assert not conn.connected
 
 
 class TestPartialReads:

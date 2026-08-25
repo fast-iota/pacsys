@@ -12,13 +12,15 @@ Tests cover:
 - Factory function
 """
 
+import time
 from unittest import mock
 from unittest.mock import MagicMock
 
 import pytest
 
-from pacsys.acnet.errors import DAE_LJ_NO_DATA, make_error
+from pacsys.acnet.errors import DAE_LJ_NO_DATA, ERR_TIMEOUT, make_error
 from pacsys.backends.dpm_http import DPMHTTPBackend, _value_to_setting
+from pacsys.dpm_connection import DPMConnectionError
 from pacsys.dpm_protocol import ListStatus_reply, Raw_reply, StartList_reply
 from pacsys.errors import AuthenticationError, DeviceError, ReadError
 from pacsys.pool import PoolExhaustedError
@@ -31,6 +33,7 @@ from tests.devices import (
     TIMESTAMP_MILLIS,
     MockSocketWithReplies,
     make_add_to_list_reply,
+    make_apply_settings_reply,
     make_device_info,
     make_read_sequence,
     make_scalar_array_reply,
@@ -85,6 +88,16 @@ class TestValueToSetting:
             with mock.patch.object(backend, "_get_write_connection") as get_connection:
                 with pytest.raises(TypeError, match="only strings"):
                     backend.write_many([("M:OUTTMP", ["on", 1])])
+            get_connection.assert_not_called()
+        finally:
+            backend.close()
+
+    def test_write_rejects_nonpositive_call_timeout_before_connecting(self):
+        backend = DPMHTTPBackend(auth=create_mock_kerberos_auth())
+        try:
+            with mock.patch.object(backend, "_get_write_connection") as get_connection:
+                with pytest.raises(ValueError, match="timeout must be positive"):
+                    backend.write_many([("M:OUTTMP", 1.0)], timeout=0)
             get_connection.assert_not_called()
         finally:
             backend.close()
@@ -714,6 +727,52 @@ class TestWriteConnectionAuthContext:
                     backend.write_many([(TEMP_DEVICE, 1.0)])
         finally:
             backend.close()
+
+    def test_expired_setup_sends_nothing_and_returns_timeout(self):
+        backend = DPMHTTPBackend(auth=create_mock_kerberos_auth())
+        wc = MagicMock()
+        wc.conn.list_id = 1
+        backend._write_in_flight = 1
+
+        def delayed_checkout(_deadline):
+            time.sleep(0.02)
+            return wc
+
+        try:
+            with mock.patch.object(backend, "_get_write_connection", side_effect=delayed_checkout):
+                results = backend.write_many([(TEMP_DEVICE, 1.0)], timeout=0.01)
+        finally:
+            backend.close()
+
+        assert results[0].error_code == ERR_TIMEOUT
+        wc.conn.send_messages_batch.assert_not_called()
+        wc.close.assert_called_once()
+
+    def test_retry_reuses_original_deadline(self):
+        backend = DPMHTTPBackend(auth=create_mock_kerberos_auth())
+        first = MagicMock()
+        first.conn.list_id = 1
+        second = MagicMock()
+        second.conn.list_id = 2
+        apply_reply = make_apply_settings_reply([(1, 0)])
+        backend._write_in_flight = 2
+
+        try:
+            with (
+                mock.patch.object(backend, "_get_write_connection", side_effect=[first, second]) as get_connection,
+                mock.patch.object(
+                    backend,
+                    "_execute_write",
+                    side_effect=[DPMConnectionError("stale"), (apply_reply, {})],
+                ) as execute,
+            ):
+                results = backend.write_many([(TEMP_DEVICE, 1.0)], timeout=1.0)
+        finally:
+            backend.close()
+
+        assert results[0].success
+        assert get_connection.call_args_list[0].args[0] == get_connection.call_args_list[1].args[0]
+        assert execute.call_args_list[0].args[-1] == execute.call_args_list[1].args[-1]
 
 
 # =============================================================================

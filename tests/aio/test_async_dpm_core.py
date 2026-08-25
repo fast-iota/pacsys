@@ -1,6 +1,8 @@
 """Tests for _AsyncDpmCore."""
 
 import asyncio
+import struct
+import time
 from unittest import mock
 
 import numpy as np
@@ -135,6 +137,29 @@ async def test_async_connection_list_id_tracks_lifecycle():
     conn = _AsyncDPMConnection("localhost", 6802)
     with pytest.raises(DPMConnectionError, match=r"connect\(\) must complete"):
         _ = conn.list_id
+
+
+@pytest.mark.asyncio
+async def test_async_connection_body_uses_remaining_timeout():
+    body = bytes(_status_ok().marshal())
+    calls = 0
+
+    async def readexactly(_size):
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.02)
+        return struct.pack(">I", len(body)) if calls == 1 else body
+
+    conn = _AsyncDPMConnection("localhost", 6802)
+    conn._reader = mock.AsyncMock()
+    conn._reader.readexactly.side_effect = readexactly
+
+    started = time.monotonic()
+    with pytest.raises(asyncio.TimeoutError, match="Receive timeout"):
+        await conn.recv_message(timeout=0.03)
+
+    assert time.monotonic() - started < 0.1
+    assert conn._reader is None
 
     conn._list_id = 42
     assert conn.list_id == 42
@@ -351,7 +376,7 @@ class TestWriteMany:
         core._settings_enabled = False  # will be set by mocked enable_settings
 
         # After auth, mock enable_settings sets _settings_enabled
-        async def fake_enable():
+        async def fake_enable(deadline=None):
             core._settings_enabled = True
 
         core.enable_settings = fake_enable
@@ -434,6 +459,23 @@ class TestWriteMany:
         core.enable_settings.assert_not_awaited()
         assert not conn.sent
 
+    @pytest.mark.asyncio
+    async def test_expired_authentication_sends_no_write_setup(self, make_core):
+        auth = mock.MagicMock()
+        auth.principal = "test@fnal.gov"
+        core, conn = make_core([], auth=auth)
+
+        async def slow_authenticate(_deadline):
+            await asyncio.sleep(0.02)
+
+        core.authenticate = slow_authenticate
+        core.enable_settings = mock.AsyncMock()
+
+        with pytest.raises(TimeoutError):
+            await core.write_many([("M:OUTTMP.SETTING@N", 72.5)], timeout=0.01)
+
+        assert not conn.sent
+
 
 class TestStream:
     @pytest.mark.asyncio
@@ -510,6 +552,23 @@ class TestEnableSettings:
         core, conn = make_core([])
         with pytest.raises(AuthenticationError, match="Must authenticate"):
             await core.enable_settings()
+
+    @pytest.mark.asyncio
+    async def test_heartbeats_respect_deadline(self, make_core):
+        core, conn = make_core([])
+        core._mic = b"fake_mic"
+        core._mic_message = b"1234"
+
+        async def heartbeat(timeout=None):
+            await asyncio.sleep(min(timeout, 0.005))
+            return _list_status()
+
+        conn.recv_message = heartbeat
+        deadline = time.monotonic() + 0.015
+        with pytest.raises(TimeoutError, match="EnableSettings"):
+            await core.enable_settings(deadline)
+
+        assert time.monotonic() - deadline < 0.1
 
 
 def _timed_scalar_array(ref_id, data, micros, timestamp=1000):
@@ -732,6 +791,23 @@ class TestAuthenticate:
             auth_reqs = [m for m in conn.sent if isinstance(m, Authenticate_request)]
             assert len(auth_reqs) == 2
             assert auth_reqs[0].token == b""
+
+    @pytest.mark.asyncio
+    async def test_heartbeats_are_ignored(self, make_core, mock_kerberos_auth):
+        mock_gssapi = MockGSSAPIModule()
+        mock_gssapi.SecurityContext = MockGSSAPIContextForAuth
+        with mock.patch.dict("sys.modules", {"gssapi": mock_gssapi}):
+            auth = mock_kerberos_auth(mock_gssapi)
+            replies = [
+                _list_status(),
+                make_auth_reply("dpm"),
+                _list_status(),
+                make_auth_reply(),
+            ]
+            core, _ = make_core(replies, auth=auth)
+            await core.authenticate()
+
+        assert core._mic == b"mock_mic_signature"
 
     @pytest.mark.asyncio
     async def test_security_context_receives_flag_bitmask(self, make_core, mock_kerberos_auth):
