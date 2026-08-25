@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from enum import IntEnum
 
 from . import rad50
-from .connection_sync import AcnetConnectionTCP, AcnetRequestContext
+from .connection_sync import AcnetConnectionTCP, AcnetConnectionUDP, AcnetRequestContext
 from .errors import (
     ACNET_DISCONNECTED,
     ACNET_UTIME,
@@ -35,6 +35,8 @@ from .errors import (
 )
 
 logger = logging.getLogger(__name__)
+
+_SyncAcnetConnection = AcnetConnectionTCP | AcnetConnectionUDP
 
 # Protocol constants
 FTPMAN_TASK = "FTPMAN"
@@ -914,7 +916,7 @@ class SnapshotHandle:
 
     def __init__(
         self,
-        connection: AcnetConnectionTCP,
+        connection: _SyncAcnetConnection,
         node: int,
         ctx: AcnetRequestContext,
         devices: list[FTPDevice],
@@ -1317,7 +1319,7 @@ class SnapshotHandle:
 class FTPClient:
     """High-level FTPMAN protocol client.
 
-    Wraps an existing AcnetConnectionTCP to provide FTP operations.
+    Wraps an existing official TCP or local UDP ACNET connection.
 
     Example:
         with AcnetConnectionTCP() as conn:  # __enter__ connects
@@ -1334,7 +1336,7 @@ class FTPClient:
                         print(f"{len(points)} points")
     """
 
-    def __init__(self, connection: AcnetConnectionTCP):
+    def __init__(self, connection: _SyncAcnetConnection):
         self._connection = connection
 
     def get_class_codes(

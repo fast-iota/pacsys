@@ -24,7 +24,7 @@ from .async_connection import (
     ReplyHandler,
     RequestHandler,
 )
-from .constants import ACNET_TCP_PORT, DEFAULT_TIMEOUT
+from .constants import ACNET_CLIENT_PORT, ACNET_TCP_PORT, DEFAULT_TIMEOUT
 from .packet import AcnetRequest, RequestId
 
 logger = logging.getLogger(__name__)
@@ -87,11 +87,18 @@ class _SyncAcnetConnectionBase:
     _MSG_TYPE_NAMES = AsyncAcnetConnectionBase._MSG_TYPE_NAMES
 
     def __init__(
-        self, host: str = ACSYS_PROXY_HOST, port: int = ACNET_TCP_PORT, name: str = "", *, trace: bool = False
+        self,
+        host: str = ACSYS_PROXY_HOST,
+        port: int = ACNET_TCP_PORT,
+        name: str = "",
+        *,
+        vnode: str = "",
+        trace: bool = False,
     ):
         self._host = host
         self._port = port
         self._requested_name = name
+        self._vnode_name = vnode
         self._trace = trace
 
         self._async: AsyncAcnetConnectionBase | None = None
@@ -183,7 +190,7 @@ class _SyncAcnetConnectionBase:
     # ------------------------------------------------------------------
 
     def connect(self):
-        """Connect to the remote ACNET daemon.
+        """Connect to the configured ACNET daemon transport.
 
         A failed connect stops the reactor and clears state; the object can
         be re-connected (fresh reactor and core).
@@ -326,17 +333,32 @@ class AcnetConnectionTCP(_SyncAcnetConnectionBase):
             host=self._host,
             port=self._port,
             name=self._requested_name,
+            vnode=self._vnode_name,
             trace=self._trace,
         )
 
 
 class AcnetConnectionUDP(_SyncAcnetConnectionBase):
-    """Synchronous ACNET connection over UDP."""
+    """Synchronous connection to the official local acnetd UDP interface."""
+
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        port: int = ACNET_CLIENT_PORT,
+        name: str = "",
+        *,
+        vnode: str = "",
+        trace: bool = False,
+    ):
+        if host not in ("127.0.0.1", "localhost"):
+            raise ValueError("acnetd's official UDP client interface is local-only; use host='127.0.0.1'")
+        super().__init__(host, port, name, vnode=vnode, trace=trace)
 
     def _create_async(self) -> AsyncAcnetConnectionUDP:
         return AsyncAcnetConnectionUDP(
             host=self._host,
             port=self._port,
             name=self._requested_name,
+            vnode=self._vnode_name,
             trace=self._trace,
         )

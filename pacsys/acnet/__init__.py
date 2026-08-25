@@ -5,16 +5,15 @@ This module provides a Python implementation of the ACNET protocol
 used for communication with the Fermilab accelerator control system.
 
 Connection types:
-- AcnetConnection: UDP connection to local ACNET daemon (sync)
 - AcnetConnectionTCP: TCP connection to remote daemon (sync, threaded reactor)
-- AcnetConnectionUDP: UDP connection to remote daemon (sync, threaded reactor)
+- AcnetConnectionUDP: UDP connection to the local daemon (sync, threaded reactor)
 - AsyncAcnetConnectionTCP: TCP connection to remote daemon (async, pure asyncio)
-- AsyncAcnetConnectionUDP: UDP connection to remote daemon (async, pure asyncio)
+- AsyncAcnetConnectionUDP: UDP connection to the local daemon (async, pure asyncio)
 
-Example (UDP - local daemon):
-    from pacsys.acnet import AcnetConnection
+Example (UDP - official local daemon interface):
+    from pacsys.acnet import AcnetConnectionUDP
 
-    with AcnetConnection("MYTASK") as conn:
+    with AcnetConnectionUDP(name="MYTASK") as conn:
         def handle_reply(reply):
             print(f"Got reply: status={reply.status}")
 
@@ -64,7 +63,6 @@ if _typing.TYPE_CHECKING:
         AsyncAcnetConnectionUDP,
         AsyncRequestContext,
     )
-    from .connection import AcnetConnection
     from .connection_sync import (
         ACSYS_PROXY_HOST,
         AcnetConnectionTCP,
@@ -72,7 +70,7 @@ if _typing.TYPE_CHECKING:
         AcnetRequestContext,
         NodeStats,
     )
-    from .constants import ACNET_HEADER_SIZE, ACNET_PORT, ACNET_TCP_PORT, DEFAULT_TIMEOUT
+    from .constants import ACNET_CLIENT_PORT, ACNET_HEADER_SIZE, ACNET_PORT, ACNET_TCP_PORT, DEFAULT_TIMEOUT
     from .dpm_acnet import DPMAcnet, DPMError, DPMReading
     from .errors import (
         ACNET_CANCELLED,
@@ -133,7 +131,6 @@ if _typing.TYPE_CHECKING:
 
 _LAZY_IMPORTS = {
     # Connections
-    "AcnetConnection": ".connection",
     "AcnetConnectionTCP": ".connection_sync",
     "AcnetConnectionUDP": ".connection_sync",
     "AsyncAcnetConnectionBase": ".async_connection",
@@ -203,6 +200,7 @@ _LAZY_IMPORTS = {
     "ReArmSpec": ".ftp_spec",
     # Constants
     "ACNET_PORT": ".constants",
+    "ACNET_CLIENT_PORT": ".constants",
     "ACNET_TCP_PORT": ".constants",
     "ACNET_HEADER_SIZE": ".constants",
     "DEFAULT_TIMEOUT": ".constants",
@@ -211,7 +209,6 @@ _LAZY_IMPORTS = {
 _LAZY_SUBMODULES = frozenset(
     {
         "async_connection",
-        "connection",
         "connection_sync",
         "constants",
         "dpm_acnet",
@@ -225,7 +222,6 @@ _LAZY_SUBMODULES = frozenset(
 
 __all__ = [
     # Connections
-    "AcnetConnection",
     "AcnetConnectionTCP",
     "AcnetConnectionUDP",
     "AsyncAcnetConnectionBase",
@@ -295,6 +291,7 @@ __all__ = [
     "ReArmSpec",
     # Constants
     "ACNET_PORT",
+    "ACNET_CLIENT_PORT",
     "ACNET_TCP_PORT",
     "ACNET_HEADER_SIZE",
     "DEFAULT_TIMEOUT",

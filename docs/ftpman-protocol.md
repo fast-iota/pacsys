@@ -646,7 +646,7 @@ After a nonnegative FTP-level status, require the complete fixed and count-decla
 
 ### acnetd Task Restrictions
 
-Most `acnetd` instances (including all clx ones) restrict TCP client access to certain tasks (including FTPMAN). If you get an `AcnetRequestRejectedError` with the message "task is on the TCP reject list", you must either run your own acnetd instance on a node you have access to, or login to one of clx nodes and use AcnetConnectionUDP.
+Most `acnetd` instances (including all clx ones) restrict TCP client access to certain tasks (including FTPMAN). If you get an `AcnetRequestRejectedError` with the message "task is on the TCP reject list", run on the same node as `acnetd` and use the local-only `AcnetConnectionUDP`.
 
 ### DIPI Encoding
 

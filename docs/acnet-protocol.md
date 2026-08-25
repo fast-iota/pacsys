@@ -3,7 +3,7 @@
 This page documents the low-level ACNET protocol for advanced users who need to communicate directly with frontends or implement custom logic.
 
 !!! danger "Low-level protocol -- prefer higher-level APIs"
-    This module provides direct access to ACNET protocol primitives. It is strongly recommeded to use the higher-level `pacsys` APIs instead. Only use `AcnetConnection` directly when you need custom ACNET interactions.
+    This module provides direct access to ACNET protocol primitives. Prefer the higher-level `pacsys` APIs unless you need custom ACNET interactions.
 
 !!! warning "TCP connection restrictions"
     `acnetd` services running on clx and most other central nodes restrict certain tasks from being reachable by TCP.
@@ -39,6 +39,17 @@ with AcnetConnectionTCP("acsys-proxy.fnal.gov") as conn:
     print(f"Reply: status={reply.status}, data={reply.data!r}, last={reply.last}")
 ```
 
+### Local UDP example
+
+Run this on the same node as `acnetd`:
+
+```python
+from pacsys.acnet import AcnetConnectionUDP
+
+with AcnetConnectionUDP(name="PYTEST") as conn:
+    print(conn.name, conn.get_local_node())
+```
+
 ## API details
 
 ### Parsing data structures
@@ -64,12 +75,15 @@ if packet.is_reply():
 
 ### TCP vs UDP connections
 
-- **`AsyncAcnetConnectionBase`** - Protocol core (commands, dispatch, tracking). Transport-agnostic - subclasses provide framing via abstract methods (`_open_transport`, `_close_transport`, `_send_frame`, `_start_read_loop`).
-  - **`AsyncAcnetConnectionTCP`** - TCP stream with 4-byte length-prefix framing and handshake, typically used via `acsys-proxy.fnal.gov:6802`.
-  - **`AsyncAcnetConnectionUDP`** - UDP datagrams (no length prefix); uses `asyncio.DatagramProtocol` for receive callbacks.
-- **`AcnetConnectionTCP`** / **`AcnetConnectionUDP`** - Synchronous wrappers. Run the async core on a dedicated reactor thread and expose a blocking API via `run_coroutine_threadsafe`.
+- **`AsyncAcnetConnectionTCP`** uses acnetd's TCP bridge protocol, normally through
+  `acsys-proxy.fnal.gov:6802`.
+- **`AsyncAcnetConnectionUDP`** uses acnetd's official local UDP client interface.
+  It is restricted to loopback and uses separate command and data sockets.
+- **`AcnetConnectionTCP`** and **`AcnetConnectionUDP`** are synchronous wrappers
+  around those async implementations.
 
-The TCP protocol uses length-prefixed framing with 4 message types. UDP protocol is same messages without length prefix:
+Both paths share the same raw, big-endian acnetd command and ACK structures.
+TCP wraps them in a length-prefixed bridge frame:
 
 | Type | Code | Direction | Purpose |
 |------|------|-----------|---------|
@@ -78,14 +92,19 @@ The TCP protocol uses length-prefixed framing with 4 message types. UDP protocol
 | ACK | 2 | acnetd → Client | Response to every COMMAND |
 | DATA | 3 | acnetd → Client | ACNET packets (replies, requests, messages, cancels) |
 
-Every command follows a request/response pattern: the client sends a COMMAND and waits for a single ACK. ACNET data packets (replies from remote nodes) arrive separately as DATA messages. Reply handlers are registered per request ID and called on the reactor thread - consumers must use thread-safe primitives (e.g. `queue.Queue`, `threading.Event`) to receive data.
+UDP has no message-type envelope: raw commands and ACKs use the command socket,
+while raw ACNET packets arrive on the data port advertised by CONNECT. Reply
+handlers run on the event loop for async connections and on the reactor thread
+for synchronous wrappers; synchronous consumers should use thread-safe handoff
+primitives such as `queue.Queue` or `threading.Event`.
 
 ### Constants
 
 ```python
 from pacsys.acnet.constants import (
-    ACNET_PORT,           # 6801 - UDP port
-    ACNET_TCP_PORT,       # 6802 - TCP port (for acnetd)
+    ACNET_PORT,           # 6801 - ACNET mesh traffic
+    ACNET_CLIENT_PORT,    # 6802 - local UDP and TCP client interfaces
+    ACNET_TCP_PORT,       # compatibility alias for ACNET_CLIENT_PORT
     ACNET_HEADER_SIZE,    # 18 bytes
 
     # Message flags
@@ -205,7 +224,8 @@ The `status` field uses facility-error encoding:
 
 ## Wire Format Notes
 
-1. **No odd-length packets** - ACNET does not support odd-length payloads
+1. **Alignment** - UDP datagrams are even-sized; an individual packet may declare
+   an odd length and is followed by one alignment byte before the next packet
 2. **Byte swapping** - Data is little-endian with even/odd bytes swapped per word.
 3. **Multiple packets per datagram** - A single UDP datagram may contain multiple ACNET packets
 
