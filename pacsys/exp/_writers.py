@@ -107,6 +107,7 @@ class CsvWriter:
                     r.units or "",
                 ]
             )
+        self._file.flush()
 
     def close(self) -> None:
         self._file.close()

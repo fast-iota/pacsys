@@ -400,6 +400,9 @@ dl.stop()  # Flushes remaining data and closes the writer
 | `last_error` | `Exception \| None` | Last write error, if any |
 
 Failed writes are retried up to 3 times before the batch is dropped. Errors are logged and available via `last_error`.
+If the final batch is dropped during `stop()`, shutdown closes the writer and raises
+`RuntimeError`; if the flush worker is stuck, shutdown raises without closing the
+writer from another thread.
 
 ---
 
@@ -416,6 +419,8 @@ class LogWriter(Protocol):
 ### CsvWriter
 
 Simple CSV output with columns: `timestamp`, `drf`, `value`, `units`.
+Each batch is flushed to the operating system before `write_readings()` returns.
+Parquet files require a successful `close()` before they are readable.
 
 ```python
 from pacsys.exp import CsvWriter

@@ -38,6 +38,16 @@ class TestCsvWriter:
         assert rows[1][1] == "M:OUTTMP"
         assert rows[1][2] == "72.5"
 
+    def test_rows_are_visible_before_close(self, tmp_path):
+        path = tmp_path / "test.csv"
+        writer = CsvWriter(path)
+        try:
+            writer.write_readings([_reading()])
+            with path.open(newline="") as f:
+                assert len(list(csv.reader(f))) == 2
+        finally:
+            writer.close()
+
     def test_csv_array_as_json(self, tmp_path):
         """Scalar arrays are serialized as JSON lists, not Python repr."""
         import numpy as np

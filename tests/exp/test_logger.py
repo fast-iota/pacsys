@@ -92,6 +92,37 @@ class TestDataLogger:
             rows = list(csv.reader(f))
         assert len(rows) == 2  # header + 1 reading
 
+    def test_final_flush_retries_then_reports_drop(self, fake):
+        class FailingWriter:
+            def __init__(self):
+                self.attempts = 0
+                self.closed = False
+
+            def write_readings(self, readings: list[Reading]) -> None:
+                self.attempts += 1
+                raise OSError("disk full")
+
+            def close(self) -> None:
+                self.closed = True
+
+        writer = FailingWriter()
+        dl = DataLogger(
+            ["M:OUTTMP@p,1000"],
+            writer=writer,
+            flush_interval=999,
+            backend=fake,
+        )
+        dl.start()
+        fake.emit_reading("M:OUTTMP@p,1000", 72.5)
+
+        with pytest.raises(RuntimeError, match="Dropped 1 reading"):
+            dl.stop()
+
+        assert writer.attempts == dl._max_retries
+        assert writer.closed
+        assert dl.last_error is not None
+        assert dl._buffer == []
+
     def test_drops_batch_after_max_retries(self, fake):
         """Poison batch is dropped after max_retries, not retried forever."""
 
