@@ -148,6 +148,7 @@ def read_fresh(
     unique_drfs = list(dict.fromkeys(drfs))
 
     collected: dict[str, list[Reading]] = {drf: [] for drf in unique_drfs}
+    usable_counts = dict.fromkeys(unique_drfs, 0)
     channels_done = 0
     error_box: list[Exception] = []
     lock = threading.Lock()
@@ -159,10 +160,12 @@ def read_fresh(
             drf = reading.drf
             if drf in collected:
                 collected[drf].append(reading)
-                if len(collected[drf]) == count:
-                    channels_done += 1
-                    if channels_done >= len(unique_drfs):
-                        done.set()
+                if reading.ok:
+                    usable_counts[drf] += 1
+                    if usable_counts[drf] == count:
+                        channels_done += 1
+                        if channels_done >= len(unique_drfs):
+                            done.set()
 
     def on_error(exc, handle):
         error_box.append(exc)
@@ -176,7 +179,7 @@ def read_fresh(
             with lock:
                 if channels_done >= len(unique_drfs):
                     return [FreshResult(drf=drf, readings=tuple(collected[drf]), requested_count=count) for drf in drfs]
-                missing = [d for d in unique_drfs if len(collected[d]) < count]
+                missing = [d for d in unique_drfs if usable_counts[d] < count]
             raise TimeoutError(f"Timed out waiting for {count} readings: {missing}")
         with lock:
             if channels_done >= len(unique_drfs):
