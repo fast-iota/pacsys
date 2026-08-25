@@ -283,7 +283,7 @@ def format_write_result(result: WriteResult, *, fmt: str) -> str:
     device = get_device_name(result.drf)
 
     if fmt == "json":
-        d: dict[str, Any] = {"device": device, "ok": result.ok}
+        d: dict[str, Any] = {"device": device, "ok": result.ok, "confirmed": result.confirmed}
         if not result.ok:
             d["error"] = result.message or f"error {result.error_code}"
         if result.verified is not None:

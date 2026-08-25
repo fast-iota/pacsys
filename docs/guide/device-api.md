@@ -217,6 +217,7 @@ and fail the strict boolean comparison.
 |-------|------|-------------|
 | `drf` | `str` | DRF that was written |
 | `success` | `bool` | True if error_code == 0 |
+| `confirmed` | `bool` | True if the write succeeded and requested verification did not fail |
 | `facility_code` | `int` | ACNET facility code |
 | `error_code` | `int` | 0 = success, <0 = error |
 | `message` | `str` or `None` | Error message (if failed) |
@@ -224,6 +225,9 @@ and fail the strict boolean comparison.
 | `readback` | `float` or `str` or `bytes` or `...` or `None` | Last readback value |
 | `skipped` | `bool` | True if check_first found value correct |
 | `attempts` | `int` | Number of readback attempts made |
+
+`success` and `ok` report whether the backend accepted the write. When verification
+was requested, use `confirmed` to require both write success and successful readback.
 
 ---
 

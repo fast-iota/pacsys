@@ -468,6 +468,7 @@ class TestFormatWriteResult:
         data = json.loads(result)
         assert data["device"] == "Z:ACLTST"
         assert data["ok"] is True
+        assert data["confirmed"] is True
 
     def test_json_error(self):
         from pacsys.cli._common import format_write_result
@@ -476,7 +477,18 @@ class TestFormatWriteResult:
         result = format_write_result(r, fmt="json")
         data = json.loads(result)
         assert data["ok"] is False
+        assert data["confirmed"] is False
         assert "WRITE_FAILED" in data.get("error", "")
+
+    def test_json_verify_failed(self):
+        from pacsys.cli._common import format_write_result
+
+        r = self._make_result(verified=False, readback=99.0)
+        data = json.loads(format_write_result(r, fmt="json"))
+        assert data["ok"] is True
+        assert data["confirmed"] is False
+        assert data["verified"] is False
+        assert data["readback"] == 99.0
 
     def test_text_verified(self):
         from pacsys.cli._common import format_write_result

@@ -79,7 +79,7 @@ def main() -> int:
                 else:
                     result = dev.write(value, verify=verify_cfg, timeout=args.timeout)
                 print(format_write_result(result, fmt=fmt))
-                if not result.ok:
+                if not result.confirmed:
                     has_error = True
         elif len(settings) == 1:
             drf, value = settings[0]
