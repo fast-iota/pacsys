@@ -43,6 +43,7 @@ audit_log = "audit.jsonl"
 
 [policies]
 write_devices = ["Z:ACLTST", "Z:CUBE_Z"]
+allow_raw = ["B:HS*"]
 
 [policies.value_ranges]
 "Z:ACLTST" = [0.0, 100.0]
@@ -56,6 +57,7 @@ write_devices = ["Z:ACLTST", "Z:CUBE_Z"]
     assert cfg.port == 9090
     assert cfg.role == "testing"
     assert cfg.write_devices == ["Z:ACLTST", "Z:CUBE_Z"]
+    assert cfg.allow_raw == ["B:HS*"]
     assert cfg.value_ranges == {"Z:ACLTST": (0.0, 100.0)}
     assert cfg.slew_rates == {"Z:ACLTST": {"max_step": 5.0}}
     assert cfg.audit_log == "audit.jsonl"

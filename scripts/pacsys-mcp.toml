@@ -16,6 +16,8 @@ transport = "stdio"
 # Devices allowed for writing (glob patterns).
 # Without this list, ALL writes are denied.
 write_devices = ["Z:ACLTST"]
+# Raw writes to range/slew-limited devices are denied unless explicitly exempted.
+# allow_raw = ["B:HS*"]
 
 # Optional value range limits (per device glob pattern).
 # Writes outside these bounds are rejected.

@@ -163,24 +163,28 @@ policies = [RateLimitPolicy(max_requests=100, window_seconds=60)]
 
 ### ValueRangePolicy
 
-Deny writes where numeric values fall outside allowed ranges. Unmatched devices are passed through. For range-limited devices the policy fails closed: array/list values are checked element-by-element, and non-numeric values (text, mixed lists) as well as NaN/inf are denied. Raw `bytes` block writes (alarm blocks, ramp tables) are exempt — they are structured payloads, not setpoints.
+Deny writes where numeric values fall outside allowed ranges. Unmatched devices are passed through. For range-limited devices the policy fails closed: array/list values are checked element-by-element, and non-numeric values (including raw bytes), NaN, and infinity are denied. Structured raw writes such as ramp or alarm blocks require an explicit `allow_raw` device pattern.
 
 ```python
 from pacsys.supervised import ValueRangePolicy
 
 # Limit M: devices to [0, 100], G: devices to [-50, 50]
-policies = [ValueRangePolicy(limits={"M:*": (0.0, 100.0), "G:*": (-50.0, 50.0)})]
+policies = [ValueRangePolicy(
+    limits={"M:*": (0.0, 100.0), "G:*": (-50.0, 50.0)},
+    allow_raw=["M:RAMP*"],
+)]
 ```
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `limits` | `dict[str, tuple[float, float]]` | *(required)* | Glob pattern to (min, max) bounds |
+| `allow_raw` | `list[str]` | `None` | Device patterns explicitly exempted for raw writes |
 
 ### SlewRatePolicy
 
 Enforce maximum step size and/or rate of change per device. Stateful -- tracks the last written value and timestamp. First write to any device is always allowed. Accepts that failed backend writes will leave stale history.
 
-For slew-limited devices the policy fails closed: only finite numeric scalars (or single-element lists/arrays) are accepted; text, multi-element arrays, and NaN/inf are denied since slew against a scalar history is undefined for them. Raw `bytes` block writes (alarm blocks, ramp tables) are exempt — they are structured payloads, not setpoints.
+For slew-limited devices the policy fails closed: only finite numeric scalars (or single-element lists/arrays) are accepted; text, raw bytes, multi-element arrays, and NaN/inf are denied since slew against them is undefined. Structured raw writes require an explicit `allow_raw` device pattern.
 
 Each device pattern maps to a `SlewLimit(max_step=..., max_rate=...)`. At least one must be set; both can be combined.
 
@@ -188,7 +192,10 @@ Each device pattern maps to a `SlewLimit(max_step=..., max_rate=...)`. At least 
 from pacsys.supervised import SlewRatePolicy, SlewLimit
 
 # Max 10 units per write from last one (absolute step)
-policies = [SlewRatePolicy(limits={"M:*": SlewLimit(max_step=10.0)})]
+policies = [SlewRatePolicy(
+    limits={"M:*": SlewLimit(max_step=10.0)},
+    allow_raw=["M:RAMP*"],
+)]
 
 # Max 5 units/second (rate)
 policies = [SlewRatePolicy(limits={"M:*": SlewLimit(max_rate=5.0)})]
@@ -200,6 +207,7 @@ policies = [SlewRatePolicy(limits={"M:*": SlewLimit(max_step=10.0, max_rate=5.0)
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `limits` | `dict[str, SlewLimit]` | *(required)* | Glob pattern to slew constraints |
+| `allow_raw` | `list[str]` | `None` | Device patterns explicitly exempted for raw writes |
 
 `SlewLimit` fields:
 

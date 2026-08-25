@@ -46,6 +46,21 @@ def _numeric_elements(value: object) -> list[float] | None:
     return None
 
 
+def _raw_patterns(patterns: list[str] | None) -> tuple[str, ...]:
+    if patterns is None:
+        return ()
+    if not isinstance(patterns, (list, tuple)):
+        raise TypeError("allow_raw must be a list of device patterns")
+    if any(not isinstance(pattern, str) or not pattern.strip() for pattern in patterns):
+        raise ValueError("allow_raw patterns must be non-empty strings")
+    return tuple(patterns)
+
+
+def _raw_allowed(device_name: str, patterns: tuple[str, ...]) -> bool:
+    upper = device_name.upper()
+    return any(fnmatch.fnmatchcase(upper, pattern.upper()) for pattern in patterns)
+
+
 @dataclass(frozen=True)
 class RequestContext:
     """Context for a single RPC request, passed to policy checks."""
@@ -238,12 +253,15 @@ class ValueRangePolicy(Policy):
 
     Args:
         limits: Mapping of device name glob pattern to (min, max) bounds.
+        allow_raw: Device patterns explicitly allowed to bypass numeric limits
+            for structured raw writes such as ramp or alarm blocks.
     """
 
-    def __init__(self, limits: dict[str, tuple[float, float]]):
+    def __init__(self, limits: dict[str, tuple[float, float]], *, allow_raw: list[str] | None = None):
         if not limits:
             raise ValueError("limits must not be empty")
         self._limits = limits
+        self._allow_raw = _raw_patterns(allow_raw)
 
     def _bound_for(self, device_name: str) -> tuple[float, float] | None:
         upper = device_name.upper()
@@ -261,7 +279,12 @@ class ValueRangePolicy(Policy):
             if bound is None:
                 continue
             if isinstance(value, (bytes, bytearray)):
-                continue  # raw block write (alarm block, ramp table) — not a setpoint
+                if _raw_allowed(name, self._allow_raw):
+                    continue
+                return PolicyDecision(
+                    allowed=False,
+                    reason=f"Raw byte write to range-limited device {name} requires an allow_raw exemption",
+                )
             elements = _numeric_elements(value)
             if elements is None:
                 return PolicyDecision(
@@ -303,16 +326,19 @@ class SlewRatePolicy(Policy):
 
     Args:
         limits: Mapping of device name glob pattern to :class:`SlewLimit`.
+        allow_raw: Device patterns explicitly allowed to bypass slew limits for
+            structured raw writes such as ramp or alarm blocks.
 
     First write to any device is always allowed (no history).
     History is updated on allow (accepts that failed backend writes will
     leave stale history).
     """
 
-    def __init__(self, limits: dict[str, SlewLimit]):
+    def __init__(self, limits: dict[str, SlewLimit], *, allow_raw: list[str] | None = None):
         if not limits:
             raise ValueError("limits must not be empty")
         self._limits = limits
+        self._allow_raw = _raw_patterns(allow_raw)
         self._lock = threading.Lock()
         self._history: dict[str, tuple[float, float]] = {}  # device -> (value, timestamp)
 
@@ -337,7 +363,12 @@ class SlewRatePolicy(Policy):
                 if limit is None:
                     continue
                 if isinstance(value, (bytes, bytearray)):
-                    continue  # raw block write (alarm block, ramp table) — not a setpoint
+                    if _raw_allowed(name, self._allow_raw):
+                        continue
+                    return PolicyDecision(
+                        allowed=False,
+                        reason=f"Raw byte write to slew-limited device {name} requires an allow_raw exemption",
+                    )
                 elements = _numeric_elements(value)
                 if elements is None or len(elements) != 1 or not math.isfinite(elements[0]):
                     # Slew against scalar history is undefined for arrays/text/NaN — fail closed

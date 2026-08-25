@@ -398,13 +398,14 @@ class TestValueRangePolicy:
         assert not d.allowed
 
     @pytest.mark.parametrize("value", [b"\x01\x02", bytearray(b"\x01\x02")])
-    def test_raw_block_write_allowed_for_limited_device(self, value):
-        """Raw block payloads (alarm blocks, ramp tables) are not setpoints — range limits don't apply."""
-        p = ValueRangePolicy(limits={"B:*": (-10.0, 10.0)})
-        d = p.check(
-            _ctx(rpc_method="Set", drfs=["B:HS23T.SETTING{0:64}.RAW"], values=[("B:HS23T.SETTING{0:64}.RAW", value)])
+    def test_raw_write_requires_explicit_exemption(self, value):
+        ctx = _ctx(
+            rpc_method="Set",
+            drfs=["B:HS23T.SETTING{0:64}.RAW"],
+            values=[("B:HS23T.SETTING{0:64}.RAW", value)],
         )
-        assert d.allowed
+        assert not ValueRangePolicy(limits={"B:*": (-10.0, 10.0)}).check(ctx).allowed
+        assert ValueRangePolicy(limits={"B:*": (-10.0, 10.0)}, allow_raw=["B:HS23T"]).check(ctx).allowed
 
     def test_in_range_array_allowed(self):
         p = ValueRangePolicy(limits={"M:*": (0.0, 100.0)})
@@ -547,17 +548,14 @@ class TestSlewRatePolicy:
         assert not d.allowed
         assert "slew-limited" in d.reason
 
-    def test_raw_block_write_allowed_for_limited_device(self):
-        """Raw block payloads are not setpoints — slew limits don't apply and don't touch history."""
-        p = SlewRatePolicy(limits={"M:*": SlewLimit(max_step=5.0)})
-        d = p.check(
-            _ctx(
-                rpc_method="Set",
-                drfs=["M:OUTTMP.SETTING{0:64}.RAW"],
-                values=[("M:OUTTMP.SETTING{0:64}.RAW", b"\x01\x02")],
-            )
+    def test_raw_write_requires_explicit_exemption(self):
+        ctx = _ctx(
+            rpc_method="Set",
+            drfs=["M:OUTTMP.SETTING{0:64}.RAW"],
+            values=[("M:OUTTMP.SETTING{0:64}.RAW", b"\x01\x02")],
         )
-        assert d.allowed
+        assert not SlewRatePolicy(limits={"M:*": SlewLimit(max_step=5.0)}).check(ctx).allowed
+        assert SlewRatePolicy(limits={"M:*": SlewLimit(max_step=5.0)}, allow_raw=["M:OUTTMP"]).check(ctx).allowed
 
     @pytest.mark.parametrize("value", [[100.0], np.array([100.0])])
     def test_single_element_container_enforced(self, value):
