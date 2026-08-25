@@ -4,7 +4,7 @@ Async ACNET connection - pure asyncio implementation with pluggable transport.
 AsyncAcnetConnectionBase holds all protocol logic (commands, dispatch, tracking).
 Subclasses provide transport-specific framing:
 - AsyncAcnetConnectionTCP: TCP stream with 4-byte length prefix + handshake
-- AsyncAcnetConnectionUDP: UDP datagrams (no length prefix)
+- AsyncAcnetConnectionUDP: local acnetd command/data datagrams
 
 The sync wrappers (AcnetConnectionTCP / AcnetConnectionUDP) schedule calls via
 run_coroutine_threadsafe.
@@ -16,6 +16,7 @@ Example:
 
 import asyncio
 import logging
+import os
 import socket
 import struct
 from collections import defaultdict, deque
@@ -24,6 +25,7 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 from .constants import (
+    ACNET_CLIENT_PORT,
     ACNET_FLG_RPY,
     ACNET_TCP_PORT,
     CMD_BLOCK_REQUESTS,
@@ -77,7 +79,7 @@ logger = logging.getLogger(__name__)
 # Default proxy host
 ACSYS_PROXY_HOST = "acsys-proxy.fnal.gov"
 
-# TCP message types (also used in UDP framing)
+# TCP bridge message types. Raw UDP has no message-type envelope.
 TCP_CLIENT_PING = 0
 ACNETD_COMMAND = 1
 ACNETD_ACK = 2
@@ -195,15 +197,18 @@ class AsyncAcnetConnectionBase:
         port: int = ACNET_TCP_PORT,
         name: str = "",
         *,
+        vnode: str = "",
         trace: bool = False,
     ):
         self._host = host
         self._port = port
         self._requested_name = name
+        self._vnode_name = vnode
         self._trace = trace
 
         # Handle assigned by daemon
-        self._raw_handle = 0
+        self._raw_handle = _rad50_encode(name) if name else 0
+        self._raw_vnode = _rad50_encode(vnode) if vnode else 0
         self._handle_name = ""
 
         # Command serialization - one command at a time
@@ -283,12 +288,20 @@ class AsyncAcnetConnectionBase:
         raise NotImplementedError
 
     async def _send_frame(self, content: bytes):
-        """Send a protocol frame. TCP prepends 4B length; UDP sends as-is."""
+        """Send one raw acnetd command using the transport's framing."""
         raise NotImplementedError
 
     def _start_read_loop(self):
         """Start the transport-specific read loop / callback registration."""
         raise NotImplementedError
+
+    def _connect_pid(self) -> int:
+        """PID placed in CONNECT; the TCP bridge replaces zero."""
+        return 0
+
+    def _connect_data_port(self) -> int:
+        """Data port placed in CONNECT; the TCP bridge replaces zero."""
+        return 0
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -356,7 +369,14 @@ class AsyncAcnetConnectionBase:
 
     async def _do_connect(self):
         """Send CONNECT command and process response."""
-        content = struct.pack(">2H3IH", ACNETD_COMMAND, CMD_CONNECT, self._raw_handle, 0, 0, 0)
+        content = struct.pack(
+            ">H3IH",
+            CMD_CONNECT,
+            self._raw_handle,
+            self._raw_vnode,
+            self._connect_pid(),
+            self._connect_data_port(),
+        )
         ack = await self._xact(content)
 
         if len(ack) < 9:
@@ -375,7 +395,7 @@ class AsyncAcnetConnectionBase:
 
     async def _do_disconnect(self):
         """Send DISCONNECT command."""
-        content = struct.pack(">2H2I", ACNETD_COMMAND, CMD_DISCONNECT, self._raw_handle, 0)
+        content = struct.pack(">H2I", CMD_DISCONNECT, self._raw_handle, self._raw_vnode)
         try:
             await self._xact(content, timeout=0.5)
         except Exception:  # noqa: BLE001
@@ -426,9 +446,8 @@ class AsyncAcnetConnectionBase:
     async def _xact(self, content: bytes, timeout: float = 5.0) -> bytes:
         """Send a command and wait for ACK. Serialized via _cmd_lock.
 
-        content is the raw protocol payload (msg_type + cmd_code + args)
-        WITHOUT the 4-byte TCP length prefix. The transport's _send_frame()
-        handles framing.
+        ``content`` starts with the raw acnetd command code. The TCP transport
+        adds the bridge message type and length; UDP sends it unchanged.
         """
         if self._disposed:
             raise AcnetError(ACNET_NOT_CONNECTED, "Connection disposed")
@@ -441,14 +460,17 @@ class AsyncAcnetConnectionBase:
             self._pending_ack = loop.create_future()
 
             if self._trace:
-                cmd = struct.unpack(">H", content[2:4])[0]
+                cmd = struct.unpack(">H", content[:2])[0]
                 cmd_name = self._CMD_NAMES.get(cmd, f"?{cmd}")
                 logger.info("TRACE> %s(%s) len=%s %s", cmd_name, cmd, len(content), content[:20].hex())
 
             try:
                 await self._send_frame(content)
-            except OSError as e:
+            except (OSError, AcnetUnavailableError) as e:
                 self._pending_ack = None
+                self._connected = False
+                self._on_connection_lost()
+                await self._close_transport()
                 logger.error("Failed to send command: %s", e)
                 raise AcnetUnavailableError from e
 
@@ -461,12 +483,14 @@ class AsyncAcnetConnectionBase:
                 # Kill the transport so the connection cannot be reused.
                 logger.error("Timeout waiting for ack - closing transport to prevent desync")
                 self._connected = False
+                self._on_connection_lost()
                 await self._close_transport()
                 raise AcnetUnavailableError from e
             except asyncio.CancelledError:
                 self._pending_ack = None
                 logger.error("Task cancelled during ack wait - closing transport to prevent desync")
                 self._connected = False
+                self._on_connection_lost()
                 await asyncio.shield(self._close_transport())
                 raise
 
@@ -495,7 +519,7 @@ class AsyncAcnetConnectionBase:
             pass
 
     async def _send_keepalive(self):
-        content = struct.pack(">2H2I", ACNETD_COMMAND, CMD_KEEPALIVE, self._raw_handle, 0)
+        content = struct.pack(">H2I", CMD_KEEPALIVE, self._raw_handle, self._raw_vnode)
         await self._xact(content)
 
     # ------------------------------------------------------------------
@@ -516,14 +540,29 @@ class AsyncAcnetConnectionBase:
             else:
                 logger.debug("Dropping unexpected ACK (no pending command)")
         elif msg_type == ACNETD_DATA:
-            if len(data) >= 18:
-                try:
-                    packet = AcnetPacket.parse(data)
-                    self._handle_packet(packet)
-                except (ValueError, struct.error) as e:
-                    logger.warning("Error parsing ACNET packet: %s", e)
+            self._dispatch_data(data)
         else:
             logger.warning("Unknown message type: %s", msg_type)
+
+    def _dispatch_data(self, data: bytes) -> None:
+        """Parse and dispatch every ACNET packet in a data frame/datagram."""
+        offset = 0
+        while offset < len(data):
+            remaining = len(data) - offset
+            if remaining < 18:
+                logger.warning("Trailing short ACNET packet: %d bytes", remaining)
+                return
+            length = struct.unpack_from("<H", data, offset + 16)[0]
+            if length < 18 or length > remaining:
+                logger.warning("Invalid ACNET packet length %d in %d-byte payload", length, remaining)
+                return
+            try:
+                packet = AcnetPacket.parse(data[offset : offset + length])
+            except (ValueError, struct.error) as e:
+                logger.warning("Error parsing ACNET packet: %s", e)
+                return
+            self._handle_packet(packet)
+            offset += (length + 1) & ~1
 
     def _handle_packet(self, packet: AcnetPacket):
         try:
@@ -615,11 +654,10 @@ class AsyncAcnetConnectionBase:
 
         content = (
             struct.pack(
-                ">2H3I2HI",
-                ACNETD_COMMAND,
+                ">H3I2HI",
                 CMD_SEND_REQUEST_TIMEOUT,
                 self._raw_handle,
-                0,
+                self._raw_vnode,
                 task_rad50,
                 node,
                 mult_flag,
@@ -718,7 +756,7 @@ class AsyncAcnetConnectionBase:
     async def get_node(self, name: str) -> int:
         """Look up a node address by name."""
         name_rad50 = _rad50_encode(name)
-        content = struct.pack(">2H3I", ACNETD_COMMAND, CMD_NAME_LOOKUP, self._raw_handle, 0, name_rad50)
+        content = struct.pack(">H3I", CMD_NAME_LOOKUP, self._raw_handle, self._raw_vnode, name_rad50)
         ack = await self._xact(content)
 
         if len(ack) < 6:
@@ -733,7 +771,7 @@ class AsyncAcnetConnectionBase:
 
     async def get_name(self, node: int) -> str:
         """Look up a node name by address."""
-        content = struct.pack(">2H2IH", ACNETD_COMMAND, CMD_NODE_LOOKUP, self._raw_handle, 0, node)
+        content = struct.pack(">H2IH", CMD_NODE_LOOKUP, self._raw_handle, self._raw_vnode, node)
         ack = await self._xact(content)
 
         if len(ack) < 8:
@@ -748,7 +786,7 @@ class AsyncAcnetConnectionBase:
 
     async def get_local_node(self) -> int:
         """Get the local node address."""
-        content = struct.pack(">2H2I", ACNETD_COMMAND, CMD_LOCAL_NODE, self._raw_handle, 0)
+        content = struct.pack(">H2I", CMD_LOCAL_NODE, self._raw_handle, self._raw_vnode)
         ack = await self._xact(content)
 
         if len(ack) < 6:
@@ -763,7 +801,7 @@ class AsyncAcnetConnectionBase:
 
     async def get_default_node(self) -> int:
         """Get the default routing node."""
-        content = struct.pack(">2H2I", ACNETD_COMMAND, CMD_DEFAULT_NODE, self._raw_handle, 0)
+        content = struct.pack(">H2I", CMD_DEFAULT_NODE, self._raw_handle, self._raw_vnode)
         ack = await self._xact(content)
 
         if len(ack) < 6:
@@ -782,7 +820,7 @@ class AsyncAcnetConnectionBase:
             raise ValueError("Task name must be 1-6 characters")
 
         name_rad50 = _rad50_encode(new_name)
-        content = struct.pack(">2H3I", ACNETD_COMMAND, CMD_RENAME_TASK, self._raw_handle, 0, name_rad50)
+        content = struct.pack(">H3I", CMD_RENAME_TASK, self._raw_handle, self._raw_vnode, name_rad50)
         ack = await self._xact(content)
 
         if len(ack) < 4:
@@ -802,11 +840,10 @@ class AsyncAcnetConnectionBase:
         task_rad50 = _rad50_encode(task)
         content = (
             struct.pack(
-                ">2H3IH",
-                ACNETD_COMMAND,
+                ">H3IH",
                 CMD_SEND,
                 self._raw_handle,
-                0,
+                self._raw_vnode,
                 task_rad50,
                 node,
             )
@@ -831,7 +868,7 @@ class AsyncAcnetConnectionBase:
         request.cancel()
 
         reply_id = request.reply_id.value & 0xFFFF
-        content = struct.pack(">2H2IH", ACNETD_COMMAND, CMD_IGNORE_REQUEST, self._raw_handle, 0, reply_id)
+        content = struct.pack(">H2IH", CMD_IGNORE_REQUEST, self._raw_handle, self._raw_vnode, reply_id)
         ack = await self._xact(content)
 
         if len(ack) < 4:
@@ -843,7 +880,7 @@ class AsyncAcnetConnectionBase:
 
     async def get_node_stats(self) -> NodeStats:
         """Get ACNET node statistics."""
-        content = struct.pack(">2H2I", ACNETD_COMMAND, CMD_NODE_STATS, self._raw_handle, 0)
+        content = struct.pack(">H2I", CMD_NODE_STATS, self._raw_handle, self._raw_vnode)
         ack = await self._xact(content)
 
         if len(ack) < 32:
@@ -860,7 +897,7 @@ class AsyncAcnetConnectionBase:
     async def get_task_pid(self, task: str) -> int:
         """Get the OS process ID for an ACNET task."""
         task_rad50 = _rad50_encode(task)
-        content = struct.pack(">2H3I", ACNETD_COMMAND, CMD_TASK_PID, self._raw_handle, 0, task_rad50)
+        content = struct.pack(">H3I", CMD_TASK_PID, self._raw_handle, self._raw_vnode, task_rad50)
         ack = await self._xact(content)
 
         if len(ack) < 8:
@@ -875,7 +912,7 @@ class AsyncAcnetConnectionBase:
 
     async def disconnect_single(self):
         """Disconnect this single task instance."""
-        content = struct.pack(">2H2I", ACNETD_COMMAND, CMD_DISCONNECT_SINGLE, self._raw_handle, 0)
+        content = struct.pack(">H2I", CMD_DISCONNECT_SINGLE, self._raw_handle, self._raw_vnode)
         ack = await self._xact(content)
 
         if len(ack) < 4:
@@ -930,11 +967,10 @@ class AsyncAcnetConnectionBase:
         reply_id = request.reply_id.value & 0xFFFF
         content = (
             struct.pack(
-                ">2H2IHHh",
-                ACNETD_COMMAND,
+                ">H2IHHh",
                 CMD_SEND_REPLY,
                 self._raw_handle,
-                0,
+                self._raw_vnode,
                 reply_id,
                 flags,
                 status,
@@ -950,11 +986,10 @@ class AsyncAcnetConnectionBase:
         self._reply_buffer.pop(context.request_id, None)
 
         content = struct.pack(
-            ">2H2IH",
-            ACNETD_COMMAND,
+            ">H2IH",
             CMD_CANCEL,
             self._raw_handle,
-            0,
+            self._raw_vnode,
             context.request_id.id,
         )
 
@@ -966,11 +1001,10 @@ class AsyncAcnetConnectionBase:
     async def _request_ack(self, reply_id: ReplyId) -> None:
         """Acknowledge receipt of an incoming request."""
         content = struct.pack(
-            ">2H2IH",
-            ACNETD_COMMAND,
+            ">H2IH",
             CMD_REQUEST_ACK,
             self._raw_handle,
-            0,
+            self._raw_vnode,
             reply_id.value & 0xFFFF,
         )
 
@@ -982,7 +1016,7 @@ class AsyncAcnetConnectionBase:
     async def _start_receiving(self):
         """Start receiving incoming packets."""
         if not self._receiving:
-            content = struct.pack(">2H2I", ACNETD_COMMAND, CMD_RECEIVE_REQUESTS, self._raw_handle, 0)
+            content = struct.pack(">H2I", CMD_RECEIVE_REQUESTS, self._raw_handle, self._raw_vnode)
             ack = await self._xact(content)
 
             if len(ack) < 4:
@@ -997,7 +1031,7 @@ class AsyncAcnetConnectionBase:
     async def _stop_receiving(self):
         """Stop receiving incoming packets."""
         if self._receiving:
-            content = struct.pack(">2H2I", ACNETD_COMMAND, CMD_BLOCK_REQUESTS, self._raw_handle, 0)
+            content = struct.pack(">H2I", CMD_BLOCK_REQUESTS, self._raw_handle, self._raw_vnode)
             ack = await self._xact(content)
 
             if len(ack) < 4:
@@ -1041,9 +1075,10 @@ class AsyncAcnetConnectionTCP(AsyncAcnetConnectionBase):
         port: int = ACNET_TCP_PORT,
         name: str = "",
         *,
+        vnode: str = "",
         trace: bool = False,
     ):
-        super().__init__(host, port, name, trace=trace)
+        super().__init__(host, port, name, vnode=vnode, trace=trace)
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
 
@@ -1082,10 +1117,11 @@ class AsyncAcnetConnectionTCP(AsyncAcnetConnectionBase):
             self._reader = None
 
     async def _send_frame(self, content: bytes):
-        """Send content with 4-byte big-endian length prefix."""
+        """Wrap a raw command in the TCP bridge envelope and length prefix."""
         if self._writer is None:
             raise AcnetUnavailableError
-        self._writer.write(struct.pack(">I", len(content)) + content)
+        frame = struct.pack(">H", ACNETD_COMMAND) + content
+        self._writer.write(struct.pack(">I", len(frame)) + frame)
         await self._writer.drain()
 
     def _start_read_loop(self):
@@ -1136,75 +1172,144 @@ class AsyncAcnetConnectionTCP(AsyncAcnetConnectionBase):
 
 
 # ======================================================================
-# UDP transport
+# Local UDP transport
 # ======================================================================
 
 
-class _AcnetUDPProtocol(asyncio.DatagramProtocol):
-    """asyncio DatagramProtocol that dispatches frames to an AsyncAcnetConnectionUDP."""
+class _AcnetUDPCommandProtocol(asyncio.DatagramProtocol):
+    """Deliver raw acnetd ACK datagrams from the command socket."""
 
     def __init__(self, connection: "AsyncAcnetConnectionUDP"):
         self._conn = connection
 
     def datagram_received(self, data: bytes, addr):
-        if len(data) < 2:
-            return
-        msg_type = struct.unpack(">H", data[:2])[0]
-        self._conn._dispatch_frame(msg_type, data[2:])
+        self._conn._dispatch_frame(ACNETD_ACK, data)
+
+    def error_received(self, exc):
+        logger.error("ACNET UDP command socket error: %s", exc)
+        self._conn._transport_failed()
 
     def connection_lost(self, exc):
-        self._conn._on_connection_lost()
+        if not self._conn._disposed:
+            self._conn._transport_failed()
+
+
+class _AcnetUDPDataProtocol(asyncio.DatagramProtocol):
+    """Deliver raw ACNET packets from the data socket."""
+
+    def __init__(self, connection: "AsyncAcnetConnectionUDP"):
+        self._conn = connection
+
+    def datagram_received(self, data: bytes, addr):
+        self._conn._dispatch_data(data)
+
+    def error_received(self, exc):
+        logger.error("ACNET UDP data socket error: %s", exc)
+        self._conn._transport_failed()
+
+    def connection_lost(self, exc):
+        if not self._conn._disposed:
+            self._conn._transport_failed()
 
 
 class AsyncAcnetConnectionUDP(AsyncAcnetConnectionBase):
-    """Async ACNET connection over UDP (no length-prefix framing)."""
+    """Async connection to the official local acnetd UDP client interface."""
 
-    # acnetd sends acks and data on separate sockets — no ack/reply ordering
+    # acnetd sends acks and data on separate sockets — no ack/reply ordering.
     _ORDERED_TRANSPORT: ClassVar[bool] = False
 
     def __init__(
         self,
-        host: str = ACSYS_PROXY_HOST,
-        port: int = ACNET_TCP_PORT,
+        host: str = "127.0.0.1",
+        port: int = ACNET_CLIENT_PORT,
         name: str = "",
         *,
+        vnode: str = "",
         trace: bool = False,
     ):
-        super().__init__(host, port, name, trace=trace)
-        self._udp_transport: asyncio.DatagramTransport | None = None
-        self._udp_protocol: _AcnetUDPProtocol | None = None
+        if host not in ("127.0.0.1", "localhost"):
+            raise ValueError("acnetd's official UDP client interface is local-only; use host='127.0.0.1'")
+        super().__init__(host, port, name, vnode=vnode, trace=trace)
+        self._cmd_transport: asyncio.DatagramTransport | None = None
+        self._data_transport: asyncio.DatagramTransport | None = None
+        self._cmd_protocol: _AcnetUDPCommandProtocol | None = None
+        self._data_protocol: _AcnetUDPDataProtocol | None = None
 
     async def _open_transport(self):
-        """Open UDP socket via create_datagram_endpoint."""
+        """Open separate local command and data sockets."""
+        loop = asyncio.get_running_loop()
         try:
-            loop = asyncio.get_running_loop()
-            transport, protocol = await asyncio.wait_for(
+            data_transport, data_protocol = await asyncio.wait_for(
                 loop.create_datagram_endpoint(
-                    lambda: _AcnetUDPProtocol(self),
+                    lambda: _AcnetUDPDataProtocol(self),
                     remote_addr=(self._host, self._port),
+                    family=socket.AF_INET,
                 ),
                 timeout=5.0,
             )
-            self._udp_transport = transport
-            self._udp_protocol = protocol
-            logger.debug("Opened async UDP channel to %s:%s", self._host, self._port)
-        except OSError as e:
-            logger.error("Failed to open UDP channel: %s", e)
+            self._data_transport = data_transport
+            self._data_protocol = data_protocol
+            data_socket = data_transport.get_extra_info("socket")
+            if data_socket is not None:
+                data_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, RECV_BUFFER_SIZE)
+
+            cmd_transport, cmd_protocol = await asyncio.wait_for(
+                loop.create_datagram_endpoint(
+                    lambda: _AcnetUDPCommandProtocol(self),
+                    remote_addr=(self._host, self._port),
+                    family=socket.AF_INET,
+                ),
+                timeout=5.0,
+            )
+            self._cmd_transport = cmd_transport
+            self._cmd_protocol = cmd_protocol
+            cmd_socket = cmd_transport.get_extra_info("socket")
+            if cmd_socket is not None:
+                cmd_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, SEND_BUFFER_SIZE)
+            logger.debug("Opened local async UDP channels to %s:%s", self._host, self._port)
+        except (OSError, TimeoutError) as e:
+            await self._close_transport()
+            logger.error("Failed to open local ACNET UDP channels: %s", e)
             raise AcnetUnavailableError from e
 
     async def _close_transport(self):
-        """Close the UDP transport."""
-        if self._udp_transport:
-            self._udp_transport.close()
-            self._udp_transport = None
-            self._udp_protocol = None
+        """Close both local UDP sockets."""
+        self._drop_transports()
+
+    def _drop_transports(self) -> None:
+        cmd_transport, self._cmd_transport = self._cmd_transport, None
+        data_transport, self._data_transport = self._data_transport, None
+        self._cmd_protocol = None
+        self._data_protocol = None
+        if cmd_transport is not None:
+            cmd_transport.close()
+        if data_transport is not None:
+            data_transport.close()
+
+    def _transport_failed(self) -> None:
+        """Poison both UDP channels after either channel fails."""
+        if self._cmd_transport is None and self._data_transport is None:
+            return
+        self._drop_transports()
+        self._on_connection_lost()
+
+    def _connect_pid(self) -> int:
+        return os.getpid()
+
+    def _connect_data_port(self) -> int:
+        if self._data_transport is None:
+            raise AcnetUnavailableError
+        sockname = self._data_transport.get_extra_info("sockname")
+        if not isinstance(sockname, tuple) or len(sockname) < 2 or not isinstance(sockname[1], int):
+            raise AcnetUnavailableError
+        return sockname[1]
 
     async def _send_frame(self, content: bytes):
-        """Send content as a UDP datagram (no length prefix)."""
-        if self._udp_transport is None:
+        """Send one raw command datagram to local acnetd."""
+        if self._cmd_transport is None:
             raise AcnetUnavailableError
-        self._udp_transport.sendto(content)
+        self._cmd_transport.sendto(content)
 
     def _start_read_loop(self):
-        """No-op - UDP protocol callbacks drive dispatch."""
+        """Datagram protocol callbacks drive both receive paths."""
         self._read_task = None

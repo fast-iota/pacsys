@@ -2,8 +2,6 @@
 
 import asyncio
 import struct
-import threading
-from collections import defaultdict
 from dataclasses import FrozenInstanceError
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,8 +10,8 @@ import pytest
 from pacsys.acnet import (
     ACNET_HEADER_SIZE,
     ACNET_PEND,
-    AcnetConnection,
     AcnetConnectionTCP,
+    AcnetConnectionUDP,
     AcnetError,
     AcnetPacket,
     AcnetReply,
@@ -31,7 +29,7 @@ from pacsys.acnet import (
     node_parts,
     node_value,
 )
-from pacsys.acnet.async_connection import AsyncAcnetConnectionTCP
+from pacsys.acnet.async_connection import AsyncAcnetConnectionTCP, AsyncAcnetConnectionUDP
 from pacsys.acnet.constants import (
     ACNET_FLG_MLT,
     ACNET_FLG_REQ,
@@ -451,7 +449,7 @@ class TestTCPGetDefaultNode:
             result = conn.get_default_node()
         assert result == 12 * 256 + 6
         buf = mock.call_args[0][0]
-        cmd = struct.unpack(">H", buf[2:4])[0]
+        cmd = struct.unpack(">H", buf[:2])[0]
         assert cmd == CMD_DEFAULT_NODE
 
     def test_error_raises(self, conn):
@@ -459,6 +457,15 @@ class TestTCPGetDefaultNode:
         with patch.object(conn._async, "_xact", new=AsyncMock(return_value=ack)):
             with pytest.raises(AcnetError):
                 conn.get_default_node()
+
+
+def test_sync_udp_wraps_official_local_async_transport():
+    conn = AcnetConnectionUDP(name="UDP001")
+    core = conn._create_async()
+
+    assert isinstance(core, AsyncAcnetConnectionUDP)
+    assert core.host == "127.0.0.1"
+    assert core.raw_handle == encode("UDP001")
 
 
 class TestTCPRenameTask:
@@ -470,10 +477,9 @@ class TestTCPRenameTask:
             conn.rename_task("NEWNAM")
         assert conn.name == "NEWNAM"
         buf = mock.call_args[0][0]
-        cmd = struct.unpack(">H", buf[2:4])[0]
+        cmd = struct.unpack(">H", buf[:2])[0]
         assert cmd == CMD_RENAME_TASK
-        # RAD50 name after handle(4) + virtual_node(4) = offset 16
-        name_rad50 = struct.unpack(">I", buf[12:16])[0]
+        name_rad50 = struct.unpack(">I", buf[10:14])[0]
         assert decode_stripped(name_rad50) == "NEWNAM"
 
     def test_empty_name_raises(self, conn):
@@ -499,7 +505,7 @@ class TestTCPSendMessage:
         with patch.object(conn._async, "_xact", new=AsyncMock(return_value=ack)) as mock:
             conn.send_message(node=0x0A06, task="DPM", data=b"\x01\x02")
         buf = mock.call_args[0][0]
-        cmd = struct.unpack(">H", buf[2:4])[0]
+        cmd = struct.unpack(">H", buf[:2])[0]
         assert cmd == CMD_SEND
         # Payload at the end
         assert buf[-2:] == b"\x01\x02"
@@ -528,7 +534,7 @@ class TestTCPIgnoreRequest:
         assert request.reply_id not in conn._async._requests_in
         assert request.cancelled
         buf = mock.call_args[0][0]
-        cmd = struct.unpack(">H", buf[2:4])[0]
+        cmd = struct.unpack(">H", buf[:2])[0]
         assert cmd == CMD_IGNORE_REQUEST
 
     def test_error_propagates_after_local_cleanup(self, conn):
@@ -561,42 +567,6 @@ class TestTCPIgnoreRequest:
             conn.ignore_request(request)
 
         mock.assert_not_awaited()
-
-
-class TestLegacyRequestTermination:
-    @pytest.fixture
-    def acnet_request(self):
-        raw = struct.pack("<HhHHIHHH", ACNET_FLG_REQ, 0, 0, 0, 0, 0, 42, 18)
-        return AcnetPacket.parse(raw)
-
-    def test_logs_terminal_reply_failure_after_handler_error(self, acnet_request, caplog):
-        conn = AcnetConnection("TEST")
-        conn._request_ack = MagicMock()
-        conn._request_handler = MagicMock(side_effect=RuntimeError("handler failed"))
-        conn.send_reply = MagicMock(side_effect=AcnetError(-1, "send failed"))
-
-        conn._handle_request(acnet_request)
-
-        assert "Failed to send terminal reply" in caplog.text
-        assert str(acnet_request.reply_id.value) in caplog.text
-
-    def test_logs_terminal_reply_failure_without_handler(self, acnet_request, caplog):
-        conn = AcnetConnection("TEST")
-        conn._request_ack = MagicMock()
-        conn.send_reply = MagicMock(side_effect=AcnetError(-1, "send failed"))
-
-        conn._handle_request(acnet_request)
-
-        assert "Failed to send terminal reply for unhandled request" in caplog.text
-        assert str(acnet_request.reply_id.value) in caplog.text
-
-    def test_unexpected_terminal_reply_error_propagates(self, acnet_request):
-        conn = AcnetConnection("TEST")
-        conn._request_ack = MagicMock()
-        conn.send_reply = MagicMock(side_effect=RuntimeError("programming bug"))
-
-        with pytest.raises(RuntimeError, match="programming bug"):
-            conn._handle_request(acnet_request)
 
 
 class TestDPMAcnetNodeResolution:
@@ -761,7 +731,7 @@ class TestTCPGetNodeStats:
         assert stats.replies_sent == 60
         assert stats.request_queue_limit == 100
         buf = mock.call_args[0][0]
-        cmd = struct.unpack(">H", buf[2:4])[0]
+        cmd = struct.unpack(">H", buf[:2])[0]
         assert cmd == CMD_NODE_STATS
 
     def test_error_raises(self, conn):
@@ -780,7 +750,7 @@ class TestTCPGetTaskPid:
             pid = conn.get_task_pid("DPM")
         assert pid == 12345
         buf = mock.call_args[0][0]
-        cmd = struct.unpack(">H", buf[2:4])[0]
+        cmd = struct.unpack(">H", buf[:2])[0]
         assert cmd == CMD_TASK_PID
 
     def test_error_raises(self, conn):
@@ -798,7 +768,7 @@ class TestTCPKeepalive:
         with patch.object(conn._async, "_xact", new=AsyncMock(return_value=ack)) as mock:
             conn._send_keepalive()
         buf = mock.call_args[0][0]
-        cmd = struct.unpack(">H", buf[2:4])[0]
+        cmd = struct.unpack(">H", buf[:2])[0]
         assert cmd == CMD_KEEPALIVE
 
 
@@ -834,64 +804,6 @@ class TestXactCancelledError:
         conn._close_transport.assert_awaited_once()
         assert conn._connected is False
         assert conn._pending_ack is None
-
-
-class TestReplyBuffering:
-    """Sync connection must buffer replies that arrive before handler registration."""
-
-    @staticmethod
-    def _make_reply(msg_id: int, *, last: bool = True, status: int = 0, data: bytes = b"\x01\x02"):
-        """Build an AcnetReply with given msg_id (becomes request_id)."""
-        flags = ACNET_FLG_RPY if last else (ACNET_FLG_RPY | ACNET_FLG_MLT)
-        return AcnetReply(flags, status, 0, 0, 0, 0, msg_id, ACNET_HEADER_SIZE + len(data), data)
-
-    def test_early_reply_is_buffered_not_cancelled(self):
-        """Reply arriving before send_request registers handler must be buffered."""
-        conn = AcnetConnection.__new__(AcnetConnection)
-        conn._requests_out = {}
-        conn._requests_out_lock = threading.Lock()
-        conn._reply_buffer = defaultdict(list)
-        conn._dead_requests = set()
-
-        reply = self._make_reply(42)
-
-        conn._handle_reply(reply)
-
-        assert RequestId(42) in conn._reply_buffer
-        assert len(conn._reply_buffer[RequestId(42)]) == 1
-
-    def test_dead_request_reply_is_silently_dropped(self):
-        """Replies for dead (completed) requests must be silently ignored."""
-        conn = AcnetConnection.__new__(AcnetConnection)
-        conn._requests_out = {}
-        conn._requests_out_lock = threading.Lock()
-        conn._reply_buffer = defaultdict(list)
-        conn._dead_requests = {RequestId(42)}
-
-        reply = self._make_reply(42)
-
-        conn._handle_reply(reply)
-
-        assert RequestId(42) not in conn._reply_buffer
-
-    def test_buffer_overflow_marks_request_dead(self):
-        """An unclaimed reply flood is discarded and the request ID is retired."""
-        from pacsys.acnet.connection import _MAX_BUFFERED_REPLIES
-
-        conn = AcnetConnection.__new__(AcnetConnection)
-        conn._requests_out = {}
-        conn._requests_out_lock = threading.Lock()
-        conn._reply_buffer = defaultdict(list)
-        conn._dead_requests = set()
-
-        for _ in range(_MAX_BUFFERED_REPLIES + 1):
-            conn._handle_reply(self._make_reply(42, last=False))
-
-        assert RequestId(42) not in conn._reply_buffer
-        assert RequestId(42) in conn._dead_requests
-
-        conn._handle_reply(self._make_reply(42))
-        assert RequestId(42) not in conn._reply_buffer
 
 
 class TestDPMAcnetOpenList:

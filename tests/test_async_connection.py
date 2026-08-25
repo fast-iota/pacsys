@@ -13,7 +13,8 @@ from pacsys.acnet.async_connection import (
     AsyncAcnetConnectionTCP,
     AsyncAcnetConnectionUDP,
     AsyncRequestContext,
-    _AcnetUDPProtocol,
+    _AcnetUDPCommandProtocol,
+    _AcnetUDPDataProtocol,
 )
 from pacsys.acnet.constants import (
     ACNET_FLG_MLT,
@@ -51,12 +52,14 @@ def _make_tcp_conn() -> AsyncAcnetConnectionTCP:
 
 def _make_udp_conn() -> AsyncAcnetConnectionUDP:
     """Create an AsyncAcnetConnectionUDP with fake handle, bypassing real connect."""
-    conn = AsyncAcnetConnectionUDP("localhost", port=9999)
+    conn = AsyncAcnetConnectionUDP("localhost", port=9999, name="TEST")
     conn._raw_handle = _rad50_encode("TEST")
     conn._handle_name = "TEST"
     conn._connected = True
-    conn._udp_transport = MagicMock()
-    conn._udp_transport.sendto = MagicMock()
+    conn._cmd_transport = MagicMock()
+    conn._cmd_transport.sendto = MagicMock()
+    conn._data_transport = MagicMock()
+    conn._data_transport.get_extra_info.return_value = ("127.0.0.1", 43210)
     return conn
 
 
@@ -81,7 +84,7 @@ class TestReceivingCommands:
 
             assert conn._receiving
             conn._xact.assert_awaited_once()
-            command = struct.unpack_from(">H", conn._xact.call_args.args[0], 2)[0]
+            command = struct.unpack_from(">H", conn._xact.call_args.args[0])[0]
             assert command == CMD_RECEIVE_REQUESTS
 
         _run(run_test())
@@ -113,7 +116,7 @@ class TestDisconnectSingle:
             assert incoming.cancelled
             assert not conn._requests_in
             assert keepalive.cancelled()
-            command = struct.unpack_from(">H", conn._xact.call_args.args[0], 2)[0]
+            command = struct.unpack_from(">H", conn._xact.call_args.args[0])[0]
             assert command == CMD_DISCONNECT_SINGLE
 
         _run(run_test())
@@ -176,7 +179,7 @@ class TestReceivingFailures:
             await conn._stop_receiving()
 
             assert not conn._receiving
-            command = struct.unpack_from(">H", conn._xact.call_args.args[0], 2)[0]
+            command = struct.unpack_from(">H", conn._xact.call_args.args[0])[0]
             assert command == CMD_BLOCK_REQUESTS
 
         _run(run_test())
@@ -675,7 +678,7 @@ class TestAsyncXact:
                 await asyncio.sleep(0.01)
                 conn._dispatch_frame(ACNETD_ACK, ack_data)
 
-            content = struct.pack(">2H2I", ACNETD_COMMAND, CMD_CONNECT, 0, 0)
+            content = struct.pack(">H2I", CMD_CONNECT, 0, 0)
             ack_task = asyncio.create_task(_deliver_ack())
             result = await conn._xact(content)
             await ack_task
@@ -686,7 +689,7 @@ class TestAsyncXact:
     def test_xact_timeout_raises(self):
         async def _test():
             conn = _make_tcp_conn()
-            content = struct.pack(">2H2I", ACNETD_COMMAND, CMD_CONNECT, 0, 0)
+            content = struct.pack(">H2I", CMD_CONNECT, 0, 0)
 
             with patch("pacsys.acnet.async_connection.asyncio.wait_for", side_effect=asyncio.TimeoutError):
                 with pytest.raises(AcnetUnavailableError):
@@ -698,7 +701,7 @@ class TestAsyncXact:
         async def _test():
             conn = _make_tcp_conn()
             conn._disposed = True
-            content = struct.pack(">2H2I", ACNETD_COMMAND, CMD_CONNECT, 0, 0)
+            content = struct.pack(">H2I", CMD_CONNECT, 0, 0)
 
             with pytest.raises(AcnetError):
                 await conn._xact(content)
@@ -846,7 +849,7 @@ class TestAsyncContextManager:
 
 
 class TestTCPSendFrame:
-    """Test that TCP _send_frame prepends 4-byte length."""
+    """Test that TCP _send_frame adds the bridge envelope and length."""
 
     def test_send_frame_prepends_length(self):
         async def _test():
@@ -855,8 +858,9 @@ class TestTCPSendFrame:
             await conn._send_frame(content)
 
             written = conn._writer.write.call_args[0][0]
-            assert written[:4] == struct.pack(">I", 4)
-            assert written[4:] == content
+            assert written[:4] == struct.pack(">I", 6)
+            assert written[4:6] == struct.pack(">H", ACNETD_COMMAND)
+            assert written[6:] == content
 
         _run(_test())
 
@@ -892,7 +896,7 @@ class TestRequestAckErrorHandling:
 
 
 class TestUDPSendFrame:
-    """Test that UDP _send_frame sends raw content without length prefix."""
+    """Test that official UDP sends raw command structures."""
 
     def test_send_frame_sends_raw(self):
         async def _test():
@@ -900,14 +904,14 @@ class TestUDPSendFrame:
             content = b"\x00\x01\x00\x02"
             await conn._send_frame(content)
 
-            conn._udp_transport.sendto.assert_called_once_with(content)
+            conn._cmd_transport.sendto.assert_called_once_with(content)
 
         _run(_test())
 
     def test_send_frame_closed_transport_raises_acnet_error(self):
         async def _test():
             conn = _make_udp_conn()
-            conn._udp_transport = None
+            conn._cmd_transport = None
             with pytest.raises(AcnetUnavailableError):
                 await conn._send_frame(b"\x00\x01")
 
@@ -915,39 +919,85 @@ class TestUDPSendFrame:
 
 
 class TestUDPProtocol:
-    """Test the _AcnetUDPProtocol dispatches to connection."""
+    """Test raw ACK and ACNET data datagram dispatch."""
 
-    def test_datagram_received_dispatches(self):
+    def test_command_datagram_delivers_raw_ack(self):
         conn = _make_udp_conn()
-        protocol = _AcnetUDPProtocol(conn)
+        protocol = _AcnetUDPCommandProtocol(conn)
 
         ack_data = struct.pack(">Hh", 1, 0)
-        # Frame: 2-byte msg_type (ACNETD_ACK=2) + ack payload
-        frame = struct.pack(">H", ACNETD_ACK) + ack_data
 
         loop = asyncio.new_event_loop()
         conn._pending_ack = loop.create_future()
 
-        protocol.datagram_received(frame, ("127.0.0.1", 6802))
+        protocol.datagram_received(ack_data, ("127.0.0.1", 6802))
 
         assert conn._pending_ack.done()
         assert conn._pending_ack.result() == ack_data
         loop.close()
 
-    def test_datagram_received_ignores_short(self):
+    def test_data_datagram_dispatches_multiple_packets(self):
         conn = _make_udp_conn()
-        protocol = _AcnetUDPProtocol(conn)
-        # Should not raise
-        protocol.datagram_received(b"\x00", ("127.0.0.1", 6802))
+        protocol = _AcnetUDPDataProtocol(conn)
+        received = []
+        for req_id in (7, 8):
+            conn._reply_handlers[RequestId(req_id)] = AsyncRequestContext(
+                connection=conn,
+                task="DPM",
+                node=0,
+                request_id=RequestId(req_id),
+                multiple_reply=False,
+                timeout=5000,
+                reply_handler=received.append,
+            )
+
+        first = struct.pack("<HhHHIHHH", ACNET_FLG_RPY, 0, 0, 0, 0, 0, 7, ACNET_HEADER_SIZE + 1)
+        first += b"x\x00"  # odd declared packet length plus alignment padding
+        second = struct.pack("<HhHHIHHH", ACNET_FLG_RPY, 0, 0, 0, 0, 0, 8, ACNET_HEADER_SIZE)
+        raw = first + second
+        protocol.datagram_received(raw, ("127.0.0.1", 6802))
+
+        assert [reply.request_id for reply in received] == [RequestId(7), RequestId(8)]
+        assert received[0].data == b"x"
 
     def test_connection_lost_calls_handler(self):
         conn = _make_udp_conn()
-        protocol = _AcnetUDPProtocol(conn)
+        protocol = _AcnetUDPCommandProtocol(conn)
 
         conn._connected = True
         protocol.connection_lost(None)
 
         assert not conn._connected
+        assert conn._cmd_transport is None
+        assert conn._data_transport is None
+
+
+class TestUDPConnect:
+    def test_connect_uses_raw_daemon_layout_with_real_data_port(self):
+        async def _test():
+            conn = _make_udp_conn()
+            handle = _rad50_encode("UDP001")
+            conn._xact = AsyncMock(return_value=struct.pack(">HhBI", 1, 0, 7, handle))
+
+            with patch("pacsys.acnet.async_connection.os.getpid", return_value=1234):
+                await conn._do_connect()
+
+            raw = conn._xact.call_args.args[0]
+            assert raw == struct.pack(
+                ">HIIIH",
+                CMD_CONNECT,
+                _rad50_encode("TEST"),
+                0,
+                1234,
+                43210,
+            )
+            assert conn.name == "UDP001"
+
+        _run(_test())
+
+    def test_remote_host_is_rejected(self):
+        with pytest.raises(ValueError, match="local-only"):
+            AsyncAcnetConnectionUDP("acsys-proxy.fnal.gov")
 
 
 class TestConnectionLossNotifiesHandlers:

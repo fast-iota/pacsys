@@ -8,8 +8,9 @@ Command names follow official acnetd CommandList enum naming.
 """
 
 # Network ports
-ACNET_PORT = 6801  # Primary ACNET UDP port
-ACNET_TCP_PORT = 6802  # TCP port for daemon
+ACNET_PORT = 6801  # ACNET node-to-node mesh traffic
+ACNET_CLIENT_PORT = 6802  # acnetd client interface (UDP and TCP bridge)
+ACNET_TCP_PORT = ACNET_CLIENT_PORT  # Backward-compatible TCP-specific name
 
 # Packet structure
 ACNET_HEADER_SIZE = 18  # Fixed header size in bytes
@@ -67,9 +68,6 @@ ACK_CONNECT_EXT = 16  # ackConnectExt - extended connect response
 # Timeouts (milliseconds)
 DEFAULT_TIMEOUT = 5000  # Default request timeout
 INFINITE_TIMEOUT = 0x7FFFFFFF  # Max timeout (~24.8 days), used for timeout=0 requests
-HEARTBEAT_TIMEOUT = 10000  # Connection monitor interval
-RECONNECT_DELAY = 2000  # Delay before reconnect attempt
-
 # Buffer sizes
 CMD_BUFFER_SIZE = 16  # Command buffer size
 SEND_BUFFER_SIZE = 256 * 1024  # Socket send buffer
