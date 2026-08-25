@@ -895,6 +895,30 @@ class FTPStream:
 # =============================================================================
 
 
+class _SnapshotReplyQueue:
+    """Queue snapshot statuses with their capture cycle."""
+
+    def __init__(self):
+        self._queue: queue.Queue[tuple[int, int, bytes, bool] | None] = queue.Queue()
+        self._cycle = 0
+        self._lock = threading.Lock()
+
+    def put(self, item: tuple[int, bytes, bool] | None) -> None:
+        if item is None:
+            self._queue.put(None)
+            return
+        with self._lock:
+            self._queue.put((self._cycle, *item))
+
+    def get(self, timeout: float) -> tuple[int, int, bytes, bool] | None:
+        return self._queue.get(timeout=timeout)
+
+    def advance_cycle(self) -> int:
+        with self._lock:
+            self._cycle += 1
+            return self._cycle
+
+
 class SnapshotHandle:
     """Handle for a snapshot plot setup with state tracking.
 
@@ -921,7 +945,7 @@ class SnapshotHandle:
         ctx: AcnetRequestContext,
         devices: list[FTPDevice],
         setup_reply: SnapshotSetupReply,
-        reply_queue: queue.Queue,
+        reply_queue: _SnapshotReplyQueue,
         task_name: int = 0,
         snap_class_code: int | None = None,
     ):
@@ -938,6 +962,8 @@ class SnapshotHandle:
         self._monitor_error: Exception | None = None
         self._lock = threading.Lock()
         self._metadata_consumed: set[int] = set()
+        self._cycle = 0
+        self._first_status_pending = False
 
         # State tracking uses setup-list position, which is unique on the wire.
         self._ready_event = threading.Event()
@@ -1003,33 +1029,39 @@ class SnapshotHandle:
             if item is None:
                 break
 
-            status, data, is_last = item
+            item_cycle, status, data, is_last = item
 
-            if status < 0:
-                with self._lock:
+            with self._lock:
+                if item_cycle != self._cycle:
+                    stale = True
+                elif status < 0:
+                    stale = False
                     for i in range(len(self._devices)):
                         if self._device_states[i] != SnapshotState.READY:
                             self._device_states[i] = SnapshotState.ERROR
                             self._device_errors[i] = status
                     self._ready_event.set()
+                else:
+                    stale = False
+                    per_device = _parse_status_update_states(data, len(self._devices))
+                    is_first_status = self._first_status_pending
+                    self._first_status_pending = False
+                    for i in range(len(per_device)):
+                        # Don't downgrade a terminal state
+                        if self._device_states[i] in (SnapshotState.READY, SnapshotState.ERROR):
+                            continue
+                        new_state = _ftp_status_to_state(per_device[i], is_first_reply=is_first_status)
+                        self._device_states[i] = new_state
+                        if new_state == SnapshotState.ERROR:
+                            self._device_errors[i] = per_device[i]
+
+                    if self._all_terminal():
+                        self._ready_event.set()
+
+            if stale:
                 if is_last:
                     break
                 continue
-
-            per_device = _parse_status_update_states(data, len(self._devices))
-
-            with self._lock:
-                for i in range(len(per_device)):
-                    # Don't downgrade a terminal state
-                    if self._device_states[i] in (SnapshotState.READY, SnapshotState.ERROR):
-                        continue
-                    new_state = _ftp_status_to_state(per_device[i], is_first_reply=False)
-                    self._device_states[i] = new_state
-                    if new_state == SnapshotState.ERROR:
-                        self._device_errors[i] = per_device[i]
-
-                if self._all_terminal():
-                    self._ready_event.set()
 
             if is_last:
                 break
@@ -1226,30 +1258,13 @@ class SnapshotHandle:
 
         with self._lock:
             # The monitor may have terminated (or the user cancelled) during
-            # the FE round trip -- do not undo its terminal cleanup (ERROR
-            # states + ready event), and do not re-enqueue items nobody will
-            # consume. Flag unset here guarantees the monitor makes at least
-            # one more queue read, so re-enqueued terminal items are consumed
-            # and its finally converts our fresh PENDINGs if it dies next.
+            # the FE round trip -- do not undo its terminal cleanup.
             if self._cancelled:
                 raise RuntimeError("Snapshot has been cancelled")
             if self._stream_ended:
                 raise RuntimeError("Snapshot stream has ended (connection lost or stream closed)")
-            # Discard queued pre-restart status updates so a stale cycle-1
-            # READY cannot satisfy the new cycle's wait(). Termination items
-            # (None sentinel, is_last) are re-enqueued for the monitor. An
-            # update already dequeued by the monitor or still in network
-            # transit is outside this queue and may be observed after restart.
-            keep = []
-            while True:
-                try:
-                    item = self._reply_queue.get_nowait()
-                except queue.Empty:
-                    break
-                if item is None or item[2]:
-                    keep.append(item)
-            for item in keep:
-                self._reply_queue.put(item)
+            self._cycle = self._reply_queue.advance_cycle()
+            self._first_status_pending = True
             self._ready_event.clear()
             for i in range(len(self._devices)):
                 self._device_states[i] = SnapshotState.PENDING
@@ -1585,7 +1600,7 @@ class FTPClient:
             task_name=task_name,
         )
 
-        reply_queue: queue.Queue = queue.Queue()
+        reply_queue = _SnapshotReplyQueue()
         setup_event = threading.Event()
         setup_result: list = []
 

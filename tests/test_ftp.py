@@ -47,6 +47,7 @@ from pacsys.acnet.ftp import (
     _next_ftp_task_name,
     _next_snap_task_name,
     _parse_status_update_states,
+    _SnapshotReplyQueue,
     build_class_info_request,
     build_continuous_setup,
     build_retrieve_request,
@@ -1284,8 +1285,6 @@ class TestSnapshotHandle:
 
     def _make_handle(self, snap_class_code=None, per_device_errors=None, devices=None):
         """Create a SnapshotHandle with mocked connection."""
-        import queue as q
-
         conn = MagicMock()
         ctx = MagicMock()
         if devices is None:
@@ -1308,7 +1307,7 @@ class TestSnapshotHandle:
             ctx=ctx,
             devices=devices,
             setup_reply=setup_reply,
-            reply_queue=q.Queue(),
+            reply_queue=_SnapshotReplyQueue(),
             snap_class_code=snap_class_code,
         )
 
@@ -1589,8 +1588,6 @@ class TestSnapshotStateTracking:
 
     def _make_handle(self, per_device_errors=None, devices=None):
         """Create a SnapshotHandle with controllable reply_queue."""
-        import queue as q
-
         conn = MagicMock()
         ctx = MagicMock()
         if devices is None:
@@ -1607,7 +1604,7 @@ class TestSnapshotStateTracking:
             per_device_ref_points=[0] * len(devices),
             per_device_arm_time=[(0, 0)] * len(devices),
         )
-        reply_queue = q.Queue()
+        reply_queue = _SnapshotReplyQueue()
         handle = SnapshotHandle(
             connection=conn,
             node=3018,
@@ -1892,8 +1889,13 @@ class TestSnapshotStateTracking:
         assert handle.state == SnapshotState.PENDING
         assert not handle.is_ready
 
-        # New cycle: device becomes ready again
+        # The first status of a restarted cycle repeats the setup-reply quirk.
         data = self._build_status_reply(0, [0])
+        rq.put((0, data, False))
+        assert not handle.wait(timeout=0.2)
+        assert handle.state == SnapshotState.PENDING
+
+        # A later zero is genuine completion.
         rq.put((0, data, False))
         assert handle.wait(timeout=2.0)
         assert handle.is_ready
@@ -1908,46 +1910,46 @@ class TestSnapshotStateTracking:
 
         handle._connection.request_single = fake_request_single
 
-    def test_restart_discards_queued_stale_ready(self):
-        """A cycle-1 READY queued before restart() must not satisfy the new wait()."""
+    def test_restart_discards_dequeued_stale_ready(self):
+        """A cycle-1 READY dequeued before restart must not affect cycle 2."""
         import threading
 
-        from pacsys.acnet import ftp as ftp_mod
-
-        handle, rq = self._make_handle(per_device_errors=[FTP_PEND])
-        self._ok_restart(handle)
         gate = threading.Event()
         entered = threading.Event()
-        real_parse = ftp_mod._parse_status_update_states
-        calls = []
+        real_get = _SnapshotReplyQueue.get
+        blocked = False
 
-        def blocking_parse(data, n):
-            if not calls:
-                calls.append(1)
+        def blocking_get(reply_queue, timeout):
+            nonlocal blocked
+            item = real_get(reply_queue, timeout)
+            if item is not None and not blocked:
+                blocked = True
                 entered.set()
                 assert gate.wait(timeout=5.0)
-            return real_parse(data, n)
+            return item
 
-        pend = self._build_status_reply(0, [FTP_PEND])
         ready = self._build_status_reply(0, [0])
-        try:
-            with patch.object(ftp_mod, "_parse_status_update_states", blocking_parse):
-                # Freeze the monitor mid-item on a harmless PENDING update
-                rq.put((0, pend, False))
-                assert entered.wait(timeout=2.0)
-                # Stale cycle-1 READY sits queued behind the frozen item
+        with patch.object(_SnapshotReplyQueue, "get", blocking_get):
+            handle, rq = self._make_handle(per_device_errors=[FTP_PEND])
+            self._ok_restart(handle)
+            try:
                 rq.put((0, ready, False))
-                handle.restart()  # drains the queued stale READY deterministically
+                assert entered.wait(timeout=2.0)
+                handle.restart()
                 gate.set()
-            # Monitor resumes with the harmless PENDING item; stale READY is gone
-            assert not handle.wait(timeout=0.3)
-            assert handle.state == SnapshotState.PENDING
-            # Fresh cycle-2 READY completes the wait
-            rq.put((0, ready, False))
-            assert handle.wait(timeout=2.0)
-        finally:
-            gate.set()
-            handle.cancel()
+
+                # The dequeued cycle-1 READY is ignored after the cycle advances.
+                assert not handle.wait(timeout=0.3)
+                assert handle.state == SnapshotState.PENDING
+
+                waiting = self._build_status_reply(0, [FTP_WAIT_EVENT])
+                rq.put((0, waiting, False))
+                self._wait_for_device_state(handle, 0, SnapshotState.WAIT_EVENT)
+                rq.put((0, ready, False))
+                assert handle.wait(timeout=2.0)
+            finally:
+                gate.set()
+                handle.cancel()
 
     def test_restart_rejected_keeps_cycle1_state(self):
         """FE rejection leaves the previous cycle's READY state intact."""
@@ -1987,8 +1989,8 @@ class TestSnapshotStateTracking:
         finally:
             handle.cancel()
 
-    def test_restart_drain_preserves_termination(self):
-        """A queued is_last survives the restart drain so the monitor exits."""
+    def test_restart_preserves_stale_termination(self):
+        """A stale is_last still terminates the monitor after restart."""
         handle, rq = self._make_handle(per_device_errors=[FTP_PEND])
         data = self._build_status_reply(0, [0])
         rq.put((0, data, False))
