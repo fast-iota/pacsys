@@ -275,6 +275,18 @@ class TestReadFreshMultiCount:
             with pytest.raises(TimeoutError):
                 read_fresh(["M:OUTTMP@p,1000"], count=10, timeout=0.2, backend=fake)
 
+    def test_error_reading_does_not_satisfy_count(self, fake):
+        drf = "M:OUTTMP@p,1000"
+
+        def emit():
+            error = Reading(drf=drf, error_code=-1, message="fail")
+            fake._subscriptions[0]._put_reading(error)
+            fake.emit_reading(drf, 1.0)
+
+        with _emit_after_subscriptions(fake, [drf], emit):
+            with pytest.raises(TimeoutError):
+                read_fresh([drf], count=2, timeout=0.1, backend=fake)
+
     def test_stats_on_fresh_result(self, fake):
         def emit():
             for v in [10.0, 20.0, 30.0]:
