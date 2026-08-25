@@ -552,7 +552,7 @@ class SubscriptionHandle:
         """Yield (reading, handle) pairs for THIS subscription.
 
         Args:
-            timeout: Seconds to wait for next reading.
+            timeout: Total wall-clock window in seconds.
                     None = block forever (until stop() called)
                     0 = non-blocking (drain buffered readings only)
 

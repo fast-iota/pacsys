@@ -183,22 +183,19 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
                     handle = await self._backend.subscribe(drfs)
                     try:
                         while not context.cancelled():
-                            try:
-                                async for reading, _ in handle.readings(timeout=1.0):
-                                    if context.cancelled():
-                                        break
-                                    indices = drf_indices.get(reading.drf)
-                                    if indices is None:
-                                        raise ValueError(f"Backend returned unexpected DRF {reading.drf!r}")
-                                    for idx in indices:
-                                        reply_proto = reading_to_proto_reply(reading, idx)
-                                        self._audit_response(seq, peer, "Read", reply_proto)
-                                        yield reply_proto
-                                        item_count += 1
-                                else:
-                                    break  # generator returned normally (handle stopped)
-                            except asyncio.TimeoutError:
-                                continue
+                            async for reading, _ in handle.readings(timeout=1.0):
+                                if context.cancelled():
+                                    break
+                                indices = drf_indices.get(reading.drf)
+                                if indices is None:
+                                    raise ValueError(f"Backend returned unexpected DRF {reading.drf!r}")
+                                for idx in indices:
+                                    reply_proto = reading_to_proto_reply(reading, idx)
+                                    self._audit_response(seq, peer, "Read", reply_proto)
+                                    yield reply_proto
+                                    item_count += 1
+                            if handle.stopped:
+                                break
                     finally:
                         await handle.stop()
                         logger.debug("stream peer=%s event=stopped items=%d", peer, item_count)
