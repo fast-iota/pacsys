@@ -34,7 +34,13 @@ from pacsys.auth import Auth, KerberosAuth, _require_gssapi
 from pacsys.backends import ALARM_READONLY_KEYS, Backend, summarize_drfs, timestamp_from_millis
 from pacsys.backends._dispatch import CallbackDispatcher
 from pacsys.backends._subscription import BufferedSubscriptionHandle
-from pacsys.dpm_connection import DPM_HANDSHAKE, MAX_MESSAGE_SIZE, DPMConnection, DPMConnectionError
+from pacsys.dpm_connection import (
+    DPM_HANDSHAKE,
+    MAX_MESSAGE_SIZE,
+    DPMConnection,
+    DPMConnectionError,
+    _remaining_timeout,
+)
 from pacsys.dpm_protocol import (
     AddToList_reply,
     AddToList_request,
@@ -99,6 +105,13 @@ DEFAULT_TIMEOUT = 5.0
 _MAX_WRITE_CONNECTIONS = 4  # max concurrent write connections (pooled + in-flight)
 
 _SettingPayload = tuple[RawSetting_struct | None, ScaledSetting_struct | None, TextSetting_struct | None]
+
+
+def _make_deadline(timeout: float | None, default: float) -> float:
+    effective_timeout = timeout if timeout is not None else default
+    if effective_timeout <= 0:
+        raise ValueError(f"timeout must be positive, got {effective_timeout}")
+    return time.monotonic() + effective_timeout
 
 
 def _coerce_setting_float(value: object) -> float:
@@ -361,19 +374,21 @@ class _AsyncDPMConnection:
             raise DPMConnectionError("DPM connection has no list ID; connect() must complete first")
         return self._list_id
 
-    async def connect(self) -> None:
+    async def connect(self, timeout: float | None = None) -> None:
         """Connect to DPM, send handshake, read OpenList_reply."""
         import asyncio
 
-        try:
-            self._reader, self._writer = await asyncio.wait_for(
-                asyncio.open_connection(self._host, self._port, limit=MAX_MESSAGE_SIZE),
-                timeout=self._timeout,
-            )
-        except asyncio.TimeoutError as e:
-            raise DPMConnectionError(f"Connection to {self._host}:{self._port} timed out") from e
+        effective_timeout = timeout if timeout is not None else self._timeout
+        if effective_timeout <= 0:
+            raise ValueError(f"timeout must be positive, got {effective_timeout}")
 
-        try:
+        async def connect_and_handshake() -> None:
+            self._reader, self._writer = await asyncio.open_connection(
+                self._host,
+                self._port,
+                limit=MAX_MESSAGE_SIZE,
+            )
+
             # Set TCP_NODELAY and SO_KEEPALIVE on the underlying socket
             sock = self._writer.get_extra_info("socket")
             if sock is not None:
@@ -383,15 +398,10 @@ class _AsyncDPMConnection:
             self._writer.write(DPM_HANDSHAKE)
             await self._writer.drain()
 
-            # Read OpenList reply (same detection as sync: first 4 bytes)
-            try:
-                first_bytes = await asyncio.wait_for(self._reader.readexactly(4), timeout=self._timeout)
-            except asyncio.TimeoutError as e:
-                raise DPMConnectionError("Handshake timed out reading initial reply") from e
+            first_bytes = await self._reader.readexactly(4)
             if first_bytes == b"HTTP":
-                # Read rest of HTTP status line for useful error message
                 try:
-                    rest = await asyncio.wait_for(self._reader.readline(), timeout=2.0)
+                    rest = await self._reader.readline()
                     status_line = "HTTP" + rest.decode("utf-8", errors="replace").rstrip()
                 except Exception:  # noqa: BLE001
                     status_line = "HTTP error (could not read status)"
@@ -401,10 +411,7 @@ class _AsyncDPMConnection:
             if length == 0 or length > MAX_MESSAGE_SIZE:
                 raise DPMConnectionError(f"Invalid message length: {length}")
 
-            try:
-                data = await asyncio.wait_for(self._reader.readexactly(length), timeout=self._timeout)
-            except asyncio.TimeoutError as e:
-                raise DPMConnectionError("Handshake timed out reading message body") from e
+            data = await self._reader.readexactly(length)
             try:
                 reply = unmarshal_reply(iter(data))
             except (ProtocolError, StopIteration) as e:
@@ -413,6 +420,12 @@ class _AsyncDPMConnection:
             if not isinstance(reply, OpenList_reply):
                 raise DPMConnectionError(f"Expected OpenList reply, got {type(reply).__name__}")
             self._list_id = reply.list_id
+
+        try:
+            await asyncio.wait_for(connect_and_handshake(), timeout=effective_timeout)
+        except TimeoutError as e:
+            await self.close()
+            raise DPMConnectionError(f"Connection to {self._host}:{self._port} timed out") from e
         except BaseException:
             await self.close()
             raise
@@ -452,8 +465,15 @@ class _AsyncDPMConnection:
         if self._reader is None:
             raise DPMConnectionError("Not connected")
         effective_timeout = timeout if timeout is not None else self._RECV_TIMEOUT
+        if effective_timeout <= 0:
+            raise ValueError(f"timeout must be positive, got {effective_timeout}")
+        deadline = time.monotonic() + effective_timeout
         try:
-            len_bytes = await asyncio.wait_for(self._reader.readexactly(4), timeout=effective_timeout)
+            prefix_timeout = _remaining_timeout(deadline, "DPM message prefix")
+            len_bytes = await asyncio.wait_for(
+                self._reader.readexactly(4),
+                timeout=prefix_timeout,
+            )
         except asyncio.TimeoutError as e:
             if timeout is not None:
                 raise asyncio.TimeoutError("Receive timeout") from e
@@ -462,10 +482,18 @@ class _AsyncDPMConnection:
             ) from e
         length = struct.unpack(">I", len_bytes)[0]
         if length == 0 or length > MAX_MESSAGE_SIZE:
+            await self.close()
             raise DPMConnectionError(f"Invalid message length: {length}")
         try:
-            data = await asyncio.wait_for(self._reader.readexactly(length), timeout=self._RECV_TIMEOUT)
+            body_timeout = _remaining_timeout(deadline, "DPM message body")
+            data = await asyncio.wait_for(
+                self._reader.readexactly(length),
+                timeout=body_timeout,
+            )
         except asyncio.TimeoutError as e:
+            await self.close()
+            if timeout is not None:
+                raise asyncio.TimeoutError("Receive timeout") from e
             raise DPMConnectionError(f"Timed out reading {length}-byte message body") from e
         try:
             return unmarshal_reply(iter(data))
@@ -1113,7 +1141,28 @@ class DPMHTTPBackend(Backend):
     # Write Methods
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _authenticate_connection(self, conn) -> tuple[bytes, bytes]:
+    def _recv_authenticate_reply(
+        self,
+        conn: DPMConnection,
+        deadline: float,
+        phase: str,
+    ) -> Authenticate_reply:
+        while True:
+            try:
+                reply = conn.recv_message(timeout=_remaining_timeout(deadline, phase))
+            except TimeoutError as e:
+                raise TimeoutError(f"Timed out during {phase}") from e
+            if isinstance(reply, ListStatus_reply):
+                continue
+            if isinstance(reply, Authenticate_reply):
+                return reply
+            raise AuthenticationError(f"Expected Authenticate_reply during {phase}, got {type(reply).__name__}")
+
+    def _authenticate_connection(
+        self,
+        conn: DPMConnection,
+        deadline: float | None = None,
+    ) -> tuple[bytes, bytes]:
         """Authenticate a connection via Kerberos GSSAPI.
 
         Two-phase protocol:
@@ -1122,18 +1171,21 @@ class DPMHTTPBackend(Backend):
         3. Create GSSAPI context targeting that service, send initial token
         4. Server accepts, optional mutual-auth token exchange
         """
+        deadline = deadline if deadline is not None else _make_deadline(None, self._timeout)
         gssapi = _require_gssapi()
         from gssapi import exceptions as gssapi_exceptions
 
+        list_id = conn.list_id
+        if list_id is None:
+            raise DPMConnectionError("DPM connection has no list ID; connect() must complete first")
+
         # Phase 1: request service name with empty token
         auth_req = Authenticate_request()
-        auth_req.list_id = conn.list_id
+        auth_req.list_id = list_id
         auth_req.token = b""
-        conn.send_message(auth_req)
+        conn.send_message(auth_req, timeout=_remaining_timeout(deadline, "Kerberos service-name request"))
 
-        reply = conn.recv_message(timeout=self._timeout)
-        if not isinstance(reply, Authenticate_reply):
-            raise AuthenticationError(f"Expected Authenticate_reply, got {type(reply).__name__}")
+        reply = self._recv_authenticate_reply(conn, deadline, "Kerberos service-name reply")
 
         raw_service_name = reply.serviceName
         if not raw_service_name:
@@ -1165,30 +1217,28 @@ class DPMHTTPBackend(Backend):
             token = ctx.step()
         except gssapi_exceptions.GSSError as e:
             raise AuthenticationError(f"Kerberos authentication failed for {gss_name}: {e}") from e
+        _remaining_timeout(deadline, "Kerberos context initialization")
 
         auth_req = Authenticate_request()
-        auth_req.list_id = conn.list_id
+        auth_req.list_id = list_id
         auth_req.token = bytes(token) if token else b""
-        conn.send_message(auth_req)
+        conn.send_message(auth_req, timeout=_remaining_timeout(deadline, "Kerberos token request"))
 
-        reply = conn.recv_message(timeout=self._timeout)
-        if not isinstance(reply, Authenticate_reply):
-            raise AuthenticationError(f"Expected Authenticate_reply, got {type(reply).__name__}")
+        reply = self._recv_authenticate_reply(conn, deadline, "Kerberos token reply")
 
         if hasattr(reply, "token") and reply.token and not ctx.complete:
             try:
                 token = ctx.step(reply.token)
             except gssapi_exceptions.GSSError as e:
                 raise AuthenticationError(f"Kerberos authentication failed for {gss_name}: {e}") from e
+            _remaining_timeout(deadline, "Kerberos mutual authentication")
             if token:
                 auth_req = Authenticate_request()
-                auth_req.list_id = conn.list_id
+                auth_req.list_id = list_id
                 auth_req.token = bytes(token)
-                conn.send_message(auth_req)
+                conn.send_message(auth_req, timeout=_remaining_timeout(deadline, "Kerberos mutual-auth request"))
 
-                reply = conn.recv_message(timeout=self._timeout)
-                if not isinstance(reply, Authenticate_reply):
-                    raise AuthenticationError(f"Expected Authenticate_reply, got {type(reply).__name__}")
+                reply = self._recv_authenticate_reply(conn, deadline, "Kerberos mutual-auth reply")
 
         if not ctx.complete:
             raise AuthenticationError("Kerberos authentication incomplete")
@@ -1199,22 +1249,36 @@ class DPMHTTPBackend(Backend):
             mic = ctx.get_signature(message)
         except gssapi_exceptions.GSSError as e:
             raise AuthenticationError(f"Kerberos authentication failed for {gss_name}: {e}") from e
+        _remaining_timeout(deadline, "Kerberos MIC generation")
 
         logger.debug("Kerberos authentication complete for %s", self._auth.principal if self._auth else "unknown")
         return bytes(mic), message
 
-    def _enable_settings(self, conn, mic: bytes, message: bytes) -> None:
+    def _enable_settings(
+        self,
+        conn: DPMConnection,
+        mic: bytes,
+        message: bytes,
+        deadline: float | None = None,
+    ) -> None:
         """Enable settings on a connection after authentication."""
+        deadline = deadline if deadline is not None else _make_deadline(None, self._timeout)
+        list_id = conn.list_id
+        if list_id is None:
+            raise DPMConnectionError("DPM connection has no list ID; connect() must complete first")
         enable_req = EnableSettings_request()
-        enable_req.list_id = conn.list_id
+        enable_req.list_id = list_id
         enable_req.MIC = mic
         enable_req.message = message
-        conn.send_message(enable_req)
+        conn.send_message(enable_req, timeout=_remaining_timeout(deadline, "EnableSettings request"))
 
         # Server replies with Status_reply (status=0 on success, DPM_PRIV on failure).
         # Skip any ListStatus_reply heartbeats that may arrive first.
         while True:
-            reply = conn.recv_message(timeout=self._timeout)
+            try:
+                reply = conn.recv_message(timeout=_remaining_timeout(deadline, "EnableSettings reply"))
+            except TimeoutError as e:
+                raise TimeoutError("Timed out during EnableSettings reply") from e
             if isinstance(reply, ListStatus_reply):
                 continue
             if isinstance(reply, Status_reply):
@@ -1231,7 +1295,7 @@ class DPMHTTPBackend(Backend):
     # Write Connection Pool Management
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _get_write_connection(self) -> _WriteConnection:
+    def _get_write_connection(self, deadline: float | None = None) -> _WriteConnection:
         """Get or create an authenticated write connection.
 
         Returns an existing idle connection from the pool, or creates
@@ -1245,8 +1309,11 @@ class DPMHTTPBackend(Backend):
             DPMConnectionError: If connection fails
             RuntimeError: If the backend was closed concurrently
         """
+        deadline = deadline if deadline is not None else _make_deadline(None, self._timeout)
         assert self._auth is not None, "Auth required for write connections"
+        _remaining_timeout(deadline, "write connection setup")
         current_principal = self._auth.principal
+        _remaining_timeout(deadline, "Kerberos credential lookup")
         current_role = self._role
 
         with self._write_lock:
@@ -1264,6 +1331,7 @@ class DPMHTTPBackend(Backend):
 
             # Try to get an existing live connection
             while self._write_connections:
+                _remaining_timeout(deadline, "write connection checkout")
                 wc = self._write_connections.pop()
                 if not wc.conn.connected:
                     logger.debug("Discarding dead write connection (list_id=%s)", wc.conn.list_id)
@@ -1291,10 +1359,10 @@ class DPMHTTPBackend(Backend):
         # Create new connection outside the lock
         conn = DPMConnection(host=self._host, port=self._port, timeout=self._timeout)
         try:
-            conn.connect()
+            conn.connect(timeout=_remaining_timeout(deadline, "DPM write connection"))
             wc = _WriteConnection(conn, current_principal, current_role)
-            mic, message = self._authenticate_connection(conn)
-            self._enable_settings(conn, mic, message)
+            mic, message = self._authenticate_connection(conn, deadline)
+            self._enable_settings(conn, mic, message, deadline)
             wc.authenticated = True
             logger.debug("Created new authenticated write connection (list_id=%s)", conn.list_id)
         except Exception:
@@ -1418,8 +1486,21 @@ class DPMHTTPBackend(Backend):
         # later field to overwrite the earlier one.
         if isinstance(value, dict):
             pairs = self._expand_alarm_dict(drf, value)
+            deadline = _make_deadline(timeout, self._timeout)
             for field_drf, field_val in pairs:
-                results = self.write_many([(field_drf, field_val)], timeout=timeout)
+                try:
+                    remaining = _remaining_timeout(deadline, "alarm write")
+                except TimeoutError as e:
+                    return WriteResult(
+                        drf=drf,
+                        facility_code=FACILITY_ACNET,
+                        error_code=ERR_TIMEOUT,
+                        message=str(e),
+                    )
+                results = self.write_many(
+                    [(field_drf, field_val)],
+                    timeout=remaining,
+                )
                 if not results[0].success:
                     r = results[0]
                     return WriteResult(
@@ -1477,7 +1558,10 @@ class DPMHTTPBackend(Backend):
         start_req.list_id = list_id
         setup_msgs.append(start_req)
 
-        conn.send_messages_batch(setup_msgs)
+        conn.send_messages_batch(
+            setup_msgs,
+            timeout=_remaining_timeout(deadline, "write list setup"),
+        )
 
         # Wait for device info / add replies before sending settings
         received_infos = 0
@@ -1565,7 +1649,10 @@ class DPMHTTPBackend(Backend):
         if text_settings:
             setattr(apply_req, "text_array", text_settings)
 
-        conn.send_message(apply_req)
+        conn.send_message(
+            apply_req,
+            timeout=_remaining_timeout(deadline, "ApplySettings request"),
+        )
 
         # Wait for ApplySettings reply
         while time.monotonic() < deadline:
@@ -1606,7 +1693,7 @@ class DPMHTTPBackend(Backend):
         if not isinstance(self._auth, KerberosAuth):
             raise AuthenticationError("Backend not configured for authenticated operations. Pass auth=KerberosAuth().")
 
-        effective_timeout = timeout if timeout is not None else self._timeout
+        deadline = _make_deadline(timeout, self._timeout)
 
         # Prepare settings (add .SETTING and @I if needed)
         prepared_settings = [(prepare_for_write(drf), value) for drf, value in settings]
@@ -1616,13 +1703,22 @@ class DPMHTTPBackend(Backend):
         add_errors: dict[int, int] = {}
         last_error = None
         for attempt in range(2):
-            deadline = time.monotonic() + effective_timeout
-
             try:
-                wc = self._get_write_connection()
+                wc = self._get_write_connection(deadline)
             except (AuthenticationError, ImportError, RuntimeError):
                 # Auth failures and closed-backend are caller bugs - fail fast
                 raise
+            except TimeoutError as e:
+                error_msg = str(e)
+                return [
+                    WriteResult(
+                        drf=drf,
+                        facility_code=FACILITY_ACNET,
+                        error_code=ERR_TIMEOUT,
+                        message=error_msg,
+                    )
+                    for drf, _ in settings
+                ]
             except (DPMConnectionError, OSError, PoolExhaustedError) as e:
                 error_msg = f"Failed to get write connection: {e}"
                 return [
@@ -1644,23 +1740,37 @@ class DPMHTTPBackend(Backend):
                     # Timeout: server's late reply may still be in the TCP stream,
                     # so discard the connection to avoid corrupting the next write.
                     self._discard_write_connection(wc)
+                    last_error = None
                     break
 
                 # Stop list (but keep connection and auth for reuse)
                 stop_req = StopList_request()
                 stop_req.list_id = list_id
-                conn.send_message(stop_req)
-
-                self._release_write_connection(wc)
+                try:
+                    conn.send_message(
+                        stop_req,
+                        timeout=_remaining_timeout(deadline, "write list cleanup"),
+                    )
+                except (TimeoutError, OSError, DPMConnectionError):
+                    logger.warning("Write succeeded but list cleanup failed; discarding connection")
+                    self._discard_write_connection(wc)
+                else:
+                    self._release_write_connection(wc)
                 last_error = None
                 break  # Success
 
+            except TimeoutError:
+                logger.warning("Write deadline expired during attempt %s", attempt + 1)
+                self._discard_write_connection(wc)
+                last_error = None
+                break
             except (BrokenPipeError, ConnectionResetError, OSError, DPMConnectionError) as e:
                 logger.warning("Write connection error (attempt %s): %s", attempt + 1, e)
                 self._discard_write_connection(wc)
                 last_error = e
-                if attempt == 0:
+                if attempt == 0 and time.monotonic() < deadline:
                     continue  # Retry with fresh connection
+                break
             except Exception as e:  # noqa: BLE001
                 logger.warning("Unexpected write error: %s", e)
                 self._discard_write_connection(wc)

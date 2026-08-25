@@ -5,7 +5,7 @@ from unittest import mock
 
 import pytest
 
-from pacsys.acnet.errors import ERR_RETRY
+from pacsys.acnet.errors import ERR_RETRY, ERR_TIMEOUT
 from pacsys.aio._dpm_http import AsyncDPMHTTPBackend, _expand_alarm_dict
 from pacsys.auth import KerberosAuth
 from pacsys.dpm_connection import DPMConnectionError
@@ -165,6 +165,22 @@ class TestAsyncDPMWrite:
             assert "Connection refused" in r.message
 
     @pytest.mark.asyncio
+    async def test_write_connect_timeout_respects_call_deadline(self):
+        auth = mock.MagicMock(spec=KerberosAuth)
+        auth.principal = "test@FNAL.GOV"
+        backend = AsyncDPMHTTPBackend(host="localhost", port=6802, auth=auth)
+
+        async def slow_create():
+            await asyncio.sleep(1.0)
+
+        backend._create_core = slow_create
+        started = asyncio.get_running_loop().time()
+        results = await backend.write_many([("M:OUTTMP", 72.5)], timeout=0.01)
+
+        assert asyncio.get_running_loop().time() - started < 0.1
+        assert results[0].error_code == ERR_TIMEOUT
+
+    @pytest.mark.asyncio
     async def test_write_many_prevalidates_before_connecting(self):
         auth = KerberosAuth(_lazy=True)
         backend = AsyncDPMHTTPBackend(host="localhost", port=6802, auth=auth)
@@ -172,6 +188,17 @@ class TestAsyncDPMWrite:
 
         with pytest.raises(TypeError, match="only strings"):
             await backend.write_many([("M:OUTTMP", ["on", 1])])
+
+        backend._create_core.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_write_rejects_nonpositive_call_timeout_before_connecting(self):
+        auth = KerberosAuth(_lazy=True)
+        backend = AsyncDPMHTTPBackend(host="localhost", port=6802, auth=auth)
+        backend._create_core = mock.AsyncMock()
+
+        with pytest.raises(ValueError, match="timeout must be positive"):
+            await backend.write_many([("M:OUTTMP", 1.0)], timeout=0)
 
         backend._create_core.assert_not_awaited()
 

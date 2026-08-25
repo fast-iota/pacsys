@@ -10,6 +10,7 @@ Tests cover:
 - Kerberos authentication flow (mocked)
 """
 
+import time
 from unittest import mock
 
 import pytest
@@ -28,6 +29,7 @@ from tests.devices import (
     make_auth_reply,
     make_device_info,
     make_enable_settings_reply,
+    make_list_status_reply,
     make_start_list,
     make_status_reply,
     make_write_sequence,
@@ -173,6 +175,51 @@ class TestWriteSuccess:
                     assert all(r.success for r in results)
                 finally:
                     backend.close()
+
+    def test_write_tolerates_heartbeats_during_authentication(self):
+        mock_gssapi = MockGSSAPIModule()
+        replies = [
+            make_list_status_reply(),
+            make_auth_reply(),
+            make_list_status_reply(),
+            make_auth_reply(),
+            make_list_status_reply(),
+            make_enable_settings_reply(),
+            make_device_info(name="M:OUTTMP", ref_id=1),
+            make_start_list(),
+            make_apply_settings_reply([(1, 0)]),
+        ]
+        mock_socket = MockSocketWithReplies(list_id=1, replies=replies)
+
+        with mock.patch.dict("sys.modules", {"gssapi": mock_gssapi}):
+            with mock.patch("socket.socket", return_value=mock_socket):
+                backend = DPMHTTPBackend(auth=KerberosAuth(), role="Operator")
+                try:
+                    result = backend.write("M:OUTTMP", 72.5)
+                finally:
+                    backend.close()
+
+        assert result.success
+
+    def test_enable_settings_heartbeats_respect_deadline(self):
+        backend = DPMHTTPBackend(auth=create_mock_kerberos_auth())
+        conn = mock.MagicMock()
+        conn.list_id = 1
+        heartbeat = make_list_status_reply()
+
+        def delayed_heartbeat(timeout):
+            time.sleep(min(timeout, 0.005))
+            return heartbeat
+
+        conn.recv_message.side_effect = delayed_heartbeat
+        deadline = time.monotonic() + 0.015
+        try:
+            with pytest.raises(TimeoutError, match="EnableSettings"):
+                backend._enable_settings(conn, b"mic", b"message", deadline)
+        finally:
+            backend.close()
+
+        assert time.monotonic() - deadline < 0.1
 
 
 class TestWriteFailure:

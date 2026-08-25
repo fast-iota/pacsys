@@ -22,6 +22,7 @@ import logging
 import os
 import socket
 import struct
+import time
 from collections.abc import Sized
 
 from pacsys.dpm_protocol import (
@@ -43,6 +44,13 @@ DPM_HANDSHAKE = b"GET /dpm HTTP/1.1\r\nContent-Type: application/pc\r\n\r\n"
 
 # Maximum message size to accept (1MB)
 MAX_MESSAGE_SIZE = 1024 * 1024
+
+
+def _remaining_timeout(deadline: float, phase: str) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError(f"Timed out during {phase}")
+    return remaining
 
 
 def _safe_len(value: object) -> int | None:
@@ -198,7 +206,7 @@ class DPMConnection:
         """True if the connection is active."""
         return self._connected and self._socket is not None
 
-    def connect(self) -> None:
+    def connect(self, timeout: float | None = None) -> None:
         """
         Establish connection to DPM server.
 
@@ -211,33 +219,40 @@ class DPMConnection:
         """
         if self._connected:
             raise DPMConnectionError("Already connected")
+        if timeout is not None and timeout <= 0:
+            raise ValueError(f"timeout must be positive, got {timeout}")
+
+        deadline = time.monotonic() + timeout if timeout is not None else None
 
         try:
             # Create and connect socket
             self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self._socket.settimeout(self._timeout)
+            connect_timeout = _remaining_timeout(deadline, "DPM connection") if deadline is not None else self._timeout
+            self._socket.settimeout(connect_timeout)
             self._socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
             logger.debug("Connecting to %s:%s", self._host, self._port)
             self._socket.connect((self._host, self._port))
 
             # Send HTTP-style handshake
+            if deadline is not None:
+                self._socket.settimeout(_remaining_timeout(deadline, "DPM handshake send"))
             self._socket.sendall(DPM_HANDSHAKE)
             logger.debug("Sent DPM handshake")
 
             # Safe response detection: read first 4 bytes
-            first_bytes = self._recv_exact(4)
+            first_bytes = self._recv_exact(4, deadline=deadline, phase="DPM handshake reply")
 
             # Check if server returned HTTP error
             if first_bytes == b"HTTP":
-                self._handle_http_error(first_bytes)
+                self._handle_http_error(first_bytes, deadline=deadline)
 
             # Otherwise, interpret as length prefix and read OpenList reply
             length = struct.unpack(">I", first_bytes)[0]
             if length == 0 or length > MAX_MESSAGE_SIZE:
                 raise DPMConnectionError(f"Invalid message length: {length}")
 
-            message_data = self._recv_exact(length)
+            message_data = self._recv_exact(length, deadline=deadline, phase="DPM OpenList reply")
             reply = self._unmarshal_reply(message_data)
 
             if not isinstance(reply, OpenList_reply):
@@ -245,6 +260,7 @@ class DPMConnection:
 
             self._list_id = reply.list_id
             self._connected = True
+            self._socket.settimeout(self._timeout)
 
             logger.info("Connected to DPM at %s:%s, list_id=%s", self._host, self._port, self._list_id)
 
@@ -255,7 +271,7 @@ class DPMConnection:
             self._cleanup_socket()
             raise
 
-    def _handle_http_error(self, first_bytes: bytes) -> None:
+    def _handle_http_error(self, first_bytes: bytes, deadline: float | None = None) -> None:
         """Handle HTTP error response from server."""
         assert self._socket is not None
         # Read rest of HTTP response line and body
@@ -264,6 +280,8 @@ class DPMConnection:
             # Read until we get enough data to see the HTTP status line
             # HTTP responses are text-based, read until double CRLF
             while b"\r\n\r\n" not in response_data and len(response_data) < 4096:
+                if deadline is not None:
+                    self._socket.settimeout(_remaining_timeout(deadline, "DPM HTTP error response"))
                 chunk = self._socket.recv(1024)
                 if not chunk:
                     break
@@ -306,7 +324,7 @@ class DPMConnection:
                 pass
             self._socket = None
 
-    def send_message(self, msg: object | bytes) -> None:
+    def send_message(self, msg: object | bytes, timeout: float | None = None) -> None:
         """
         Send a PC-encoded message with length prefix.
 
@@ -329,9 +347,15 @@ class DPMConnection:
         else:
             raise TypeError(f"msg must be a protocol message or bytes, got {type(msg).__name__}")
 
+        if timeout is not None and timeout <= 0:
+            raise ValueError(f"timeout must be positive, got {timeout}")
+
         # Send with length prefix
         length_prefix = struct.pack(">I", len(data))
+        original_timeout = self._socket.gettimeout()
         try:
+            if timeout is not None:
+                self._socket.settimeout(timeout)
             self._socket.sendall(length_prefix + data)
             if _TRACE_DPM:
                 logger.debug("DPM TX: %s (%s bytes)", _summarize_message(msg), len(data))
@@ -340,8 +364,11 @@ class DPMConnection:
         except OSError as e:
             self._connected = False
             raise DPMConnectionError(f"Send failed: {e}") from e
+        finally:
+            if timeout is not None and self._socket is not None:
+                self._socket.settimeout(original_timeout)
 
-    def send_messages_batch(self, messages: list) -> None:
+    def send_messages_batch(self, messages: list, timeout: float | None = None) -> None:
         """Send multiple messages in a single TCP packet.
 
         Builds one bytearray with all length-prefixed messages concatenated,
@@ -358,6 +385,8 @@ class DPMConnection:
 
         if not self._connected or self._socket is None:
             raise DPMConnectionError("Not connected")
+        if timeout is not None and timeout <= 0:
+            raise ValueError(f"timeout must be positive, got {timeout}")
 
         buf = bytearray()
         for msg in messages:
@@ -370,7 +399,10 @@ class DPMConnection:
             buf.extend(struct.pack(">I", len(data)))
             buf.extend(data)
 
+        original_timeout = self._socket.gettimeout()
         try:
+            if timeout is not None:
+                self._socket.settimeout(timeout)
             self._socket.sendall(buf)
             if _TRACE_DPM:
                 logger.debug("DPM TX BATCH: %s messages, %s bytes", len(messages), len(buf))
@@ -381,6 +413,9 @@ class DPMConnection:
         except OSError as e:
             self._connected = False
             raise DPMConnectionError(f"Send failed: {e}") from e
+        finally:
+            if timeout is not None and self._socket is not None:
+                self._socket.settimeout(original_timeout)
 
     def recv_message(self, timeout: float | None = None) -> object:
         """
@@ -399,16 +434,17 @@ class DPMConnection:
         """
         if not self._connected or self._socket is None:
             raise DPMConnectionError("Not connected")
+        if timeout is not None and timeout <= 0:
+            raise ValueError(f"timeout must be positive, got {timeout}")
 
         # Save original timeout and set new one if specified
         original_timeout = self._socket.gettimeout()
-        if timeout is not None:
-            self._socket.settimeout(timeout)
+        deadline = time.monotonic() + timeout if timeout is not None else None
 
         mid_message = False
         try:
             # Read length prefix (4 bytes)
-            len_bytes = self._recv_exact(4)
+            len_bytes = self._recv_exact(4, deadline=deadline, phase="DPM message prefix")
             length = struct.unpack(">I", len_bytes)[0]
 
             if length == 0 or length > MAX_MESSAGE_SIZE:
@@ -420,7 +456,7 @@ class DPMConnection:
             # Stream is committed: we must read `length` bytes or die trying.
             # A timeout here corrupts the stream (partial body consumed).
             mid_message = True
-            data = self._recv_exact(length)
+            data = self._recv_exact(length, deadline=deadline, phase="DPM message body")
 
             # Full message consumed — stream is at next frame boundary.
             # Unmarshal errors are safe (stream position is valid).
@@ -448,7 +484,7 @@ class DPMConnection:
             if timeout is not None and self._socket is not None:
                 self._socket.settimeout(original_timeout)
 
-    def _recv_exact(self, n: int) -> bytes:
+    def _recv_exact(self, n: int, *, deadline: float | None = None, phase: str = "DPM receive") -> bytes:
         """
         Receive exactly n bytes from socket.
 
@@ -469,6 +505,8 @@ class DPMConnection:
         """
         assert self._socket is not None
         while len(self._recv_buffer) < n:
+            if deadline is not None:
+                self._socket.settimeout(_remaining_timeout(deadline, phase))
             chunk = self._socket.recv(4096)
             if not chunk:
                 self._connected = False

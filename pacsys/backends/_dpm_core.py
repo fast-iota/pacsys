@@ -3,6 +3,8 @@
 import asyncio
 import logging
 import time
+from collections.abc import Awaitable, Callable
+from typing import TypeVar
 
 import numpy as np
 
@@ -20,11 +22,12 @@ from pacsys.backends.dpm_http import (
     _aggregate_logger_chunks,
     _AsyncDPMConnection,
     _device_info_to_meta,
+    _make_deadline,
     _reply_to_reading,
     _SettingPayload,
     _value_to_setting,
 )
-from pacsys.dpm_connection import DPMConnectionError
+from pacsys.dpm_connection import DPMConnectionError, _remaining_timeout
 from pacsys.dpm_protocol import (
     AddToList_reply,
     AddToList_request,
@@ -54,6 +57,22 @@ from pacsys.types import (
 )
 
 logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
+
+
+async def _await_with_deadline(
+    operation: Callable[[], Awaitable[_T]],
+    deadline: float,
+    phase: str,
+) -> _T:
+    try:
+        timeout = _remaining_timeout(deadline, phase)
+        return await asyncio.wait_for(
+            operation(),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError as e:
+        raise TimeoutError(f"Timed out during {phase}") from e
 
 
 class _AsyncDpmCore:
@@ -80,9 +99,13 @@ class _AsyncDpmCore:
         self._mic: bytes | None = None
         self._mic_message: bytes | None = None
 
-    async def connect(self) -> None:
+    async def connect(self, timeout: float | None = None) -> None:
         conn = _AsyncDPMConnection(self._host, self._port, self._timeout)
-        await conn.connect()
+        try:
+            await conn.connect(timeout=timeout)
+        except BaseException:
+            await conn.close()
+            raise
         self._conn = conn
 
     async def close(self) -> None:
@@ -102,12 +125,27 @@ class _AsyncDpmCore:
 
     # ── Authentication ────────────────────────────────────────────────────
 
-    async def authenticate(self) -> None:
+    async def _recv_authenticate_reply(self, deadline: float, phase: str) -> Authenticate_reply:
+        assert self._conn is not None
+        while True:
+            try:
+                reply = await self._conn.recv_message(timeout=_remaining_timeout(deadline, phase))
+            except asyncio.TimeoutError as e:
+                raise TimeoutError(f"Timed out during {phase}") from e
+            if isinstance(reply, ListStatus_reply):
+                continue
+            if isinstance(reply, Authenticate_reply):
+                return reply
+            raise AuthenticationError(f"Expected Authenticate_reply during {phase}, got {type(reply).__name__}")
+
+    async def authenticate(self, deadline: float | None = None) -> None:
         """Kerberos GSSAPI authentication over the DPM connection."""
+        deadline = deadline if deadline is not None else _make_deadline(None, self._timeout)
         gssapi = _require_gssapi()
         from gssapi import exceptions as gssapi_exceptions
 
-        assert self._conn is not None
+        conn = self._conn
+        assert conn is not None
         if self._auth is None:
             raise AuthenticationError("KerberosAuth required for authentication")
 
@@ -115,11 +153,13 @@ class _AsyncDpmCore:
         auth_req = Authenticate_request()
         auth_req.list_id = self.list_id
         auth_req.token = b""
-        await self._conn.send_message(auth_req)
+        await _await_with_deadline(
+            lambda: conn.send_message(auth_req),
+            deadline,
+            "Kerberos service-name request",
+        )
 
-        reply = await self._conn.recv_message(timeout=self._timeout)
-        if not isinstance(reply, Authenticate_reply):
-            raise AuthenticationError(f"Expected Authenticate_reply, got {type(reply).__name__}")
+        reply = await self._recv_authenticate_reply(deadline, "Kerberos service-name reply")
 
         raw_service_name = reply.serviceName
         if not raw_service_name:
@@ -147,30 +187,36 @@ class _AsyncDpmCore:
             token = ctx.step()
         except gssapi_exceptions.GSSError as e:
             raise AuthenticationError(f"Kerberos authentication failed for {gss_name}: {e}") from e
+        _remaining_timeout(deadline, "Kerberos context initialization")
 
         auth_req = Authenticate_request()
         auth_req.list_id = self.list_id
         auth_req.token = bytes(token) if token else b""
-        await self._conn.send_message(auth_req)
+        await _await_with_deadline(
+            lambda: conn.send_message(auth_req),
+            deadline,
+            "Kerberos token request",
+        )
 
-        reply = await self._conn.recv_message(timeout=self._timeout)
-        if not isinstance(reply, Authenticate_reply):
-            raise AuthenticationError(f"Expected Authenticate_reply, got {type(reply).__name__}")
+        reply = await self._recv_authenticate_reply(deadline, "Kerberos token reply")
 
         if hasattr(reply, "token") and reply.token and not ctx.complete:
             try:
                 token = ctx.step(reply.token)
             except gssapi_exceptions.GSSError as e:
                 raise AuthenticationError(f"Kerberos authentication failed for {gss_name}: {e}") from e
+            _remaining_timeout(deadline, "Kerberos mutual authentication")
             if token:
                 auth_req = Authenticate_request()
                 auth_req.list_id = self.list_id
                 auth_req.token = bytes(token)
-                await self._conn.send_message(auth_req)
+                await _await_with_deadline(
+                    lambda: conn.send_message(auth_req),
+                    deadline,
+                    "Kerberos mutual-auth request",
+                )
 
-                reply = await self._conn.recv_message(timeout=self._timeout)
-                if not isinstance(reply, Authenticate_reply):
-                    raise AuthenticationError(f"Expected Authenticate_reply, got {type(reply).__name__}")
+                reply = await self._recv_authenticate_reply(deadline, "Kerberos mutual-auth reply")
 
         if not ctx.complete:
             raise AuthenticationError("Kerberos authentication incomplete")
@@ -180,13 +226,16 @@ class _AsyncDpmCore:
             mic = ctx.get_signature(message)
         except gssapi_exceptions.GSSError as e:
             raise AuthenticationError(f"Kerberos authentication failed for {gss_name}: {e}") from e
+        _remaining_timeout(deadline, "Kerberos MIC generation")
         self._mic = bytes(mic)
         self._mic_message = message
         logger.debug("Kerberos authentication complete for %s", self._auth.principal)
 
-    async def enable_settings(self) -> None:
+    async def enable_settings(self, deadline: float | None = None) -> None:
         """Enable settings on the connection after authentication."""
-        assert self._conn is not None
+        deadline = deadline if deadline is not None else _make_deadline(None, self._timeout)
+        conn = self._conn
+        assert conn is not None
         if self._mic is None or self._mic_message is None:
             raise AuthenticationError("Must authenticate before enabling settings")
 
@@ -195,10 +244,17 @@ class _AsyncDpmCore:
         enable_req.MIC = self._mic
         enable_req.message = self._mic_message
 
-        await self._conn.send_message(enable_req)
+        await _await_with_deadline(
+            lambda: conn.send_message(enable_req),
+            deadline,
+            "EnableSettings request",
+        )
 
         while True:
-            reply = await self._conn.recv_message(timeout=self._timeout)
+            try:
+                reply = await conn.recv_message(timeout=_remaining_timeout(deadline, "EnableSettings reply"))
+            except asyncio.TimeoutError as e:
+                raise TimeoutError("Timed out during EnableSettings reply") from e
             if isinstance(reply, ListStatus_reply):
                 continue
             if isinstance(reply, Status_reply):
@@ -215,7 +271,8 @@ class _AsyncDpmCore:
 
     async def read_many(self, drfs: list[str], timeout: float) -> list[Reading]:
         """Read multiple devices in a single batch."""
-        assert self._conn is not None
+        conn = self._conn
+        assert conn is not None
         deadline = time.monotonic() + timeout
 
         prepared_drfs = [ensure_immediate_event(drf) for drf in drfs]
@@ -255,7 +312,7 @@ class _AsyncDpmCore:
         start_req = StartList_request()
         start_req.list_id = list_id
         setup_msgs.append(start_req)
-        await self._conn.send_messages_batch(setup_msgs)
+        await conn.send_messages_batch(setup_msgs)
 
         try:
             while received_count < expected_count:
@@ -263,7 +320,7 @@ class _AsyncDpmCore:
                 if remaining <= 0:
                     break
                 try:
-                    reply = await self._conn.recv_message(timeout=min(remaining, 2.0))
+                    reply = await conn.recv_message(timeout=min(remaining, 2.0))
                 except asyncio.TimeoutError:
                     if time.monotonic() >= deadline:
                         break
@@ -335,7 +392,7 @@ class _AsyncDpmCore:
                         stop_req.list_id = list_id
                         clear_req = ClearList_request()
                         clear_req.list_id = list_id
-                        await self._conn.send_messages_batch([stop_req, clear_req])
+                        await conn.send_messages_batch([stop_req, clear_req])
                     except Exception as e:  # noqa: BLE001
                         # Failed StopList send means unknown connection state — close
                         # so the core is not re-pooled dirty. Data is already complete;
@@ -454,16 +511,16 @@ class _AsyncDpmCore:
         setting_payloads: list[_SettingPayload] | None = None,
     ) -> list[WriteResult]:
         """Write multiple devices."""
-        assert self._conn is not None
-        effective_timeout = timeout if timeout is not None else self._timeout
-        deadline = time.monotonic() + effective_timeout
+        conn = self._conn
+        assert conn is not None
+        deadline = _make_deadline(timeout, self._timeout)
 
         if setting_payloads is None:
             setting_payloads = [_value_to_setting(i, value) for i, (_, value) in enumerate(settings, 1)]
 
         if not self._settings_enabled:
-            await self.authenticate()
-            await self.enable_settings()
+            await self.authenticate(deadline)
+            await self.enable_settings(deadline)
 
         role = role or self._role
         list_id = self.list_id
@@ -498,7 +555,11 @@ class _AsyncDpmCore:
         start_req.list_id = list_id
         setup_msgs.append(start_req)
 
-        await self._conn.send_messages_batch(setup_msgs)
+        await _await_with_deadline(
+            lambda: conn.send_messages_batch(setup_msgs),
+            deadline,
+            "write list setup",
+        )
 
         # Phase 1: Wait for device infos
         received_infos = 0
@@ -511,7 +572,7 @@ class _AsyncDpmCore:
             if remaining <= 0:
                 break
             try:
-                reply = await self._conn.recv_message(timeout=min(remaining, 2.0))
+                reply = await conn.recv_message(timeout=min(remaining, 2.0))
             except asyncio.TimeoutError:
                 if time.monotonic() >= deadline:
                     break
@@ -588,7 +649,11 @@ class _AsyncDpmCore:
         if text_settings:
             setattr(apply_req, "text_array", text_settings)
 
-        await self._conn.send_message(apply_req)
+        await _await_with_deadline(
+            lambda: conn.send_message(apply_req),
+            deadline,
+            "ApplySettings request",
+        )
 
         # Phase 3: Wait for ApplySettings reply
         apply_reply = None
@@ -597,7 +662,7 @@ class _AsyncDpmCore:
             if remaining <= 0:
                 break
             try:
-                reply = await self._conn.recv_message(timeout=min(remaining, 2.0))
+                reply = await conn.recv_message(timeout=min(remaining, 2.0))
             except asyncio.TimeoutError:
                 if time.monotonic() >= deadline:
                     break

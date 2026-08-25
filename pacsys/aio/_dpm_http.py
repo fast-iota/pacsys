@@ -3,14 +3,14 @@
 import asyncio
 import logging
 
-from pacsys.acnet.errors import ERR_RETRY, FACILITY_ACNET
+from pacsys.acnet.errors import ERR_RETRY, ERR_TIMEOUT, FACILITY_ACNET
 from pacsys.aio._backends import AsyncBackend
 from pacsys.aio._subscription import AsyncSubscriptionHandle, _callback_feeder
 from pacsys.auth import KerberosAuth
 from pacsys.backends import ALARM_READONLY_KEYS
 from pacsys.backends._dpm_core import _AsyncDpmCore
-from pacsys.backends.dpm_http import _value_to_setting
-from pacsys.dpm_connection import DPMConnectionError
+from pacsys.backends.dpm_http import _make_deadline, _value_to_setting
+from pacsys.dpm_connection import DPMConnectionError, _remaining_timeout
 from pacsys.drf_utils import prepare_for_write
 from pacsys.errors import AuthenticationError, DeviceError, ReadError
 from pacsys.pool import PoolExhaustedError
@@ -257,8 +257,18 @@ class AsyncDPMHTTPBackend(AsyncBackend):
             from pacsys.acnet.errors import ERR_OK
 
             pairs = _expand_alarm_dict(drf, value)
+            deadline = _make_deadline(timeout, self._timeout)
             for field_drf, field_val in pairs:
-                results = await self.write_many([(field_drf, field_val)], timeout=timeout)
+                try:
+                    remaining = _remaining_timeout(deadline, "alarm write")
+                except TimeoutError as e:
+                    return WriteResult(
+                        drf=drf,
+                        facility_code=FACILITY_ACNET,
+                        error_code=ERR_TIMEOUT,
+                        message=str(e),
+                    )
+                results = await self.write_many([(field_drf, field_val)], timeout=remaining)
                 if not results[0].success:
                     r = results[0]
                     return WriteResult(
@@ -282,13 +292,28 @@ class AsyncDPMHTTPBackend(AsyncBackend):
         self._check_closed()
         if not isinstance(self._auth, KerberosAuth):
             raise AuthenticationError("Backend not configured for authenticated operations. Pass auth=KerberosAuth().")
-        effective_timeout = timeout if timeout is not None else self._timeout
+        deadline = _make_deadline(timeout, self._timeout)
         prepared = [(prepare_for_write(drf), value) for drf, value in settings]
         setting_payloads = [_value_to_setting(i, value) for i, (_, value) in enumerate(settings, 1)]
 
         # Dedicated core for writes (fresh authenticated connection)
         try:
-            core = await self._create_core()
+            connection_timeout = _remaining_timeout(deadline, "DPM write connection")
+            core = await asyncio.wait_for(
+                self._create_core(),
+                timeout=connection_timeout,
+            )
+        except TimeoutError as e:
+            error_msg = f"DPM write connection timed out: {e}"
+            return [
+                WriteResult(
+                    drf=drf,
+                    facility_code=FACILITY_ACNET,
+                    error_code=ERR_TIMEOUT,
+                    message=error_msg,
+                )
+                for drf, _ in settings
+            ]
         except (DPMConnectionError, OSError) as e:
             error_msg = f"Failed to get write connection: {e}"
             return [
@@ -296,19 +321,37 @@ class AsyncDPMHTTPBackend(AsyncBackend):
                 for drf, _ in settings
             ]
         try:
-            result = await core.write_many(
-                prepared,
-                timeout=effective_timeout,
-                setting_payloads=setting_payloads,
-            )
-            await core.close()
-            return result
-        except BaseException:
+            try:
+                return await core.write_many(
+                    prepared,
+                    timeout=_remaining_timeout(deadline, "DPM write"),
+                    setting_payloads=setting_payloads,
+                )
+            except TimeoutError as e:
+                return [
+                    WriteResult(
+                        drf=drf,
+                        facility_code=FACILITY_ACNET,
+                        error_code=ERR_TIMEOUT,
+                        message=str(e),
+                    )
+                    for drf, _ in settings
+                ]
+            except (DPMConnectionError, OSError) as e:
+                return [
+                    WriteResult(
+                        drf=drf,
+                        facility_code=FACILITY_ACNET,
+                        error_code=ERR_RETRY,
+                        message=f"Connection error: {e}",
+                    )
+                    for drf, _ in settings
+                ]
+        finally:
             try:
                 await core.close()
             except Exception:  # noqa: BLE001
                 logger.debug("Failed to close DPM write core after error", exc_info=True)
-            raise
 
     # ── Streaming ─────────────────────────────────────────────────────────
 
