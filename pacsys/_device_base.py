@@ -172,7 +172,7 @@ class _DeviceBase:
             if start is not None or end is not None:
                 raise ValueError("'at' cannot be combined with 'start'/'end'")
             new_range = ARRAY_RANGE(mode="single", low=at)
-        elif start is not None:
+        elif start is not None or end is not None:
             new_range = ARRAY_RANGE(mode="std", low=start, high=end)
         else:
             new_range = ARRAY_RANGE(mode="full")

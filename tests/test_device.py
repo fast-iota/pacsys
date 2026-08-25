@@ -548,6 +548,10 @@ class TestEdgeCases:
         assert modified.request.range is not None
         assert modified.request.range.low == 5
 
+    def test_with_range_end_only(self):
+        modified = Device("B:HS23T").with_range(end=5)
+        assert str(modified.request.range) == "[:5]"
+
     def test_device_with_lowercase_drf(self):
         dev = Device("m:outtmp")
         assert dev.name.upper() == "M:OUTTMP"
