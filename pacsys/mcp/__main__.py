@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+from dataclasses import replace
 
 from ._config import load_config
 from ._server import create_server
@@ -21,13 +22,15 @@ def main():
 
     config = load_config(args.config)
 
-    # CLI args override config file
+    # CLI args override config file; transport-specific validation follows.
+    overrides = {}
     if args.transport is not None:
-        config.transport = args.transport
+        overrides["transport"] = args.transport
     if args.port is not None:
-        config.port = args.port
+        overrides["port"] = args.port
     if args.role is not None:
-        config.role = args.role
+        overrides["role"] = args.role
+    config = replace(config, **overrides).finalized()
 
     server = create_server(config)
     server.run(transport=config.transport)  # ty: ignore[invalid-argument-type]

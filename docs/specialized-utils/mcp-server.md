@@ -108,6 +108,15 @@ write_devices = ["Z:ACLTST", "Z:CUBE_Z"]
 
 A sample config is provided at `scripts/pacsys-mcp.toml`.
 
+Configuration is validated strictly at startup. Unknown keys, malformed policy
+tables, invalid bounds, and transport-specific options such as `port` with
+`stdio` stop the server instead of silently weakening a policy.
+
+When `audit_log` is configured, every allowed or denied write attempt is
+recorded as JSON Lines with its requested DRF, value, decision, and reason. The
+file is opened during startup so an invalid audit destination prevents the
+server from accepting clients.
+
 ### CLI flags
 
 CLI flags override values from the config file:

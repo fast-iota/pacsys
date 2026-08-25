@@ -9,10 +9,11 @@ from pacsys.mcp._server import ServerContext, _lifespan, create_server
 
 
 class _FakeFastMCP:
-    def __init__(self, name, *, instructions, lifespan):
+    def __init__(self, name, *, instructions, lifespan, port):
         self.name = name
         self.instructions = instructions
         self.lifespan = lifespan
+        self.port = port
         self.tools = {}
         self.context = None
 
@@ -48,12 +49,19 @@ def test_create_server_registers_context_bound_tools():
         assert server.tools["device_info"]("M:OUTTMP") == {"info": True}
 
     read.assert_called_once_with(backend, "M:OUTTMP", policies)
-    write.assert_called_once_with(backend, "Z:ACLTST", 1.0, policies)
+    write.assert_called_once_with(backend, "Z:ACLTST", 1.0, policies, None)
     info.assert_called_once_with(devdb, "M:OUTTMP")
 
 
+def test_create_server_wires_sse_port():
+    with mock.patch("pacsys.mcp._server.FastMCP", _FakeFastMCP):
+        server = create_server(MCPConfig(transport="sse", port=9090))
+
+    assert server.port == 9090
+
+
 @pytest.mark.asyncio
-async def test_lifespan_closes_backend_and_devdb(monkeypatch):
+async def test_lifespan_closes_backend_devdb_and_audit(monkeypatch, tmp_path):
     backend = mock.MagicMock()
     devdb = mock.MagicMock()
     auth = SimpleNamespace(principal="user@EXAMPLE")
@@ -67,11 +75,15 @@ async def test_lifespan_closes_backend_and_devdb(monkeypatch):
     monkeypatch.setattr(devdb_module, "DEVDB_AVAILABLE", True)
     monkeypatch.setattr(devdb_module, "DevDBClient", mock.MagicMock(return_value=devdb))
 
-    async with _lifespan(None, config=MCPConfig(role="testing")) as context:
+    audit_path = tmp_path / "mcp-audit.jsonl"
+    async with _lifespan(None, config=MCPConfig(role="testing", audit_log=str(audit_path))) as context:
         assert context.backend is backend
         assert context.devdb is devdb
         assert context.policies == []
+        assert context.audit_log is not None
 
     backend_factory.assert_called_once_with(timeout=5.0, auth=auth, role="testing")
     backend.close.assert_called_once_with()
     devdb.close.assert_called_once_with()
+    assert audit_path.exists()
+    assert context.audit_log._json_file is None
