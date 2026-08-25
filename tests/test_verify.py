@@ -1,5 +1,6 @@
 """Tests for Verify dataclass, context manager, and resolution logic."""
 
+import asyncio
 import threading
 
 import numpy as np
@@ -134,6 +135,36 @@ class TestThreadIsolation:
         assert results["thread_before"] is None
         assert results["thread_during"].tolerance == 99.0
         assert results["thread_after"] is None
+
+
+class TestTaskIsolation:
+    @pytest.mark.asyncio
+    async def test_interleaved_contexts_are_task_local(self):
+        v1 = Verify(tolerance=1.0)
+        v2 = Verify(tolerance=2.0)
+        first_entered = asyncio.Event()
+        second_entered = asyncio.Event()
+        first_exited = asyncio.Event()
+        observed = {}
+
+        async def first():
+            with v1:
+                first_entered.set()
+                await second_entered.wait()
+            first_exited.set()
+
+        async def second():
+            await first_entered.wait()
+            observed["before"] = get_active_verify()
+            with v2:
+                second_entered.set()
+                await first_exited.wait()
+                observed["during"] = get_active_verify()
+            observed["after"] = get_active_verify()
+
+        await asyncio.gather(first(), second())
+
+        assert observed == {"before": None, "during": v2, "after": None}
 
 
 class TestValuesMatch:
