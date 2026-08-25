@@ -149,6 +149,9 @@ with AcnetConnectionTCP() as conn:
             snap.restart()  # re-arm for next capture - avoids repeated setup
 ```
 
+After `restart()` succeeds, statuses already received for the preceding cycle
+cannot make the new cycle report readiness.
+
 ### Sequential Multi-Chunk Retrieval
 
 For large captures that exceed `retrieval_max` (512 for most classes):
