@@ -96,24 +96,41 @@ class AsyncSubscriptionHandle:
             yield item
 
     async def _readings(self, timeout: float | None = None) -> AsyncIterator[tuple[Reading, "AsyncSubscriptionHandle"]]:
-        deadline = None if timeout is None else time.monotonic() + timeout
-        while True:
-            if self._queue.empty():
-                if self._stopped:
+        if timeout == 0:
+            for _ in range(self._queue.qsize()):
+                try:
+                    item = self._queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if item is None:
                     if self._exc is not None:
                         raise self._exc
                     return
-                remaining = None if deadline is None else deadline - time.monotonic()
-                if remaining is not None and remaining <= 0:
-                    return
+                yield (item, self)
+            if self._exc is not None:
+                raise self._exc
+            return
+
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                if self._exc is not None:
+                    raise self._exc
+                return
+            if self._stopped and self._queue.empty():
+                if self._exc is not None:
+                    raise self._exc
+                return
+            try:
+                item = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
                 try:
                     item = await asyncio.wait_for(self._queue.get(), timeout=remaining)
                 except asyncio.TimeoutError:
                     if self._exc is not None:
                         raise self._exc from None
                     return
-            else:
-                item = self._queue.get_nowait()
             if item is None:
                 if self._exc is not None:
                     raise self._exc
