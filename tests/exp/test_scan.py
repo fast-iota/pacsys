@@ -1,5 +1,6 @@
 """Tests for scan."""
 
+import logging
 from unittest import mock
 
 import numpy as np
@@ -115,6 +116,30 @@ class TestScan:
         # Last write should restore the original SETTING value (42.0)
         last_write = fake.writes[-1]
         assert last_write[1] == 42.0
+
+    def test_failed_error_cleanup_restore_is_logged(self, fake, caplog):
+        write_device = mock.Mock()
+        write_device.setting.return_value = 42.0
+        write_device.write.side_effect = [
+            WriteResult(drf="Z:ACLTST.SETTING@N"),
+            WriteResult(drf="Z:ACLTST.SETTING@N", error_code=-1, message="restore failed"),
+        ]
+        fake.get_many = mock.Mock(side_effect=RuntimeError("read failed"))
+
+        with (
+            mock.patch("pacsys.device.Device", return_value=write_device),
+            caplog.at_level(logging.ERROR, logger="pacsys.exp._scan"),
+            pytest.raises(RuntimeError, match="read failed"),
+        ):
+            scan(
+                write_device="Z:ACLTST",
+                read_devices=["M:OUTTMP"],
+                values=[1.0],
+                settle=0,
+                backend=fake,
+            )
+
+        assert "Failed to restore Z:ACLTST to 42.0 during error cleanup: restore failed" in caplog.text
 
     def test_no_restore(self, fake):
         fake.set_reading("Z:ACLTST.SETTING", 42.0)
