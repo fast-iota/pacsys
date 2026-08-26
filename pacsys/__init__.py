@@ -6,6 +6,7 @@ pacsys - Pure Python library for ACNET control system at Fermilab.
 import atexit
 import importlib
 import logging
+import math
 import os
 import sys
 import threading
@@ -146,6 +147,23 @@ class _Unset:
 _UNSET = _Unset()
 
 
+def _validate_config_host(value: object, name: str) -> None:
+    if value is not None and (not isinstance(value, str) or not value.strip()):
+        raise ValueError(f"{name} must be a non-empty string or None")
+
+
+def _validate_config_port(value: object, name: str) -> None:
+    if value is not None and (isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65535):
+        raise ValueError(f"{name} must be an integer from 1 to 65535 or None")
+
+
+def _validate_config_positive(value: object, name: str, *, integer: bool = False) -> None:
+    valid_type = isinstance(value, int) if integer else isinstance(value, (int, float))
+    if value is not None and (isinstance(value, bool) or not valid_type or not math.isfinite(value) or value <= 0):
+        kind = "a positive integer" if integer else "a positive finite number"
+        raise ValueError(f"{name} must be {kind} or None")
+
+
 def configure(
     *,
     dpm_host: str | _Unset | None = _UNSET,
@@ -193,7 +211,30 @@ def configure(
     else:
         normalized_auth = auth
 
+    if not isinstance(dpm_host, _Unset):
+        _validate_config_host(dpm_host, "dpm_host")
+    if not isinstance(dpm_port, _Unset):
+        _validate_config_port(dpm_port, "dpm_port")
+    if not isinstance(pool_size, _Unset):
+        _validate_config_positive(pool_size, "pool_size", integer=True)
+    if not isinstance(default_timeout, _Unset):
+        _validate_config_positive(default_timeout, "default_timeout")
+    if not isinstance(devdb_host, _Unset):
+        _validate_config_host(devdb_host, "devdb_host")
+    if not isinstance(devdb_port, _Unset):
+        _validate_config_port(devdb_port, "devdb_port")
+
     with _global_lock:
+        configured_backend = backend if not isinstance(backend, _Unset) else _config_backend
+        configured_auth = normalized_auth if not isinstance(normalized_auth, _Unset) else _config_auth
+        effective_backend = configured_backend or "dpm"
+        if effective_backend == "dpm" and configured_auth is not None and not isinstance(configured_auth, KerberosAuth):
+            raise ValueError("DPM backend auth must be KerberosAuth or None")
+        if effective_backend == "grpc" and configured_auth is not None and not isinstance(configured_auth, JWTAuth):
+            raise ValueError("gRPC backend auth must be JWTAuth or None")
+        if effective_backend == "dmq" and not isinstance(configured_auth, KerberosAuth):
+            raise ValueError("DMQ backend requires KerberosAuth")
+
         if _backend_initialized or _devdb_initialized:
             logger.debug("configure() called with active backend — auto-replacing")
             _shutdown_locked()
