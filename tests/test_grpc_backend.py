@@ -887,6 +887,10 @@ class TestBoundedQueue:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+async def _call_get(backend):
+    return backend.get("M:OUTTMP", timeout=0.01)
+
+
 class TestReactorLifecycle:
     """Tests for lazy reactor startup and clean shutdown."""
 
@@ -922,6 +926,17 @@ class TestReactorLifecycle:
         assert backend._closed
         assert backend._reactor_thread is None
         assert backend._loop is None
+
+    def test_blocking_call_from_reactor_thread_raises(self):
+        """A sync facade on the reactor thread would deadlock until timeout - fail immediately instead."""
+        backend = grpc_backend.GRPCBackend()
+        backend._start_reactor()
+        try:
+            fut = asyncio.run_coroutine_threadsafe(_call_get(backend), backend._loop)
+            with pytest.raises(RuntimeError, match="reactor thread"):
+                fut.result(timeout=2.0)
+        finally:
+            backend.close()
 
     def test_properties_dont_start_reactor(self):
         """Accessing properties does not start the reactor thread."""

@@ -113,6 +113,21 @@ class TestVerifyValidation:
     def test_accepts_numpy_integer_attempts(self):
         assert Verify(max_attempts=np.int64(2)).max_attempts == 2
 
+    @pytest.mark.parametrize("value", [123, b"M:OUTTMP"])
+    def test_rejects_non_string_readback(self, value):
+        """Readback is first touched after the write - must be validated before it."""
+        with pytest.raises(TypeError, match="readback"):
+            Verify(readback=value)
+
+    def test_rejects_invalid_readback_drf(self):
+        with pytest.raises(ValueError):
+            Verify(readback="M:OUTTMP@bogus")
+
+    @pytest.mark.parametrize("field", ["check_first", "always"])
+    def test_rejects_non_bool_flags(self, field):
+        with pytest.raises(TypeError, match=field):
+            Verify(**{field: 1})
+
 
 class TestThreadIsolation:
     def test_contexts_are_thread_local(self):

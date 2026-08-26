@@ -9,7 +9,7 @@ import pytest
 import pacsys
 from pacsys import aio
 from pacsys.errors import ReadError
-from pacsys.types import Reading, ValueType, WriteResult
+from pacsys.types import BasicControl, Reading, ValueType, WriteResult
 
 
 @pytest.fixture(autouse=True)
@@ -144,6 +144,18 @@ class TestModuleAPI:
     async def test_write(self, fake_backend):
         result = await aio.write("M:OUTTMP", 72.5)
         assert result.success
+
+    @pytest.mark.asyncio
+    async def test_write_basic_control_routes_to_control(self, fake_backend):
+        await aio.write("Z:ACLTST", BasicControl.ON)
+        drf, value = fake_backend.write.call_args.args[:2]
+        assert ".CONTROL" in drf and value is BasicControl.ON
+
+    @pytest.mark.asyncio
+    async def test_write_many_basic_control_routes_to_control(self, fake_backend):
+        await aio.write_many({"Z:ACLTST": BasicControl.OFF})
+        (settings,) = fake_backend.write_many.call_args.args
+        assert ".CONTROL" in settings[0][0]
 
     @pytest.mark.asyncio
     async def test_write_many(self, fake_backend):

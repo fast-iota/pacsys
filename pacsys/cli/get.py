@@ -89,16 +89,20 @@ def main() -> int:
     except KeyboardInterrupt:
         return 130
     except ReadError as e:
-        for reading in e.readings:
-            print(
-                format_reading(
-                    reading,
-                    fmt=fmt,
-                    number_format=args.number_format,
-                    array_slice=array_slice,
+        try:
+            for reading in e.readings:
+                print(
+                    format_reading(
+                        reading,
+                        fmt=fmt,
+                        number_format=args.number_format,
+                        array_slice=array_slice,
+                    )
                 )
-            )
-        print(f"Error: {e}", file=sys.stderr)
+        except Exception as format_error:  # noqa: BLE001
+            print(f"Error: {format_error}", file=sys.stderr)
+        else:
+            print(f"Error: {e}", file=sys.stderr)
         return EXIT_DEVICE_ERROR
     except Exception as e:  # noqa: BLE001
         print(f"Error: {e}", file=sys.stderr)

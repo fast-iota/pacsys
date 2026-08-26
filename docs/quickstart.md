@@ -194,6 +194,7 @@ value = pacsys.read("M:OUTTMP")
 
 `configure()` can be called at any time — if a backend is already running, it will be
 automatically shut down and replaced on the next operation. See the full list of options in the [API Reference](api.md).
+Configuration is validated first, so a failed `configure()` call leaves the active backend unchanged.
 
 :material-arrow-right: [Backends](backends/index.md) - architecture, configuration, comparison
 

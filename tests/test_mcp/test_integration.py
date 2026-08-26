@@ -1,6 +1,7 @@
 """Integration tests: full tool flow with FakeBackend and policies."""
 
 from dataclasses import replace
+from unittest.mock import Mock
 
 import pytest
 
@@ -112,9 +113,11 @@ def test_write_executes_transformed_value(backend):
         DeviceAccessPolicy(patterns=["Z:ACLTST"], mode="allow", action="set"),
         ClampPolicy(),
     ]
-    result = tool_write_device(backend, "Z:ACLTST", 200.0, policies=policies)
+    audit = Mock()
+    result = tool_write_device(backend, "Z:ACLTST", 200.0, policies=policies, audit_log=audit)
     assert result["ok"] is True
     assert backend.get_written_value("Z:ACLTST.SETTING") == 100.0
+    assert audit.log_request.call_args.args[0].values == [("Z:ACLTST.SETTING@N", 100.0)]
 
 
 def test_write_retarget_is_rejected_before_backend_call(backend):

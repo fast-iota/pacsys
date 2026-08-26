@@ -43,6 +43,8 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
         self._policies = policies
         self._token = token
         self._audit = audit_log
+        # Serializes policy check + write so stateful policies see no interleaving
+        self._set_lock = asyncio.Lock()
 
     def _check_token(self, context) -> bool:
         """Validate bearer token from gRPC metadata. Returns True if ok."""
@@ -59,14 +61,20 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
         context.set_details("Invalid or missing bearer token")
         return False
 
-    def _audit_request(self, ctx: RequestContext, decision: PolicyDecision) -> int | None:
-        """Best-effort audit log of incoming request. Returns seq or None."""
+    def _audit_request(self, ctx: RequestContext, decision: PolicyDecision, *, required: bool = False) -> int | None:
+        """Audit log of incoming request. Returns seq or None.
+
+        Best-effort unless ``required`` (allowed writes): then a failing audit
+        log propagates so the write is blocked rather than executed unrecorded.
+        """
         if self._audit is None:
             return None
         try:
             return self._audit.log_request(ctx, decision)
         except Exception:
             logger.exception("audit log_request failed")
+            if required:
+                raise
             return None
 
     def _audit_response(self, seq: int | None, peer: str, method: str, proto) -> None:
@@ -298,6 +306,12 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
             context.set_details(str(e))
             return DAQ_pb2.SettingReply()
 
+        async with self._set_lock:
+            return await self._set_locked(request, context, drfs, values, peer, devices)
+
+    async def _set_locked(self, request, context, drfs, values, peer, devices):
+        from pacsys._proto.controls.service.DAQ.v1 import DAQ_pb2
+
         try:
             req_ctx, decision = self._check_policies(drfs, "Set", context, values=values, raw_request=request)
         except Exception as e:
@@ -306,7 +320,12 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
             context.set_details(f"Policy error: {e}")
             return DAQ_pb2.SettingReply()
 
-        seq = self._audit_request(req_ctx, decision)
+        try:
+            seq = self._audit_request(req_ctx, decision, required=decision.allowed)
+        except Exception as e:  # noqa: BLE001 - already logged in _audit_request
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(f"Audit log failed; write blocked: {e}")
+            return DAQ_pb2.SettingReply()
 
         if not decision.allowed:
             logger.warning("rpc=Set peer=%s devices=%s decision=denied reason=%s", peer, devices, decision.reason)

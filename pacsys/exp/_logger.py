@@ -51,7 +51,7 @@ class DataLogger:
         self._closed = False
         self._last_error: Exception | None = None
         self._retry_count: int = 0
-        self._shutdown_dropped: int = 0
+        self._dropped_count: int = 0
         self._max_retries: int = 3
 
     @property
@@ -63,6 +63,16 @@ class DataLogger:
         """Last write error, or None if no errors occurred."""
         return self._last_error
 
+    @property
+    def dropped_count(self) -> int:
+        """Readings lost after exhausting write retries; sticky until the next start()."""
+        return self._dropped_count
+
+    @property
+    def failed(self) -> bool:
+        """True once any batch has been dropped. Logging continues; stop() raises."""
+        return self._dropped_count > 0
+
     def start(self) -> None:
         """Start logging."""
         with self._lifecycle_lock:
@@ -73,7 +83,7 @@ class DataLogger:
             with self._lock:
                 self._stopped = False
                 self._last_error = None
-                self._shutdown_dropped = 0
+                self._dropped_count = 0
             self._stop_event.clear()
             be = resolve_backend(self._backend)
             try:
@@ -131,7 +141,7 @@ class DataLogger:
                 self._flush_now()
 
             with self._lock:
-                dropped = self._shutdown_dropped
+                dropped = self._dropped_count
 
             if handle_error is not None:
                 raise RuntimeError("DataLogger subscription did not stop; writer left open") from handle_error
@@ -149,7 +159,7 @@ class DataLogger:
             self._handle = None
             self._flush_thread = None
             if dropped:
-                error = RuntimeError(f"Dropped {dropped} readings while stopping DataLogger")
+                error = RuntimeError(f"Dropped {dropped} readings during DataLogger run (see last_error)")
                 raise error from self._last_error
 
     def _on_reading(self, reading: Reading, handle: SubscriptionHandle) -> None:
@@ -164,8 +174,8 @@ class DataLogger:
 
     # TODO: distinguish conversion/validation failures (bad reading — quarantine it)
     # from transient I/O failures (retryable) so one poison reading cannot drop the batch
-    def _flush_now(self) -> int:
-        """Flush one buffered batch and return the number of dropped readings."""
+    def _flush_now(self) -> None:
+        """Flush one buffered batch."""
         with self._lock:
             batch = self._buffer
             self._buffer = []
@@ -193,10 +203,8 @@ class DataLogger:
                     )
                     with self._lock:
                         self._retry_count = 0
-                        if self._stopped:
-                            self._shutdown_dropped += len(batch)
-                    return len(batch)
-        return 0
+                        self._dropped_count += len(batch)
+                    return
 
     def __enter__(self) -> DataLogger:
         self.start()

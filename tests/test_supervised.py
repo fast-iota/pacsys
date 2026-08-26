@@ -2,12 +2,20 @@
 
 import threading
 import time
+from unittest import mock
 
 import grpc
 import pytest
 
 from pacsys._proto.controls.service.DAQ.v1 import DAQ_pb2, DAQ_pb2_grpc
-from pacsys.supervised import DeviceAccessPolicy, ReadOnlyPolicy, SupervisedServer, ValueRangePolicy
+from pacsys.supervised import (
+    DeviceAccessPolicy,
+    ReadOnlyPolicy,
+    SlewLimit,
+    SlewRatePolicy,
+    SupervisedServer,
+    ValueRangePolicy,
+)
 from pacsys.supervised._conversions import reading_to_proto_reply, write_result_to_proto_status
 from pacsys.supervised._event_classify import all_oneshot, is_oneshot_event
 from pacsys.supervised._policies import Policy, PolicyDecision, RequestContext
@@ -365,6 +373,64 @@ class TestSet:
             with pytest.raises(grpc.RpcError) as exc_info:
                 stub.Set(request, timeout=5.0)
             assert exc_info.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+
+
+def _set_request(device: str, value: float) -> DAQ_pb2.SettingList:
+    request = DAQ_pb2.SettingList()
+    setting = DAQ_pb2.Setting()
+    setting.device = device
+    setting.value.scalar = value
+    request.setting.append(setting)
+    return request
+
+
+class TestSetAuditAndCommit:
+    def test_audit_failure_blocks_write(self):
+        fb = FakeBackend()
+        _seed_backend(fb)
+        audit = mock.Mock()
+        audit.log_request.side_effect = OSError("disk full")
+        srv = SupervisedServer(fb, port=0, policies=[_ALLOW_ALL_WRITES], audit_log=audit)
+        srv.start()
+        try:
+            with _make_channel(srv) as ch:
+                stub = DAQ_pb2_grpc.DAQStub(ch)
+                with pytest.raises(grpc.RpcError) as exc_info:
+                    stub.Set(_set_request("M:OUTTMP", 80.0), timeout=5.0)
+                assert exc_info.value.code() == grpc.StatusCode.INTERNAL
+                assert "Audit" in exc_info.value.details()
+            assert fb.writes == []
+        finally:
+            srv.stop()
+
+    def test_concurrent_sets_are_serialized(self):
+        """Two in-flight Sets must not both pass a slew limit measured from the same history."""
+        fb = FakeBackend()
+        _seed_backend(fb)
+        policies = [_ALLOW_ALL_WRITES, SlewRatePolicy(limits={"M:OUTTMP": SlewLimit(max_step=10.0)})]
+        srv = SupervisedServer(fb, port=0, policies=policies)
+        srv.start()
+        try:
+            with _make_channel(srv) as ch:
+                stub = DAQ_pb2_grpc.DAQStub(ch)
+                assert stub.Set(_set_request("M:OUTTMP", 0.0), timeout=5.0).status[0].status_code == 0
+                outcomes = []
+
+                def attempt(value):
+                    try:
+                        stub.Set(_set_request("M:OUTTMP", value), timeout=5.0)
+                        outcomes.append("ok")
+                    except grpc.RpcError as e:
+                        outcomes.append(e.code())
+
+                threads = [threading.Thread(target=attempt, args=(v,)) for v in (10.0, -10.0)]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join(timeout=5.0)
+            assert sorted(outcomes, key=str) == sorted(["ok", grpc.StatusCode.PERMISSION_DENIED], key=str)
+        finally:
+            srv.stop()
 
 
 # ── Policy Enforcement Tests ──────────────────────────────────────────────

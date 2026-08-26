@@ -8,6 +8,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from numbers import Real
 
 import numpy as np
 
@@ -319,6 +320,14 @@ class SlewLimit:
     def __post_init__(self):
         if self.max_step is None and self.max_rate is None:
             raise ValueError("SlewLimit requires at least one of max_step or max_rate")
+        for name in ("max_step", "max_rate"):
+            v = getattr(self, name)
+            if v is None:
+                continue
+            if isinstance(v, bool) or not isinstance(v, Real):
+                raise TypeError(f"{name} must be a real number")
+            if not math.isfinite(v) or v <= 0:
+                raise ValueError(f"{name} must be finite and positive, got {v}")
 
 
 class SlewRatePolicy(Policy):

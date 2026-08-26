@@ -103,6 +103,20 @@ class TestScan:
         assert result.restored
         assert write_device.write.call_args_list[-1] == mock.call(42.0, timeout=None)
 
+    def test_failed_write_marks_aborted(self, fake):
+        fake.set_write_result("Z:ACLTST.SETTING@N", success=False, error_code=-42, message="rejected")
+        result = scan(
+            write_device="Z:ACLTST",
+            read_devices=["M:OUTTMP"],
+            values=[0.0, 1.0, 2.0],
+            settle=0,
+            restore=False,
+            backend=fake,
+        )
+        assert result.aborted
+        assert len(result.write_results) == 1
+        assert result.readings == []
+
     def test_restores_original_setting(self, fake):
         fake.set_reading("Z:ACLTST.SETTING", 42.0)
         scan(

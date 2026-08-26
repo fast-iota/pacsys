@@ -363,8 +363,8 @@ class TestCombinedStream:
         with pytest.raises(RuntimeError, match="fail"):
             list(CombinedStream([h1]).readings(timeout=2))
 
-    def test_blocking_error_available_after_stop(self):
-        """Error set mid-stream is accessible via .exc after readings end."""
+    def test_blocking_error_propagates_after_start(self):
+        """Error set mid-stream terminates iteration and remains accessible."""
         fake = FakeBackend()
         h1 = fake.subscribe(["M:OUTTMP"])
         err = RuntimeError("late")
@@ -375,7 +375,8 @@ class TestCombinedStream:
 
         threading.Timer(0.05, error_then_stop).start()
 
-        list(cs.readings(timeout=2))
+        with pytest.raises(RuntimeError, match="late"):
+            list(cs.readings(timeout=2))
         assert cs.exc is err
 
     def test_blocking_none_timeout_stops_when_all_done(self):

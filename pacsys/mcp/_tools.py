@@ -1,6 +1,7 @@
 """MCP tool implementations — pure business logic, no MCP dependency."""
 
 import logging
+import threading
 
 from pacsys.backends import Backend
 from pacsys.drf_utils import get_device_name, prepare_for_write
@@ -17,13 +18,20 @@ from ._serialization import reading_to_dict, write_result_to_dict
 logger = logging.getLogger("pacsys.mcp")
 
 
-def _audit_write(audit_log: AuditLog | None, ctx: RequestContext, decision: PolicyDecision) -> None:
+# Serializes policy check + write so stateful policies see no interleaving
+_write_lock = threading.Lock()
+
+
+def _audit_write(audit_log: AuditLog | None, ctx: RequestContext, decision: PolicyDecision) -> bool:
+    """Record a write decision. Returns False if a configured audit log failed."""
     if audit_log is None:
-        return
+        return True
     try:
         audit_log.log_request(ctx, decision)
+        return True
     except Exception:  # noqa: BLE001
         logger.exception("write_device audit failed for drf=%s", ctx.drfs[0])
+        return False
 
 
 def tool_read_device(backend: Backend, drf: str, policies: list[Policy]) -> dict:
@@ -70,6 +78,17 @@ def tool_write_device(
     audit_log: AuditLog | None = None,
 ) -> dict:
     """Write a device value with policy enforcement. Returns a JSON-safe dict."""
+    with _write_lock:
+        return _write_device_locked(backend, drf, value, policies, audit_log)
+
+
+def _write_device_locked(
+    backend: Backend,
+    drf: str,
+    value: float | str | list,
+    policies: list[Policy],
+    audit_log: AuditLog | None,
+) -> dict:
     write_drf = prepare_for_write(drf)
     device_name = get_device_name(drf)
 
@@ -113,9 +132,10 @@ def tool_write_device(
         logger.warning("write_device drf=%s device=%s denied reason=%s", write_drf, device_name, reason)
         return {"ok": False, "drf": write_drf, "error": reason}
 
-    # Execute write
-    _audit_write(audit_log, ctx, PolicyDecision(allowed=True, ctx=final_ctx))
+    # Execute write - an unrecordable write is blocked, not executed
     final_drf, final_value = final_ctx.values[0]
+    if not _audit_write(audit_log, final_ctx, PolicyDecision(allowed=True, ctx=final_ctx)):
+        return {"ok": False, "drf": final_drf, "error": "Audit log failed; write blocked"}
     try:
         result = backend.write(final_drf, final_value)
         return write_result_to_dict(result)

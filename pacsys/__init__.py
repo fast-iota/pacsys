@@ -196,7 +196,7 @@ def configure(
         role: Role for authenticated operations (e.g., "testing")
 
     Raises:
-        ValueError: If backend is not a valid backend type
+        ValueError: If a supplied value or backend/auth combination is invalid.
     """
     global _config_dpm_host, _config_dpm_port, _config_pool_size, _config_timeout
     global _config_devdb_host, _config_devdb_port
@@ -434,6 +434,16 @@ def _resolve_drf(device: DeviceSpec) -> str:
     raise TypeError(f"Expected str or Device, got {type(device).__name__}")
 
 
+def _resolve_setting(device: DeviceSpec, value: Value) -> tuple[str, Value]:
+    """Resolve a write target; BasicControl values are routed to CONTROL, never SETTING."""
+    from pacsys.drf_utils import prepare_for_control
+
+    drf = _resolve_drf(device)
+    if isinstance(value, BasicControl):
+        drf = prepare_for_control(drf)
+    return drf, value
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Simple API Functions
 # ─────────────────────────────────────────────────────────────────────────────
@@ -546,7 +556,8 @@ def write(device: DeviceSpec, value: Value, timeout: float | None = None) -> Wri
 
     Args:
         device: DRF string or Device object
-        value: Value to write
+        value: Value to write. BasicControl values target the CONTROL property
+            (a bare device name is retargeted; SETTING is never used).
         timeout: Total timeout in seconds
 
     Returns:
@@ -559,7 +570,7 @@ def write(device: DeviceSpec, value: Value, timeout: float | None = None) -> Wri
     Thread Safety:
         Safe to call from multiple threads.
     """
-    drf = _resolve_drf(device)
+    drf, value = _resolve_setting(device, value)
     backend = _get_global_backend()
     return backend.write(drf, value, timeout=timeout)
 
@@ -584,7 +595,7 @@ def write_many(
         Safe to call from multiple threads.
     """
     items = settings.items() if isinstance(settings, dict) else settings
-    resolved = [(_resolve_drf(d), v) for d, v in items]
+    resolved = [_resolve_setting(d, v) for d, v in items]
     backend = _get_global_backend()
     return backend.write_many(resolved, timeout=timeout)
 

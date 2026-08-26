@@ -27,6 +27,7 @@ from pacsys import (
 )
 from pacsys.backends.dpm_http import DPMHTTPBackend
 from pacsys.testing import FakeBackend
+from pacsys.types import BasicControl
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixtures
@@ -257,6 +258,31 @@ class TestReadMany:
 # ─────────────────────────────────────────────────────────────────────────────
 # configure() Tests
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestWrite:
+    """Module-level writes must never send a BasicControl ordinal to SETTING."""
+
+    def test_basic_control_routes_to_control(self, fake):
+        pacsys.write("Z:ACLTST", BasicControl.ON)
+        ((drf, value),) = fake.writes
+        assert ".CONTROL" in drf and ".SETTING" not in drf
+        assert value is BasicControl.ON
+
+    def test_basic_control_via_device_object(self, fake):
+        pacsys.write(Device("Z:ACLTST"), BasicControl.OFF)
+        assert ".CONTROL" in fake.writes[0][0]
+
+    def test_write_many_routes_each_basic_control(self, fake):
+        pacsys.write_many([("Z:ACLTST", BasicControl.RESET), ("M:OUTTMP", 1.5)])
+        drfs = [d for d, _ in fake.writes]
+        assert ".CONTROL" in drfs[0]
+        assert drfs[1] == "M:OUTTMP"  # non-control values pass through untouched
+
+    def test_basic_control_on_epics_pv_raises_before_write(self, fake):
+        with pytest.raises(ValueError, match="ACNET device"):
+            pacsys.write("PV:NAME", BasicControl.ON)
+        assert fake.writes == []
 
 
 class TestConfigure:

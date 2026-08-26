@@ -29,7 +29,7 @@ class ScanResult:
     set_values: list[float]
     readings: list[dict[str, Reading]]
     write_results: list[WriteResult]
-    aborted: bool = False
+    aborted: bool = False  # abort_if fired or a write failed/unconfirmed before the last value
     restored: bool = False
 
     def to_dataframe(self):
@@ -104,6 +104,7 @@ def scan(
                     logger.warning("Write verification failed at value %s: %s", sv, detail)
                 else:
                     logger.warning("Write failed at value %s: %s", sv, wr.message)
+                aborted = True
                 break
 
             if settle > 0:

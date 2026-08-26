@@ -2,6 +2,7 @@
 
 import csv
 import threading
+import time
 
 import pytest
 
@@ -198,7 +199,15 @@ class TestDataLogger:
         dl.start()
         fake.emit_reading("M:OUTTMP@p,1000", 72.5)
         assert writer.retries_exhausted.wait(1.0)
-        dl.stop()
+        deadline = time.monotonic() + 1.0
+        while not dl.failed and time.monotonic() < deadline:
+            time.sleep(0.01)
+        # Failure is sticky and visible while still running; stop() reports it
+        assert dl.running
+        assert dl.failed
+        assert dl.dropped_count == 1
+        with pytest.raises(RuntimeError, match="Dropped 1 reading"):
+            dl.stop()
         # Should have attempted exactly max_retries times, then dropped
         assert writer.attempts == dl._max_retries
         assert dl.last_error is not None

@@ -324,7 +324,7 @@ result = scan(
     readings_per_step=5,  # Average 5 readings per step
     abort_if=lambda step: step["M:OUTTMP"].value > 100.0,
 )
-print(result.aborted)   # True if abort_if triggered
+print(result.aborted)   # True if abort_if triggered or a write failed
 print(result.restored)  # True if original value was restored
 ```
 
@@ -353,7 +353,7 @@ print(result.restored)  # True if original value was restored
 | `set_values` | `list[float]` | Values that were written |
 | `readings` | `list[dict[str, Reading]]` | Per-step readings keyed by DRF |
 | `write_results` | `list[WriteResult]` | Per-step write results |
-| `aborted` | `bool` | Whether `abort_if` triggered |
+| `aborted` | `bool` | `abort_if` triggered or a write failed/unconfirmed before the last value |
 | `restored` | `bool` | Whether original value was restored |
 | `to_dataframe()` | `DataFrame` | Export with `set_value` + read columns |
 
@@ -398,9 +398,13 @@ dl.stop()  # Flushes remaining data and closes the writer
 |----------|------|-------------|
 | `running` | `bool` | Whether the logger is actively collecting |
 | `last_error` | `Exception \| None` | Last write error, if any |
+| `failed` | `bool` | True once a batch was dropped after exhausting write retries; logging continues |
+| `dropped_count` | `int` | Readings lost so far (sticky until the next `start()`) |
+
+A dropped batch is never silent: `stop()` (and context-manager exit) raises `RuntimeError` naming the count, with `last_error` as the cause.
 
 Failed writes are retried up to 3 times before the batch is dropped. Errors are logged and available via `last_error`.
-If the final batch is dropped during `stop()`, shutdown closes the writer and raises
+If a batch is dropped after `stop()` begins, shutdown closes the writer and raises
 `RuntimeError`; if the flush worker is stuck, shutdown raises without closing the
 writer from another thread.
 
