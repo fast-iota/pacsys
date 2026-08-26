@@ -470,6 +470,21 @@ class TestAsyncDPMCloseRaces:
             await task
 
     @pytest.mark.asyncio
+    async def test_discard_wakes_waiter_to_create_replacement(self):
+        b = AsyncDPMHTTPBackend(host="localhost", port=6802, pool_size=1, timeout=0.2)
+        failed = _mock_core()
+        replacement = _mock_core()
+        b._pool_count = 1
+        b._create_core = mock.AsyncMock(return_value=replacement)
+
+        waiter = asyncio.create_task(b._borrow_core())
+        await asyncio.sleep(0)
+        await b._discard_core(failed)
+
+        assert await asyncio.wait_for(waiter, timeout=0.1) is replacement
+        await b._discard_core(replacement)
+
+    @pytest.mark.asyncio
     async def test_pool_exhaustion_raises_read_error(self):
         b = AsyncDPMHTTPBackend(host="localhost", port=6802, pool_size=1, timeout=0.2)
         b._pool_count = 1  # one core checked out, pool queue empty
