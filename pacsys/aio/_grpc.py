@@ -15,6 +15,7 @@ from pacsys.types import (
     ReadingCallback,
     Value,
     WriteResult,
+    _validate_callback,
 )
 
 logger = logging.getLogger(__name__)
@@ -143,6 +144,7 @@ class AsyncGRPCBackend(AsyncBackend):
     ) -> AsyncSubscriptionHandle:
         if not drfs:
             raise ValueError("drfs cannot be empty")
+        _validate_callback(callback, on_error)
         await self._ensure_connected()
         assert self._core is not None
         handle = AsyncSubscriptionHandle(remover=self.remove)
@@ -171,7 +173,7 @@ class AsyncGRPCBackend(AsyncBackend):
                     self._handles.remove(handle)
 
         handle._task = asyncio.ensure_future(_run_stream())
-        if callback:
+        if callback is not None:
             handle._callback_task = asyncio.ensure_future(_callback_feeder(handle, callback, on_error))
         self._handles.append(handle)
         return handle

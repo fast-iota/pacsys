@@ -1117,6 +1117,23 @@ class TestSubscribe:
 
         assert handle.stopped
 
+    @pytest.mark.parametrize(
+        ("kwargs", "message"),
+        [
+            ({"callback": "bad"}, "callback must be callable"),
+            ({"callback": lambda reading: None}, "callback must accept 2 arguments"),
+            ({"on_error": "bad"}, "on_error must be callable"),
+            ({"on_error": lambda error: None}, "on_error must accept 2 arguments"),
+        ],
+    )
+    def test_subscribe_validates_callbacks_before_creation(self, kwargs, message):
+        fake = FakeBackend()
+
+        with pytest.raises(TypeError, match=message):
+            fake.subscribe(["M:OUTTMP"], **kwargs)
+
+        assert fake._subscriptions == []
+
 
 class TestEmitReading:
     """Tests for emit_reading() method."""

@@ -93,6 +93,7 @@ from pacsys.types import (
     ValueType,
     WriteResult,
     _loaded_numpy_types,
+    _validate_callback,
 )
 
 logger = logging.getLogger(__name__)
@@ -1983,6 +1984,7 @@ class DPMHTTPBackend(Backend):
 
         if self._closed:
             raise RuntimeError("Backend is closed")
+        _validate_callback(callback, on_error)
 
         import asyncio
 

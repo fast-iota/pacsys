@@ -21,6 +21,7 @@ from pacsys.types import (
     ReadingCallback,
     Value,
     WriteResult,
+    _validate_callback,
 )
 
 logger = logging.getLogger(__name__)
@@ -364,6 +365,7 @@ class AsyncDPMHTTPBackend(AsyncBackend):
         self._check_closed()
         if not drfs:
             raise ValueError("drfs cannot be empty")
+        _validate_callback(callback, on_error)
         core = await self._create_core()
         # Until handle._core is set and the handle registered, a raise here
         # would strand the connected core (unreachable by remove/close) --
@@ -391,7 +393,7 @@ class AsyncDPMHTTPBackend(AsyncBackend):
                         self._handles.remove(handle)
 
             handle._task = asyncio.ensure_future(_run_stream())
-            if callback:
+            if callback is not None:
                 handle._callback_task = asyncio.ensure_future(_callback_feeder(handle, callback, on_error))
             handle._core = core
             self._handles.append(handle)

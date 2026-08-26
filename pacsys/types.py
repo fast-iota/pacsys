@@ -3,6 +3,7 @@ Core data types - Reading, WriteResult, SubscriptionHandle, CombinedStream.
 """
 
 import base64
+import inspect
 import sys
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -121,6 +122,40 @@ ReadingCallback = Callable[["Reading", "SubscriptionHandle"], None]
 
 # Callback type for error handling in streaming - receives (exception, handle) pairs
 ErrorCallback = Callable[[Exception, "SubscriptionHandle"], None]
+
+
+def _min_positional_params(fn: Any) -> int | None:
+    """Count positional args *fn* accepts, or return None if uninspectable."""
+    try:
+        sig = inspect.signature(fn)
+    except (ValueError, TypeError):
+        return None
+    count = 0
+    for param in sig.parameters.values():
+        if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
+            return None
+        if param.kind in (param.POSITIONAL_ONLY, param.POSITIONAL_OR_KEYWORD):
+            count += 1
+    return count
+
+
+def _validate_callback(callback: object, on_error: object, *, event_hint: bool = False) -> None:
+    """Validate subscription callback callability and arity."""
+    if callback is not None:
+        if not callable(callback):
+            message = f"callback must be callable, got {type(callback).__name__}"
+            if event_hint:
+                message += f" — did you mean subscribe(event={callback!r})?"
+            raise TypeError(message)
+        count = _min_positional_params(callback)
+        if count is not None and count < 2:
+            raise TypeError(f"callback must accept 2 arguments (reading, handle), but {callback!r} accepts {count}")
+    if on_error is not None:
+        if not callable(on_error):
+            raise TypeError(f"on_error must be callable, got {type(on_error).__name__}")
+        count = _min_positional_params(on_error)
+        if count is not None and count < 2:
+            raise TypeError(f"on_error must accept 2 arguments (exception, handle), but {on_error!r} accepts {count}")
 
 
 class DispatchMode(Enum):
