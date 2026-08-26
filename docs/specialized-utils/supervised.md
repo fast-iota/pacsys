@@ -182,7 +182,7 @@ policies = [ValueRangePolicy(
 
 ### SlewRatePolicy
 
-Enforce maximum step size and/or rate of change per device. Stateful -- tracks the last written value and timestamp. First write to any device is always allowed. Accepts that failed backend writes will leave stale history.
+Enforce maximum step size and/or rate of change per device. Stateful -- tracks the last written value and timestamp. First write to any device is always allowed. Accepts that failed backend writes will leave stale history. The server serializes policy check and write, so concurrent writes cannot both pass a limit measured from the same history.
 
 For slew-limited devices the policy fails closed: only finite numeric scalars (or single-element lists/arrays) are accepted; text, raw bytes, multi-element arrays, and NaN/inf are denied since slew against them is undefined. Structured raw writes require an explicit `allow_raw` device pattern.
 
@@ -213,12 +213,12 @@ policies = [SlewRatePolicy(limits={"M:*": SlewLimit(max_step=10.0, max_rate=5.0)
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `max_step` | `float` or `None` | `None` | Max absolute change per write |
-| `max_rate` | `float` or `None` | `None` | Max units/second |
+| `max_step` | `float` or `None` | `None` | Max absolute change per write (finite, > 0) |
+| `max_rate` | `float` or `None` | `None` | Max units/second (finite, > 0) |
 
 ### AuditLog
 
-Structured audit log that writes JSON lines and optionally tagged length-delimited binary protobuf. Not a `Policy` — passed as a separate `audit_log=` parameter to `SupervisedServer`. Logs both allowed and denied requests. Called automatically by the server after each policy decision.
+Structured audit log that writes JSON lines and optionally tagged length-delimited binary protobuf. Not a `Policy` — passed as a separate `audit_log=` parameter to `SupervisedServer`. Logs both allowed and denied requests. Called automatically by the server after each policy decision. If the log cannot record an *allowed* `Set`, the write is blocked (`INTERNAL`) rather than executed unrecorded; reads and denials stay best-effort.
 
 Two modes controlled by `log_responses`:
 

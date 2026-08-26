@@ -180,6 +180,7 @@ from pacsys import BasicControl
 backend.write("Z&ACLTST", BasicControl.ON)
 backend.write("Z|ACLTST", BasicControl.ON)  # STATUS → CONTROL auto-conversion
 backend.write("Z|ACLTST", BasicControl.OFF)
+pacsys.write("Z:ACLTST", BasicControl.ON)   # module-level: bare name routed to CONTROL, never SETTING
 
 # Other control commands
 backend.write("Z|ACLTST", BasicControl.RESET)
@@ -188,6 +189,9 @@ backend.write("Z|ACLTST", BasicControl.NEGATIVE)
 backend.write("Z|ACLTST", BasicControl.RAMP)
 backend.write("Z|ACLTST", BasicControl.DC)
 ```
+
+!!! warning "Backend `write()` does not retarget"
+    `backend.write("Z:ACLTST", BasicControl.ON)` on a bare name is a SETTING write of the enum ordinal. Use a `&`/`|` qualifier or an explicit `.CONTROL` there; `pacsys.write()`, `pacsys.write_many()`, their `pacsys.aio` twins, `acput`, and `Device.control()` route `BasicControl` values for you.
 
 !!! note "Control Commands Are Sequential"
     Each `BasicControl` value is a single command. To toggle on/off and set polarity, issue separate writes. There is no batch control command in the protocol.

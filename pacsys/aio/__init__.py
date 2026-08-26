@@ -18,6 +18,7 @@ from pacsys.aio._backends import AsyncBackend
 from pacsys.aio._device import AsyncDevice
 from pacsys.aio._subscription import AsyncSubscriptionHandle
 from pacsys.auth import Auth, JWTAuth, KerberosAuth
+from pacsys.types import BasicControl, Value
 
 __all__ = [
     "AsyncBackend",
@@ -132,7 +133,7 @@ def configure(
         role: Role for authenticated operations (DPM only)
 
     Raises:
-        ValueError: If backend is not a valid type
+        ValueError: If a supplied value or backend/auth combination is invalid.
         RuntimeError: If a backend is initialized but no event loop is
             running (its resources are loop-bound and cannot be cleaned up
             here -- ``await shutdown()`` on the owning loop first)
@@ -332,6 +333,16 @@ def _resolve_drf(device) -> str:
     raise TypeError(f"Expected str or device, got {type(device).__name__}")
 
 
+def _resolve_setting(device, value) -> tuple[str, Value]:
+    """Resolve a write target; BasicControl values are routed to CONTROL, never SETTING."""
+    from pacsys.drf_utils import prepare_for_control
+
+    drf = _resolve_drf(device)
+    if isinstance(value, BasicControl):
+        drf = prepare_for_control(drf)
+    return drf, value
+
+
 # ── Simple API Functions ──────────────────────────────────────────────────
 
 
@@ -368,7 +379,7 @@ async def read_many(devices: list, timeout: float | None = None):
 
 async def write(device, value, timeout: float | None = None):
     """Write a single device value."""
-    drf = _resolve_drf(device)
+    drf, value = _resolve_setting(device, value)
     backend = _get_global_async_backend()
     return await backend.write(drf, value, timeout=timeout)
 
@@ -376,7 +387,7 @@ async def write(device, value, timeout: float | None = None):
 async def write_many(settings, timeout: float | None = None):
     """Write multiple device values in a single batch."""
     items = settings.items() if isinstance(settings, dict) else settings
-    resolved = [(_resolve_drf(d), v) for d, v in items]
+    resolved = [_resolve_setting(d, v) for d, v in items]
     backend = _get_global_async_backend()
     return await backend.write_many(resolved, timeout=timeout)
 

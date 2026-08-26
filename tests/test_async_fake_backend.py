@@ -84,6 +84,32 @@ class TestAsyncFakeBackendStreaming:
 
         asyncio.run(_run())
 
+    def test_callback_mode(self):
+        async def _run():
+            fb = AsyncFakeBackend()
+            readings = []
+            errors = []
+            handle = await fb.subscribe(
+                ["M:OUTTMP"],
+                callback=lambda reading, _handle: readings.append(reading.value),
+                on_error=lambda exc, _handle: errors.append(exc),
+            )
+
+            with pytest.raises(RuntimeError, match="Cannot iterate subscription with callback"):
+                await anext(handle.readings(timeout=0))
+
+            fb.emit_reading("M:OUTTMP", 73.0)
+            error = ConnectionError("Simulated disconnect")
+            fb.emit_error(error)
+            assert handle._callback_task is not None
+            await asyncio.wait_for(handle._callback_task, timeout=0.1)
+
+            assert readings == [73.0]
+            assert errors == [error]
+            await fb.close()
+
+        asyncio.run(_run())
+
     def test_close(self):
         async def _run():
             fb = AsyncFakeBackend()

@@ -139,6 +139,23 @@ def is_setting_property(drf: str) -> bool:
     return request.property == DRF_PROPERTY.SETTING
 
 
+def prepare_for_control(drf: str) -> str:
+    """Retarget a DRF for a BasicControl write.
+
+    Non-CONTROL/STATUS properties (e.g. a bare device name, which would
+    otherwise become a SETTING write) are rewritten to CONTROL; STATUS is
+    left for prepare_for_write() to map. EPICS PVs have no CONTROL property.
+    """
+    from pacsys.drf3.property import DRF_PROPERTY
+
+    request = parse_request(drf)
+    if not request.is_acnet:
+        raise ValueError(f"Basic control writes require an ACNET device: {drf}")
+    if request.property in (DRF_PROPERTY.CONTROL, DRF_PROPERTY.STATUS):
+        return drf
+    return request.to_canonical(property=DRF_PROPERTY.CONTROL)
+
+
 def prepare_for_write(drf: str) -> str:
     """Prepare a DRF string for write operations.
 

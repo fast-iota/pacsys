@@ -459,6 +459,19 @@ class TestSlewLimit:
         with pytest.raises(ValueError, match="at least one"):
             SlewLimit()
 
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), 0.0, -1.0])
+    def test_rejects_non_positive_or_non_finite(self, value):
+        """nan silently disables the comparison - must fail at construction, not at check time."""
+        with pytest.raises(ValueError, match="finite and positive"):
+            SlewLimit(max_step=value)
+        with pytest.raises(ValueError, match="finite and positive"):
+            SlewLimit(max_rate=value)
+
+    @pytest.mark.parametrize("value", [True, "10"])
+    def test_rejects_non_numeric(self, value):
+        with pytest.raises(TypeError, match="real number"):
+            SlewLimit(max_step=value)
+
 
 # ── SlewRatePolicy ───────────────────────────────────────────────────────
 

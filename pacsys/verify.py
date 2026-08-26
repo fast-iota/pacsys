@@ -56,6 +56,15 @@ class Verify:
             raise TypeError("max_attempts must be an integer")
         if self.max_attempts < 1:
             raise ValueError("max_attempts must be at least 1")
+        for name in ("check_first", "always"):
+            if not isinstance(getattr(self, name), bool):
+                raise TypeError(f"{name} must be a bool")
+        if self.readback is not None:
+            if not isinstance(self.readback, str):
+                raise TypeError("readback must be a DRF string or None")
+            from pacsys.drf3 import parse_request
+
+            parse_request(self.readback)  # ValueError on invalid DRF, before any write
 
     def __enter__(self) -> Verify:
         _push_verify(self)

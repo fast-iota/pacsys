@@ -130,6 +130,7 @@ A **node** is a computer (physical or VM) that runs either:
 Each node has a unique **address** encoded as `trunk:node` (two bytes). All nodes maintain tables mapping node addresses to IP addresses.
 
 A **task** is a named process that can send/receive ACNET messages. Task names are 6-character strings encoded using **RAD50** (a base-40 encoding that packs 6 chars into 32 bits).
+Connection and vnode names that cannot be represented losslessly in RAD50 are rejected.
 
 ## Packet Structure
 

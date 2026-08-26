@@ -1170,6 +1170,8 @@ class TestEmitReading:
         assert len(collected) == 2
         assert collected[0].value == 72.5
         assert collected[1].value == 73.0
+        with pytest.raises(RuntimeError, match="Cannot iterate subscription with callback"):
+            list(handle.readings(timeout=0))
         handle.stop()
 
     def test_emit_reading_with_metadata(self):
@@ -1273,6 +1275,8 @@ class TestEmitError:
         assert len(errors) == 1
         assert errors[0][0] is err
         assert errors[0][1] is handle
+        with pytest.raises(ConnectionError, match="Simulated disconnect"):
+            list(handle.readings(timeout=0.1))
         handle.stop()
 
     def test_emit_error_raises_in_iterator(self):

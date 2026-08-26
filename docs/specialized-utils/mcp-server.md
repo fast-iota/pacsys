@@ -117,7 +117,8 @@ tables, invalid bounds, and transport-specific options such as `port` with
 When `audit_log` is configured, every allowed or denied write attempt is
 recorded as JSON Lines with its requested DRF, value, decision, and reason. The
 file is opened during startup so an invalid audit destination prevents the
-server from accepting clients.
+server from accepting clients, and a write whose approval cannot be recorded
+is blocked rather than executed unlogged.
 
 ### CLI flags
 

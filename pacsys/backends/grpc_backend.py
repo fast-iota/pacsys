@@ -944,6 +944,7 @@ class GRPCBackend(Backend):
 
     def _ensure_reactor(self) -> None:
         """Lazily start reactor and connect core."""
+        self._check_not_reactor_thread()
         if self._core is not None:
             return
         with self._reactor_lock:
@@ -969,6 +970,15 @@ class GRPCBackend(Backend):
                 self._loop = None
                 raise
             self._core = core
+
+    def _check_not_reactor_thread(self) -> None:
+        """Raise if called from the reactor thread to prevent deadlock."""
+        if threading.current_thread() is getattr(self, "_reactor_thread", None):
+            raise RuntimeError(
+                "Cannot call blocking backend methods from the reactor thread "
+                "(e.g. from a DIRECT mode streaming callback). "
+                "Use DispatchMode.WORKER or offload to another thread."
+            )
 
     def _run_sync(self, coro, timeout: float | None = None):
         """Bridge sync → async: submit coroutine to reactor and wait."""

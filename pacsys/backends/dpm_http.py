@@ -887,6 +887,7 @@ class DPMHTTPBackend(Backend):
         """Read multiple devices in a single batch."""
         if not drfs:
             return []
+        self._check_not_reactor_thread()
 
         effective_timeout = timeout if timeout is not None else self._timeout
         deadline = time.monotonic() + effective_timeout
@@ -1687,6 +1688,7 @@ class DPMHTTPBackend(Backend):
         """
         if not settings:
             return []
+        self._check_not_reactor_thread()
 
         if self._closed:
             raise RuntimeError("Backend is closed")
@@ -1914,8 +1916,18 @@ class DPMHTTPBackend(Backend):
             raise RuntimeError("DPMHTTPBackend: failed to start reactor event loop")
         self._loop = loop_holder[0]
 
+    def _check_not_reactor_thread(self) -> None:
+        """Raise if called from the reactor thread: blocking there stalls every subscription."""
+        if threading.current_thread() is getattr(self, "_reactor_thread", None):
+            raise RuntimeError(
+                "Cannot call blocking backend methods from the reactor thread "
+                "(e.g. from a DIRECT mode streaming callback). "
+                "Use DispatchMode.WORKER or offload to another thread."
+            )
+
     def _ensure_reactor(self) -> None:
         """Lazily start the reactor thread (double-check locking)."""
+        self._check_not_reactor_thread()
         if self._loop is not None:
             return
         with self._reactor_lock:

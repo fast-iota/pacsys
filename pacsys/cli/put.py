@@ -12,7 +12,7 @@ from pacsys.cli._common import (
     parse_value,
 )
 from pacsys.drf3 import parse_request
-from pacsys.drf3.property import DRF_PROPERTY
+from pacsys.drf_utils import prepare_for_control
 from pacsys.types import BasicControl
 
 
@@ -37,18 +37,14 @@ def main() -> int:
     for i in range(0, len(args.pairs), 2):
         drf = args.pairs[i]
         try:
-            req = parse_request(drf)
+            parse_request(drf)
             value = parse_value(args.pairs[i + 1])
+            # BasicControl values target CONTROL property regardless of DRF form
+            if isinstance(value, BasicControl):
+                drf = prepare_for_control(drf)
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
             return EXIT_USAGE_ERROR
-        # BasicControl values target CONTROL property regardless of DRF form
-        if isinstance(value, BasicControl):
-            if not req.is_acnet:
-                print(f"Error: basic control writes require an ACNET device: {drf}", file=sys.stderr)
-                return EXIT_USAGE_ERROR
-            if req.property not in (DRF_PROPERTY.CONTROL, DRF_PROPERTY.STATUS):
-                drf = req.to_canonical(property=DRF_PROPERTY.CONTROL)
         settings.append((drf, value))
 
     fmt = "terse" if args.terse else args.output_format

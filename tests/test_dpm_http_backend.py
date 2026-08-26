@@ -103,6 +103,31 @@ class TestValueToSetting:
             backend.close()
 
 
+class TestReactorThreadGuard:
+    @pytest.mark.parametrize("method", ["get", "write", "subscribe"])
+    def test_blocking_call_from_reactor_thread_raises(self, method):
+        """Pool I/O on the reactor thread stalls every subscription - fail immediately instead."""
+        import asyncio
+
+        backend = DPMHTTPBackend(auth=create_mock_kerberos_auth())
+        backend._ensure_reactor()
+        calls = {
+            "get": lambda: backend.get("M:OUTTMP", timeout=0.01),
+            "write": lambda: backend.write("Z:ACLTST", 1.0, timeout=0.01),
+            "subscribe": lambda: backend.subscribe(["M:OUTTMP@p,1000"]),
+        }
+
+        async def on_reactor():
+            return calls[method]()
+
+        try:
+            fut = asyncio.run_coroutine_threadsafe(on_reactor(), backend._loop)
+            with pytest.raises(RuntimeError, match="reactor thread"):
+                fut.result(timeout=2.0)
+        finally:
+            backend.close()
+
+
 class TestAlarmDictExpansion:
     @pytest.mark.parametrize("key", ["alarm_status", "abort", "tries_now"])
     def test_rejects_readonly_keys(self, key):

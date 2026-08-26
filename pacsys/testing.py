@@ -4,6 +4,7 @@ Testing utilities - FakeBackend for unit tests without network.
 See class docstrings below for available methods and pytest fixtures.
 """
 
+import asyncio
 import queue
 import sys
 import threading
@@ -14,7 +15,7 @@ from typing import Any
 
 from pacsys.acnet.errors import ERR_NOPROP, ERR_OK, ERR_RETRY, FACILITY_ACNET, FACILITY_DBM
 from pacsys.aio._backends import AsyncBackend as _AsyncBackend
-from pacsys.aio._subscription import AsyncSubscriptionHandle
+from pacsys.aio._subscription import AsyncSubscriptionHandle, _callback_feeder
 from pacsys.backends import Backend
 from pacsys.backends._dispatch import CallbackDispatcher
 from pacsys.drf3 import parse_request
@@ -339,6 +340,9 @@ class FakeSubscriptionHandle(SubscriptionHandle):
         Args:
             timeout: Seconds to wait for next reading. None = block forever.
         """
+        if self._callback is not None:
+            raise RuntimeError("Cannot iterate subscription with callback; readings are pushed to callback")
+
         if self._exc is not None:
             raise self._exc
 
@@ -346,7 +350,8 @@ class FakeSubscriptionHandle(SubscriptionHandle):
             try:
                 reading = self._queue.get(block=True, timeout=timeout)
                 if reading is None:
-                    # Poison pill - stop signal
+                    if self._exc is not None:
+                        raise self._exc
                     break
                 yield (reading, self)
             except queue.Empty:
@@ -378,13 +383,12 @@ class FakeSubscriptionHandle(SubscriptionHandle):
         self._exc = exc
         self._stopped = True
         self._remover(self)
+        self._queue.put(None)  # Unblock iterator
         if self._on_error:
             if self._dispatcher is not None:
                 self._dispatcher.dispatch_error(self._on_error, exc, self)
             else:
                 self._on_error(exc, self)
-        else:
-            self._queue.put(None)  # Unblock iterator
 
 
 class FakeBackend(Backend):
@@ -1136,8 +1140,13 @@ class AsyncFakeBackend(_AsyncBackend):
         def _on_reading(reading, _sync_handle):
             handle._dispatch(reading)
 
-        sync_handle = self._sync.subscribe(drfs, callback=_on_reading)
+        def _on_error(exc, _sync_handle):
+            handle._signal_error(exc)
+
+        sync_handle = self._sync.subscribe(drfs, callback=_on_reading, on_error=_on_error)
         self._sync_handles.append(sync_handle)
+        if callback is not None:
+            handle._callback_task = asyncio.ensure_future(_callback_feeder(handle, callback, on_error))
         return handle
 
     def emit_reading(self, drf, value, **kwargs):

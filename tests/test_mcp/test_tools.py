@@ -93,6 +93,18 @@ def test_write_audit_records_allowed_and_denied_values(backend, tmp_path):
     ]
 
 
+def test_write_blocked_when_audit_fails(backend):
+    """A configured audit log that cannot record the decision blocks the write."""
+    audit = mock.Mock(spec=AuditLog)
+    audit.log_request.side_effect = OSError("disk full")
+    policies = [DeviceAccessPolicy(patterns=["Z:ACLTST"], mode="allow", action="set")]
+
+    result = tool_write_device(backend, "Z:ACLTST", 42.0, policies, audit)
+    assert result["ok"] is False
+    assert "Audit" in result["error"]
+    assert backend.writes == []
+
+
 def test_write_device_unknown_device(backend):
     policies = [DeviceAccessPolicy(patterns=["Z:ACLTST"], mode="allow", action="set")]
     result = tool_write_device(backend, "Z:UNKNOWN", 42.0, policies=policies)

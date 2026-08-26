@@ -110,6 +110,25 @@ class TestMultipleDevices:
         assert "Z:NOTFND" in out.getvalue()
         assert "Request timeout" in err.getvalue()
 
+    @mock.patch("pacsys.cli.get.make_backend")
+    def test_partial_timeout_format_error_is_reported(self, mock_mb):
+        from pacsys.cli.get import main
+
+        reading = _make_reading(drf="M:OUTTMP", value=72.5, name="M:OUTTMP")
+        backend = mock.MagicMock()
+        backend.get_many.side_effect = ReadError([reading], "Request timeout")
+        mock_mb.return_value = backend
+
+        err = io.StringIO()
+        with (
+            mock.patch("sys.argv", ["acget", "-f", "bad", "M:OUTTMP", "Z:NOTFND"]),
+            contextlib.redirect_stderr(err),
+        ):
+            rc = main()
+
+        assert rc == 1
+        assert "Invalid format specifier" in err.getvalue()
+
 
 class TestTerseOutput:
     """Terse mode prints bare values without device names or units."""
