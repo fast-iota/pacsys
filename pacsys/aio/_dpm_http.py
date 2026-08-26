@@ -114,7 +114,7 @@ class AsyncDPMHTTPBackend(AsyncBackend):
         self._closed = False
         self._pool: asyncio.Queue[_AsyncDpmCore] = asyncio.Queue(maxsize=pool_size)
         self._pool_count = 0
-        self._pool_lock = asyncio.Lock()
+        self._pool_condition = asyncio.Condition()
         self._handles: list[AsyncSubscriptionHandle] = []
 
     def _check_closed(self) -> None:
@@ -144,37 +144,50 @@ class AsyncDPMHTTPBackend(AsyncBackend):
         backend default), mirroring the sync pool's wait_timeout.
         """
         self._check_closed()
-        try:
-            return self._pool.get_nowait()
-        except asyncio.QueueEmpty:
-            pass
-        async with self._pool_lock:
-            if self._pool_count < self._pool_size:
-                core = await self._create_core()
-                self._pool_count += 1
-                return core
-        # Pool is full — wait with timeout to avoid permanent hangs
-        self._check_closed()
         borrow_timeout = timeout if timeout is not None else self._timeout
+        deadline = asyncio.get_running_loop().time() + borrow_timeout
+
+        while True:
+            async with self._pool_condition:
+                self._check_closed()
+                try:
+                    return self._pool.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+
+                if self._pool_count < self._pool_size:
+                    self._pool_count += 1
+                    break
+
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    raise PoolExhaustedError("Connection pool exhausted (all cores busy)")
+                try:
+                    await asyncio.wait_for(self._pool_condition.wait(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    self._check_closed()
+                    raise PoolExhaustedError("Connection pool exhausted (all cores busy)") from None
+
         try:
-            core = await asyncio.wait_for(self._pool.get(), timeout=borrow_timeout)
-        except asyncio.TimeoutError:
-            self._check_closed()
-            raise PoolExhaustedError("Connection pool exhausted (all cores busy)") from None
-        if self._closed:
-            await self._discard_core(core)
-            raise RuntimeError("Backend is closed")
-        return core
+            return await self._create_core()
+        except BaseException:
+            async with self._pool_condition:
+                self._pool_count = max(0, self._pool_count - 1)
+                self._pool_condition.notify_all()
+            raise
 
     async def _release_core(self, core: _AsyncDpmCore) -> None:
         """Return a core to the pool, discarding it if the backend closed."""
-        if self._closed:
-            await self._discard_core(core)
-            return
-        try:
-            self._pool.put_nowait(core)
-        except asyncio.QueueFull:
-            await self._discard_core(core)
+        async with self._pool_condition:
+            if not self._closed:
+                try:
+                    self._pool.put_nowait(core)
+                except asyncio.QueueFull:
+                    pass
+                else:
+                    self._pool_condition.notify_all()
+                    return
+        await self._discard_core(core)
 
     async def _discard_core(self, core: _AsyncDpmCore) -> None:
         """Close and discard a core (on error), freeing a pool slot."""
@@ -182,8 +195,9 @@ class AsyncDPMHTTPBackend(AsyncBackend):
             await core.close()
         except Exception:  # noqa: BLE001
             logger.debug("Failed to close discarded DPM core", exc_info=True)
-        async with self._pool_lock:
+        async with self._pool_condition:
             self._pool_count = max(0, self._pool_count - 1)
+            self._pool_condition.notify_all()
 
     # ── Properties ────────────────────────────────────────────────────────
 
@@ -429,9 +443,11 @@ class AsyncDPMHTTPBackend(AsyncBackend):
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
     async def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
+        async with self._pool_condition:
+            if self._closed:
+                return
+            self._closed = True
+            self._pool_condition.notify_all()
         await self.stop_streaming()
         while not self._pool.empty():
             try:
@@ -443,4 +459,6 @@ class AsyncDPMHTTPBackend(AsyncBackend):
                     await core.close()
             except Exception:  # noqa: BLE001
                 logger.debug("Failed to close pooled DPM core", exc_info=True)
-        self._pool_count = 0
+        async with self._pool_condition:
+            self._pool_count = 0
+            self._pool_condition.notify_all()
