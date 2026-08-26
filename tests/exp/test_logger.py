@@ -123,6 +123,54 @@ class TestDataLogger:
         assert dl.last_error is not None
         assert dl._buffer == []
 
+    def test_worker_drop_during_stop_is_reported(self, fake):
+        class BlockingFailingWriter:
+            def __init__(self):
+                self.attempts = 0
+                self.third_attempt = threading.Event()
+                self.release = threading.Event()
+                self.closed = False
+
+            def write_readings(self, readings: list[Reading]) -> None:
+                self.attempts += 1
+                if self.attempts == 3:
+                    self.third_attempt.set()
+                    assert self.release.wait(1.0)
+                raise OSError("disk full")
+
+            def close(self) -> None:
+                self.closed = True
+
+        writer = BlockingFailingWriter()
+        dl = DataLogger(
+            ["M:OUTTMP@p,1000"],
+            writer=writer,
+            flush_interval=0.01,
+            backend=fake,
+        )
+        dl.start()
+        fake.emit_reading("M:OUTTMP@p,1000", 72.5)
+        assert writer.third_attempt.wait(1.0)
+
+        errors = []
+
+        def stop():
+            try:
+                dl.stop()
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        thread = threading.Thread(target=stop)
+        thread.start()
+        assert dl._stop_event.wait(1.0)
+        writer.release.set()
+        thread.join(timeout=2.0)
+
+        assert not thread.is_alive()
+        assert len(errors) == 1
+        assert "Dropped 1 reading" in str(errors[0])
+        assert writer.closed
+
     def test_drops_batch_after_max_retries(self, fake):
         """Poison batch is dropped after max_retries, not retried forever."""
 
