@@ -1122,6 +1122,8 @@ class TestSubscribe:
         [
             ({"callback": "bad"}, "callback must be callable"),
             ({"callback": lambda reading: None}, "callback must accept 2 arguments"),
+            ({"callback": lambda reading, handle, required: None}, "callback must accept 2 arguments"),
+            ({"callback": lambda reading, **kwargs: None}, "callback must accept 2 arguments"),
             ({"on_error": "bad"}, "on_error must be callable"),
             ({"on_error": lambda error: None}, "on_error must accept 2 arguments"),
         ],

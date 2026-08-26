@@ -124,19 +124,16 @@ ReadingCallback = Callable[["Reading", "SubscriptionHandle"], None]
 ErrorCallback = Callable[[Exception, "SubscriptionHandle"], None]
 
 
-def _min_positional_params(fn: Any) -> int | None:
-    """Count positional args *fn* accepts, or return None if uninspectable."""
+def _validate_callback_signature(fn: Any, name: str, arguments: str) -> None:
+    """Require that *fn* can be called with two positional arguments."""
     try:
         sig = inspect.signature(fn)
     except (ValueError, TypeError):
-        return None
-    count = 0
-    for param in sig.parameters.values():
-        if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
-            return None
-        if param.kind in (param.POSITIONAL_ONLY, param.POSITIONAL_OR_KEYWORD):
-            count += 1
-    return count
+        return
+    try:
+        sig.bind(object(), object())
+    except TypeError as exc:
+        raise TypeError(f"{name} must accept 2 arguments ({arguments}), but {fn!r} cannot: {exc}") from None
 
 
 def _validate_callback(callback: object, on_error: object, *, event_hint: bool = False) -> None:
@@ -147,15 +144,11 @@ def _validate_callback(callback: object, on_error: object, *, event_hint: bool =
             if event_hint:
                 message += f" — did you mean subscribe(event={callback!r})?"
             raise TypeError(message)
-        count = _min_positional_params(callback)
-        if count is not None and count < 2:
-            raise TypeError(f"callback must accept 2 arguments (reading, handle), but {callback!r} accepts {count}")
+        _validate_callback_signature(callback, "callback", "reading, handle")
     if on_error is not None:
         if not callable(on_error):
             raise TypeError(f"on_error must be callable, got {type(on_error).__name__}")
-        count = _min_positional_params(on_error)
-        if count is not None and count < 2:
-            raise TypeError(f"on_error must accept 2 arguments (exception, handle), but {on_error!r} accepts {count}")
+        _validate_callback_signature(on_error, "on_error", "exception, handle")
 
 
 class DispatchMode(Enum):
