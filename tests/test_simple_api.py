@@ -526,7 +526,7 @@ class TestGlobalBackendInitialization:
 
     def test_global_backend_dmq(self):
         """configure(backend='dmq') creates DMQBackend."""
-        auth = mock.MagicMock(spec=pacsys.Auth)
+        auth = mock.MagicMock(spec=KerberosAuth)
         pacsys.configure(backend="dmq", auth=auth)
 
         with mock.patch("pacsys.backends.dmq.DMQBackend") as mock_dmq:
@@ -553,7 +553,7 @@ class TestGlobalBackendInitialization:
 
     def test_global_backend_dpm_with_auth(self):
         """configure(auth=..., role=...) passes auth/role to DPM backend."""
-        auth = mock.MagicMock(spec=pacsys.Auth)
+        auth = mock.MagicMock(spec=KerberosAuth)
         pacsys.configure(auth=auth, role="testing")
 
         with mock.patch("pacsys.backends.dpm_http.DPMHTTPBackend") as mock_dpm:

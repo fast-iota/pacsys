@@ -13,10 +13,11 @@ for use in async code. Uses lazy-initialized global async backend.
 import asyncio
 import logging
 
+from pacsys import _validate_config_host, _validate_config_port, _validate_config_positive
 from pacsys.aio._backends import AsyncBackend
 from pacsys.aio._device import AsyncDevice
 from pacsys.aio._subscription import AsyncSubscriptionHandle
-from pacsys.auth import Auth
+from pacsys.auth import Auth, JWTAuth, KerberosAuth
 
 __all__ = [
     "AsyncBackend",
@@ -145,11 +146,26 @@ def configure(
     if isinstance(auth, str):
         if auth != "krb":
             raise ValueError("auth string must be 'krb'")
-        from pacsys.auth import KerberosAuth
-
         normalized_auth = KerberosAuth()
     else:
         normalized_auth = auth
+
+    if not isinstance(host, _Unset):
+        _validate_config_host(host, "host")
+    if not isinstance(port, _Unset):
+        _validate_config_port(port, "port")
+    if not isinstance(pool_size, _Unset):
+        _validate_config_positive(pool_size, "pool_size", integer=True)
+    if not isinstance(timeout, _Unset):
+        _validate_config_positive(timeout, "timeout")
+
+    configured_backend = backend if not isinstance(backend, _Unset) else _config_backend
+    configured_auth = normalized_auth if not isinstance(normalized_auth, _Unset) else _config_auth
+    effective_backend = configured_backend or "dpm"
+    if effective_backend == "dpm" and configured_auth is not None and not isinstance(configured_auth, KerberosAuth):
+        raise ValueError("DPM backend auth must be KerberosAuth or None")
+    if effective_backend == "grpc" and configured_auth is not None and not isinstance(configured_auth, JWTAuth):
+        raise ValueError("gRPC backend auth must be JWTAuth or None")
 
     if _async_backend_initialized:
         old_backend = _global_async_backend
