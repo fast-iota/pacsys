@@ -51,6 +51,7 @@ class DataLogger:
         self._closed = False
         self._last_error: Exception | None = None
         self._retry_count: int = 0
+        self._shutdown_dropped: int = 0
         self._max_retries: int = 3
 
     @property
@@ -72,6 +73,7 @@ class DataLogger:
             with self._lock:
                 self._stopped = False
                 self._last_error = None
+                self._shutdown_dropped = 0
             self._stop_event.clear()
             be = resolve_backend(self._backend)
             try:
@@ -122,12 +124,14 @@ class DataLogger:
                     logger.error("%s", error)
                     raise error
 
-            dropped = 0
             while True:
                 with self._lock:
                     if not self._buffer:
                         break
-                dropped += self._flush_now()
+                self._flush_now()
+
+            with self._lock:
+                dropped = self._shutdown_dropped
 
             if handle_error is not None:
                 raise RuntimeError("DataLogger subscription did not stop; writer left open") from handle_error
@@ -189,6 +193,8 @@ class DataLogger:
                     )
                     with self._lock:
                         self._retry_count = 0
+                        if self._stopped:
+                            self._shutdown_dropped += len(batch)
                     return len(batch)
         return 0
 
