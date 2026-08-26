@@ -119,7 +119,10 @@ def scan(
         # Restore on exception — log failure but don't mask the original
         if restore and original is not None:
             try:
-                write_dev.write(original, timeout=timeout)
+                restore_result = write_dev.write(original, timeout=timeout)
+                if not restore_result.ok:
+                    detail = restore_result.message or f"error_code={restore_result.error_code}"
+                    logger.error("Failed to restore %s to %s during error cleanup: %s", write_drf, original, detail)
             except Exception:
                 logger.exception("Failed to restore %s to %s during error cleanup", write_drf, original)
         raise
