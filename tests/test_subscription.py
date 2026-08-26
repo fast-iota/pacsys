@@ -177,6 +177,17 @@ class TestTimeout:
         assert elapsed >= 0.05  # waited at least some time
         assert elapsed < 2.0  # didn't block forever
 
+    def test_timeout_expires_while_buffer_remains(self, handle, make_reading):
+        for i in range(20):
+            handle._dispatch(make_reading(float(i)))
+
+        results = []
+        for reading, _ in handle.readings(timeout=0.02):
+            results.append(reading)
+            time.sleep(0.005)
+
+        assert 0 < len(results) < 20
+
 
 # =============================================================================
 # Stop semantics

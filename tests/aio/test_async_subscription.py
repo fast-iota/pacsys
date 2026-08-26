@@ -50,22 +50,15 @@ class TestAsyncSubscriptionHandle:
         from pacsys.aio._subscription import AsyncSubscriptionHandle
 
         handle = AsyncSubscriptionHandle()
+        for i in range(20):
+            handle._dispatch(make_reading(float(i)))
 
-        async def produce():
-            while True:
-                handle._dispatch(make_reading(1.0))
-                await asyncio.sleep(0.01)
+        readings = []
+        async for reading, _ in handle.readings(timeout=0.02):
+            readings.append(reading)
+            await asyncio.sleep(0.005)
 
-        async def consume():
-            return sum([1 async for _ in handle.readings(timeout=0.05)])
-
-        producer = asyncio.create_task(produce())
-        try:
-            readings = await asyncio.wait_for(consume(), timeout=0.2)
-        finally:
-            producer.cancel()
-            await asyncio.gather(producer, return_exceptions=True)
-        assert readings > 0
+        assert 0 < len(readings) < 20
 
     @pytest.mark.asyncio
     async def test_timeout_zero_drains_buffer(self, make_reading):

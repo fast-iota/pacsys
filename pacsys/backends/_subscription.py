@@ -97,44 +97,41 @@ class BufferedSubscriptionHandle(SubscriptionHandle):
     ) -> Iterator[tuple[Reading, SubscriptionHandle]]:
         if getattr(self, "_is_callback_mode", False):
             raise RuntimeError("Cannot iterate subscription with callback; readings are pushed to callback")
-        start = time.monotonic()
+
+        if timeout == 0:
+            with self._cond:
+                buffered = len(self._buf)
+            for _ in range(buffered):
+                with self._cond:
+                    if not self._buf:
+                        break
+                    reading = self._buf.popleft()
+                yield (reading, self)
+            with self._cond:
+                if self._exc is not None:
+                    raise self._exc
+            return
+
+        deadline = None if timeout is None else time.monotonic() + timeout
 
         while True:
-            reading = None
             with self._cond:
-                # Try to pop a buffered reading
-                if self._buf:
-                    reading = self._buf.popleft()
-                else:
-                    # No data - check terminal conditions
+                while not self._buf and self._exc is None and not self._stopped:
+                    remaining = None if deadline is None else deadline - time.monotonic()
+                    if remaining is not None and remaining <= 0:
+                        return
+                    self._cond.wait(timeout=remaining)
+
+                if deadline is not None and time.monotonic() >= deadline:
                     if self._exc is not None:
                         raise self._exc
-                    if self._stopped:
-                        return
-
-                    # Compute wait time
-                    if timeout == 0:
-                        return
-                    elif timeout is not None:
-                        remaining = timeout - (time.monotonic() - start)
-                        if remaining <= 0:
-                            return
-                        wait = remaining
-                    else:
-                        wait = None
-
-                    self._cond.wait(timeout=wait)
-
-                    # Re-check after wakeup
-                    if self._buf:
-                        reading = self._buf.popleft()
-                    elif self._exc is not None:
-                        raise self._exc
-                    elif self._stopped or timeout == 0 or timeout is not None and time.monotonic() - start >= timeout:
-                        return
-                    else:
-                        continue  # spurious wakeup, loop again
+                    return
+                if self._buf:
+                    reading = self._buf.popleft()
+                elif self._exc is not None:
+                    raise self._exc
+                else:
+                    return
 
             # Yield outside the lock
-            if reading is not None:
-                yield (reading, self)
+            yield (reading, self)
