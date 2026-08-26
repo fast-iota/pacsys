@@ -63,6 +63,16 @@ def _make_udp_conn() -> AsyncAcnetConnectionUDP:
     return conn
 
 
+@pytest.mark.parametrize("name", ["TOOLONG", "BAD_NAME"])
+def test_connection_names_must_be_lossless_rad50(name):
+    from pacsys.acnet.connection_sync import AcnetConnectionTCP
+
+    with pytest.raises(ValueError):
+        AsyncAcnetConnectionTCP("localhost", name=name)
+    with pytest.raises(ValueError):
+        AcnetConnectionTCP("localhost", name=name)
+
+
 def _make_reply_packet(req_id: int, status: int = 0, last: bool = True, data: bytes = b"") -> AcnetReply:
     """Build a fake AcnetReply."""
     flags = ACNET_FLG_RPY

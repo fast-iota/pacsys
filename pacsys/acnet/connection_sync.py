@@ -23,6 +23,7 @@ from .async_connection import (
     NodeStats,
     ReplyHandler,
     RequestHandler,
+    _encode_connection_name,
 )
 from .constants import ACNET_CLIENT_PORT, ACNET_TCP_PORT, DEFAULT_TIMEOUT
 from .packet import AcnetRequest, RequestId
@@ -100,6 +101,8 @@ class _SyncAcnetConnectionBase:
         self._requested_name = name
         self._vnode_name = vnode
         self._trace = trace
+        _encode_connection_name(name, "Task name", allow_empty=True)
+        _encode_connection_name(vnode, "Vnode name", allow_empty=True)
 
         self._async: AsyncAcnetConnectionBase | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
