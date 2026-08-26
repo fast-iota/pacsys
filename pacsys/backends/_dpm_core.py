@@ -312,9 +312,9 @@ class _AsyncDpmCore:
         start_req = StartList_request()
         start_req.list_id = list_id
         setup_msgs.append(start_req)
-        await conn.send_messages_batch(setup_msgs)
 
         try:
+            await conn.send_messages_batch(setup_msgs)
             while received_count < expected_count:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
