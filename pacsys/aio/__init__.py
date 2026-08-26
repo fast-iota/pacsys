@@ -140,6 +140,17 @@ def configure(
     global _config_host, _config_port, _config_pool_size, _config_timeout
     global _global_async_backend, _async_backend_initialized, _owner_loop
 
+    if not isinstance(backend, _Unset) and backend is not None and backend not in _VALID_ASYNC_BACKENDS:
+        raise ValueError(f"Invalid backend {backend!r}, must be one of {sorted(_VALID_ASYNC_BACKENDS)}")
+    if isinstance(auth, str):
+        if auth != "krb":
+            raise ValueError("auth string must be 'krb'")
+        from pacsys.auth import KerberosAuth
+
+        normalized_auth = KerberosAuth()
+    else:
+        normalized_auth = auth
+
     if _async_backend_initialized:
         old_backend = _global_async_backend
         if old_backend is not None:
@@ -173,17 +184,10 @@ def configure(
         _owner_loop = None
 
     if not isinstance(backend, _Unset):
-        if backend is not None and backend not in _VALID_ASYNC_BACKENDS:
-            raise ValueError(f"Invalid backend {backend!r}, must be one of {sorted(_VALID_ASYNC_BACKENDS)}")
         _config_backend = backend
     if not isinstance(auth, _Unset):
-        if isinstance(auth, str):
-            if auth != "krb":
-                raise ValueError("auth string must be 'krb'")
-            from pacsys.auth import KerberosAuth
-
-            auth = KerberosAuth()
-        _config_auth = auth
+        assert not isinstance(normalized_auth, _Unset)
+        _config_auth = normalized_auth
     if not isinstance(role, _Unset):
         _config_role = role
     if not isinstance(host, _Unset):

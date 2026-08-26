@@ -184,21 +184,25 @@ def configure(
     global _config_devdb_host, _config_devdb_port
     global _config_backend, _config_auth, _config_role
 
+    if not isinstance(backend, _Unset) and backend is not None and backend not in _VALID_BACKENDS:
+        raise ValueError(f"Invalid backend {backend!r}, must be one of {sorted(_VALID_BACKENDS)}")
+    if isinstance(auth, str):
+        if auth != "krb":
+            raise ValueError("auth string must be 'krb'")
+        normalized_auth = KerberosAuth()
+    else:
+        normalized_auth = auth
+
     with _global_lock:
         if _backend_initialized or _devdb_initialized:
             logger.debug("configure() called with active backend — auto-replacing")
             _shutdown_locked()
 
         if not isinstance(backend, _Unset):
-            if backend is not None and backend not in _VALID_BACKENDS:
-                raise ValueError(f"Invalid backend {backend!r}, must be one of {sorted(_VALID_BACKENDS)}")
             _config_backend = backend
         if not isinstance(auth, _Unset):
-            if isinstance(auth, str):
-                if auth != "krb":
-                    raise ValueError("auth string must be 'krb'")
-                auth = KerberosAuth()
-            _config_auth = auth
+            assert not isinstance(normalized_auth, _Unset)
+            _config_auth = normalized_auth
         if not isinstance(role, _Unset):
             _config_role = role
         if not isinstance(dpm_host, _Unset):
