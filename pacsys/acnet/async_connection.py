@@ -96,6 +96,21 @@ KEEPALIVE_INTERVAL = 30
 _MAX_BUFFERED_REPLIES = 16
 
 
+def _encode_connection_name(value: str, label: str, *, allow_empty: bool) -> int:
+    if not isinstance(value, str):
+        raise TypeError(f"{label} must be a string")
+    if not value:
+        if allow_empty:
+            return 0
+        raise ValueError(f"{label} must be 1-6 characters")
+    if len(value) > 6:
+        raise ValueError(f"{label} must be 1-6 characters")
+    encoded = _rad50_encode(value)
+    if _rad50_decode(encoded) != value.upper():
+        raise ValueError(f"{label} contains characters not representable in RAD50")
+    return encoded
+
+
 @dataclass(frozen=True)
 class NodeStats:
     """ACNET node statistics from acnetd."""
@@ -207,8 +222,8 @@ class AsyncAcnetConnectionBase:
         self._trace = trace
 
         # Handle assigned by daemon
-        self._raw_handle = _rad50_encode(name) if name else 0
-        self._raw_vnode = _rad50_encode(vnode) if vnode else 0
+        self._raw_handle = _encode_connection_name(name, "Task name", allow_empty=True)
+        self._raw_vnode = _encode_connection_name(vnode, "Vnode name", allow_empty=True)
         self._handle_name = ""
 
         # Command serialization - one command at a time
@@ -816,10 +831,7 @@ class AsyncAcnetConnectionBase:
 
     async def rename_task(self, new_name: str):
         """Rename this connection's task handle."""
-        if not new_name or len(new_name) > 6:
-            raise ValueError("Task name must be 1-6 characters")
-
-        name_rad50 = _rad50_encode(new_name)
+        name_rad50 = _encode_connection_name(new_name, "Task name", allow_empty=False)
         content = struct.pack(">H3I", CMD_RENAME_TASK, self._raw_handle, self._raw_vnode, name_rad50)
         ack = await self._xact(content)
 
