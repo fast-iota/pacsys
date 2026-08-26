@@ -72,6 +72,7 @@ from pacsys.types import (
     Value,
     ValueType,
     WriteResult,
+    _validate_callback,
 )
 
 logger = logging.getLogger(__name__)
@@ -2312,6 +2313,7 @@ class DMQBackend(Backend):
 
         if not drfs:
             raise ValueError("drfs cannot be empty")
+        _validate_callback(callback, on_error)
 
         # Ensure IO thread is running
         self._ensure_io_thread()

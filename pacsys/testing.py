@@ -34,6 +34,7 @@ from pacsys.types import (
     Value,
     ValueType,
     WriteResult,
+    _validate_callback,
 )
 
 
@@ -914,6 +915,7 @@ class FakeBackend(Backend):
         Returns:
             FakeSubscriptionHandle for managing subscription
         """
+        _validate_callback(callback, on_error)
         handle = FakeSubscriptionHandle(drfs, callback, on_error, self._remove_subscription, self._dispatcher)
         with self._subscription_condition:
             self._subscriptions.append(handle)
@@ -1126,6 +1128,7 @@ class AsyncFakeBackend(_AsyncBackend):
 
     async def subscribe(self, drfs, callback=None, on_error=None):
         self._check_closed()
+        _validate_callback(callback, on_error)
         handle = AsyncSubscriptionHandle(remover=self.remove)
         handle._drfs = drfs
         self._handles.append(handle)

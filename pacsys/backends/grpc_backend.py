@@ -35,6 +35,7 @@ from pacsys.types import (
     Value,
     ValueType,
     WriteResult,
+    _validate_callback,
 )
 
 logger = logging.getLogger(__name__)
@@ -1099,6 +1100,7 @@ class GRPCBackend(Backend):
             raise ValueError("drfs cannot be empty")
         if self._closed:
             raise RuntimeError("Backend is closed")
+        _validate_callback(callback, on_error)
 
         self._ensure_reactor()
         assert self._loop is not None, "Reactor loop not initialized"

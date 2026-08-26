@@ -5,11 +5,11 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from pacsys._device_base import CONTROL_STATUS_MAP, _DeviceBase, _require_str_list, _validate_callback
+from pacsys._device_base import CONTROL_STATUS_MAP, _DeviceBase, _require_str_list
 from pacsys.drf3 import parse_event, parse_request
 from pacsys.drf3.event import NeverEvent
 from pacsys.drf3.property import DRF_PROPERTY
-from pacsys.types import BasicControl, ErrorCallback, Reading, ReadingCallback, Value, WriteResult
+from pacsys.types import BasicControl, ErrorCallback, Reading, ReadingCallback, Value, WriteResult, _validate_callback
 
 if TYPE_CHECKING:
     from pacsys.aio._backends import AsyncBackend
@@ -266,7 +266,7 @@ class AsyncDevice(_DeviceBase):
         Raises:
             ValueError: If no event available, or field given without prop
         """
-        _validate_callback(callback, on_error)
+        _validate_callback(callback, on_error, event_hint=True)
 
         if prop is None:
             if field is not None:

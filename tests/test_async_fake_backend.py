@@ -50,6 +50,16 @@ class TestAsyncFakeBackendWrite:
 
 
 class TestAsyncFakeBackendStreaming:
+    @pytest.mark.parametrize("kwargs", [{"callback": "bad"}, {"on_error": "bad"}])
+    def test_subscribe_validates_callbacks_before_creation(self, kwargs):
+        async def _run():
+            fb = AsyncFakeBackend()
+            with pytest.raises(TypeError, match="must be callable"):
+                await fb.subscribe(["M:OUTTMP"], **kwargs)
+            assert fb._handles == []
+
+        asyncio.run(_run())
+
     def test_subscribe_and_emit(self):
         async def _run():
             fb = AsyncFakeBackend()
