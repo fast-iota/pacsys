@@ -19,6 +19,8 @@ import struct
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
+from pacsys.errors import PacsysError
+
 if TYPE_CHECKING:
     from pacsys.devdb import PropertyInfo
 
@@ -31,7 +33,7 @@ except ImportError:
     _HAS_NUMPY = False
 
 
-class ScalingError(Exception):
+class ScalingError(PacsysError):
     """Raised when client-side scaling fails (maps to DIO_SCALEFAIL)."""
 
 

@@ -11,7 +11,11 @@ if TYPE_CHECKING:
     from pacsys.types import Reading
 
 
-class ReadError(Exception):
+class PacsysError(Exception):
+    """Base class for all pacsys exceptions; catch this for any library-originated failure."""
+
+
+class ReadError(PacsysError):
     """Batch read failure.
 
     Raised in two scenarios:
@@ -45,7 +49,7 @@ class ReadError(Exception):
         return f"ReadError({ok}/{total} ok, {self.args[0]!r})"
 
 
-class DeviceError(Exception):
+class DeviceError(PacsysError):
     """Raised when a device read fails.
 
     Attributes:
@@ -79,7 +83,7 @@ class DeviceError(Exception):
         )
 
 
-class AuthenticationError(Exception):
+class AuthenticationError(PacsysError):
     """Raised when authentication fails or is required.
 
     This exception is raised when:
@@ -96,7 +100,7 @@ class AuthenticationError(Exception):
         return f"AuthenticationError({self.message!r})"
 
 
-class ACLError(Exception):
+class ACLError(PacsysError):
     """Raised when an ACL command fails.
 
     This exception is raised when:

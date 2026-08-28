@@ -219,7 +219,7 @@ EPICS-style command-line tools:
 acget M:OUTTMP Z:ACLTST
 acget --format json M:OUTTMP
 
-# Write devices (requires authentication, kerberos attempted by default)
+# Write devices (requires authentication: -a kerberos, or -a jwt with -b grpc)
 acput Z:ACLTST 72.5
 acput -a kerberos -b dmq --verify --tolerance 0.5 Z:ACLTST 72.5
 

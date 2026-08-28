@@ -279,10 +279,9 @@ def _value_hashable(value: object) -> object:
     if isinstance(value, _loaded_numpy_types("ndarray")):
         value = cast("Any", value)
         return (value.dtype.str, value.tobytes())
-    if isinstance(value, dict):
-        return tuple(sorted((k, _value_hashable(v)) for k, v in value.items()))
-    if isinstance(value, list):
-        return tuple(_value_hashable(v) for v in value)
+    if isinstance(value, (dict, list)):
+        # Mutable after construction - a hash would drift and corrupt any set/dict holding it
+        raise TypeError(f"unhashable value of type {type(value).__name__}")
     return value
 
 

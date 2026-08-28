@@ -115,6 +115,21 @@ class TestReadingEquality:
         c = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=np.array([1.0, 2.0]))
         assert hash(a) == hash(c)
 
+    @pytest.mark.parametrize(
+        ("value_type", "value"),
+        [
+            (ValueType.SCALAR_ARRAY, [1.0, 2.0]),
+            (ValueType.TIMED_SCALAR_ARRAY, {"data": np.array([1.0]), "micros": np.array([0])}),
+        ],
+    )
+    def test_container_values_unhashable(self, value_type, value):
+        """list/dict values stay mutable after construction, so a hash would drift."""
+        r = Reading(drf="M:OUTTMP", value_type=value_type, value=value)
+        with pytest.raises(TypeError, match="unhashable"):
+            hash(r)
+        with pytest.raises(TypeError, match="unhashable"):
+            hash(WriteResult(drf="M:OUTTMP", readback=value))
+
     def test_owning_array_frozen_in_place(self):
         # Ownership transfer: the passed-in owning array becomes read-only, no copy
         arr = np.array([1.0, 2.0])

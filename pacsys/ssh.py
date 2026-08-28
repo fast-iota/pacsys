@@ -29,6 +29,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from pacsys.errors import PacsysError
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -49,7 +51,7 @@ def _require_paramiko():
     if paramiko is None:
         raise ImportError(
             f"paramiko library required for SSH operations. "
-            f"Install with: pip install pacsys[ssh] or pacsys[kerberos]. "
+            f"Install with: pip install pacsys[kerberos]. "
             f"Original error: {_paramiko_import_error}"
         )
 
@@ -62,7 +64,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class SSHError(Exception):
+class SSHError(PacsysError):
     """Base exception for SSH operations."""
 
 

@@ -118,9 +118,9 @@ Or use the Device API:
 === "Async"
 
     ```python
-    from pacsys.aio import Device
+    from pacsys.aio import AsyncDevice
 
-    dev = Device("M:OUTTMP@p,1000")
+    dev = AsyncDevice("M:OUTTMP@p,1000")
     stream = await dev.subscribe()
     async for reading, _ in stream.readings(timeout=30):
         print(reading.value)

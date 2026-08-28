@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Optional
 from pacsys.auth import Auth, JWTAuth, KerberosAuth
 from pacsys.device import ArrayDevice, Device, ScalarDevice, TextDevice
 from pacsys.drf3 import DataRequest
-from pacsys.errors import ACLError, AuthenticationError, DeviceError, ReadError
+from pacsys.errors import ACLError, AuthenticationError, DeviceError, PacsysError, ReadError
 from pacsys.types import (
     BackendCapability,
     BasicControl,
@@ -465,7 +465,7 @@ def read(device: DeviceSpec, timeout: float | None = None) -> Value:
 
     Note:
         Even if DRF specifies periodic event (@p,1000), only FIRST reading
-        is returned. Use Session for continuous data.
+        is returned. Use subscribe() for continuous data.
 
     Thread Safety:
         Safe to call from multiple threads. Each call borrows a connection
@@ -1105,6 +1105,7 @@ __all__ = [
     "ErrorCallback",
     "BasicControl",
     # Errors
+    "PacsysError",
     "DeviceError",
     "AuthenticationError",
     "ACLError",

@@ -216,3 +216,11 @@ class TestKerberosAuth:
             reads.clear()
             assert auth.principal == "user@FNAL.GOV"
             assert len(reads) == 1  # one guarded read per inspection, no extra property access
+
+
+def test_all_pacsys_exceptions_share_base():
+    from pacsys import ACLError, AuthenticationError, DeviceError, PacsysError, ReadError, ScalingError, SSHError
+    from pacsys.acnet.errors import AcnetError
+
+    for cls in (ReadError, DeviceError, AuthenticationError, ACLError, ScalingError, SSHError, AcnetError):
+        assert issubclass(cls, PacsysError), cls
