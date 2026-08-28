@@ -1191,6 +1191,49 @@ class TestGetManyTimeoutConnectionCleanup:
         # The connection MUST be closed so the pool discards it
         mock_conn.close.assert_called()
 
+    def test_recv_gets_full_remaining_budget(self):
+        """No 2 s recv slice: a reply body straddling a slice boundary used to kill the connection."""
+        import threading
+        from contextlib import contextmanager
+
+        backend = DPMHTTPBackend.__new__(DPMHTTPBackend)
+        backend._timeout = 10.0
+        backend._pool_lock = threading.Lock()
+        backend._pool_size = 2
+        backend._closed = False
+
+        mock_conn = MagicMock()
+        mock_conn.list_id = 1
+        mock_conn.connected = True
+        replies = iter(
+            [
+                make_add_to_list_reply(ref_id=1, status=0),
+                make_start_list(status=0),
+                make_device_info(ref_id=1),
+                make_scalar_reply(ref_id=1),
+            ]
+        )
+        timeouts = []
+
+        def mock_recv(timeout=None):
+            timeouts.append(timeout)
+            return next(replies)
+
+        mock_conn.recv_message = mock_recv
+        mock_conn.send_messages_batch = MagicMock()
+        mock_conn.send_message = MagicMock()
+
+        @contextmanager
+        def mock_connection(wait_timeout=None):
+            yield mock_conn
+
+        mock_pool = MagicMock()
+        mock_pool.connection = mock_connection
+        backend._get_pool = MagicMock(return_value=mock_pool)
+
+        backend.get_many(["Z:ACLTST"], timeout=10.0)
+        assert timeouts and all(t > 2.0 for t in timeouts), timeouts
+
     def test_stop_send_failure_returns_readings(self):
         """A failed StopList/ClearList send after a complete read keeps the readings."""
         import threading

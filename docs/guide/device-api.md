@@ -346,7 +346,7 @@ with pacsys.dpm() as backend:
     value = dev.read()   # Uses the explicit backend
 ```
 
-Without `with_backend()`, devices use the global backend (initialized on first use).
+Without `with_backend()`, devices use the global backend (initialized on first use). Bound devices keep their backend when passed to `pacsys.read()`, `pacsys.write_many()`, etc.
 
 ### Subclass Preservation
 

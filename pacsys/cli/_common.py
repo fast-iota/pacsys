@@ -18,9 +18,25 @@ EXIT_DEVICE_ERROR = 1
 EXIT_USAGE_ERROR = 2
 
 
-def base_parser(description: str) -> argparse.ArgumentParser:
-    """Create ArgumentParser with common flags shared by all CLI tools."""
-    parser = argparse.ArgumentParser(description=description)
+# Options each backend ignores; passing one is a usage error, not a silent no-op
+_UNUSED_BY_BACKEND = {"acl": ("host", "port", "auth", "role"), "grpc": ("role",), "dmq": ("role",)}
+
+
+class _Parser(argparse.ArgumentParser):
+    def parse_args(self, *args, **kwargs):  # type: ignore[override]
+        ns = super().parse_args(*args, **kwargs)
+        for name in _UNUSED_BY_BACKEND.get(ns.backend, ()):
+            if getattr(ns, name) is not None:
+                self.error(f"--{name} is not used by the {ns.backend} backend")
+        return ns
+
+
+def base_parser(description: str, *, terse: bool = True, verbose: bool = False) -> argparse.ArgumentParser:
+    """Create ArgumentParser with common flags shared by all CLI tools.
+
+    ``terse``/``verbose`` add ``-t``/``-v`` only for tools that act on them.
+    """
+    parser = _Parser(description=description)
     parser.add_argument("-b", "--backend", choices=("dpm", "grpc", "dmq", "acl"), default="dpm", help="backend type")
     parser.add_argument("-H", "--host", default=None, help="backend host")
     parser.add_argument("-P", "--port", type=int, default=None, help="backend port")
@@ -30,8 +46,10 @@ def base_parser(description: str) -> argparse.ArgumentParser:
     parser.add_argument(
         "--format", dest="output_format", choices=("text", "json"), default="text", help="output format"
     )
-    parser.add_argument("-t", "--terse", action="store_true", help="terse output (bare values)")
-    parser.add_argument("-v", "--verbose", action="store_true", help="verbose output")
+    if terse:
+        parser.add_argument("-t", "--terse", action="store_true", help="terse output (bare values)")
+    if verbose:
+        parser.add_argument("-v", "--verbose", action="store_true", help="verbose output")
     return parser
 
 
@@ -53,17 +71,13 @@ def make_backend(args):
     if backend_type == "dpm":
         return pacsys.dpm(**kwargs)
     if backend_type == "grpc":
-        kwargs.pop("role", None)
         return pacsys.grpc(**kwargs)
     if backend_type == "dmq":
-        kwargs.pop("role", None)
         if "auth" not in kwargs:
             kwargs["auth"] = pacsys.KerberosAuth()
         return pacsys.dmq(**kwargs)
     if backend_type == "acl":
-        # ACL only accepts timeout (and optionally base_url)
-        acl_kwargs: dict[str, Any] = {"timeout": args.timeout}
-        return pacsys.acl(**acl_kwargs)
+        return pacsys.acl(timeout=args.timeout)
     raise ValueError(f"Unknown backend: {backend_type!r}")
 
 

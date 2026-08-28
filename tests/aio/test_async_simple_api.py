@@ -8,7 +8,9 @@ import pytest
 
 import pacsys
 from pacsys import aio
+from pacsys.aio import AsyncDevice
 from pacsys.errors import ReadError
+from pacsys.testing import AsyncFakeBackend
 from pacsys.types import BasicControl, Reading, ValueType, WriteResult
 
 
@@ -371,3 +373,32 @@ class TestLazyInit:
             await aio.read("G:AMANDA")
 
         assert mock_dpm.call_count == 1
+
+
+class TestBoundBackend:
+    @pytest.mark.asyncio
+    async def test_async_device_uses_bound_backend(self, fake_backend):
+        bound = AsyncFakeBackend()
+        bound.set_reading("M:OUTTMP", 1.0)
+        dev = AsyncDevice("M:OUTTMP", backend=bound)
+        assert await aio.read(dev) == 1.0
+        assert (await aio.read_many([dev])) == [1.0]
+        fake_backend.read.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sync_bound_device_rejected(self, fake_backend):
+        from pacsys import Device
+        from pacsys.testing import FakeBackend
+
+        with pytest.raises(TypeError, match="sync FakeBackend"):
+            await aio.read(Device("M:OUTTMP", backend=FakeBackend()))
+
+    @pytest.mark.asyncio
+    async def test_mixed_backends_raise(self, fake_backend):
+        devs = [AsyncDevice("M:OUTTMP", backend=AsyncFakeBackend()), "G:AMANDA"]
+        with pytest.raises(ValueError, match="same backend"):
+            await aio.read_many(devs)
+
+    def test_configure_rejects_role_for_grpc(self):
+        with pytest.raises(ValueError, match="role is only used by the DPM backend"):
+            aio.configure(backend="grpc", role="testing")
