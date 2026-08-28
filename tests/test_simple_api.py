@@ -285,6 +285,40 @@ class TestWrite:
         assert fake.writes == []
 
 
+class TestBoundBackend:
+    """A Device bound to a backend must use it through the module-level API - never the global one."""
+
+    def test_single_device_uses_bound_backend(self, fake):
+        bound = FakeBackend()
+        bound.set_reading("M:OUTTMP", 1.0)
+        dev = Device("M:OUTTMP", backend=bound)
+        assert pacsys.read(dev) == 1.0
+        assert pacsys.get(dev).value == 1.0
+        pacsys.write(dev, 2.0)
+        assert bound.writes and fake.writes == [] and fake.reads == []
+
+    def test_batch_with_shared_bound_backend(self, fake):
+        bound = FakeBackend()
+        bound.set_reading("M:OUTTMP", 1.0)
+        bound.set_reading("G:AMANDA", 2.0)
+        devs = [Device("M:OUTTMP", backend=bound), Device("G:AMANDA", backend=bound)]
+        assert pacsys.read_many(devs) == [1.0, 2.0]
+        pacsys.write_many({devs[0]: 5.0, devs[1]: 6.0})
+        assert len(bound.writes) == 2 and fake.reads == []
+
+    @pytest.mark.parametrize(
+        "second", [lambda: "G:AMANDA", lambda: Device("G:AMANDA"), lambda: Device("G:AMANDA", backend=FakeBackend())]
+    )
+    def test_mixed_backends_raise_before_io(self, fake, second):
+        bound = FakeBackend()
+        devs = [Device("M:OUTTMP", backend=bound), second()]
+        with pytest.raises(ValueError, match="same backend"):
+            pacsys.read_many(devs)
+        with pytest.raises(ValueError, match="same backend"):
+            pacsys.write_many([(d, 1.0) for d in devs])
+        assert bound.reads == [] and fake.reads == [] and bound.writes == [] and fake.writes == []
+
+
 class TestConfigure:
     """Tests for pacsys.configure()."""
 
@@ -344,6 +378,22 @@ class TestConfigure:
         """configure() raises ValueError for invalid backend name."""
         with pytest.raises(ValueError, match="Invalid backend"):
             pacsys.configure(backend="nosql")
+
+    def test_configure_rejects_auth_for_acl(self):
+        with pytest.raises(ValueError, match="ACL backend does not use auth"):
+            pacsys.configure(backend="acl", auth=KerberosAuth())
+
+    @pytest.mark.parametrize("backend", ["grpc", "dmq", "acl"])
+    def test_configure_rejects_role_for_non_dpm(self, backend):
+        auth = KerberosAuth() if backend == "dmq" else pacsys._UNSET
+        kwargs = {"auth": auth} if backend == "dmq" else {}
+        with pytest.raises(ValueError, match="role is only used by the DPM backend"):
+            pacsys.configure(backend=backend, role="testing", **kwargs)
+
+    def test_configure_rejects_stale_role_when_switching_backend(self):
+        pacsys.configure(role="testing")
+        with pytest.raises(ValueError, match="role is only used by the DPM backend"):
+            pacsys.configure(backend="grpc")
 
     def test_configure_invalid_auth_string_raises(self):
         with pytest.raises(ValueError, match="auth string must be 'krb'"):

@@ -617,7 +617,7 @@ class TestBaseParser:
         assert args.timeout == 5.0
         assert args.output_format == "text"
         assert args.terse is False
-        assert args.verbose is False
+        assert not hasattr(args, "verbose")  # -v only exists for tools that act on it
 
     def test_timeout_flag(self):
         from pacsys.cli._common import base_parser
@@ -690,3 +690,41 @@ class TestResolveAuth:
 
         with pytest.raises(ValueError, match="Unknown auth type"):
             _resolve_auth("bogus")
+
+
+class TestBackendSpecificFlags:
+    """Options a backend cannot use are usage errors, not silent no-ops."""
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["-b", "acl", "-H", "host"],
+            ["-b", "acl", "-P", "1"],
+            ["-b", "acl", "-a", "kerberos"],
+            ["-b", "acl", "--role", "r"],
+            ["-b", "grpc", "--role", "r"],
+            ["-b", "dmq", "--role", "r"],
+        ],
+    )
+    def test_unused_option_rejected(self, argv, capsys):
+        from pacsys.cli._common import base_parser
+
+        with pytest.raises(SystemExit) as exc_info:
+            base_parser("x").parse_args(argv)
+        assert exc_info.value.code == 2
+        assert "is not used by the" in capsys.readouterr().err
+
+    def test_dpm_accepts_all(self):
+        from pacsys.cli._common import base_parser
+
+        args = base_parser("x").parse_args(["-H", "h", "-P", "1", "-a", "kerberos", "--role", "r"])
+        assert args.role == "r"
+
+    def test_terse_and_verbose_scoped_per_tool(self):
+        from pacsys.cli._common import base_parser
+
+        with pytest.raises(SystemExit):
+            base_parser("get-like").parse_args(["-v"])
+        with pytest.raises(SystemExit):
+            base_parser("info-like", terse=False, verbose=True).parse_args(["-t"])
+        assert base_parser("info-like", terse=False, verbose=True).parse_args(["-v"]).verbose

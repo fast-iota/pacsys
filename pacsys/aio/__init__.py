@@ -167,6 +167,9 @@ def configure(
         raise ValueError("DPM backend auth must be KerberosAuth or None")
     if effective_backend == "grpc" and configured_auth is not None and not isinstance(configured_auth, JWTAuth):
         raise ValueError("gRPC backend auth must be JWTAuth or None")
+    configured_role = role if not isinstance(role, _Unset) else _config_role
+    if effective_backend != "dpm" and configured_role is not None:
+        raise ValueError(f"role is only used by the DPM backend, not {effective_backend!r}")
 
     if _async_backend_initialized:
         old_backend = _global_async_backend
@@ -333,6 +336,20 @@ def _resolve_drf(device) -> str:
     raise TypeError(f"Expected str or device, got {type(device).__name__}")
 
 
+def _resolve_backend(devices: list) -> AsyncBackend:
+    """Async twin of pacsys._resolve_backend: bound backend if shared by all devices, else global."""
+    from pacsys._device_base import _DeviceBase
+
+    bound = [d._backend for d in devices if isinstance(d, _DeviceBase) and d._backend is not None]
+    if not bound:
+        return _get_global_async_backend()
+    if len(bound) != len(devices) or any(b is not bound[0] for b in bound):
+        raise ValueError("All devices in one call must be bound to the same backend (or none)")
+    if not isinstance(bound[0], AsyncBackend):
+        raise TypeError(f"Device is bound to a sync {type(bound[0]).__name__}; pacsys.aio needs an AsyncBackend")
+    return bound[0]
+
+
 def _resolve_setting(device, value) -> tuple[str, Value]:
     """Resolve a write target; BasicControl values are routed to CONTROL, never SETTING."""
     from pacsys.drf_utils import prepare_for_control
@@ -349,21 +366,21 @@ def _resolve_setting(device, value) -> tuple[str, Value]:
 async def read(device, timeout: float | None = None):
     """Read a single device value using the global async backend."""
     drf = _resolve_drf(device)
-    backend = _get_global_async_backend()
+    backend = _resolve_backend([device])
     return await backend.read(drf, timeout=timeout)
 
 
 async def get(device, timeout: float | None = None):
     """Read a single device with full metadata."""
     drf = _resolve_drf(device)
-    backend = _get_global_async_backend()
+    backend = _resolve_backend([device])
     return await backend.get(drf, timeout=timeout)
 
 
 async def get_many(devices: list, timeout: float | None = None):
     """Read multiple devices in a single batch."""
     drfs = [_resolve_drf(d) for d in devices]
-    backend = _get_global_async_backend()
+    backend = _resolve_backend(devices)
     return await backend.get_many(drfs, timeout=timeout)
 
 
@@ -373,27 +390,28 @@ async def read_many(devices: list, timeout: float | None = None):
     Returns bare values. Raises ReadError if any device fails.
     """
     drfs = [_resolve_drf(d) for d in devices]
-    backend = _get_global_async_backend()
+    backend = _resolve_backend(devices)
     return await backend.read_many(drfs, timeout=timeout)
 
 
 async def write(device, value, timeout: float | None = None):
     """Write a single device value."""
     drf, value = _resolve_setting(device, value)
-    backend = _get_global_async_backend()
+    backend = _resolve_backend([device])
     return await backend.write(drf, value, timeout=timeout)
 
 
 async def write_many(settings, timeout: float | None = None):
     """Write multiple device values in a single batch."""
     items = settings.items() if isinstance(settings, dict) else settings
+    items = list(items)
     resolved = [_resolve_setting(d, v) for d, v in items]
-    backend = _get_global_async_backend()
+    backend = _resolve_backend([d for d, _ in items])
     return await backend.write_many(resolved, timeout=timeout)
 
 
 async def subscribe(drfs: list, callback=None, on_error=None):
     """Subscribe to devices for streaming."""
     resolved = [_resolve_drf(d) for d in drfs]
-    backend = _get_global_async_backend()
+    backend = _resolve_backend(drfs)
     return await backend.subscribe(resolved, callback=callback, on_error=on_error)

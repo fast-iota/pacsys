@@ -944,7 +944,7 @@ class DPMHTTPBackend(Backend):
                             break
 
                         try:
-                            reply = conn.recv_message(timeout=min(remaining, 2.0))
+                            reply = conn.recv_message(timeout=remaining)
                         except TimeoutError:
                             if time.monotonic() >= deadline:
                                 break
@@ -1577,7 +1577,7 @@ class DPMHTTPBackend(Backend):
                 break
 
             try:
-                reply = conn.recv_message(timeout=min(remaining, 2.0))
+                reply = conn.recv_message(timeout=remaining)
             except TimeoutError:
                 if time.monotonic() >= deadline:
                     break
@@ -1663,7 +1663,7 @@ class DPMHTTPBackend(Backend):
                 break
 
             try:
-                reply = conn.recv_message(timeout=min(remaining, 2.0))
+                reply = conn.recv_message(timeout=remaining)
             except TimeoutError:
                 if time.monotonic() >= deadline:
                     break

@@ -410,7 +410,7 @@ def _query_device_props(devdb, name: str) -> _DeviceProps:
 
 
 def main() -> int:
-    parser = base_parser("Display ACNET device metadata and status")
+    parser = base_parser("Display ACNET device metadata and status", terse=False, verbose=True)
     parser.add_argument("devices", nargs="+", metavar="DEVICE", help="device name(s) or DRF string(s)")
     parser.add_argument("-f", "--number-format", default=None, help="Python format spec for numeric values")
     args = parser.parse_args()

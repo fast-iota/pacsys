@@ -193,10 +193,10 @@ def configure(
         backend: Backend type - one of "dpm", "grpc", "dmq", "acl" (default: "dpm")
         auth: Authentication object (KerberosAuth or JWTAuth) for writes,
               or "krb" as shortcut for KerberosAuth()
-        role: Role for authenticated operations (e.g., "testing")
+        role: Role for authenticated operations (e.g., "testing"); DPM backend only
 
     Raises:
-        ValueError: If a supplied value or backend/auth combination is invalid.
+        ValueError: If a supplied value or backend/auth/role combination is invalid.
     """
     global _config_dpm_host, _config_dpm_port, _config_pool_size, _config_timeout
     global _config_devdb_host, _config_devdb_port
@@ -234,6 +234,11 @@ def configure(
             raise ValueError("gRPC backend auth must be JWTAuth or None")
         if effective_backend == "dmq" and not isinstance(configured_auth, KerberosAuth):
             raise ValueError("DMQ backend requires KerberosAuth")
+        if effective_backend == "acl" and configured_auth is not None:
+            raise ValueError("ACL backend does not use auth")
+        configured_role = role if not isinstance(role, _Unset) else _config_role
+        if effective_backend != "dpm" and configured_role is not None:
+            raise ValueError(f"role is only used by the DPM backend, not {effective_backend!r}")
 
         if _backend_initialized or _devdb_initialized:
             logger.debug("configure() called with active backend — auto-replacing")
@@ -434,6 +439,20 @@ def _resolve_drf(device: DeviceSpec) -> str:
     raise TypeError(f"Expected str or Device, got {type(device).__name__}")
 
 
+def _resolve_backend(devices: list[DeviceSpec]) -> "Backend":
+    """Backend for one call: the Devices' bound backend if they all share it, else the global one.
+
+    A batch is never split: mixing bound Devices with bare DRFs, or Devices bound
+    to different backends, raises before any I/O.
+    """
+    bound = [d._backend for d in devices if isinstance(d, Device) and d._backend is not None]
+    if not bound:
+        return _get_global_backend()
+    if len(bound) != len(devices) or any(b is not bound[0] for b in bound):
+        raise ValueError("All devices in one call must be bound to the same backend (or none)")
+    return bound[0]
+
+
 def _resolve_setting(device: DeviceSpec, value: Value) -> tuple[str, Value]:
     """Resolve a write target; BasicControl values are routed to CONTROL, never SETTING."""
     from pacsys.drf_utils import prepare_for_control
@@ -472,7 +491,7 @@ def read(device: DeviceSpec, timeout: float | None = None) -> Value:
         from the shared pool for the duration of the operation.
     """
     drf = _resolve_drf(device)
-    backend = _get_global_backend()
+    backend = _resolve_backend([device])
     return backend.read(drf, timeout=timeout)
 
 
@@ -495,7 +514,7 @@ def get(device: DeviceSpec, timeout: float | None = None) -> Reading:
         Safe to call from multiple threads.
     """
     drf = _resolve_drf(device)
-    backend = _get_global_backend()
+    backend = _resolve_backend([device])
     return backend.get(drf, timeout=timeout)
 
 
@@ -521,7 +540,7 @@ def get_many(
         Safe to call from multiple threads.
     """
     drfs = [_resolve_drf(d) for d in devices]
-    backend = _get_global_backend()
+    backend = _resolve_backend(devices)
     return backend.get_many(drfs, timeout=timeout)
 
 
@@ -529,7 +548,7 @@ def read_many(
     devices: list[DeviceSpec],
     timeout: float | None = None,
 ) -> list[Value]:
-    """Read multiple device values in a single batch using the global backend.
+    """Read multiple device values in a single batch using the devices' bound backend, or the global backend.
 
     Args:
         devices: List of DRF strings or Device objects (can mix)
@@ -547,12 +566,12 @@ def read_many(
         Safe to call from multiple threads.
     """
     drfs = [_resolve_drf(d) for d in devices]
-    backend = _get_global_backend()
+    backend = _resolve_backend(devices)
     return backend.read_many(drfs, timeout=timeout)
 
 
 def write(device: DeviceSpec, value: Value, timeout: float | None = None) -> WriteResult:
-    """Write a single device value using the global backend.
+    """Write a single device value using the devices' bound backend, or the global backend.
 
     Args:
         device: DRF string or Device object
@@ -571,7 +590,7 @@ def write(device: DeviceSpec, value: Value, timeout: float | None = None) -> Wri
         Safe to call from multiple threads.
     """
     drf, value = _resolve_setting(device, value)
-    backend = _get_global_backend()
+    backend = _resolve_backend([device])
     return backend.write(drf, value, timeout=timeout)
 
 
@@ -579,7 +598,7 @@ def write_many(
     settings: WriteSettings,
     timeout: float | None = None,
 ) -> list[WriteResult]:
-    """Write multiple device values in a single batch using the global backend.
+    """Write multiple device values in a single batch using the devices' bound backend, or the global backend.
 
     Args:
         settings: List of (device, value) tuples, or a dict mapping device -> value
@@ -595,8 +614,9 @@ def write_many(
         Safe to call from multiple threads.
     """
     items = settings.items() if isinstance(settings, dict) else settings
+    items = list(items)
     resolved = [_resolve_setting(d, v) for d, v in items]
-    backend = _get_global_backend()
+    backend = _resolve_backend([d for d, _ in items])
     return backend.write_many(resolved, timeout=timeout)
 
 
@@ -657,7 +677,7 @@ def subscribe(
         )
     """
     resolved = [_resolve_drf(d) for d in drfs]
-    backend = _get_global_backend()
+    backend = _resolve_backend(drfs)
     return backend.subscribe(resolved, callback=callback, on_error=on_error)
 
 

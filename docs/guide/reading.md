@@ -6,7 +6,7 @@ One-shot reads are the most basic operation supported by all backends. PACSys tr
 
 ## Simple API
 
-The module-level functions use a shared global backend (DPM/HTTP, lazily initialized).
+The module-level functions use a shared global backend (DPM/HTTP, lazily initialized). A `Device` created with `backend=` uses that backend instead; a single call must not mix devices bound to different backends (or bound and unbound ones) - it raises `ValueError` before any I/O.
 
 ### Single Value
 
