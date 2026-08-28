@@ -223,6 +223,8 @@ automatically when reconfiguring.
 | `PACSYS_DPM_HOST` | DPM proxy hostname | acsys-proxy.fnal.gov |
 | `PACSYS_DPM_PORT` | DPM proxy port | 6802 |
 | `PACSYS_TIMEOUT` | Default timeout (seconds) | 5.0 |
+| `PACSYS_GRPC_HOST` | gRPC DAQ server hostname | dce08.fnal.gov |
+| `PACSYS_GRPC_PORT` | gRPC DAQ server port | 50051 |
 | `PACSYS_JWT_TOKEN` | JWT token for gRPC auth | - |
 | `PACSYS_DMQ_HOST` | RabbitMQ broker host | appsrv2.fnal.gov |
 | `PACSYS_DMQ_PORT` | RabbitMQ broker port | 5672 |

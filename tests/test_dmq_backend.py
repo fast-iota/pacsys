@@ -1085,6 +1085,33 @@ class TestDMQBackendRead:
             assert readings[0].error_code == -6  # ACNET_REQTMO
             assert "timeout" in readings[0].message.lower()
 
+    def test_startup_wait_bounded_by_call_timeout(self):
+        """A per-call timeout also caps how long we wait for the IO thread to connect."""
+        with _mock_dmq_backend([], timeout=5.0) as backend:
+            stall = threading.Event()
+            backend._io_thread = threading.Thread(target=stall.wait, daemon=True)
+            backend._io_thread.start()
+            backend._connection_ready.clear()
+            start = time.monotonic()
+            try:
+                with pytest.raises(ConnectionError, match="timed out after 0.05s"):
+                    backend._ensure_io_thread(0.05)
+                assert time.monotonic() - start < 1.0
+            finally:
+                stall.set()
+
+    @pytest.mark.parametrize("op", ["read", "write"])
+    def test_call_timeout_covers_startup(self, op):
+        with _mock_dmq_backend([], timeout=5.0) as backend:
+            with mock.patch.object(backend, "_ensure_io_thread") as ensure:
+                if op == "read":
+                    with pytest.raises(ReadError):
+                        backend.get(TEMP_DEVICE, timeout=0.5)
+                else:
+                    with pytest.raises(RuntimeError, match="Connection not available"):
+                        backend.write(TEMP_DEVICE, 1.0, timeout=0.5)
+            ensure.assert_called_once_with(0.5)
+
     def test_read_gss_failure_reports_auth_error(self):
         """GSS read failures surface as ERR_RETRY and preserve their cause."""
         factory, mock_conn = create_mock_select_connection_factory([])
@@ -1131,8 +1158,8 @@ class TestDMQBackendSubscribe:
         with _mock_dmq_backend([]) as backend:
             orig = backend._ensure_io_thread
 
-            def racy():
-                orig()
+            def racy(timeout=None):
+                orig(timeout)
                 backend._closed = True  # concurrent close() lands here
 
             with (
@@ -1805,7 +1832,7 @@ class TestDMQPartialTimeout:
             job.done_event.set()
 
         backend._start_read_async = fake_start_read
-        backend._ensure_io_thread = lambda: None
+        backend._ensure_io_thread = lambda timeout=None: None
 
         with pytest.raises(ReadError) as exc_info:
             backend.get_many(["M:OUTTMP", "G:AMANDA"], timeout=1.0)
