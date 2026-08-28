@@ -219,6 +219,31 @@ class TestPoolExhaustion:
 
             pool.release(conn1)
 
+    @pytest.mark.parametrize(("wait_timeout", "expect"), [(0.05, 0.05), (None, 30.0)])
+    def test_borrow_budget_covers_connect(self, wait_timeout, expect):
+        """Creating a connection happens inside wait_timeout, not after it."""
+        pool = ConnectionPool(pool_size=1, timeout=30.0)
+        seen = []
+
+        def fake_create(connect_timeout=None):
+            seen.append(connect_timeout)
+            return mock.Mock(spec=DPMConnection)
+
+        with mock.patch.object(pool, "_create_connection", side_effect=fake_create):
+            pool.borrow(wait_timeout=wait_timeout)
+        assert len(seen) == 1 and 0 < seen[0] <= expect
+
+    def test_borrow_budget_exhausted_before_connect(self):
+        pool = ConnectionPool(pool_size=1)
+        with (
+            mock.patch.object(pool, "_create_connection") as create,
+            mock.patch("pacsys.pool.time.monotonic", side_effect=[0.0, 10.0]),
+        ):
+            with pytest.raises(PoolExhaustedError, match="budget exhausted"):
+                pool.borrow(wait_timeout=1.0)
+        create.assert_not_called()
+        assert pool._pending_creates == 0
+
     def test_pool_exhausted_indefinite_wait(self):
         """Test that wait_timeout=None waits indefinitely."""
         pool = ConnectionPool(pool_size=1)

@@ -12,6 +12,8 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING
 
+from typing_extensions import Self
+
 from pacsys._device_base import CONTROL_STATUS_MAP, _DeviceBase, _require_str_list
 from pacsys.drf3 import parse_event, parse_request
 from pacsys.drf3.event import NeverEvent
@@ -164,7 +166,7 @@ class Device(_DeviceBase):
         devdb = self._get_devdb()
         if devdb is not None:
             try:
-                info = devdb.get_device_info([name])[name]
+                info = devdb.get_device_info([name], timeout=timeout)[name]
             except Exception:  # noqa: BLE001
                 info = None
             if info is not None and info.status_bits is not None:
@@ -498,14 +500,14 @@ class Device(_DeviceBase):
 
     # ─── Fluent Modifications ─────────────────────────────────────────────
 
-    def with_backend(self, backend: Backend) -> Device:
+    def with_backend(self, backend: Backend) -> Self:
         """Return new Device bound to a specific backend."""
         return self._new(self.drf, backend)
 
-    def _from_drf(self, drf: str) -> Device:
+    def _from_drf(self, drf: str) -> Self:
         return self._new(drf, self._backend)
 
-    def _new(self, drf: str, backend: Backend | None) -> Device:
+    def _new(self, drf: str, backend: Backend | None) -> Self:
         device = self.__class__(drf, backend)
         device._request.field_explicit = self._request.field_explicit
         return device

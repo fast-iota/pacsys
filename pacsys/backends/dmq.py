@@ -729,7 +729,8 @@ class DMQBackend(Backend):
             drf_to_all_indices=dict(drf_to_all),
         )
 
-        self._ensure_io_thread()
+        deadline = time.monotonic() + timeout
+        self._ensure_io_thread(timeout)
         conn = self._select_connection
         if conn is None:
             cause = ConnectionError(f"No connection to RabbitMQ at {self._host}:{self._port}")
@@ -749,12 +750,14 @@ class DMQBackend(Backend):
 
         conn.ioloop.add_callback_threadsafe(lambda: self._start_read_async(job))
 
-        timed_out = not job.done_event.wait(timeout)
+        timed_out = not job.done_event.wait(max(deadline - time.monotonic(), 0))
         if timed_out:
-            # Timeout -- schedule cleanup on IO thread
+            # Timeout -- schedule cleanup on IO thread and wait briefly so it
+            # cannot mutate job.readings under the backfill below
             if conn.is_open:
                 conn.ioloop.add_callback_threadsafe(lambda: self._complete_read(job))
-                job.done_event.wait(timeout=5.0)
+                if not job.done_event.wait(timeout=2.0):
+                    logger.warning("Read cleanup did not complete within 2s; IO thread may be unresponsive")
 
         # Build result list
         if job.error is not None:
@@ -1852,8 +1855,10 @@ class DMQBackend(Backend):
         if not isinstance(self._auth, KerberosAuth):
             raise AuthenticationError("KerberosAuth required for writes. Pass auth=KerberosAuth().")
 
-        # Ensure IO thread is running (shared with streaming)
-        self._ensure_io_thread()
+        # Ensure IO thread is running (shared with streaming), within this call's budget
+        effective_timeout = timeout if timeout is not None else self._timeout
+        deadline = time.monotonic() + effective_timeout
+        self._ensure_io_thread(effective_timeout)
 
         # Prepare results container (shared with IO thread)
         results = cast("list[WriteResult | None]", [None] * len(settings))
@@ -1868,8 +1873,7 @@ class DMQBackend(Backend):
         conn.ioloop.add_callback_threadsafe(lambda: self._execute_write_many_async(settings, results, tracker))
 
         # Block until done or timeout
-        effective_timeout = timeout if timeout is not None else self._timeout
-        if not tracker.done_event.wait(effective_timeout):
+        if not tracker.done_event.wait(max(deadline - time.monotonic(), 0)):
             # Timeout - schedule abort on IO thread and wait for it to finish
             # before touching results.  This avoids a race where the main thread
             # overwrites a successful result with ERR_TIMEOUT.
@@ -1932,8 +1936,12 @@ class DMQBackend(Backend):
     # SelectConnection streaming infrastructure
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _ensure_io_thread(self) -> None:
-        """Start the IO thread and SelectConnection if not already running."""
+    def _ensure_io_thread(self, timeout: float | None = None) -> None:
+        """Start the IO thread and SelectConnection if not already running.
+
+        ``timeout`` bounds the wait for connection readiness (default: backend timeout)
+        so a per-call budget also covers startup.
+        """
         with self._stream_lock:
             if self._io_thread is not None and self._io_thread.is_alive():
                 # Thread exists - still verify connection is ready before returning
@@ -1955,9 +1963,10 @@ class DMQBackend(Backend):
                 self._io_thread.start()
 
         # Wait for connection to be ready
-        if not self._connection_ready.wait(timeout=self._timeout):
+        wait = timeout if timeout is not None else self._timeout
+        if not self._connection_ready.wait(timeout=wait):
             raise ConnectionError(
-                f"Failed to connect to RabbitMQ at {self._host}:{self._port}: timed out after {self._timeout}s"
+                f"Failed to connect to RabbitMQ at {self._host}:{self._port}: timed out after {wait}s"
             )
         if self._connection_error is not None:
             err = self._connection_error

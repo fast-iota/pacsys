@@ -1068,6 +1068,18 @@ class TestDeviceExtra:
 
         assert exc_info.value.error_code == 1
 
+    def test_digital_status_forwards_timeout_to_devdb(self, mock_backend, monkeypatch):
+        devdb = mock.Mock()
+        devdb.get_device_info.return_value = {"Z:ACLTST": None}
+        monkeypatch.setattr(Device, "_get_devdb", lambda _self: devdb)
+        mock_backend.get_many.return_value = [
+            Reading(drf="Z:ACLTST.STATUS.BIT_VALUE@I", value=0, value_type=ValueType.SCALAR),
+            Reading(drf="Z:ACLTST.STATUS.BIT_NAMES@I", value=[], value_type=ValueType.TEXT_ARRAY),
+            Reading(drf="Z:ACLTST.STATUS.BIT_VALUES@I", value=[], value_type=ValueType.TEXT_ARRAY),
+        ]
+        Device("Z:ACLTST", backend=mock_backend).digital_status(timeout=0.7)
+        devdb.get_device_info.assert_called_once_with(["Z:ACLTST"], timeout=0.7)
+
     def test_no_extra_omits_suffix(self, fake):
         """Devices without extra don't get a spurious suffix."""
         fake.set_reading("M:OUTTMP.READING", 72.5)

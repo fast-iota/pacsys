@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+from typing_extensions import Self
+
 from pacsys._device_base import CONTROL_STATUS_MAP, _DeviceBase, _require_str_list
 from pacsys.drf3 import parse_event, parse_request
 from pacsys.drf3.event import NeverEvent
@@ -350,14 +352,14 @@ class AsyncDevice(_DeviceBase):
 
     # ─── Fluent Modifications ─────────────────────────────────────────────
 
-    def with_backend(self, backend: AsyncBackend) -> AsyncDevice:
+    def with_backend(self, backend: AsyncBackend) -> Self:
         """Return new AsyncDevice bound to a specific backend."""
         return self._new(self.drf, backend)
 
-    def _from_drf(self, drf: str) -> AsyncDevice:
+    def _from_drf(self, drf: str) -> Self:
         return self._new(drf, self._backend)
 
-    def _new(self, drf: str, backend: AsyncBackend | None) -> AsyncDevice:
+    def _new(self, drf: str, backend: AsyncBackend | None) -> Self:
         device = self.__class__(drf, backend)
         device._request.field_explicit = self._request.field_explicit
         return device

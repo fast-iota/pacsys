@@ -179,7 +179,8 @@ class ConnectionPool:
         blocks until a connection becomes available.
 
         Args:
-            wait_timeout: Maximum time to wait if pool is exhausted (seconds).
+            wait_timeout: Maximum time to obtain a connection (seconds), covering
+                          both waiting for a free slot and creating a new one.
                           None means wait indefinitely. Default is 30 seconds.
 
         Returns:
@@ -235,9 +236,19 @@ class ConnectionPool:
                 )
                 return conn
 
-        # Create connection OUTSIDE the lock to avoid blocking other threads
+        # Create connection OUTSIDE the lock to avoid blocking other threads,
+        # but still inside the caller's budget
         try:
-            conn = self._create_connection()
+            connect_timeout = self._timeout
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise PoolExhaustedError(
+                        f"No DPM connection to {self._host}:{self._port} within {wait_timeout}s "
+                        "(budget exhausted before connect)"
+                    )
+                connect_timeout = min(remaining, self._timeout)
+            conn = self._create_connection(connect_timeout)
         except Exception:
             # Release the reservation on failure
             with self._condition:
@@ -258,7 +269,7 @@ class ConnectionPool:
             logger.debug("Created new connection, total=%s", total)
             return conn
 
-    def _create_connection(self) -> DPMConnection:
+    def _create_connection(self, connect_timeout: float | None = None) -> DPMConnection:
         """
         Create a new DPM connection.
 
@@ -276,7 +287,7 @@ class ConnectionPool:
             port=self._port,
             timeout=self._timeout,
         )
-        conn.connect()
+        conn.connect(timeout=connect_timeout)
         return conn
 
     def release(self, conn: DPMConnection) -> None:

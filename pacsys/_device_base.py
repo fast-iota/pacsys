@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import cast
 
+from typing_extensions import Self
+
 from pacsys.drf3 import DataRequest, parse_event, parse_extra
 from pacsys.drf3.event import DefaultEvent, PeriodicEvent
 from pacsys.drf3.field import (
@@ -127,12 +129,12 @@ class _DeviceBase:
             raise ValueError(f"Field '{field}' not allowed for {prop.name}")
         return f
 
-    def with_event(self, event: str) -> _DeviceBase:
+    def with_event(self, event: str) -> Self:
         new_event = parse_event(event)
         new_drf = self._request.to_canonical(event=new_event)
         return self._from_drf(new_drf)
 
-    def with_range(self, start: int | None = None, end: int | None = None, *, at: int | None = None) -> _DeviceBase:
+    def with_range(self, start: int | None = None, end: int | None = None, *, at: int | None = None) -> Self:
         if at is not None:
             if start is not None or end is not None:
                 raise ValueError("'at' cannot be combined with 'start'/'end'")
@@ -144,17 +146,17 @@ class _DeviceBase:
         new_drf = self._request.to_canonical(range=new_range)
         return self._from_drf(new_drf)
 
-    def without_range(self) -> _DeviceBase:
+    def without_range(self) -> Self:
         """Return new device with array range removed."""
         new_drf = self._request.to_canonical(range=None)
         return self._from_drf(new_drf)
 
-    def without_event(self) -> _DeviceBase:
+    def without_event(self) -> Self:
         """Return new device with event removed (back to default/unspecified)."""
         new_drf = self._request.to_canonical(event=DefaultEvent())
         return self._from_drf(new_drf)
 
-    def with_extra(self, extra: str | None) -> _DeviceBase:
+    def with_extra(self, extra: str | None) -> Self:
         """Return new device with extra modifier set or cleared.
 
         Args:
@@ -168,7 +170,7 @@ class _DeviceBase:
             canonical += f"<-{extra}"
         return self._from_drf(canonical)
 
-    def _from_drf(self, drf: str) -> _DeviceBase:
+    def _from_drf(self, drf: str) -> Self:
         """Create new instance of same type from DRF. Override in subclasses."""
         raise NotImplementedError
 
