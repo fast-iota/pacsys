@@ -162,6 +162,15 @@ Create explicit backend instances for more control.
 
 ## Errors
 
+All exceptions below derive from `PacsysError` (as do `ScalingError`, `SSHError`, and `AcnetError`).
+
+### PacsysError
+
+::: pacsys.errors.PacsysError
+    options:
+      show_root_heading: true
+      heading_level: 3
+
 ### DeviceError
 
 ::: pacsys.errors.DeviceError

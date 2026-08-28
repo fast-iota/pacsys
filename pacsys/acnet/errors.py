@@ -7,6 +7,8 @@ where error_number is signed (-128 to +127) and facility is 1-255.
 
 from enum import IntEnum
 
+from pacsys.errors import PacsysError
+
 
 class AcnetFacility(IntEnum):
     """ACNET facility codes."""
@@ -502,7 +504,7 @@ def status_message(facility: int, error: int) -> str | None:
     return f"Warning (facility={facility}, error={error})"
 
 
-class AcnetError(Exception):
+class AcnetError(PacsysError):
     """Exception for ACNET protocol errors."""
 
     def __init__(self, status: int, message: str | None = None):
