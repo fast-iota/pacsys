@@ -28,6 +28,7 @@ from collections.abc import Sized
 from pacsys.dpm_protocol import (
     OpenList_reply,
     ProtocolError,
+    _Cursor,
     unmarshal_reply,
 )
 
@@ -532,7 +533,7 @@ class DPMConnection:
             DPMConnectionError: If unmarshaling fails
         """
         try:
-            return unmarshal_reply(iter(data))
+            return unmarshal_reply(_Cursor(data))
         except ProtocolError as e:
             raise DPMConnectionError(f"Protocol error: {e}") from e
         except StopIteration as e:
