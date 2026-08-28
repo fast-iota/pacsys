@@ -53,6 +53,21 @@ assert "asyncio" not in sys.modules
     )
 
 
+def test_cursor_scalar_decode_does_not_import_numpy():
+    _run_isolated(
+        """
+import sys
+
+from pacsys.dpm_protocol import Scalar_reply, Text_reply, _Cursor, unmarshal_reply
+
+for reply in (Scalar_reply(), Text_reply()):
+    reply.data = 72.5 if isinstance(reply, Scalar_reply) else "hello"
+    assert unmarshal_reply(_Cursor(bytes(reply.marshal()))).data == reply.data
+assert "numpy" not in sys.modules
+"""
+    )
+
+
 def test_array_reply_imports_numpy_on_demand():
     _run_isolated(
         """

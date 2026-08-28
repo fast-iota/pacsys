@@ -34,6 +34,7 @@ from pacsys.dpm_protocol import (
     Text_reply,
     TextArray_reply,
     TimedScalarArray_reply,
+    _Cursor,
     unmarshal_reply,
 )
 from pacsys.drf_utils import ensure_immediate_event
@@ -206,7 +207,7 @@ class DPMAcnet:
                     result_event.set()
                 return
             try:
-                resp = unmarshal_reply(iter(reply.data))
+                resp = unmarshal_reply(_Cursor(reply.data))
                 if isinstance(resp, OpenList_reply):
                     result["list_id"] = resp.list_id
                 else:
@@ -247,7 +248,7 @@ class DPMAcnet:
 
         def handle_reply(reply):
             try:
-                result["reply"] = unmarshal_reply(iter(reply.data))
+                result["reply"] = unmarshal_reply(_Cursor(reply.data))
             except Exception as e:  # noqa: BLE001
                 result["error"] = str(e)
             result_event.set()

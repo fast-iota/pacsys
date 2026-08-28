@@ -70,6 +70,7 @@ from pacsys.dpm_protocol import (
     TextArray_reply,
     TextSetting_struct,
     TimedScalarArray_reply,
+    _Cursor,
     unmarshal_reply,
 )
 from pacsys.drf_utils import (
@@ -194,13 +195,13 @@ def _aggregate_logger_chunks(chunks: list, drf: str, meta) -> Reading:
                 meta=meta,
             )
         if isinstance(chunk, TimedScalarArray_reply):
-            all_data.append(np.array(chunk.data))
+            all_data.append(np.asarray(chunk.data))
             if hasattr(chunk, "micros") and chunk.micros:
                 all_micros.append(np.array(chunk.micros, dtype=np.int64))
             if first_ts is None and chunk.timestamp:
                 first_ts = timestamp_from_millis(chunk.timestamp)
         elif isinstance(chunk, ScalarArray_reply):
-            all_data.append(np.array(chunk.data))
+            all_data.append(np.asarray(chunk.data))
             if first_ts is None and chunk.timestamp:
                 first_ts = timestamp_from_millis(chunk.timestamp)
 
@@ -230,8 +231,8 @@ def _reply_to_value_and_type(reply) -> tuple[Value | None, ValueType | None]:
         import numpy as np
 
         if isinstance(reply, ScalarArray_reply):
-            return np.array(reply.data), ValueType.SCALAR_ARRAY
-        data = np.array(reply.data)
+            return np.asarray(reply.data), ValueType.SCALAR_ARRAY
+        data = np.asarray(reply.data)
         if hasattr(reply, "micros") and reply.micros:
             micros = np.array(reply.micros, dtype=np.int64)
             return {"data": data, "micros": micros}, ValueType.TIMED_SCALAR_ARRAY
@@ -414,7 +415,7 @@ class _AsyncDPMConnection:
 
             data = await self._reader.readexactly(length)
             try:
-                reply = unmarshal_reply(iter(data))
+                reply = unmarshal_reply(_Cursor(data))
             except (ProtocolError, StopIteration) as e:
                 raise DPMConnectionError(f"Protocol error during handshake: {e}") from e
 
@@ -497,7 +498,7 @@ class _AsyncDPMConnection:
                 raise asyncio.TimeoutError("Receive timeout") from e
             raise DPMConnectionError(f"Timed out reading {length}-byte message body") from e
         try:
-            return unmarshal_reply(iter(data))
+            return unmarshal_reply(_Cursor(data))
         except (ProtocolError, StopIteration) as e:
             raise DPMConnectionError(f"Protocol error: {e}") from e
 
