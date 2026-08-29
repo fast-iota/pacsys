@@ -5,7 +5,7 @@ import pacsys
 device_name_list = ["M:OUTTMP"]
 user = ["toor"]
 
-with pacsys.ssh(["clx66.fnal.gov"]) as ssh:
+with pacsys.SSHClient(["clx66.fnal.gov"]) as ssh:
     # Get your account info
     output = ssh.acl(f"user_info/exact {user}")
 

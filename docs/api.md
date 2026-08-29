@@ -79,12 +79,16 @@ Create explicit backend instances for more control.
       show_root_heading: true
       heading_level: 3
 
-::: pacsys.devdb
+---
+
+## Clients and Servers
+
+::: pacsys.DevDBClient
     options:
       show_root_heading: true
       heading_level: 3
 
-::: pacsys.supervised
+::: pacsys.SupervisedServer
     options:
       show_root_heading: true
       heading_level: 3
