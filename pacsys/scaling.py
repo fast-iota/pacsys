@@ -401,14 +401,18 @@ def _primary_unscale(value: float, p_index: int, input_len: int) -> int:
     if p_index == 12:
         return _check_signed(int(value * 320.0), input_len)
     if p_index == 14:
-        # BCD encode
+        # BCD encode: 10-bit mantissa, 3-bit exponent (Java silently corrupts outside 0..1023e7)
+        if not 0.0 <= value <= 1023e7:  # also rejects NaN/inf (inf would spin the loop below forever)
+            raise ScalingError("Out of valid range")
         mantis = value
         expon = 0
         while mantis > 1023.0:
             mantis /= 10.0
             expon += 1
+        if expon > 7:  # float rounding guard at the upper bound
+            raise ScalingError("Out of valid range")
         state = int(mantis)
-        state |= ((expon & 0xFFFF) << 10) & 0xFFFF
+        state |= expon << 10
         state |= 0xC000
         return state
     if p_index == 16:
@@ -456,8 +460,11 @@ def _primary_unscale(value: float, p_index: int, input_len: int) -> int:
     if p_index == 34:
         return _check_unsigned(int(abs(value)), 1)
     if p_index == 36:
-        state = _check_signed(int(abs(value)) & 0xFFFF, 1)
-        return ((state & 0xFF) << 8) & 0xFF00
+        # Decoder yields the full unsigned high byte (0..255); Java's abs()+signed check
+        # would reject 128..255 and silently flip negatives.
+        if not 0.0 <= value < 256.0:  # also rejects NaN
+            raise ScalingError("Overflow")
+        return int(value) << 8
     if p_index == 38:
         state = int(abs((value + 0.310269935) * 82.1865))
         return state & 0xFF
@@ -479,12 +486,11 @@ def _primary_unscale(value: float, p_index: int, input_len: int) -> int:
                 state += hbit * int(16**ii)
         return state + temp
     if p_index == 46:
-        if value < 0.0:
+        # Unsigned I*4 as a signed 32-bit raw (the decoder adds 2**32 to negatives);
+        # Java's (int) cast would saturate the upper half at 2**31-1.
+        if not 0.0 <= value < 4294967296.0:  # also rejects NaN
             raise ScalingError("Corrupt data")
-        unsigned_state = _java_int_cast(value)
-        if unsigned_state < 0:
-            unsigned_state = -unsigned_state
-        return unsigned_state
+        return _to_signed32(int(value))
     if p_index == 48:
         return _float_to_int(float(value * 0.036))
     if p_index == 50:

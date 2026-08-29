@@ -479,40 +479,37 @@ class AsyncAcnetConnectionBase:
                 cmd_name = self._CMD_NAMES.get(cmd, f"?{cmd}")
                 logger.info("TRACE> %s(%s) len=%s %s", cmd_name, cmd, len(content), content[:20].hex())
 
+            # Every abnormal exit below abandons the transport: a late ACK for this command
+            # could otherwise complete the next one, permanently desynchronizing the stream.
             try:
                 await self._send_frame(content)
             except (OSError, AcnetUnavailableError) as e:
-                self._pending_ack = None
-                self._connected = False
-                self._on_connection_lost()
-                await self._close_transport()
-                logger.error("Failed to send command: %s", e)
+                await self._abandon_xact(f"Failed to send command: {e}")
                 raise AcnetUnavailableError from e
+            except asyncio.CancelledError:
+                await self._abandon_xact("Task cancelled during send")
+                raise
 
             try:
                 ack_data = await asyncio.wait_for(self._pending_ack, timeout=timeout)
             except asyncio.TimeoutError as e:
-                self._pending_ack = None
-                # A late ACK could arrive and be consumed by the next
-                # command, permanently desynchronizing the stream.
-                # Kill the transport so the connection cannot be reused.
-                logger.error("Timeout waiting for ack - closing transport to prevent desync")
-                self._connected = False
-                self._on_connection_lost()
-                await self._close_transport()
+                await self._abandon_xact("Timeout waiting for ack")
                 raise AcnetUnavailableError from e
             except asyncio.CancelledError:
-                self._pending_ack = None
-                logger.error("Task cancelled during ack wait - closing transport to prevent desync")
-                self._connected = False
-                self._on_connection_lost()
-                await asyncio.shield(self._close_transport())
+                await self._abandon_xact("Task cancelled during ack wait")
                 raise
 
             if self._trace:
                 logger.info("TRACE< ACK len=%s %s", len(ack_data), ack_data.hex())
 
             return ack_data
+
+    async def _abandon_xact(self, why: str) -> None:
+        self._pending_ack = None
+        logger.error("%s - closing transport to prevent desync", why)
+        self._connected = False
+        self._on_connection_lost()
+        await asyncio.shield(self._close_transport())
 
     # ------------------------------------------------------------------
     # Keepalive loop

@@ -1167,6 +1167,7 @@ class GRPCBackend(Backend):
         if not isinstance(handle, _GRPCSubscriptionHandle):
             raise TypeError(f"Expected _GRPCSubscriptionHandle, got {type(handle).__name__}")
 
+        handle._stop_requested = True
         handle._signal_stop()
 
         if handle._task is not None and self._loop is not None:
@@ -1185,6 +1186,7 @@ class GRPCBackend(Backend):
             self._handles.clear()
 
         for handle in handles:
+            handle._stop_requested = True
             handle._signal_stop()
             if handle._task is not None and self._loop is not None:
                 self._loop.call_soon_threadsafe(handle._task.cancel)

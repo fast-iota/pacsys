@@ -159,7 +159,7 @@ class TestAsyncSubscriptionHandle:
         task = asyncio.ensure_future(_callback_feeder(handle, cb, None))
         handle._dispatch(make_reading(10.0))
         handle._dispatch(make_reading(20.0))
-        handle._signal_stop()
+        handle._signal_stop()  # stream ended on its own: queued tail is still delivered
         await task
         assert collected == [10.0, 20.0]
 
@@ -178,3 +178,55 @@ class TestAsyncSubscriptionHandle:
         handle._signal_stop()
         await task
         assert collected == [5.0]
+
+    @pytest.mark.asyncio
+    async def test_queued_callbacks_skipped_after_stop(self, make_reading):
+        """Readings queued before stop() must not reach the callback afterwards (sync parity)."""
+        from pacsys.aio._subscription import AsyncSubscriptionHandle, _callback_feeder
+
+        handle = AsyncSubscriptionHandle()
+        delivered = []
+
+        async def cb(reading, h):
+            delivered.append(reading.value)
+            await h.stop()
+
+        for i in range(5):
+            handle._dispatch(make_reading(float(i)))
+        handle._callback_task = asyncio.ensure_future(_callback_feeder(handle, cb, None))
+        await asyncio.wait_for(handle._callback_task, timeout=1.0)
+        assert delivered == [0.0]
+
+    @pytest.mark.asyncio
+    async def test_error_callback_delivered_after_stop(self, make_reading):
+        """A stream error raised after the callback stopped the handle must still reach on_error."""
+        from pacsys.aio._subscription import AsyncSubscriptionHandle, _callback_feeder
+
+        handle = AsyncSubscriptionHandle()
+        errors = []
+
+        async def cb(reading, h):
+            await h.stop()
+            h._signal_error(RuntimeError("boom"))
+
+        for i in range(3):
+            handle._dispatch(make_reading(float(i)))
+        handle._callback_task = asyncio.ensure_future(_callback_feeder(handle, cb, lambda exc, h: errors.append(exc)))
+        await asyncio.wait_for(handle._callback_task, timeout=1.0)
+        assert len(errors) == 1 and str(errors[0]) == "boom"
+
+    def test_dropped_is_cumulative_across_log_windows(self, make_reading, monkeypatch):
+        """Sync on purpose: patching time.monotonic under a running loop would freeze the loop clock."""
+        from pacsys.aio._subscription import AsyncSubscriptionHandle
+
+        handle = AsyncSubscriptionHandle()
+        handle._maxsize = 1
+        handle._queue = asyncio.Queue(maxsize=1)
+        handle._dispatch(make_reading(0.0))
+        clock = [1000.0]
+        monkeypatch.setattr("pacsys.aio._subscription.time.monotonic", lambda: clock[0])
+        for _ in range(3):
+            handle._dispatch(make_reading(1.0))  # first one logs and resets the per-window count
+        clock[0] += 10.0
+        handle._dispatch(make_reading(2.0))  # new window: logs again
+        assert handle.dropped == 4

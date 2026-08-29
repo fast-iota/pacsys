@@ -12,8 +12,37 @@ from numbers import Real
 
 import numpy as np
 
-from pacsys.drf_utils import get_device_name
+from pacsys.drf3 import parse_request
+from pacsys.drf3.field import DRF_FIELD
+from pacsys.drf3.property import DRF_PROPERTY
+from pacsys.drf3.range import BYTE_RANGE
+from pacsys.drf_utils import get_device_name, prepare_for_write
 from pacsys.types import Value
+
+# Payloads in these fields are device counts/volts, not comparable to limits in engineering units.
+_UNSCALED_FIELDS = frozenset(
+    {
+        DRF_FIELD.RAW,
+        DRF_FIELD.PRIMARY,
+        DRF_FIELD.VOLTS,
+        DRF_FIELD.RAW_MIN,
+        DRF_FIELD.RAW_MAX,
+        DRF_FIELD.RAW_NOM,
+        DRF_FIELD.RAW_TOL,
+    }
+)
+
+# Server-side aliases (DPM Field.java): COMMON is SCALED, VOLTS is PRIMARY.
+_FIELD_ALIASES = {DRF_FIELD.COMMON: DRF_FIELD.SCALED, DRF_FIELD.VOLTS: DRF_FIELD.PRIMARY}
+
+# (device, property, field, elements, epics record fields) — see _write_target
+_WriteTarget = tuple[
+    str,
+    DRF_PROPERTY,
+    "DRF_FIELD | None",
+    "tuple[int, int] | tuple[str, int, int | None]",
+    "tuple[str | None, str | None]",
+]
 
 
 def _numeric_elements(value: object) -> list[float] | None:
@@ -201,8 +230,71 @@ class DeviceAccessPolicy(Policy):
         return PolicyDecision(allowed=True, ctx=replace(ctx, allowed=new_allowed))
 
 
+def _range_key(rng) -> tuple[int, int] | tuple[str, int, int | None]:
+    """Elements a write lands on, the way DPM sees them (Range.createArrayRange/createByteRange):
+    bare, ``[]``/``[:]`` and ``{}``/``{:}``/``{0:}`` are the server's FullRange; ``[0]``/``[0:0]`` are
+    element 0 and are deliberately folded onto it (a scalar write to either lands on element 0);
+    ``[i]`` and ``[i:i]`` are one element; ``{i}`` is ``{i:1}``."""
+    if isinstance(rng, BYTE_RANGE):
+        if rng.mode == "single":
+            return ("bytes", rng.offset or 0, 1)
+        offset, length = rng.offset or 0, rng.length
+        if rng.mode == "full" or (offset == 0 and length is None):
+            return (0, 0)  # DPM FullRange: the same Range object as [] / [:] / [0:]
+        return ("bytes", offset, length)
+    if rng is None or rng.mode == "full":
+        return (0, 0)
+    low = rng.low or 0
+    return (low, low if rng.mode == "single" or rng.high is None else rng.high)
+
+
+def _write_target(drf: str) -> _WriteTarget:
+    """Identity of a write as the server will apply it (one key per distinct thing that can change).
+
+    Bare names mean SETTING/SCALED; ACNET names are case-insensitive (EPICS PVs are not); server
+    field aliases are folded; one device's SETTING, SETTING.RAW, ANALOG.MIN, ANALOG.MAX, ``[i]``
+    elements and EPICS record fields (``PV.VAL`` vs ``PV.RBV``) are all distinct targets.
+    """
+    req = parse_request(prepare_for_write(drf))
+    dev = req.device.upper() if req.is_acnet else req.device
+    field = _FIELD_ALIASES.get(req.field, req.field) if req.field is not None else None
+    epics = (None, None) if req.is_acnet else req.epics_fields
+    if epics[0] == "VAL":  # the default EPICS record field (PVAPool renders a blank field as VAL)
+        epics = (None, epics[1])
+    return (dev, req.property, field, _range_key(req.range), epics)
+
+
+def _target_label(t: _WriteTarget) -> str:
+    r = t[3]
+    if len(r) == 3:
+        rng = f"{{{r[1]}:}}" if r[2] is None else f"{{{r[1]}:{r[2]}}}"
+    else:
+        rng = f"[{r[0]}]" if r[0] == r[1] else f"[{r[0]}:{r[1]}]"
+    return (
+        f"{t[0]}.{t[1].name}"
+        + (f".{t[2].name}" if t[2] is not None else "")
+        + rng
+        + "".join(f".{f}" for f in t[4] if f)
+    )
+
+
+def _unscaled_denial(t: _WriteTarget, what: str) -> PolicyDecision:
+    """Counts/volts payloads cannot be compared with an engineering-unit limit (and RAW history
+    could mask a large scaled step); only an allow_raw exemption lets them through unchecked."""
+    assert t[2] is not None
+    return PolicyDecision(
+        allowed=False,
+        reason=f"{t[2].name} field write to {what} device {t[0]} is not comparable to its engineering-unit limit",
+    )
+
+
+def _peer_key(peer: str) -> str:
+    """Bucket key: gRPC peer without its ephemeral port, so a reconnect cannot reset the limit."""
+    return peer.rsplit(":", 1)[0] if peer.startswith(("ipv4:", "ipv6:")) else peer
+
+
 class RateLimitPolicy(Policy):
-    """Sliding window rate limit per peer.
+    """Sliding window rate limit per client address (port ignored).
 
     Args:
         max_requests: Maximum requests per window
@@ -223,28 +315,26 @@ class RateLimitPolicy(Policy):
         now = time.monotonic()
         cutoff = now - self._window
 
+        key = _peer_key(ctx.peer)
         with self._lock:
-            # Prune stale peers (no activity in the last hour)
+            # Prune buckets with no activity inside the window (they would be empty anyway)
             if len(self._timestamps) > 100:
-                stale_cutoff = now - 3600
-                stale = [
-                    peer for peer, ts_list in self._timestamps.items() if not ts_list or ts_list[-1] < stale_cutoff
-                ]
+                stale = [peer for peer, ts_list in self._timestamps.items() if not ts_list or ts_list[-1] <= cutoff]
                 for peer in stale:
                     del self._timestamps[peer]
 
-            times = self._timestamps.get(ctx.peer, [])
+            times = self._timestamps.get(key, [])
             times = [t for t in times if t > cutoff]
 
             if len(times) >= self._max_requests:
-                self._timestamps[ctx.peer] = times
+                self._timestamps[key] = times
                 return PolicyDecision(
                     allowed=False,
                     reason=f"Rate limit exceeded ({self._max_requests} per {self._window}s)",
                 )
 
             times.append(now)
-            self._timestamps[ctx.peer] = times
+            self._timestamps[key] = times
 
         return _ALLOW
 
@@ -255,7 +345,11 @@ class ValueRangePolicy(Policy):
     Args:
         limits: Mapping of device name glob pattern to (min, max) bounds.
         allow_raw: Device patterns explicitly allowed to bypass numeric limits
-            for structured raw writes such as ramp or alarm blocks.
+            for structured raw writes such as ramp or alarm blocks, and for
+            RAW/PRIMARY/VOLTS field writes (otherwise denied as not comparable).
+
+    CONTROL writes (``M&X``, ``.CONTROL``, ``.STATUS.ON``) are command ordinals, not
+    values, and pass through; restrict them with ``DeviceAccessPolicy``.
     """
 
     def __init__(self, limits: dict[str, tuple[float, float]], *, allow_raw: list[str] | None = None):
@@ -275,13 +369,16 @@ class ValueRangePolicy(Policy):
         if ctx.rpc_method != "Set":
             return _ALLOW
         for drf, value in ctx.values:
-            name = get_device_name(drf)
+            target = _write_target(drf)
+            name = target[0]
             bound = self._bound_for(name)
-            if bound is None:
-                continue
-            if isinstance(value, (bytes, bytearray)):
+            if bound is None or target[1] is DRF_PROPERTY.CONTROL:
+                continue  # CONTROL payloads are command ordinals, not values (gate them by device access)
+            if isinstance(value, (bytes, bytearray)) or target[2] in _UNSCALED_FIELDS:
                 if _raw_allowed(name, self._allow_raw):
-                    continue
+                    continue  # exempt raw write: nothing comparable to check
+                if target[2] in _UNSCALED_FIELDS:
+                    return _unscaled_denial(target, "range-limited")
                 return PolicyDecision(
                     allowed=False,
                     reason=f"Raw byte write to range-limited device {name} requires an allow_raw exemption",
@@ -340,7 +437,12 @@ class SlewRatePolicy(Policy):
 
     First write to any device is always allowed (no history).
     History is updated on allow (accepts that failed backend writes will
-    leave stale history).
+    leave stale history). A Set naming the same slew-limited target (device,
+    property, field, element) more than once is denied: each slot is checked
+    against pre-batch history, so duplicates could otherwise combine into a step
+    larger than ``max_step``. RAW/PRIMARY/VOLTS field writes are denied (not
+    comparable to engineering-unit limits) unless the device is in ``allow_raw``.
+    CONTROL writes are command ordinals, not values, and pass through.
     """
 
     def __init__(self, limits: dict[str, SlewLimit], *, allow_raw: list[str] | None = None):
@@ -349,7 +451,7 @@ class SlewRatePolicy(Policy):
         self._limits = limits
         self._allow_raw = _raw_patterns(allow_raw)
         self._lock = threading.Lock()
-        self._history: dict[str, tuple[float, float]] = {}  # device -> (value, timestamp)
+        self._history: dict[_WriteTarget, tuple[float, float]] = {}  # target -> (value, timestamp)
 
     def _limit_for(self, device_name: str) -> SlewLimit | None:
         upper = device_name.upper()
@@ -363,17 +465,28 @@ class SlewRatePolicy(Policy):
             return _ALLOW
 
         now = time.monotonic()
+        seen: set[_WriteTarget] = set()
+        validated: list[tuple[_WriteTarget, float]] = []
 
         with self._lock:
             # First pass: validate all values
             for drf, value in ctx.values:
-                name = get_device_name(drf)
+                key = _write_target(drf)
+                name = key[0]
                 limit = self._limit_for(name)
-                if limit is None:
-                    continue
-                if isinstance(value, (bytes, bytearray)):
+                if limit is None or key[1] is DRF_PROPERTY.CONTROL:
+                    continue  # CONTROL payloads are command ordinals, not values (gate them by device access)
+                if key in seen:
+                    return PolicyDecision(
+                        allowed=False,
+                        reason=f"Duplicate target {_target_label(key)} in one Set bypasses slew limits",
+                    )
+                seen.add(key)
+                if isinstance(value, (bytes, bytearray)) or key[2] in _UNSCALED_FIELDS:
                     if _raw_allowed(name, self._allow_raw):
-                        continue
+                        continue  # exempt raw write: no engineering-unit history to slew against
+                    if key[2] in _UNSCALED_FIELDS:
+                        return _unscaled_denial(key, "slew-limited")
                     return PolicyDecision(
                         allowed=False,
                         reason=f"Raw byte write to slew-limited device {name} requires an allow_raw exemption",
@@ -386,7 +499,8 @@ class SlewRatePolicy(Policy):
                         reason=f"Non-scalar or non-finite value {value!r} for slew-limited device {name}",
                     )
                 value = elements[0]
-                prev = self._history.get(name)
+                validated.append((key, value))
+                prev = self._history.get(key)
                 if prev is None:
                     continue  # first write always allowed
                 prev_value, prev_time = prev
@@ -407,14 +521,9 @@ class SlewRatePolicy(Policy):
                             reason=f"Slew rate {rate:.1f}/s for {name} exceeds limit {limit.max_rate}/s",
                         )
 
-            # Second pass: update history (only if all passed)
-            for drf, value in ctx.values:
-                name = get_device_name(drf)
-                if self._limit_for(name) is None:
-                    continue
-                elements = _numeric_elements(value)
-                if elements is not None and len(elements) == 1:  # guaranteed by first pass
-                    self._history[name] = (elements[0], now)
+            # Second pass: commit history (only if all passed)
+            for key, value in validated:
+                self._history[key] = (value, now)
 
         return _ALLOW
 

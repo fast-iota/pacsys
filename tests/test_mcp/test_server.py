@@ -70,8 +70,10 @@ async def test_lifespan_closes_backend_devdb_and_audit(monkeypatch, tmp_path):
 
     monkeypatch.delenv("PACSYS_DPM_HOST", raising=False)
     monkeypatch.delenv("PACSYS_DPM_PORT", raising=False)
-    monkeypatch.setattr("pacsys.auth.KerberosAuth", lambda: auth)
+    # Import dpm_http (via its patch) BEFORE patching KerberosAuth: a first import inside the
+    # patch window would bind dpm_http.KerberosAuth to the lambda for the rest of the session.
     monkeypatch.setattr("pacsys.backends.dpm_http.DPMHTTPBackend", backend_factory)
+    monkeypatch.setattr("pacsys.auth.KerberosAuth", lambda: auth)
     monkeypatch.setattr(devdb_module, "DEVDB_AVAILABLE", True)
     monkeypatch.setattr(devdb_module, "DevDBClient", mock.MagicMock(return_value=devdb))
 

@@ -11,6 +11,11 @@ from pacsys.errors import ACLError
 from .ssh_helpers import connected_ssh, make_exec_channel, make_interactive_channel
 
 
+def _mktemp_channel():
+    """Remote mktemp reply: the script path acl() will use."""
+    return make_exec_channel(stdout=b"/tmp/pacsys_acl_a1b2c3d4.acl\n", exit_code=0)
+
+
 @pytest.fixture(autouse=True)
 def _mock_getuser():
     with patch("getpass.getuser", return_value="testuser"):
@@ -58,6 +63,7 @@ class TestSSHClientACL:
         ssh, transport = connected_ssh(mock_connect, mock_transport_cls)
         acl_stdout = b"\nACL> read M:OUTTMP\n\nM:OUTTMP       =  72.500 DegF\n\nACL> \n"
         transport.open_session.side_effect = [
+            _mktemp_channel(),
             make_exec_channel(exit_code=0),  # cat > script
             make_exec_channel(stdout=acl_stdout, exit_code=0),  # acl script
             make_exec_channel(exit_code=0),  # rm -f script
@@ -71,6 +77,7 @@ class TestSSHClientACL:
     def test_acl_failure_raises(self, mock_connect, mock_transport_cls):
         ssh, transport = connected_ssh(mock_connect, mock_transport_cls)
         transport.open_session.side_effect = [
+            _mktemp_channel(),
             make_exec_channel(exit_code=0),  # cat > script
             make_exec_channel(stderr=b"error text\n", exit_code=1),  # acl fails
             make_exec_channel(exit_code=0),  # rm -f
@@ -85,6 +92,7 @@ class TestSSHClientACL:
         ssh, transport = connected_ssh(mock_connect, mock_transport_cls)
         stdout = b"\nACL> cmd\n\n  result  \n\nACL> \n"
         transport.open_session.side_effect = [
+            _mktemp_channel(),
             make_exec_channel(exit_code=0),
             make_exec_channel(stdout=stdout, exit_code=0),
             make_exec_channel(exit_code=0),
@@ -99,6 +107,7 @@ class TestSSHClientACL:
         ssh, transport = connected_ssh(mock_connect, mock_transport_cls)
         stdout = b"\nACL> read M:OUTTMP; read G:AMANDA\n\nout1\nout2\n\nACL> \n"
         transport.open_session.side_effect = [
+            _mktemp_channel(),
             make_exec_channel(exit_code=0),
             make_exec_channel(stdout=stdout, exit_code=0),
             make_exec_channel(exit_code=0),
@@ -121,6 +130,7 @@ class TestSSHClientACLScript:
         ssh, transport = connected_ssh(mock_connect, mock_transport_cls)
         acl_stdout = b"\nACL> read M:OUTTMP\n\nM:OUTTMP       =  72.500 DegF\n\nACL> \n"
         transport.open_session.side_effect = [
+            _mktemp_channel(),
             make_exec_channel(exit_code=0),  # cat > script
             make_exec_channel(stdout=acl_stdout, exit_code=0),  # acl script
             make_exec_channel(exit_code=0),  # rm -f script
@@ -128,7 +138,7 @@ class TestSSHClientACLScript:
 
         result = ssh.acl(["read M:OUTTMP"])
         assert result == "M:OUTTMP       =  72.500 DegF"
-        assert transport.open_session.call_count == 3
+        assert transport.open_session.call_count == 4
 
     @patch("paramiko.Transport")
     @patch("socket.create_connection")
@@ -136,6 +146,7 @@ class TestSSHClientACLScript:
         ssh, transport = connected_ssh(mock_connect, mock_transport_cls)
         write_chan = make_exec_channel(exit_code=0)
         transport.open_session.side_effect = [
+            _mktemp_channel(),
             write_chan,  # cat > script
             make_exec_channel(exit_code=0),  # acl script
             make_exec_channel(exit_code=0),  # rm
@@ -151,6 +162,7 @@ class TestSSHClientACLScript:
     def test_acl_list_cleans_up_on_failure(self, mock_connect, mock_transport_cls):
         ssh, transport = connected_ssh(mock_connect, mock_transport_cls)
         transport.open_session.side_effect = [
+            _mktemp_channel(),
             make_exec_channel(exit_code=0),  # cat > script
             make_exec_channel(stderr=b"error\n", exit_code=1),  # acl fails
             make_exec_channel(exit_code=0),  # rm still runs
@@ -158,7 +170,7 @@ class TestSSHClientACLScript:
 
         with pytest.raises(ACLError, match="ACL script failed"):
             ssh.acl(["bad command"])
-        assert transport.open_session.call_count == 3
+        assert transport.open_session.call_count == 4
 
     @patch("paramiko.Transport")
     @patch("socket.create_connection")
@@ -172,11 +184,14 @@ class TestSSHClientACLScript:
     def test_acl_list_script_write_failure(self, mock_connect, mock_transport_cls):
         ssh, transport = connected_ssh(mock_connect, mock_transport_cls)
         transport.open_session.side_effect = [
+            _mktemp_channel(),
             make_exec_channel(stderr=b"Permission denied\n", exit_code=1),  # cat fails
+            make_exec_channel(exit_code=0),  # rm -f still removes the mktemp file
         ]
 
         with pytest.raises(ACLError, match="Failed to write"):
             ssh.acl(["read M:OUTTMP"])
+        assert transport.open_session.call_count == 3
 
 
 # ---------------------------------------------------------------------------

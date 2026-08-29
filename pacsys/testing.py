@@ -8,6 +8,7 @@ import asyncio
 import queue
 import sys
 import threading
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -338,7 +339,9 @@ class FakeSubscriptionHandle(SubscriptionHandle):
         """Yield (reading, handle) pairs for this subscription.
 
         Args:
-            timeout: Seconds to wait for next reading. None = block forever.
+            timeout: Total wall-clock window in seconds, like the real backends; returns
+                quietly when it elapses. None = block forever. Unlike the real handles,
+                a stopped fake handle does not drain its remaining buffer.
         """
         if self._callback is not None:
             raise RuntimeError("Cannot iterate subscription with callback; readings are pushed to callback")
@@ -346,21 +349,28 @@ class FakeSubscriptionHandle(SubscriptionHandle):
         if self._exc is not None:
             raise self._exc
 
+        deadline = None if timeout is None else time.monotonic() + timeout
         while not self._stopped:
+            remaining = None if deadline is None else deadline - time.monotonic()
             try:
-                reading = self._queue.get(block=True, timeout=timeout)
-                if reading is None:
-                    if self._exc is not None:
-                        raise self._exc
+                if timeout == 0:
+                    reading = self._queue.get_nowait()  # nonblocking drain, like the real handles
+                elif remaining is not None and remaining <= 0:
                     break
-                yield (reading, self)
+                else:
+                    reading = self._queue.get(block=True, timeout=remaining)
             except queue.Empty:
-                # Timeout reached
                 break
+            if reading is None:
+                if self._exc is not None:
+                    raise self._exc
+                break
+            yield (reading, self)
 
     def stop(self) -> None:
         """Stop this subscription."""
         if not self._stopped:
+            self._stop_requested = True
             self._stopped = True
             self._queue.put(None)  # Poison pill to unblock readings()
             self._remover(self)
@@ -1051,9 +1061,16 @@ class AsyncFakeBackend(_AsyncBackend):
         self._sync.set_error(drf, error_code, message)
 
     def reset(self):
-        self._sync.reset()
+        """Stop all subscriptions and clear configured state; backend stays usable.
+
+        Synchronous so module-scoped sync fixtures can call it: async handles get the
+        stop sentinel (their feeders exit on it), sync handles are stopped by the sync reset.
+        """
+        for h in list(self._handles):
+            h._signal_stop()
         self._handles.clear()
         self._sync_handles.clear()
+        self._sync.reset()
         self._closed = False
 
     # -- Inspection -----------------------------------------------------------

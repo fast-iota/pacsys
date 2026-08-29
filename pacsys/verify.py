@@ -158,9 +158,16 @@ def values_match(a: Value, b: Value, tolerance: float = 0.0) -> bool:
 
 
 def _normalize_control_readback(value: Value, field: str) -> Value:
-    """Extract a mapped field from a backend basic-status response."""
+    """Extract a mapped field from a backend basic-status response.
+
+    DPM delivers ``.STATUS.<field>`` as a 0.0/1.0 double (DPMProtocolReplierPC.sendReply(boolean));
+    only those two values are coerced to bool so text or other numbers still fail to match.
+    """
     if isinstance(value, dict) and field in value:
-        return value[field]
+        value = value[field]
+    scalar = value.item() if isinstance(value, np.generic) else value
+    if isinstance(scalar, Real) and not isinstance(scalar, bool) and scalar in (0, 1):
+        return bool(scalar)
     return value
 
 

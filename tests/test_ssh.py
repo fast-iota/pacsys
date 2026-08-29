@@ -7,6 +7,7 @@ import paramiko
 import pytest
 
 from pacsys.ssh import (
+    CommandResult,
     SFTPSession,
     SSHClient,
     SSHCommandError,
@@ -805,7 +806,52 @@ class TestAuthDispatch:
 
         ssh = SSHClient(SSHHop("host", username="user"))
         ssh._ensure_connected()
+        mock_transport.auth_gssapi_with_mic.assert_called_once_with("user", "host", gss_deleg_creds=False)
+
+    @patch("paramiko.Transport")
+    @patch("socket.create_connection")
+    def test_gssapi_delegation_is_opt_in(self, mock_connect, mock_transport_cls):
+        mock_connect.return_value = MagicMock()
+        mock_transport = _make_mock_transport()
+        mock_transport_cls.return_value = mock_transport
+
+        ssh = SSHClient(SSHHop("host", username="user", delegate_credentials=True))
+        ssh._ensure_connected()
         mock_transport.auth_gssapi_with_mic.assert_called_once_with("user", "host", gss_deleg_creds=True)
+
+    @patch("paramiko.Transport")
+    @patch("socket.create_connection")
+    def test_gssapi_auth_username_from_auth_principal(self, mock_connect, mock_transport_cls):
+        """SSHClient(auth=KerberosAuth(...)) must log in as that principal, not the default cache one."""
+        from pacsys.auth import KerberosAuth
+
+        mock_connect.return_value = MagicMock()
+        mock_transport = _make_mock_transport()
+        mock_transport_cls.return_value = mock_transport
+        auth = MagicMock(spec=KerberosAuth)
+        auth.name = None
+        auth.principal = "operator@FNAL.GOV"
+
+        with patch("pacsys.ssh._gssapi_username", side_effect=AssertionError("default cache consulted")):
+            ssh = SSHClient(SSHHop("host"), auth=auth)
+            ssh._ensure_connected()
+        mock_transport.auth_gssapi_with_mic.assert_called_once_with("operator", "host", gss_deleg_creds=False)
+
+    @patch("pacsys.ssh._default_principal", return_value="nikita@FNAL.GOV")
+    def test_named_auth_must_be_default_principal(self, _mock_default):
+        """paramiko can only present the default credential; a different named principal fails at init."""
+        from pacsys.auth import KerberosAuth
+        from pacsys.errors import AuthenticationError
+
+        auth = MagicMock(spec=KerberosAuth)
+        auth.name = "operator@FNAL.GOV"
+        auth.principal = "operator@FNAL.GOV"
+        with pytest.raises(AuthenticationError, match="default credential-cache principal nikita@FNAL.GOV"):
+            SSHClient(SSHHop("host"), auth=auth)
+
+        auth.principal = "nikita@FNAL.GOV"
+        auth.name = "nikita@FNAL.GOV"
+        assert SSHClient(SSHHop("host"), auth=auth).connected is False
 
     @patch("pacsys.ssh._gssapi_username", return_value="kerbuser")
     @patch("paramiko.Transport")
@@ -817,7 +863,7 @@ class TestAuthDispatch:
 
         ssh = SSHClient(SSHHop("host"))  # no explicit username
         ssh._ensure_connected()
-        mock_transport.auth_gssapi_with_mic.assert_called_once_with("kerbuser", "host", gss_deleg_creds=True)
+        mock_transport.auth_gssapi_with_mic.assert_called_once_with("kerbuser", "host", gss_deleg_creds=False)
 
     @patch("paramiko.RSAKey.from_private_key_file")
     @patch("paramiko.Transport")
@@ -857,3 +903,72 @@ class TestAuthDispatch:
         ssh = SSHClient(SSHHop("host", auth_method="password", password="secret", username="user"))
         ssh._ensure_connected()
         mock_transport.auth_password.assert_called_once_with("user", "secret")
+
+
+# ---------------------------------------------------------------------------
+# ACL script execution
+# ---------------------------------------------------------------------------
+
+
+class TestACLScript:
+    _MKTEMP = "mktemp --suffix=.acl /tmp/pacsys_acl_XXXXXXXX"
+
+    @staticmethod
+    def _client():
+        return SSHClient(SSHHop("host", auth_method="key", key_filename="/tmp/key"))
+
+    @staticmethod
+    def _result(command, exit_code=0, stdout="", stderr=""):
+        return CommandResult(command=command, exit_code=exit_code, stdout=stdout, stderr=stderr)
+
+    @pytest.mark.parametrize(
+        ("mktemp_stdout", "path"),
+        [
+            ("/tmp/pacsys_acl_a1b2c3d4.acl\n", "/tmp/pacsys_acl_a1b2c3d4.acl"),
+            ("Welcome to host\n/tmp/pacsys_acl_a1b2c3d4.acl\nlogout\n", "/tmp/pacsys_acl_a1b2c3d4.acl"),  # banners
+        ],
+    )
+    def test_uses_remote_mktemp_and_removes_exact_path(self, mktemp_stdout, path):
+        """The script path is the mktemp-shaped line of the output and is removed even when acl fails."""
+        import shlex
+
+        from pacsys.errors import ACLError
+
+        ssh = self._client()
+        q = shlex.quote(path)
+
+        def fake_exec(command, timeout=None, input=None):
+            if command == self._MKTEMP:
+                return self._result(command, stdout=mktemp_stdout)
+            if command.startswith("acl "):
+                return self._result(command, exit_code=1, stderr="boom")
+            return self._result(command)
+
+        with patch.object(ssh, "exec", side_effect=fake_exec) as ex:
+            with pytest.raises(ACLError, match="boom"):
+                ssh.acl("read M:OUTTMP")
+        commands = [c.args[0] for c in ex.call_args_list]
+        assert commands == [self._MKTEMP, f"cat > {q}", f"acl {q}", f"rm -f {q}"]
+        assert ex.call_args_list[1].kwargs["input"] == "read M:OUTTMP\n"
+
+    def test_mktemp_failure_runs_nothing_else(self):
+        from pacsys.errors import ACLError
+
+        ssh = self._client()
+        with patch.object(ssh, "exec", return_value=self._result(self._MKTEMP, exit_code=1, stderr="ro fs")) as ex:
+            with pytest.raises(ACLError, match="Failed to create ACL script file: ro fs"):
+                ssh.acl("read M:OUTTMP")
+        assert [c.args[0] for c in ex.call_args_list] == [self._MKTEMP]
+
+    @pytest.mark.parametrize(
+        "stdout", ["/etc/passwd\n", "/tmp/pacsys_acl_x/../../home/u/.bashrc\n", "/tmp/pacsys_acl_a b$c.acl\n", ""]
+    )
+    def test_unexpected_mktemp_output_rejected(self, stdout):
+        """Only a path of exactly mktemp's shape is ever written, executed, or removed."""
+        from pacsys.errors import ACLError
+
+        ssh = self._client()
+        with patch.object(ssh, "exec", return_value=self._result(self._MKTEMP, stdout=stdout)) as ex:
+            with pytest.raises(ACLError, match="Failed to create ACL script file"):
+                ssh.acl("read M:OUTTMP")
+        assert ex.call_count == 1

@@ -99,6 +99,12 @@ class TestFTPDevice:
         with pytest.raises(ValueError, match="data_length must be 2 or 4"):
             FTPDevice(di=1, pi=0, ssdn=b"\x00" * 8, data_length=3)
 
+    @pytest.mark.parametrize(("di", "pi"), [(0x1000000, 0), (-1, 0), (0, 256), (0, -1)])
+    def test_index_range_validation(self, di, pi):
+        """Out-of-range di/pi would silently encode a different device/property in dipi."""
+        with pytest.raises(ValueError, match="di must be|pi must be"):
+            FTPDevice(di=di, pi=pi, ssdn=b"\x00" * 8)
+
 
 # =============================================================================
 # Class code registry tests

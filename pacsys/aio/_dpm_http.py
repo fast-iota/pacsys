@@ -318,7 +318,7 @@ class AsyncDPMHTTPBackend(AsyncBackend):
                 self._create_core(),
                 timeout=connection_timeout,
             )
-        except TimeoutError as e:
+        except (TimeoutError, asyncio.TimeoutError) as e:  # distinct classes on 3.10
             error_msg = f"DPM write connection timed out: {e}"
             return [
                 WriteResult(
@@ -342,7 +342,7 @@ class AsyncDPMHTTPBackend(AsyncBackend):
                     timeout=_remaining_timeout(deadline, "DPM write"),
                     setting_payloads=setting_payloads,
                 )
-            except TimeoutError as e:
+            except (TimeoutError, asyncio.TimeoutError) as e:
                 return [
                     WriteResult(
                         drf=drf,

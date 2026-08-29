@@ -2418,6 +2418,7 @@ class DMQBackend(Backend):
         if sub is None:
             return
 
+        handle._stop_requested = True
         self._cancel_subscription_async(sub)
         handle._signal_stop()
         logger.info("Removed subscription sub_id=%s", sub_id[:8])
@@ -2434,6 +2435,7 @@ class DMQBackend(Backend):
             self._subscriptions.clear()
 
         for sub in subs:
+            sub.handle._stop_requested = True
             sub.handle._signal_stop()
             self._cancel_subscription_async(sub)
 

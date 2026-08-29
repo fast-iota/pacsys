@@ -459,6 +459,42 @@ class TestPolicyEnforcement:
                 stub.Set(request, timeout=5.0)
             assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED
 
+    @pytest.mark.parametrize(
+        "drf",
+        [
+            " M:OUTTMP@I",
+            "M:OUTTMP@I ",
+            "\tM:OUTTMP",
+            "\u200bM:OUTTMP",
+            "M:OUTTMP\ufeff",
+            "M:OUTTMP@Z",
+            "M:OUTTMP[[",
+            "0:1234@I",  # device-index alias resolves to any device: matches no pattern
+            "#:1234@I",
+            "#LOG:N",  # DPM list directive (settings logging off), never a device
+        ],
+    )
+    def test_malformed_drf_denied_at_gateway(self, server_with_policy, drf):
+        """Padded/zero-width DRFs parse as non-ACNET names no policy pattern can match; unparseable ones must
+        not raise out of the servicer (gRPC UNKNOWN); index aliases name any device — all fail closed."""
+        with _make_channel(server_with_policy) as ch:
+            stub = DAQ_pb2_grpc.DAQStub(ch)
+            request = DAQ_pb2.ReadingList()
+            request.drf.append(drf)
+            with pytest.raises(grpc.RpcError) as exc_info:
+                list(stub.Read(request, timeout=5.0))
+            assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED
+            assert "Malformed or disallowed DRF" in exc_info.value.details()
+
+    def test_set_drf_invalid_as_write_denied_at_gateway(self, server):
+        """'PV:NAME@' parses as a read but prepare_for_write yields '@@N': deny, never a policy exception."""
+        with _make_channel(server) as ch:
+            stub = DAQ_pb2_grpc.DAQStub(ch)
+            with pytest.raises(grpc.RpcError) as exc_info:
+                stub.Set(_set_request("PV:NAME@", 1.0), timeout=5.0)
+            assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED
+            assert "Malformed or disallowed DRF" in exc_info.value.details()
+
 
 # ── Default-Deny Writes Tests ─────────────────────────────────────────────
 

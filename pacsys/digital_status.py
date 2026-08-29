@@ -244,7 +244,10 @@ class DigitalStatus:
         """
         bits = []
         for i, bd in enumerate(bit_defs):
-            is_active = ((raw_value & bd.mask) == bd.match) ^ bd.invert
+            # Server inverts the raw word before mask/match (BasicStatusScaling.getState),
+            # which differs from inverting the result for multi-bit masks.
+            word = ~raw_value if bd.invert else raw_value
+            is_active = (word & bd.mask) == bd.match
             bit_pos = (bd.mask & -bd.mask).bit_length() - 1 if bd.mask > 0 else i
             bits.append(
                 StatusBit(

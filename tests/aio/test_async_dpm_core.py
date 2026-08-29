@@ -169,6 +169,20 @@ async def test_async_connection_body_uses_remaining_timeout():
         _ = conn.list_id
 
 
+@pytest.mark.asyncio
+async def test_async_connection_connect_timeout_is_connection_error():
+    """wait_for expiry (asyncio.TimeoutError, a distinct class on 3.10) maps to DPMConnectionError."""
+    conn = _AsyncDPMConnection("localhost", 6802)
+
+    async def hang(*_args, **_kwargs):
+        await asyncio.sleep(10)
+
+    with mock.patch("asyncio.open_connection", side_effect=hang):
+        with pytest.raises(DPMConnectionError, match="timed out"):
+            await conn.connect(timeout=0.02)
+    assert conn._writer is None
+
+
 @pytest.fixture
 def make_core():
     def _make(replies, auth=None, role=None):

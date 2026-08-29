@@ -140,7 +140,7 @@ class CallbackDispatcher:
             if item is None:  # sentinel
                 break
             fn, arg, handle, is_error = item
-            if handle.stopped and not is_error:  # reading queued before stop(); errors are always delivered
+            if handle._stop_requested and not is_error:  # reading queued before stop(); errors are always delivered
                 continue
             try:
                 fn(arg, handle)

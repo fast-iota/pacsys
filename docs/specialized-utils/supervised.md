@@ -29,6 +29,8 @@ Writes (Set RPCs) are **denied by default** — every write must be explicitly a
 This means:
 - A server with no policies allows all reads and denies all writes
 - Policies like `RateLimitPolicy` or `ValueRangePolicy` do not unlock writes — they only constrain already-approved writes
+- A request containing a DRF that is empty, has surrounding whitespace or non-printable characters, does not parse (for a Set: as the write would be issued), uses a device-index alias (`0:1234`, `#:1234` — DPM resolves these to any device), or starts with `#` (DPM list directives such as `#LOG:N` are not devices) is denied (`PERMISSION_DENIED`, "Malformed or disallowed DRF") before any policy runs — such names would otherwise match no device pattern
+- `ValueRangePolicy`/`SlewRatePolicy` never gate `.CONTROL` writes: a command ordinal is not a value. Restrict commands with `DeviceAccessPolicy`
 
 ## Quick Start
 
@@ -147,7 +149,7 @@ policies = [DeviceAccessPolicy(patterns=[r"M:OUT.*", r"G:AMANDA"], action="set",
 
 ### RateLimitPolicy
 
-Sliding window rate limit per client peer address.
+Sliding window rate limit per client address. The ephemeral port is ignored, so reconnecting does not reset the limit.
 
 ```python
 from pacsys.supervised import RateLimitPolicy
@@ -163,7 +165,7 @@ policies = [RateLimitPolicy(max_requests=100, window_seconds=60)]
 
 ### ValueRangePolicy
 
-Deny writes where numeric values fall outside allowed ranges. Unmatched devices are passed through. For range-limited devices the policy fails closed: array/list values are checked element-by-element, and non-numeric values (including raw bytes), NaN, and infinity are denied. Structured raw writes such as ramp or alarm blocks require an explicit `allow_raw` device pattern.
+Deny writes where numeric values fall outside allowed ranges. Unmatched devices are passed through. For range-limited devices the policy fails closed: array/list values are checked element-by-element, and non-numeric values (including raw bytes), NaN, and infinity are denied. Structured raw writes such as ramp or alarm blocks, and writes to `.RAW`/`.PRIMARY`/`.VOLTS` fields (device counts are not comparable to engineering-unit bounds), require an explicit `allow_raw` device pattern.
 
 ```python
 from pacsys.supervised import ValueRangePolicy
@@ -184,7 +186,7 @@ policies = [ValueRangePolicy(
 
 Enforce maximum step size and/or rate of change per device. Stateful -- tracks the last written value and timestamp. First write to any device is always allowed. Accepts that failed backend writes will leave stale history. The server serializes policy check and write, so concurrent writes cannot both pass a limit measured from the same history.
 
-For slew-limited devices the policy fails closed: only finite numeric scalars (or single-element lists/arrays) are accepted; text, raw bytes, multi-element arrays, and NaN/inf are denied since slew against them is undefined. Structured raw writes require an explicit `allow_raw` device pattern.
+For slew-limited devices the policy fails closed: only finite numeric scalars (or single-element lists/arrays) are accepted; text, raw bytes, multi-element arrays, and NaN/inf are denied since slew against them is undefined. Structured raw writes, and writes to `.RAW`/`.PRIMARY`/`.VOLTS` fields (not comparable to engineering-unit history), require an explicit `allow_raw` device pattern. History is kept per target — device, property, field, array element and EPICS record field (`M:OUTTMP`, `M:OUTTMP[5]`, `M:OUTTMP.ANALOG.MIN`, `PV:X.RBV` are distinct; `M:OUTTMP`, `M:OUTTMP[0]`, `M:OUTTMP[0:0]` and `.COMMON`/`.SCALED` are the same) — and a single `Set` naming the same target more than once is denied, since each slot is checked against pre-batch history.
 
 Each device pattern maps to a `SlewLimit(max_step=..., max_rate=...)`. At least one must be set; both can be combined.
 
