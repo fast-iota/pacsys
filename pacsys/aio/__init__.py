@@ -15,7 +15,7 @@ import logging
 
 from pacsys import _validate_config_host, _validate_config_port, _validate_config_positive
 from pacsys.aio._backends import AsyncBackend
-from pacsys.aio._device import AsyncDevice
+from pacsys.aio._device import AsyncArrayDevice, AsyncDevice, AsyncScalarDevice, AsyncTextDevice
 from pacsys.aio._subscription import AsyncSubscriptionHandle
 from pacsys.auth import Auth, JWTAuth, KerberosAuth
 from pacsys.types import BasicControl, Value
@@ -23,6 +23,9 @@ from pacsys.types import BasicControl, Value
 __all__ = [
     "AsyncBackend",
     "AsyncDevice",
+    "AsyncScalarDevice",
+    "AsyncArrayDevice",
+    "AsyncTextDevice",
     "AsyncSubscriptionHandle",
     "configure",
     "shutdown",
@@ -111,8 +114,14 @@ def configure(
     timeout: float | _Unset | None = _UNSET,
     auth: Auth | str | _Unset | None = _UNSET,
     role: str | _Unset | None = _UNSET,
+    dpm_host: str | _Unset | None = _UNSET,
+    dpm_port: int | _Unset | None = _UNSET,
+    default_timeout: float | _Unset | None = _UNSET,
 ) -> None:
     """Configure async backend settings.
+
+    ``dpm_host``/``dpm_port``/``default_timeout`` are accepted as the sync
+    ``pacsys.configure()`` spellings of ``host``/``port``/``timeout``.
 
     If a backend is already initialized, its cleanup is scheduled on the
     running event loop (best-effort) and it is replaced on the next
@@ -142,6 +151,18 @@ def configure(
     global _config_host, _config_port, _config_pool_size, _config_timeout
     global _global_async_backend, _async_backend_initialized, _owner_loop
 
+    if dpm_host is not _UNSET:
+        if host is not _UNSET:
+            raise ValueError("pass host or dpm_host, not both")
+        host = dpm_host
+    if dpm_port is not _UNSET:
+        if port is not _UNSET:
+            raise ValueError("pass port or dpm_port, not both")
+        port = dpm_port
+    if default_timeout is not _UNSET:
+        if timeout is not _UNSET:
+            raise ValueError("pass timeout or default_timeout, not both")
+        timeout = default_timeout
     if not isinstance(backend, _Unset) and backend is not None and backend not in _VALID_ASYNC_BACKENDS:
         raise ValueError(f"Invalid backend {backend!r}, must be one of {sorted(_VALID_ASYNC_BACKENDS)}")
     if isinstance(auth, str):

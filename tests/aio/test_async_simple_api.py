@@ -402,3 +402,16 @@ class TestBoundBackend:
     def test_configure_rejects_role_for_grpc(self):
         with pytest.raises(ValueError, match="role is only used by the DPM backend"):
             aio.configure(backend="grpc", role="testing")
+
+
+class TestConfigureAliases:
+    def test_sync_names_accepted(self):
+        aio.configure(dpm_host="h.example", dpm_port=1234, default_timeout=2.5)
+        assert (aio._config_host, aio._config_port, aio._config_timeout) == ("h.example", 1234, 2.5)
+
+    @pytest.mark.parametrize(
+        "kwargs", [{"host": "a", "dpm_host": "b"}, {"port": 1, "dpm_port": 2}, {"timeout": 1.0, "default_timeout": 2.0}]
+    )
+    def test_both_spellings_rejected(self, kwargs):
+        with pytest.raises(ValueError, match="not both"):
+            aio.configure(**kwargs)

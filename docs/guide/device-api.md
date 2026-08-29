@@ -398,6 +398,27 @@ devices = {Device("M:OUTTMP"), Device("G:AMANDA")}
 
 ---
 
+## Async
+
+`pacsys.aio.AsyncDevice` (and `AsyncScalarDevice`/`AsyncArrayDevice`/`AsyncTextDevice`) mirror
+the sync classes: every I/O method above is `await`-able with the same arguments, verification
+follows the same plan (shared code, not a copy), and fluent modifiers return the same subclass.
+
+```python
+from pacsys.aio import AsyncDevice, AsyncScalarDevice
+
+dev = AsyncDevice("Z:ACLTST", backend=backend)
+await dev.write(72.5, verify=True)
+await dev.on(verify=Verify(check_first=True))
+reading = await dev.await_next(event="p,1000", timeout=2.0)
+temp = await AsyncScalarDevice("M:OUTTMP", backend=backend).read()   # float
+```
+
+Not available on `AsyncDevice`: `info()` (DevDB metadata is sync-only) and the DevDB-accelerated
+`digital_status()` path (the async version always does the 3-read form).
+
+---
+
 ## See Also
 
 - [Reading Devices](reading.md) - Reading patterns and value types

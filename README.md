@@ -109,7 +109,7 @@ with pacsys.dpm(auth=pacsys.KerberosAuth(), role="testing") as backend:
 
 ## Async capabilities
 
-Native async versions with same API surface.
+Native async versions with the same API surface (`AsyncDevice` mirrors `Device` except `info()`, which needs the sync DevDB client).
 
 ```python
 import pacsys.aio as aio
