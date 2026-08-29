@@ -145,6 +145,18 @@ class TestBufferOverflow:
         warnings = [r for r in caplog.records if "buffer full" in r.message.lower()]
         assert len(warnings) == 1
 
+    def test_dropped_is_cumulative_across_log_windows(self, handle, make_reading, monkeypatch):
+        handle._maxsize = 1
+        handle._dispatch(make_reading(0.0))
+        clock = [1000.0]
+        monkeypatch.setattr("pacsys.backends._subscription.time.monotonic", lambda: clock[0])
+        for _ in range(3):
+            handle._dispatch(make_reading(1.0))  # first one logs and resets the per-window count
+        clock[0] += 10.0
+        handle._dispatch(make_reading(2.0))  # new window: logs again
+        handle._note_dispatch_drop()  # worker-queue drop reported by the dispatcher
+        assert handle.dropped == 5
+
 
 # =============================================================================
 # Timeout behavior

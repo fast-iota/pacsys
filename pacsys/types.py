@@ -572,6 +572,14 @@ class SubscriptionHandle:
         """Exception if an error occurred, else None."""
         raise NotImplementedError
 
+    @property
+    def dropped(self) -> int:
+        """Readings discarded because the buffer or callback queue was full (cumulative)."""
+        return 0
+
+    def _note_dispatch_drop(self) -> None:
+        """Called by the callback dispatcher when it had to drop a reading for this handle."""
+
     def readings(
         self,
         timeout: float | None = None,

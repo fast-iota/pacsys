@@ -29,7 +29,8 @@ class BufferedSubscriptionHandle(SubscriptionHandle):
         self._exc: Exception | None = None
         self._ref_ids: list[int] = []
         self._drfs: list[str] = []
-        self._drop_count = 0
+        self._drop_count = 0  # cumulative, never reset
+        self._drops_since_log = 0
         self._last_drop_log = 0.0
 
     # -- Properties -----------------------------------------------------------
@@ -46,6 +47,14 @@ class BufferedSubscriptionHandle(SubscriptionHandle):
     def exc(self) -> Exception | None:
         return self._exc
 
+    @property
+    def dropped(self) -> int:
+        return self._drop_count
+
+    def _note_dispatch_drop(self) -> None:
+        with self._cond:
+            self._drop_count += 1
+
     # -- Producer API (called from reactor / IO thread) -----------------------
 
     def _dispatch(self, reading: Reading) -> None:
@@ -57,17 +66,17 @@ class BufferedSubscriptionHandle(SubscriptionHandle):
                 return
             if len(self._buf) >= self._maxsize:
                 self._drop_count += 1
+                self._drops_since_log += 1
                 now = time.monotonic()
                 if now - self._last_drop_log >= 5.0:
-                    drf_summary = summarize_drfs(self._drfs)
                     logger.warning(
                         "Subscription buffer full (%d), dropped %d readings (devices: %s)",
                         self._maxsize,
-                        self._drop_count,
-                        drf_summary,
+                        self._drops_since_log,
+                        summarize_drfs(self._drfs),
                     )
-                    self._drop_count = 0
                     self._last_drop_log = now
+                    self._drops_since_log = 0
                 return
             self._buf.append(reading)
             self._cond.notify()
