@@ -63,6 +63,9 @@ class TestDPMHTTPBackendInit:
             ({"pool_size": -1}, "pool_size must be positive"),
             ({"timeout": 0}, "timeout must be positive"),
             ({"timeout": -1.0}, "timeout must be positive"),
+            ({"timeout": None}, "timeout must be positive"),
+            ({"timeout": float("inf")}, "timeout must be positive"),
+            ({"timeout": float("nan")}, "timeout must be positive"),
         ],
     )
     def test_invalid_init_params(self, kwargs, match):

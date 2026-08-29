@@ -16,6 +16,8 @@ def _parse_time_freq(raw: str) -> int:
     if m is None:
         raise ValueError(f"Bad time-freq value: {raw}")
     num = int(m.group(1))
+    if num > 0x7FFFFFFF:  # Java Integer.parseInt range; also keeps the divisions below from overflowing
+        raise ValueError(f"Bad time-freq value: {raw}")
     unit = (m.group(2) or "M").upper()
     if num == 0:
         return 0

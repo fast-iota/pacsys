@@ -492,6 +492,22 @@ class TestDMQSetupRaces:
             exchange_name="ex",
         )
 
+    def test_fail_subscription_error_survives_channel_close(self):
+        """First error wins: closing the channel must not overwrite the server's DeviceError."""
+        backend, conn = self._bare_backend()
+        sub = self._sub(stopped=False)
+        sub.channel = MockSelectChannel(conn, [], [])
+        sub.channel.add_on_close_callback(lambda ch, reason: backend._on_channel_closed(ch, reason, sub))
+        backend._subscriptions[sub.sub_id] = sub
+        error = DeviceError(
+            drf=TEMP_DEVICE, facility_code=FACILITY_DMQ, error_code=SECURITY_VIOLATION, message="denied"
+        )
+
+        backend._fail_subscription(sub, error)
+
+        assert sub.setup_complete.is_set()
+        assert sub.setup_error is error
+
     def test_channel_closed_by_open_hook_skips_topology_setup(self):
         """pika raises on a CLOSING channel, which would tear down the shared connection."""
         backend, conn = self._bare_backend()
@@ -775,10 +791,9 @@ class TestDMQBackendInit:
     def test_backend_init_invalid_timeout(self):
         """Test that invalid timeout raises ValueError."""
         auth = _create_mock_auth()
-        with pytest.raises(ValueError, match="timeout must be positive"):
-            DMQBackend(timeout=0, auth=auth)
-        with pytest.raises(ValueError, match="timeout must be positive"):
-            DMQBackend(timeout=-1, auth=auth)
+        for timeout in (0, -1, None, float("inf"), float("nan")):
+            with pytest.raises(ValueError, match="timeout must be positive"):
+                DMQBackend(timeout=timeout, auth=auth)
 
 
 class TestDMQConnectionOpenError:
@@ -1759,6 +1774,23 @@ class TestValueToSample:
         backend = object.__new__(DMQBackend)
         with pytest.raises(TypeError, match="one-dimensional"):
             backend._value_to_sample(np.zeros((2, 2)))
+
+    @pytest.mark.parametrize(
+        ("value", "sample_cls", "expected"),
+        [
+            (np.int64(3), IntegerSample_reply, 3),
+            (np.bool_(True), IntegerSample_reply, 1),
+            (np.float32(1.5), DoubleSample_reply, 1.5),
+            (np.longdouble(1.5), DoubleSample_reply, 1.5),  # .item() would stay a NumPy scalar
+        ],
+    )
+    def test_numpy_scalars_match_python_peers(self, value, sample_cls, expected):
+        """NumPy scalars are accepted like DPM does, not rejected as unsupported types."""
+        from pacsys.backends.dmq import DMQBackend
+
+        sample = object.__new__(DMQBackend)._value_to_sample(value)
+        assert isinstance(sample, sample_cls)
+        assert sample.value == expected
 
 
 # =============================================================================

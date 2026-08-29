@@ -36,6 +36,11 @@ def _audit_write(audit_log: AuditLog | None, ctx: RequestContext, decision: Poli
 
 def tool_read_device(backend: Backend, drf: str, policies: list[Policy]) -> dict:
     """Read a device value with policy enforcement. Returns a JSON-safe dict."""
+    try:
+        name = get_device_name(drf)  # single parse: a malformed DRF must not escape as a raw exception
+    except ValueError as e:
+        logger.warning("read_device rejected malformed drf=%r: %s", drf, e)
+        return {"ok": False, "name": drf, "drf": drf, "value": None, "error": str(e)}
     final_drf = drf
     if policies:
         ctx = RequestContext(
@@ -51,23 +56,23 @@ def tool_read_device(backend: Backend, drf: str, policies: list[Policy]) -> dict
             decision = evaluate_policies(policies, ctx)
         except ValueError as e:
             logger.exception("read_device policy failed for drf=%s", drf)
-            return {"ok": False, "name": get_device_name(drf), "drf": drf, "value": None, "error": str(e)}
+            return {"ok": False, "name": name, "drf": drf, "value": None, "error": str(e)}
         if not decision.allowed:
             reason = decision.reason or "Read denied by policy"
             logger.warning("read_device drf=%s denied reason=%s", drf, reason)
-            return {"ok": False, "name": get_device_name(drf), "drf": drf, "value": None, "error": reason}
+            return {"ok": False, "name": name, "drf": drf, "value": None, "error": reason}
         assert decision.ctx is not None
         if 0 not in decision.ctx.allowed:
             reason = "Read denied by policy"
             logger.warning("read_device drf=%s denied reason=%s", drf, reason)
-            return {"ok": False, "name": get_device_name(drf), "drf": drf, "value": None, "error": reason}
+            return {"ok": False, "name": name, "drf": drf, "value": None, "error": reason}
         final_drf = decision.ctx.drfs[0]
     try:
         reading = backend.get(final_drf)
         return reading_to_dict(reading)
     except Exception as e:
         logger.exception("read_device failed for drf=%s", drf)
-        return {"ok": False, "name": get_device_name(drf), "drf": drf, "value": None, "error": str(e)}
+        return {"ok": False, "name": name, "drf": drf, "value": None, "error": str(e)}
 
 
 def tool_write_device(
@@ -89,8 +94,16 @@ def _write_device_locked(
     policies: list[Policy],
     audit_log: AuditLog | None,
 ) -> dict:
-    write_drf = prepare_for_write(drf)
-    device_name = get_device_name(drf)
+    try:
+        write_drf = prepare_for_write(drf)
+        device_name = get_device_name(write_drf)
+    except ValueError as e:
+        logger.warning("write_device rejected malformed drf=%r: %s", drf, e)
+        raw_ctx = RequestContext(
+            drfs=[drf], rpc_method="Set", peer="mcp-client", metadata={}, values=[(drf, value)], raw_request=None
+        )
+        _audit_write(audit_log, raw_ctx, PolicyDecision(allowed=False, reason=str(e)))
+        return {"ok": False, "drf": drf, "error": str(e)}
 
     # Build request context for policy evaluation
     ctx = RequestContext(

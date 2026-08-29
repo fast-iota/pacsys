@@ -221,8 +221,10 @@ class TestDpmStreamCore:
         assert isinstance(errors[0], DPMConnectionError)
         assert "status=99" in str(errors[0])
 
-    def test_ref0_status_failure_calls_error_fn(self):
+    def test_ref0_status_failure_calls_error_fn(self, caplog):
         """A job-start failure is fatal instead of being ignored as an unknown ref."""
+        import logging
+
         conn = MockAsyncDPMConnection(
             replies=[
                 make_start_list(),
@@ -232,19 +234,21 @@ class TestDpmStreamCore:
         )
         dispatched, errors = [], []
 
-        self._run(
-            self._core(conn).stream(
-                drfs=[TEMP_DEVICE],
-                dispatch_fn=dispatched.append,
-                stop_check=lambda: False,
-                error_fn=errors.append,
+        with caplog.at_level(logging.ERROR, logger="pacsys.backends.dpm_http"):
+            self._run(
+                self._core(conn).stream(
+                    drfs=[TEMP_DEVICE],
+                    dispatch_fn=dispatched.append,
+                    stop_check=lambda: False,
+                    error_fn=errors.append,
+                )
             )
-        )
 
         assert not dispatched
         assert len(errors) == 1
         assert isinstance(errors[0], DPMConnectionError)
         assert "job start failed" in str(errors[0]).lower()
+        assert any("job start failed" in r.message for r in caplog.records)  # never silent without on_error
 
     # -- Connection error calls error_fn -----------------------------------
 
@@ -689,8 +693,10 @@ class TestDpmStreamCore:
 
     # -- Connection error mid-stream ---------------------------------------
 
-    def test_connection_error_mid_stream(self):
-        """Some successful dispatches then DPMConnectionError → readings + error_fn."""
+    def test_connection_error_mid_stream(self, caplog):
+        """Some successful dispatches then DPMConnectionError → readings + error_fn + error log."""
+        import logging
+
         conn = MockAsyncDPMConnection(
             replies=[
                 make_start_list(),
@@ -701,19 +707,22 @@ class TestDpmStreamCore:
         )
         dispatched, errors = [], []
 
-        self._run(
-            self._core(conn).stream(
-                drfs=[f"{TEMP_DEVICE}@p,1000"],
-                dispatch_fn=dispatched.append,
-                stop_check=lambda: False,
-                error_fn=errors.append,
+        with caplog.at_level(logging.ERROR, logger="pacsys.backends.dpm_http"):
+            self._run(
+                self._core(conn).stream(
+                    drfs=[f"{TEMP_DEVICE}@p,1000"],
+                    dispatch_fn=dispatched.append,
+                    stop_check=lambda: False,
+                    error_fn=errors.append,
+                )
             )
-        )
 
         assert len(dispatched) == 1
         assert dispatched[0].value == TEMP_VALUE
         assert len(errors) == 1
         assert isinstance(errors[0], DPMConnectionError)
+        # Logged even without on_error, so a callback subscription never stops silently
+        assert any("connection lost" in r.message for r in caplog.records)
 
     # -- Multiple data replies same ref_id ---------------------------------
 

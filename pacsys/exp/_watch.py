@@ -58,14 +58,13 @@ def watch(
     handle = None
     try:
         handle = be.subscribe([drf], callback=on_reading, on_error=on_error)
-        if not done.wait(timeout=timeout):
-            raise TimeoutError(f"Condition not met within {timeout}s for {drf}")
+        done.wait(timeout=timeout)
+        # Boxes are filled before done is set, so a win racing the deadline is still honored
         if result_box:
             return result_box[0]
         if error_box:
             raise error_box[0]
+        raise TimeoutError(f"Condition not met within {timeout}s for {drf}")
     finally:
         if handle is not None:
             handle.stop()
-
-    return result_box[0]

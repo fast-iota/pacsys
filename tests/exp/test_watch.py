@@ -58,6 +58,19 @@ class TestWatch:
         with _emit_after_subscription(fake, emit), pytest.raises(TimeoutError, match="Condition not met"):
             watch("M:OUTTMP@p,1000", lambda r: r.value > 100, timeout=0.1, backend=fake)
 
+    def test_result_racing_deadline_is_returned(self, fake, monkeypatch):
+        """A reading that satisfies the condition as the wait expires wins over TimeoutError."""
+
+        class RacyEvent(threading.Event):
+            def wait(self, timeout=None):
+                fake.emit_reading("M:OUTTMP@p,1000", 75.0)
+                assert super().wait(timeout=1.0)  # callback ran and set us...
+                return False  # ...but the waiter observes an expired wait
+
+        monkeypatch.setattr("pacsys.exp._watch.threading.Event", RacyEvent)
+        reading = watch("M:OUTTMP@p,1000", lambda r: r.value > 72, timeout=0.1, backend=fake)
+        assert reading.value == 75.0
+
     def test_condition_receives_reading_object(self, fake):
         """Predicate gets a Reading, not just value."""
 

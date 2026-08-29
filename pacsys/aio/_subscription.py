@@ -33,6 +33,7 @@ class AsyncSubscriptionHandle:
         self._exc: Exception | None = None
         self._task: asyncio.Task | None = None
         self._callback_task: asyncio.Task | None = None
+        self._aux_tasks: set[asyncio.Task] = set()  # owned notifications (on_error), reaped by stop()
         self._drop_count = 0  # cumulative, never reset
         self._drops_since_log = 0
         self._last_drop_log = 0.0
@@ -89,6 +90,12 @@ class AsyncSubscriptionHandle:
 
     def _is_stopped(self) -> bool:
         return self._stopped
+
+    def _spawn(self, coro) -> None:
+        """Run an auxiliary coroutine owned by this handle (kept referenced; awaited by stop())."""
+        task = asyncio.ensure_future(coro)
+        self._aux_tasks.add(task)
+        task.add_done_callback(self._aux_tasks.discard)
 
     # -- Consumer API ----------------------------------------------------------
 
@@ -161,22 +168,20 @@ class AsyncSubscriptionHandle:
                 await self._remover(self)
             # Never cancel/await the current task (callback calling stop());
             # it ends naturally via the stop sentinel.
-            if self._task is not None and self._task is not cur and not self._task.done():
-                self._task.cancel()
-                try:
-                    await self._task
-                except asyncio.CancelledError:
-                    pass
-                except Exception:  # noqa: BLE001
-                    logger.exception("Subscription task failed during shutdown")
-            if self._callback_task is not None and self._callback_task is not cur and not self._callback_task.done():
-                self._callback_task.cancel()
-                try:
-                    await self._callback_task
-                except asyncio.CancelledError:
-                    pass
-                except Exception:  # noqa: BLE001
-                    logger.exception("Subscription callback task failed during shutdown")
+            owned = [
+                (t, what)
+                for t, what in ((self._task, "task"), (self._callback_task, "callback task"))
+                if t is not None and t is not cur and not t.done()
+            ]
+            # Cancel both before awaiting either: a stop() cancelled mid-reap still leaves nothing running
+            for t, _ in owned:
+                t.cancel()
+            for t, what in owned:
+                await _reap(t, what)
+            # on_error notifications are always delivered: awaited, not cancelled
+            for t in list(self._aux_tasks):
+                if t is not cur:
+                    await _reap(t, "on_error task")
         finally:
             # A cancelled stop() releases waiters without a completion
             # guarantee -- acceptable while no caller wraps stop in a timeout.
@@ -190,10 +195,31 @@ class AsyncSubscriptionHandle:
         return False
 
 
+async def _reap(task: asyncio.Task, what: str) -> None:
+    """Wait for a cancelled child task to unwind, logging any failure.
+
+    asyncio.wait never re-raises the child's CancelledError, so only an external
+    cancellation of the awaiting task itself propagates from here.
+    """
+    await asyncio.wait({task})
+    if not task.cancelled() and task.exception() is not None:
+        logger.error("Subscription %s failed during shutdown", what, exc_info=task.exception())
+
+
+async def _call_on_error(on_error, exc: Exception, handle: AsyncSubscriptionHandle) -> None:
+    """Invoke a sync or async on_error callback; its own failures are logged, never raised."""
+    try:
+        if inspect.iscoroutinefunction(on_error):
+            await on_error(exc, handle)
+        else:
+            on_error(exc, handle)
+    except Exception as err_exc:  # noqa: BLE001
+        logger.error("Error in on_error callback: %s", err_exc)
+
+
 async def _callback_feeder(handle: AsyncSubscriptionHandle, callback, on_error) -> None:
     """Feed readings from handle to callback (async or sync)."""
     is_async_cb = inspect.iscoroutinefunction(callback)
-    is_async_err = inspect.iscoroutinefunction(on_error) if on_error else False
 
     try:
         async for reading, h in handle._readings():
@@ -205,26 +231,14 @@ async def _callback_feeder(handle: AsyncSubscriptionHandle, callback, on_error) 
                 else:
                     callback(reading, h)
             except Exception as exc:  # noqa: BLE001
-                try:
-                    if on_error:
-                        if is_async_err:
-                            await on_error(exc, h)
-                        else:
-                            on_error(exc, h)
-                    else:
-                        logger.error("Unhandled error in subscription callback: %s", exc)
-                except Exception as err_exc:  # noqa: BLE001
-                    logger.error("Error in on_error callback: %s", err_exc)
+                if on_error:
+                    await _call_on_error(on_error, exc, h)
+                else:
+                    logger.error("Unhandled error in subscription callback: %s", exc)
     except asyncio.CancelledError:
         pass
     except Exception as exc:  # noqa: BLE001
         if on_error:
-            try:
-                if is_async_err:
-                    await on_error(exc, handle)
-                else:
-                    on_error(exc, handle)
-            except Exception as err_exc:  # noqa: BLE001
-                logger.error("Error in on_error callback: %s", err_exc)
+            await _call_on_error(on_error, exc, handle)
         else:
             logger.error("Unhandled error in stream: %s", exc)
