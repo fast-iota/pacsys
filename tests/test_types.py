@@ -2,6 +2,7 @@
 Tests for pacsys.types module.
 """
 
+import json
 import threading
 import time
 from datetime import datetime, timezone
@@ -109,11 +110,29 @@ class TestReadingEquality:
 
     def test_hash_numpy_array(self):
         a = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=np.array([1.0, 2.0]))
-        b = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=np.array([1.0, 3.0]))
-        assert hash(a) != hash(b)
-        # equal arrays hash the same
         c = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=np.array([1.0, 2.0]))
         assert hash(a) == hash(c)
+        assert len({a, c}) == 1
+
+    @pytest.mark.parametrize(
+        ("va", "vb"),
+        [
+            pytest.param(np.array([0.0]), np.array([-0.0]), id="signed-zero"),
+            pytest.param(
+                np.array([float("nan")]), np.frombuffer(b"\x01\x00\x00\x00\x00\x00\xf8\x7f"), id="nan-payload"
+            ),
+            pytest.param(np.ma.array([1.0, 2.0], mask=[False, True]), np.ma.array([1.0, 2.0]), id="mask"),
+        ],
+    )
+    def test_equal_arrays_hash_equal(self, va, vb):
+        """__eq__ is value-based, so equal readings must hash equal (set/dict contract)."""
+        a = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=va)
+        b = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=vb)
+        assert a == b
+        assert hash(a) == hash(b)
+        assert b in {a}
+        wa, wb = WriteResult(drf="M:OUTTMP", readback=va), WriteResult(drf="M:OUTTMP", readback=vb)
+        assert wa == wb and hash(wa) == hash(wb)
 
     @pytest.mark.parametrize(
         ("value_type", "value"),
@@ -465,7 +484,7 @@ class TestReadingToDict:
             drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=np.ma.array([1.0, 2.0], mask=[False, True])
         )
         assert not r.value.flags.writeable
-        assert not r.value.mask.flags.writeable  # mask feeds tobytes() -> hash
+        assert not r.value.mask.flags.writeable  # mask feeds tobytes()
 
     def test_user_defined_ndarray_subclass_frozen(self):
         class Ext(np.ndarray):
@@ -481,12 +500,28 @@ class TestReadingToDict:
         assert r == Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=v.copy())
 
     def test_legacy_dict_without_dtype(self):
-        # Dicts serialized before value_dtype existed must still deserialize
+        # Dicts serialized before value_dtype existed must still deserialize as ndarrays
         r = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR_ARRAY, value=np.array([1, 2], dtype=np.int16))
         d = r.to_dict()
         d.pop("value_dtype")
         r2 = Reading.from_dict(d)
+        assert isinstance(r2.value, np.ndarray)
         np.testing.assert_array_equal(r2.value, [1, 2])
+
+    @pytest.mark.parametrize(
+        ("value_type", "value"),
+        [
+            pytest.param(ValueType.SCALAR_ARRAY, [1.0, 2.0], id="list"),
+            pytest.param(ValueType.TIMED_SCALAR_ARRAY, {"data": [1.0], "micros": np.array([0])}, id="mixed-dict"),
+        ],
+    )
+    def test_list_array_round_trip_exact(self, value_type, value):
+        """List-valued array readings (FakeBackend) must not come back as ndarrays."""
+        r = Reading(drf="M:OUTTMP", value_type=value_type, value=value)
+        r2 = Reading.from_dict(json.loads(json.dumps(r.to_dict())))
+        assert r2 == r
+        inner = r2.value["data"] if isinstance(value, dict) else r2.value
+        assert isinstance(inner, list)
 
     def test_bytes_round_trip(self):
         r = Reading(drf="M:OUTTMP.RAW", value_type=ValueType.RAW, value=b"\x01\x02\x03")

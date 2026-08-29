@@ -17,6 +17,7 @@ from unittest import mock
 import httpx
 import pytest
 
+from pacsys.acnet.errors import ERR_RETRY, ERR_TIMEOUT
 from pacsys.backends.acl import (
     ACLBackend,
     _acl_read_command,
@@ -75,6 +76,9 @@ class TestParseACLLine:
             ("45  2.2  3.0 blip", [45.0, 2.2, 3.0], ValueType.SCALAR_ARRAY),
             # Pure text
             ("Hello World", "Hello World", ValueType.TEXT),
+            # Numeric-leading text is not a number with multi-word units
+            ("M:X = 1 of 2", "1 of 2", ValueType.TEXT),
+            ("M:X = 12 deg F", "12 deg F", ValueType.TEXT),
         ],
     )
     def test_parse_acl_line(self, line, expected_value, expected_type):
@@ -107,10 +111,29 @@ class TestIsErrorResponse:
         assert is_error is False
         assert msg is None
 
-    def test_description_with_dash_not_error(self):
-        """A description containing ' - ' should not be a false positive."""
-        is_error, msg = _is_error_response("M:FOO = Temperature - external sensor")
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "M:FOO = Temperature - external sensor",
+            "M:FOO = MODE - MAIN_INJ",  # error-code shape, but on a value line
+            "M:FOO = A - B - DBM_NOREC",
+        ],
+    )
+    def test_value_line_with_dash_not_error(self, line):
+        """Value lines always contain '='; only bare ACL messages end in ' - ERROR_CODE'."""
+        is_error, msg = _is_error_response(line)
         assert is_error is False
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "Error determining status text in read device command at line 1 - Z:ACLTST DIO_NOATT",
+            "Invalid device name (Z:NOTFND) in read device command at line 1 - DBM_NOREC",
+            "Invalid device - DIO_NO_SUCH",
+        ],
+    )
+    def test_known_error_shapes(self, line):
+        assert _is_error_response(line)[0] is True
 
 
 class TestAclReadCommand:
@@ -344,6 +367,36 @@ class TestMultipleDeviceRead:
             finally:
                 backend.close()
 
+    def test_periodic_drf_isolated_without_aborting_batch(self):
+        """An unsupported (@p) DRF becomes its own error reading; the rest is read in one batch."""
+        with mock.patch("httpx.Client.get") as mock_get, ACLBackend() as backend:
+            mock_get.return_value = MockACLResponse("M:OUTTMP       =  72.5 DegF\nG:AMANDA       =  66")
+            readings = backend.get_many(["M:OUTTMP", "M:OUTTMP@p,1000", "G:AMANDA"])
+            assert mock_get.call_count == 1
+            assert [r.drf for r in readings] == ["M:OUTTMP", "M:OUTTMP@p,1000", "G:AMANDA"]
+            assert readings[0].value == 72.5 and readings[2].value == 66.0
+            assert readings[1].error_code == ERR_RETRY and "periodic" in readings[1].message
+
+    def test_periodic_status_drf_makes_no_requests(self):
+        with mock.patch("httpx.Client.get") as mock_get, ACLBackend() as backend:
+            (reading,) = backend.get_many(["Z:ACLTST.STATUS@p,1000"])
+            assert reading.error_code == ERR_RETRY
+            mock_get.assert_not_called()
+
+    def test_malformed_drf_raises_before_any_request(self):
+        with mock.patch("httpx.Client.get") as mock_get, ACLBackend() as backend:
+            with pytest.raises(ValueError):
+                backend.get_many(["M:OUTTMP@p,1000", "M:OUTTMP[["])
+            mock_get.assert_not_called()
+
+    def test_text_value_with_error_code_shape_is_not_an_error(self):
+        """'MODE - MAIN_INJ' looks like ' - ERROR_CODE' but sits on a value line."""
+        with mock.patch("httpx.Client.get") as mock_get, ACLBackend() as backend:
+            mock_get.return_value = MockACLResponse("M:FOO = MODE - MAIN_INJ")
+            reading = backend.get("M:FOO")
+            assert reading.ok and reading.value == "MODE - MAIN_INJ"
+            assert mock_get.call_count == 1  # no fallback triggered
+
     def test_fallback_on_batch_error(self):
         """Bad device in batch triggers individual fallback."""
         with mock.patch("httpx.Client.get") as mock_get:
@@ -424,8 +477,8 @@ class TestHTTPErrors:
             try:
                 with pytest.raises(ReadError) as exc_info:
                     backend.read("M:OUTTMP")
-                assert "timed out" in str(exc_info.value)
-                assert isinstance(exc_info.value.__cause__, DeviceError)
+                assert "timed out" in exc_info.value.readings[0].message
+                assert exc_info.value.readings[0].error_code == ERR_TIMEOUT
             finally:
                 backend.close()
 
@@ -601,7 +654,7 @@ class TestTimeout:
             backend = ACLBackend(timeout=3.0)
             try:
                 backend.read("M:OUTTMP")
-                assert mock_get.call_args.kwargs["timeout"] == 3.0
+                assert mock_get.call_args.kwargs["timeout"] == pytest.approx(3.0, abs=0.05)
             finally:
                 backend.close()
 
@@ -611,6 +664,70 @@ class TestTimeout:
             backend = ACLBackend(timeout=10.0)
             try:
                 backend.read("M:OUTTMP", timeout=2.0)
-                assert mock_get.call_args.kwargs["timeout"] == 2.0
+                assert mock_get.call_args.kwargs["timeout"] == pytest.approx(2.0, abs=0.05)
             finally:
                 backend.close()
+
+    def test_nonpositive_call_timeout_rejected_before_io(self):
+        with mock.patch("httpx.Client.get") as mock_get, ACLBackend() as backend:
+            with pytest.raises(ValueError, match="timeout must be positive"):
+                backend.get_many(["M:OUTTMP"], timeout=0)
+            mock_get.assert_not_called()
+
+    @staticmethod
+    def _ticking_get(step: float):
+        """httpx.Client.get stand-in that advances a fake clock by *step* per call."""
+        clock = [0.0]
+
+        def get(url, timeout=None):
+            clock[0] += step
+            return MockACLResponse("M:OUTTMP = 72.5")
+
+        return clock, get
+
+    def test_fallback_shares_one_deadline(self):
+        """Batch failure + per-device fallback never exceed the call budget: once it is spent,
+        the remaining devices get ERR_TIMEOUT without a request and ReadError carries all of them."""
+        clock, get = self._ticking_get(0.6)
+        responses = iter(
+            [
+                MockACLResponse("Invalid device name (Z:BAD) - DIO_NO_SUCH"),  # batch aborts
+                MockACLResponse("M:OUTTMP = 72.5"),  # first fallback read
+            ]
+        )
+        with (
+            mock.patch("httpx.Client.get", side_effect=lambda url, timeout=None: (get(url), next(responses))[1]) as g,
+            mock.patch("pacsys.backends.acl.time") as fake_time,
+            ACLBackend() as backend,
+        ):
+            fake_time.monotonic.side_effect = lambda: clock[0]
+            with pytest.raises(ReadError, match="timeout") as exc_info:
+                backend.get_many(["M:OUTTMP", "Z:BAD", "G:AMANDA"], timeout=1.0)
+
+        readings = exc_info.value.readings
+        assert [r.drf for r in readings] == ["M:OUTTMP", "Z:BAD", "G:AMANDA"]
+        assert readings[0].ok and readings[0].value == 72.5
+        assert [r.error_code for r in readings[1:]] == [ERR_TIMEOUT, ERR_TIMEOUT]
+        assert g.call_count == 2
+        assert [c.kwargs["timeout"] for c in g.call_args_list] == [pytest.approx(1.0), pytest.approx(0.4)]
+
+    def test_basic_status_shares_one_deadline(self):
+        """A partially completed 5-field status read becomes one timeout reading, not a partial dict."""
+        clock, get = self._ticking_get(0.6)
+        with (
+            mock.patch(
+                "httpx.Client.get",
+                side_effect=lambda url, timeout=None: (get(url), MockACLResponse("Z:ACLTST is on = True"))[1],
+            ) as g,
+            mock.patch("pacsys.backends.acl.time") as fake_time,
+            ACLBackend() as backend,
+        ):
+            fake_time.monotonic.side_effect = lambda: clock[0]
+            with pytest.raises(ReadError) as exc_info:
+                backend.get_many(["Z:ACLTST.STATUS", "M:OUTTMP"], timeout=1.0)
+
+        readings = exc_info.value.readings
+        assert [r.drf for r in readings] == ["Z:ACLTST.STATUS", "M:OUTTMP"]
+        assert readings[0].error_code == ERR_TIMEOUT and readings[0].value is None
+        assert readings[1].ok  # the batch ran first, inside the budget
+        assert g.call_count == 2

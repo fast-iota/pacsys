@@ -57,6 +57,12 @@ class ReplyId:
         """Create reply ID from client node and message ID."""
         return cls((client << 16) | msg_id)
 
+    @classmethod
+    def from_packet(cls, status: int, client: int, msg_id: int) -> "ReplyId":
+        """Reply ID carried by an incoming request or cancel: the (16-bit) status field
+        when nonzero, else client node + message ID (Java AcnetRequest/AcnetCancel)."""
+        return cls.from_client_and_id(client, msg_id) if status == 0 else cls(status & 0xFFFF)
+
     def __hash__(self):
         return hash(self.value)
 
@@ -207,11 +213,7 @@ class AcnetRequest(AcnetPacket):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # Reply ID comes from status field (if non-zero) or client+id
-        if self.status == 0:
-            self._reply_id = ReplyId.from_client_and_id(self.client, self.id)
-        else:
-            self._reply_id = ReplyId(self.status)
+        self._reply_id = ReplyId.from_packet(self.status, self.client, self.id)
         self._multiple_reply = (self.flags & ACNET_FLG_MLT) > 0
         self._cancelled = False
         self.user_object: object | None = None
@@ -258,6 +260,11 @@ class AcnetMessage(AcnetPacket):
 
 class AcnetCancel(AcnetPacket):
     """An ACNET cancel packet."""
+
+    @property
+    def reply_id(self) -> ReplyId:
+        """Reply ID of the incoming request being cancelled."""
+        return ReplyId.from_packet(self.status, self.client, self.id)
 
     def is_cancel(self) -> bool:
         return True

@@ -160,9 +160,9 @@ def _dict_to_alarm_sample(d: dict, ref_id: int, timestamp_ms: int):
     return sample
 
 
-@dataclass
+@dataclass(eq=False)
 class _ReadJob:
-    """State for an async one-shot read on the IO thread."""
+    """State for an async one-shot read on the IO thread (identity-hashed: tracked in a set)."""
 
     drfs: list[str]
     prepared_drfs: list[str]
@@ -201,7 +201,7 @@ class _WriteSession:
     pending: dict[str, tuple[int, str, list, "_WriteCompletionTracker"]] = field(default_factory=dict)
     # Writes queued until server confirms INIT via PENDING response (S.# binding ready)
     init_confirmed: bool = False
-    queued_sends: list[tuple[list[tuple[int, str, Value]], list, "_WriteCompletionTracker"]] = field(
+    queued_sends: list[tuple[list[tuple[int, str, bytes]], list, "_WriteCompletionTracker"]] = field(
         default_factory=list
     )
     init_timer: object | None = None  # safety timer if PENDING never arrives
@@ -561,8 +561,10 @@ class DMQBackend(Backend):
         self._write_sessions: dict[str, _WriteSession] = {}  # init_drf -> active session
         # Writes queued while channel setup is in progress (prevents duplicate sessions)
         self._pending_session_setups: dict[
-            str, list[tuple[list[tuple[int, str, Value]], list[WriteResult | None], _WriteCompletionTracker]]
+            str, list[tuple[list[tuple[int, str, bytes]], list[WriteResult | None], _WriteCompletionTracker]]
         ] = {}
+        # In-flight one-shot reads (IO thread), failed on connection loss
+        self._read_jobs: set[_ReadJob] = set()
 
         # Cache local IP (used in INIT, SETTING messages)
         self._local_ip = _get_host_address()
@@ -788,7 +790,7 @@ class DMQBackend(Backend):
 
         # Connection-level errors or total timeout → raise
         if job.error is not None:
-            raise ReadError(result, f"DMQ job start failed: {backfill_msg}") from job.error
+            raise ReadError(result, f"DMQ read failed: {backfill_msg}") from job.error
         if has_backfill:
             raise ReadError(result, backfill_msg)
 
@@ -800,6 +802,7 @@ class DMQBackend(Backend):
             job.error = ConnectionError(f"No connection to RabbitMQ at {self._host}:{self._port}")
             job.done_event.set()
             return
+        self._read_jobs.add(job)
 
         def on_ready(channel, exchange_name, queue_name):
             if job.done_event.is_set():
@@ -853,7 +856,22 @@ class DMQBackend(Backend):
                 except AMQPError:
                     pass
 
-        self._setup_channel_async(on_ready=on_ready)
+        self._setup_channel_async(
+            on_ready=on_ready,
+            on_channel_open=lambda ch: ch.add_on_close_callback(
+                lambda _ch, reason: self._on_read_channel_closed(job, reason)
+            ),
+        )
+
+    def _on_read_channel_closed(self, job: _ReadJob, reason: Exception) -> None:
+        """Read channel closed under an in-flight job (IO thread). Deliberate cleanup
+        unregisters the job first, so only broker/connection-initiated closes get here."""
+        if job not in self._read_jobs:
+            return
+        self._read_jobs.discard(job)
+        logger.warning("DMQ read channel closed: %s (devices: %s)", reason, summarize_drfs(job.drfs))
+        job.error = reason
+        job.done_event.set()
 
     def _on_read_message(self, job: _ReadJob, channel: Channel, method, properties, body: bytes) -> None:
         """Handle a message for an async read (IO thread)."""
@@ -893,6 +911,7 @@ class DMQBackend(Backend):
 
     def _complete_read(self, job: _ReadJob) -> None:
         """Finish async read: send DROP, cancel consumer, close channel (IO thread)."""
+        self._read_jobs.discard(job)  # before the close below fires _on_read_channel_closed
         if job.done_event.is_set():
             return
         try:
@@ -1000,9 +1019,13 @@ class DMQBackend(Backend):
         """
         ex = exchange_name or str(uuid.uuid4())
 
+        # Every step re-checks is_open: a stop during setup closes the channel (on_channel_open,
+        # remove()) and pika raises on a CLOSING channel, which would tear down the shared connection
         def _on_open(channel: Channel):
             if on_channel_open:
                 on_channel_open(channel)
+            if not channel.is_open:
+                return
             channel.queue_declare(
                 queue="",
                 exclusive=True,
@@ -1011,6 +1034,8 @@ class DMQBackend(Backend):
             )
 
         def _on_queue(ch, q):
+            if not ch.is_open:
+                return
             ch.exchange_declare(
                 exchange=ex,
                 exchange_type="topic",
@@ -1019,6 +1044,8 @@ class DMQBackend(Backend):
             )
 
         def _on_exchange(ch, q):
+            if not ch.is_open:
+                return
             ch.queue_bind(
                 queue=q,
                 exchange=ex,
@@ -1027,6 +1054,8 @@ class DMQBackend(Backend):
             )
 
         def _on_r_bind(ch, q):
+            if not ch.is_open:
+                return
             ch.queue_bind(
                 queue=q,
                 exchange=ex,
@@ -1173,17 +1202,17 @@ class DMQBackend(Backend):
 
     def _execute_write_many_async(
         self,
-        settings: list[tuple[str, Value]],
+        settings: list[tuple[str, bytes]],
         results: list[WriteResult | None],
         tracker: _WriteCompletionTracker,
     ) -> None:
-        """Execute write_many on IO thread."""
+        """Execute write_many on IO thread (settings carry marshalled sample bodies)."""
         try:
             # Group by init_drf (property-aware, not just device name)
-            by_init_drf: dict[str, list[tuple[int, str, Value]]] = defaultdict(list)
-            for i, (drf, value) in enumerate(settings):
+            by_init_drf: dict[str, list[tuple[int, str, bytes]]] = defaultdict(list)
+            for i, (drf, body) in enumerate(settings):
                 init_drf = prepare_for_write(drf)
-                by_init_drf[init_drf].append((i, drf, value))
+                by_init_drf[init_drf].append((i, drf, body))
 
             tracker.total_devices = len(by_init_drf)
 
@@ -1201,7 +1230,7 @@ class DMQBackend(Backend):
     def _write_to_device_async(
         self,
         init_drf: str,
-        drf_settings: list[tuple[int, str, Value]],
+        drf_settings: list[tuple[int, str, bytes]],
         results: list[WriteResult | None],
         tracker: _WriteCompletionTracker,
     ) -> None:
@@ -1459,11 +1488,11 @@ class DMQBackend(Backend):
     def _send_settings_async(
         self,
         session: _WriteSession,
-        device_settings: list[tuple[int, str, Value]],
+        device_settings: list[tuple[int, str, bytes]],
         results: list[WriteResult | None],
         tracker: _WriteCompletionTracker,
     ) -> None:
-        """Send SETTING messages for device (IO thread)."""
+        """Send marshalled SETTING messages for device (IO thread)."""
         if session.channel is None or not session.channel.is_open:
             for i, drf, _ in device_settings:
                 results[i] = WriteResult(
@@ -1474,11 +1503,8 @@ class DMQBackend(Backend):
 
         pending_for_device = 0
 
-        for idx, (i, drf, value) in enumerate(device_settings):
+        for idx, (i, drf, body) in enumerate(device_settings):
             try:
-                sample = self._value_to_sample(value, ref_id=1)
-                body = bytes(sample.marshal())
-
                 # Use message_id as the pending key. impl1 sends empty
                 # correlationId on write responses; FIFO fallback handles it.
                 message_id = str(uuid.uuid4())
@@ -1844,6 +1870,7 @@ class DMQBackend(Backend):
 
         Raises:
             AuthenticationError: If no KerberosAuth configured
+            TypeError, ValueError: If a value cannot be sent as a DMQ setting (checked before any I/O)
         """
         if not settings:
             return []
@@ -1854,6 +1881,10 @@ class DMQBackend(Backend):
 
         if not isinstance(self._auth, KerberosAuth):
             raise AuthenticationError("KerberosAuth required for writes. Pass auth=KerberosAuth().")
+
+        # Marshal on the caller thread: invalid values raise here, before any I/O, and the IO
+        # thread only sees immutable bodies (a value error there would close the device's session)
+        bodies = [(drf, bytes(self._value_to_sample(value).marshal())) for drf, value in settings]
 
         # Ensure IO thread is running (shared with streaming), within this call's budget
         effective_timeout = timeout if timeout is not None else self._timeout
@@ -1870,7 +1901,7 @@ class DMQBackend(Backend):
         if conn is None:
             raise RuntimeError("Connection not available")
 
-        conn.ioloop.add_callback_threadsafe(lambda: self._execute_write_many_async(settings, results, tracker))
+        conn.ioloop.add_callback_threadsafe(lambda: self._execute_write_many_async(bodies, results, tracker))
 
         # Block until done or timeout
         if not tracker.done_event.wait(max(deadline - time.monotonic(), 0)):
@@ -2081,6 +2112,13 @@ class DMQBackend(Backend):
         # Clear write state
         self._write_sessions.clear()
 
+        # Fail in-flight one-shot reads; pika closes their channels first, but a channel still
+        # OPENING (or not yet allocated) has no close callback registered
+        for job in self._read_jobs:
+            job.error = reason
+            job.done_event.set()
+        self._read_jobs.clear()
+
         # Notify all active subscriptions of the connection loss
         # Copy under lock, dispatch outside - callbacks may call remove()/stop_streaming()
         with self._stream_lock:
@@ -2117,22 +2155,25 @@ class DMQBackend(Backend):
             sub.setup_complete.set()
             return
 
+        def abandon(channel):
+            """Stopped during setup: release the channel and unblock subscribe()."""
+            try:
+                channel.close()
+            except AMQPError:
+                pass
+            sub.setup_error = RuntimeError("Subscription stopped during setup")
+            sub.setup_complete.set()
+
         def on_ch_open(channel):
             if sub.handle._stopped:
-                try:
-                    channel.close()
-                except AMQPError:
-                    pass
+                abandon(channel)
                 return
             sub.channel = channel
             channel.add_on_close_callback(lambda ch, reason: self._on_channel_closed(ch, reason, sub))
 
         def on_ready(channel, exchange_name, queue_name):
             if sub.handle._stopped:
-                try:
-                    channel.close()
-                except AMQPError:
-                    pass
+                abandon(channel)
                 return
             sub.queue_name = queue_name
 
@@ -2190,6 +2231,9 @@ class DMQBackend(Backend):
     def _on_channel_closed(self, channel: Channel, reason: Exception, sub: _SelectSubscription) -> None:
         """Channel closed callback (runs in IO thread)."""
         logger.debug("Channel closed for sub %s: %s", sub.sub_id[:8], reason)
+        # Unblock a subscribe() still waiting on setup (a no-op once setup completed)
+        sub.setup_error = reason
+        sub.setup_complete.set()
         with self._stream_lock:
             was_active = self._subscriptions.pop(sub.sub_id, None) is not None
         if not was_active:

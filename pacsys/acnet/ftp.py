@@ -742,6 +742,18 @@ def parse_snapshot_setup_reply(data: bytes, num_devices: int) -> SnapshotSetupRe
     )
 
 
+def _check_control_reply(status: int, data: bytes, what: str) -> None:
+    """Validate a snapshot control (typecode 5) reply: ACNET header status, then the
+    payload error word (Java SnapShotPool reads it after the header)."""
+    if status < 0:
+        raise AcnetError(status, f"Snapshot {what} failed")
+    if len(data) < 2:
+        raise ValueError(f"Snapshot {what} reply too short: {len(data)} bytes")
+    error = struct.unpack_from("<h", data, 0)[0]
+    if error < 0:
+        raise AcnetError(error, f"Snapshot {what} rejected by front-end")
+
+
 def parse_snapshot_data_reply(
     data: bytes,
     device: FTPDevice,
@@ -1245,7 +1257,7 @@ class SnapshotHandle:
         )
 
         try:
-            status, _ = result_q.get(timeout=timeout)
+            status, data = result_q.get(timeout=timeout)
         except queue.Empty:
             # No ack: the FE may or may not have restarted. State is
             # indeterminate -- fail loudly rather than report stale readiness.
@@ -1256,9 +1268,8 @@ class SnapshotHandle:
                 self._ready_event.set()
             raise AcnetTimeoutError(int(timeout * 1000)) from None
 
-        if status < 0:
-            # FE rejected: nothing was reset, cycle-1 state remains valid
-            raise AcnetError(status, "Snapshot restart failed")
+        # Rejected (header or payload): nothing was reset, cycle-1 state remains valid
+        _check_control_reply(status, data, "restart")
 
         with self._lock:
             # The monitor may have terminated (or the user cancelled) during
@@ -1296,12 +1307,11 @@ class SnapshotHandle:
         )
 
         try:
-            status, _ = result_q.get(timeout=timeout)
+            status, data = result_q.get(timeout=timeout)
         except queue.Empty:
             raise AcnetTimeoutError(int(timeout * 1000)) from None
 
-        if status < 0:
-            raise AcnetError(status, "Snapshot reset pointers failed")
+        _check_control_reply(status, data, "reset pointers")
         with self._lock:
             self._metadata_consumed.clear()
 

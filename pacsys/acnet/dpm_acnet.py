@@ -41,11 +41,13 @@ from pacsys.drf_utils import ensure_immediate_event
 
 from .connection_sync import ACSYS_PROXY_HOST, AcnetConnectionTCP  # noqa: E402
 from .constants import ACNET_TCP_PORT
+from .errors import ACNET_CANCELLED
 
 logger = logging.getLogger(__name__)
 
 DPM_TASK = "DPMD"
 _DEFAULT_DPM_NODE = "DPM06"
+_REPLY_QUEUE_SIZE = 10000  # bounded to prevent OOM on slow consumers
 
 
 @dataclass
@@ -120,8 +122,9 @@ class DPMAcnet:
         self._dev_list: dict[int, str] = {}  # tag -> drf
         self._meta: dict[int, dict] = {}  # ref_id -> metadata
 
-        # Reply handling (bounded to prevent OOM on slow consumers)
-        self._reply_queue: queue.Queue = queue.Queue(maxsize=10000)
+        # Reply handling; a None sentinel ends the stream (see _terminate)
+        self._reply_queue: queue.Queue = queue.Queue(maxsize=_REPLY_QUEUE_SIZE)
+        self._terminal_status: int | None = None  # ACNET status that ended the stream
         self._request_ctx = None
 
         # Lock for state
@@ -141,7 +144,14 @@ class DPMAcnet:
 
     def connect(self):
         """Connect to ACNET and DPM."""
-        # Create ACNET connection
+        if self._con is not None:
+            raise RuntimeError("DPMAcnet is already connected; close() it first")
+        # Fresh stream state: a previous connection may have left readings or its sentinel behind
+        self._reply_queue = queue.Queue(maxsize=_REPLY_QUEUE_SIZE)
+        self._terminal_status = None
+        self._dev_list.clear()
+        self._meta.clear()
+
         self._con = AcnetConnectionTCP(host=self._host, port=self._port, trace=self._trace)
         try:
             self._con.connect()
@@ -160,6 +170,9 @@ class DPMAcnet:
 
     def close(self):
         """Close the connection."""
+        # Wake readings() consumers first: cancelling the request drops its handler,
+        # so the connection teardown cannot deliver a terminal reply afterwards
+        self._terminate(ACNET_CANCELLED)
         if self._request_ctx:
             try:
                 self._request_ctx.cancel()
@@ -197,11 +210,7 @@ class DPMAcnet:
 
         def handle_reply(reply):
             if reply.last and reply.status < 0:
-                # Stream terminated (e.g. connection lost) -- wake readings() consumers
-                try:
-                    self._reply_queue.put_nowait(None)
-                except queue.Full:
-                    pass
+                self._terminate(reply.status)  # stream ended (e.g. connection lost)
                 if not result_event.is_set():
                     result["error"] = f"stream terminated: status {reply.status}"
                     result_event.set()
@@ -322,6 +331,9 @@ class DPMAcnet:
         """Stop data acquisition."""
         if not self._active:
             return
+        if self._terminal_status is not None:
+            self._active = False  # the list died with the stream; StopList cannot be delivered
+            return
 
         msg = StopList_request()
         msg.list_id = self.list_id
@@ -374,10 +386,7 @@ class DPMAcnet:
                 status=msg.status,
                 meta=self._meta.get(msg.ref_id),
             )
-            try:
-                self._reply_queue.put_nowait(reading)
-            except queue.Full:
-                pass  # drop newest on overflow
+            self._enqueue(reading)
             return
 
         if isinstance(
@@ -403,10 +412,7 @@ class DPMAcnet:
                 meta=self._meta.get(msg.ref_id),
                 micros=micros,
             )
-            try:
-                self._reply_queue.put_nowait(reading)
-            except queue.Full:
-                pass  # drop newest on overflow
+            self._enqueue(reading)
             return
 
         if isinstance(msg, (AnalogAlarm_reply, DigitalAlarm_reply, BasicStatus_reply)):
@@ -416,15 +422,46 @@ class DPMAcnet:
                 data=msg.__dict__,
                 meta=self._meta.get(msg.ref_id),
             )
-            try:
-                self._reply_queue.put_nowait(reading)
-            except queue.Full:
-                pass  # drop newest on overflow
+            self._enqueue(reading)
             return
+
+    def _enqueue(self, reading: DPMReading) -> None:
+        """Queue a reading for readings() (reactor thread); drops the newest on overflow."""
+        if self._terminal_status is not None:
+            return  # stream already ended: keep the sentinel the last item
+        try:
+            self._reply_queue.put_nowait(reading)
+        except queue.Full:
+            pass
+
+    def _terminate(self, status: int) -> None:
+        """End the reply stream once: record why and wake readings() consumers.
+
+        The None sentinel is what unblocks a consumer waiting in queue.get(), so it
+        must land even when a slow consumer has filled the queue - the oldest reading
+        is dropped to make room (the stream is over either way).
+        """
+        with self._lock:
+            if self._terminal_status is not None:
+                return
+            self._terminal_status = status
+        # Nothing else enqueues after _terminal_status is set, so this loop ends
+        while True:
+            try:
+                self._reply_queue.put_nowait(None)
+                return
+            except queue.Full:
+                try:
+                    self._reply_queue.get_nowait()
+                except queue.Empty:
+                    pass
 
     def readings(self, timeout: float | None = None):
         """
         Generator that yields readings from DPM.
+
+        Returns when the stream has ended (connection lost or closed) or no
+        reading arrives within ``timeout``.
 
         Args:
             timeout: Maximum time to wait for next reading (None = forever)
@@ -433,11 +470,13 @@ class DPMAcnet:
             DPMReading objects
         """
         while True:
+            if self._terminal_status is not None and self._reply_queue.empty():
+                return  # stream ended and its sentinel was already consumed
             try:
                 item = self._reply_queue.get(timeout=timeout)
             except queue.Empty:
                 return
-            if item is None:  # stream terminated (connection lost)
+            if item is None:  # stream terminated (connection lost or closed)
                 return
             yield item
 
@@ -486,6 +525,8 @@ class DPMAcnet:
                 if time.time() - start > timeout:
                     break
 
+            if self._terminal_status is not None:
+                raise DPMError(self._terminal_status, f"DPM stream terminated while reading {drf}")
             raise TimeoutError(f"Timeout reading {drf}")
 
         finally:

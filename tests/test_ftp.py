@@ -16,6 +16,7 @@ from pacsys.acnet.errors import (
     FTP_BUMPED,
     FTP_COLLECTING,
     FTP_ENDOFDATA,
+    FTP_NO_SETUP,
     FTP_PEND,
     FTP_WAIT_DELAY,
     FTP_WAIT_EVENT,
@@ -1333,7 +1334,7 @@ class TestSnapshotHandle:
             if typecode == TYPECODE_SNAPSHOT_RETRIEVE:
                 status, payload = next(replies)
             else:
-                status, payload = 0, b""
+                status, payload = 0, struct.pack("<h", 0)  # control reply: payload error word
             reply_handler(MagicMock(status=status, data=payload, last=True))
 
         handle._connection.request_single.side_effect = request_single
@@ -1827,7 +1828,7 @@ class TestSnapshotStateTracking:
             handle._monitor_thread.join(timeout=2.0)
             reply = MagicMock()
             reply.status = 0
-            reply.data = b""
+            reply.data = struct.pack("<h", 0)
             reply_handler(reply)  # FE acks success after the monitor died
 
         handle._connection.request_single = fake_request_single
@@ -1886,7 +1887,7 @@ class TestSnapshotStateTracking:
         def fake_request_single(node, task, data, reply_handler, timeout):
             reply = MagicMock()
             reply.status = 0
-            reply.data = b""
+            reply.data = struct.pack("<h", 0)
             reply_handler(reply)
 
         handle._connection.request_single = fake_request_single
@@ -1911,7 +1912,7 @@ class TestSnapshotStateTracking:
         def fake_request_single(node, task, data, reply_handler, timeout):
             reply = MagicMock()
             reply.status = 0
-            reply.data = b""
+            reply.data = struct.pack("<h", 0)
             reply_handler(reply)
 
         handle._connection.request_single = fake_request_single
@@ -1957,24 +1958,62 @@ class TestSnapshotStateTracking:
                 gate.set()
                 handle.cancel()
 
-    def test_restart_rejected_keeps_cycle1_state(self):
-        """FE rejection leaves the previous cycle's READY state intact."""
+    @staticmethod
+    def _control_reply(handle, status, payload):
+        def request_single(node, task, data, reply_handler, timeout):
+            reply_handler(MagicMock(status=status, data=payload, last=True))
+
+        handle._connection.request_single = request_single
+
+    @pytest.mark.parametrize(
+        ("status", "data", "expected"),
+        [
+            pytest.param(-1, b"", -1, id="header"),
+            pytest.param(0, struct.pack("<h", FTP_NO_SETUP), FTP_NO_SETUP, id="payload"),
+        ],
+    )
+    def test_restart_rejected_keeps_cycle1_state(self, status, data, expected):
+        """FE rejection (ACNET header or payload error word) leaves the previous cycle's READY state intact."""
         handle, rq = self._make_handle(per_device_errors=[FTP_PEND])
         try:
-            data = self._build_status_reply(0, [0])
-            rq.put((0, data, False))
+            rq.put((0, self._build_status_reply(0, [0]), False))
             assert handle.wait(timeout=2.0)
+            cycle = handle._cycle
 
-            def reject_request_single(node, task, data, reply_handler, timeout):
-                reply = MagicMock()
-                reply.status = -1
-                reply.data = b""
-                reply_handler(reply)
-
-            handle._connection.request_single = reject_request_single
-            with pytest.raises(AcnetError):
+            self._control_reply(handle, status, data)
+            with pytest.raises(AcnetError) as exc_info:
                 handle.restart()
+            assert exc_info.value.status == expected
             assert handle.is_ready  # cycle-1 data still retrievable
+            assert handle._cycle == cycle
+        finally:
+            handle.cancel()
+
+    @pytest.mark.parametrize(
+        ("status", "data"),
+        [pytest.param(-1, b"", id="header"), pytest.param(0, struct.pack("<h", FTP_NO_SETUP), id="payload")],
+    )
+    def test_reset_pointers_rejected_keeps_cursor(self, status, data):
+        handle, rq = self._make_handle(per_device_errors=[FTP_PEND])
+        try:
+            handle._metadata_consumed.add(0)
+            self._control_reply(handle, status, data)
+            with pytest.raises(AcnetError):
+                handle.reset_pointers()
+            assert handle._metadata_consumed == {0}
+        finally:
+            handle.cancel()
+
+    def test_control_reply_short_payload_is_malformed(self):
+        """Header status 0 must carry the 2-byte error word (Java reads it unconditionally)."""
+        handle, rq = self._make_handle(per_device_errors=[FTP_PEND])
+        try:
+            self._control_reply(handle, 0, b"")
+            with pytest.raises(ValueError, match="too short"):
+                handle.reset_pointers()
+            # Informational (positive) payload status is not an error
+            self._control_reply(handle, 0, struct.pack("<h", FTP_PEND))
+            handle.reset_pointers()
         finally:
             handle.cancel()
 

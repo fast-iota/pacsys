@@ -56,6 +56,7 @@ from .constants import (
 )
 from .errors import (
     ACNET_DISCONNECTED,
+    ACNET_ENDMULT,
     ACNET_NOT_CONNECTED,
     ACNET_REQREJ,
     AcnetError,
@@ -94,6 +95,7 @@ KEEPALIVE_INTERVAL = 30
 # Max buffered replies per request ID before treating as orphaned.
 # Legitimate buffering is 1-2 replies (ACK+reply in same TCP batch).
 _MAX_BUFFERED_REPLIES = 16
+_TRANSPORT_CLOSE_TIMEOUT = 1.0  # graceful TCP close bound before abort()
 
 
 def _encode_connection_name(value: str, label: str, *, allow_empty: bool) -> int:
@@ -434,6 +436,10 @@ class AsyncAcnetConnectionBase:
         # Fail all active request contexts so consumers don't hang
         self._fail_reply_handlers()
         self._reply_buffer.clear()
+        # No reply can reach the peers of incoming requests any more
+        for request in self._requests_in.values():
+            request.cancel()
+        self._requests_in.clear()
 
         logger.debug("Connection lost for %s", self._handle_name)
 
@@ -619,18 +625,34 @@ class AsyncAcnetConnectionBase:
             logger.debug("Dropping stale reply for unknown request %s", reply.request_id)
 
     def _handle_request(self, request: AcnetRequest):
-        task = asyncio.create_task(self._request_ack(request.reply_id))
+        # Registered before the ACK round trip so a cancel racing it is not lost
+        self._requests_in[request.reply_id] = request
+        task = asyncio.create_task(self._receive_request(request))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
-        self._requests_in[request.reply_id] = request
 
-        if self._request_handler:
+    async def _receive_request(self, request: AcnetRequest) -> None:
+        """ACK an incoming request, then dispatch it - or, with no handler registered,
+        end it for the peer (Java AcnetConnection's default handler)."""
+        try:
+            await self._request_ack(request.reply_id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to send request ack for %s: %s", request.reply_id, e)
+            self._requests_in.pop(request.reply_id, None)
+            request.cancel()
+            return
+        if request.cancelled:  # cancelled or connection lost while the ACK was in flight
+            return
+        if self._request_handler is None:
             try:
-                self._request_handler(request)
+                await self.send_reply(request, b"", ACNET_ENDMULT)
             except Exception as e:  # noqa: BLE001
-                logger.warning("Request handler exception: %s", e)
-        else:
-            logger.debug("No request handler, ignoring incoming request")
+                logger.warning("Failed to end unhandled request %s: %s", request.reply_id, e)
+            return
+        try:
+            self._request_handler(request)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Request handler exception: %s", e)
 
     def _handle_message(self, message: AcnetMessage):
         if self._message_handler:
@@ -640,6 +662,9 @@ class AsyncAcnetConnectionBase:
                 logger.warning("Message handler exception: %s", e)
 
     def _handle_cancel(self, cancel: AcnetCancel):
+        request = self._requests_in.pop(cancel.reply_id, None)
+        if request is not None:
+            request.cancel()
         if self._cancel_handler:
             try:
                 self._cancel_handler(cancel)
@@ -987,7 +1012,14 @@ class AsyncAcnetConnectionBase:
             + data
         )
 
-        await self._xact(content)
+        ack = await self._xact(content)
+
+        if len(ack) < 4:
+            raise AcnetUnavailableError
+
+        _ack_code, ack_status = struct.unpack(">Hh", ack[:4])
+        if ack_status < 0:
+            raise AcnetError(ack_status, "SEND_REPLY failed")
 
     async def _send_cancel(self, context: AsyncRequestContext):
         """Send a cancel for an outgoing request."""
@@ -1016,11 +1048,14 @@ class AsyncAcnetConnectionBase:
             self._raw_vnode,
             reply_id.value & 0xFFFF,
         )
+        ack = await self._xact(content)
 
-        try:
-            await self._xact(content)
-        except Exception:  # noqa: BLE001
-            logger.warning("Failed to send request ack for %s", reply_id, exc_info=True)
+        if len(ack) < 4:
+            raise AcnetUnavailableError
+
+        _ack_code, status = struct.unpack(">Hh", ack[:4])
+        if status < 0:
+            raise AcnetError(status, "REQUEST_ACK failed")
 
     async def _start_receiving(self):
         """Start receiving incoming packets."""
@@ -1115,15 +1150,22 @@ class AsyncAcnetConnectionTCP(AsyncAcnetConnectionBase):
             raise AcnetUnavailableError from e
 
     async def _close_transport(self):
-        """Close the TCP writer."""
-        if self._writer:
-            try:
-                self._writer.close()
-                await self._writer.wait_closed()
-            except OSError:
-                pass
-            self._writer = None
-            self._reader = None
+        """Close the TCP writer.
+
+        Detaches the transport before awaiting so a concurrent closer (read loop,
+        _abandon_xact, close) cannot double-close it or clobber a replacement.
+        """
+        writer, self._writer, self._reader = self._writer, None, None
+        if writer is None:
+            return
+        writer.close()
+        try:
+            await asyncio.wait_for(writer.wait_closed(), timeout=_TRANSPORT_CLOSE_TIMEOUT)
+        except asyncio.TimeoutError:  # before OSError: TimeoutError is an OSError on 3.11+
+            logger.warning("Closing transport for %s timed out; aborting", self._handle_name)
+            writer.transport.abort()
+        except OSError:
+            pass
 
     async def _send_frame(self, content: bytes):
         """Wrap a raw command in the TCP bridge envelope and length prefix."""
@@ -1170,14 +1212,15 @@ class AsyncAcnetConnectionTCP(AsyncAcnetConnectionBase):
                     self._dispatch_frame(msg_type, msg_data)
 
         except asyncio.CancelledError:
-            raise
+            raise  # close() owns transport teardown on this path
         except OSError as e:
             if not self._disposed:
                 logger.warning("Socket error in read loop: %s", e)
         except Exception:
             logger.exception("Error in read loop")
 
-        self._on_connection_lost()
+        self._on_connection_lost()  # wake waiters first; closing may take a moment
+        await self._close_transport()
 
 
 # ======================================================================
