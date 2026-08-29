@@ -2,7 +2,10 @@
 
 import asyncio
 import struct
+import threading
+import time
 from dataclasses import FrozenInstanceError
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -840,7 +843,111 @@ class TestDPMAcnetStreamTermination:
 
         d = DPMAcnet.__new__(DPMAcnet)
         d._reply_queue = queue.Queue()
+        d._terminal_status = None
         d._reply_queue.put("r1")
         d._reply_queue.put(None)
         d._reply_queue.put("r2")
         assert list(d.readings(timeout=0.5)) == ["r1"]
+
+    @staticmethod
+    def _terminal_reply(status):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(last=True, status=status, data=b"")
+
+    def _open(self, dpm):
+        """Drive _open_list with a fake connection; returns the captured reply handler."""
+        from pacsys.dpm_protocol import OpenList_reply
+
+        captured = {}
+
+        def request_multiple(node, task, data, reply_handler, timeout):
+            captured["handler"] = reply_handler
+            ol = OpenList_reply()
+            ol.list_id = 7
+            reply_handler(SimpleNamespace(last=False, status=0, data=bytes(ol.marshal())))
+            return MagicMock()
+
+        dpm._con = MagicMock(request_multiple=request_multiple)
+        dpm._dpm_node = 1
+        dpm._open_list()
+        assert dpm._list_id == 7
+        return captured["handler"]
+
+    def test_terminal_reply_wakes_consumer_when_queue_full(self):
+        """The sentinel must land even when a slow consumer filled the queue (oldest reading dropped)."""
+        import queue
+
+        from pacsys.acnet.errors import ACNET_DISCONNECTED
+
+        dpm = DPMAcnet()
+        dpm._reply_queue = queue.Queue(maxsize=2)
+        handler = self._open(dpm)
+        dpm._reply_queue.put(DPMReading(ref_id=1))
+        dpm._reply_queue.put(DPMReading(ref_id=2))
+
+        got = []
+        t = threading.Thread(target=lambda: got.extend(dpm.readings(timeout=None)), daemon=True)
+        t.start()
+        time.sleep(0.05)  # consumer drains and blocks in queue.get()
+        handler(self._terminal_reply(ACNET_DISCONNECTED))
+        t.join(timeout=2.0)
+        assert not t.is_alive()
+        assert [r.ref_id for r in got] == [1, 2]
+        assert dpm._terminal_status == ACNET_DISCONNECTED
+        # Later readings after termination are dropped; a second iteration returns at once
+        dpm._handle_dpm_reply(Status_reply())
+        assert list(dpm.readings(timeout=None)) == []
+
+    def test_terminal_reply_when_full_and_idle_drops_oldest(self):
+        import queue
+
+        from pacsys.acnet.errors import ACNET_DISCONNECTED
+
+        dpm = DPMAcnet()
+        dpm._reply_queue = queue.Queue(maxsize=1)
+        handler = self._open(dpm)
+        dpm._reply_queue.put(DPMReading(ref_id=1))
+        handler(self._terminal_reply(ACNET_DISCONNECTED))
+        assert list(dpm.readings(timeout=0.5)) == []
+
+    def test_read_reports_termination_not_timeout(self):
+        from pacsys.acnet.errors import ACNET_DISCONNECTED
+
+        dpm = DPMAcnet()
+        handler = self._open(dpm)
+        dpm._active = True
+        dpm._send_request = MagicMock(return_value=Status_reply())
+        handler(self._terminal_reply(ACNET_DISCONNECTED))
+
+        with pytest.raises(DPMError) as exc_info:
+            dpm.read("M:OUTTMP", timeout=0.5)
+        assert exc_info.value.status == ACNET_DISCONNECTED
+
+    def test_close_wakes_blocked_iterator_and_connect_resets(self):
+        from pacsys.acnet.errors import ACNET_CANCELLED
+
+        dpm = DPMAcnet()
+        dpm._reply_queue.put(DPMReading(ref_id=1))
+        got = []
+        t = threading.Thread(target=lambda: got.extend(dpm.readings(timeout=None)), daemon=True)
+        t.start()
+        time.sleep(0.05)
+        dpm.close()
+        t.join(timeout=2.0)
+        assert not t.is_alive()
+        assert dpm._terminal_status == ACNET_CANCELLED
+        dpm._dev_list[1] = "M:OUTTMP"
+        dpm._reply_queue.put(DPMReading(ref_id=1))  # stale item left behind
+
+        with (
+            patch("pacsys.acnet.dpm_acnet.AcnetConnectionTCP"),
+            patch.object(dpm, "_find_dpm"),
+            patch.object(dpm, "_open_list"),
+        ):
+            dpm.connect()
+            assert dpm._terminal_status is None
+            assert dpm._reply_queue.empty()
+            assert dpm._dev_list == {}
+            with pytest.raises(RuntimeError, match="already connected"):
+                dpm.connect()

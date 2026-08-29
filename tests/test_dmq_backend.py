@@ -25,11 +25,13 @@ import pytest
 from pika.adapters.select_connection import SelectConnection
 from pika.exceptions import ChannelWrongStateError
 
-from pacsys.acnet.errors import ERR_TIMEOUT, FACILITY_DMQ
+from pacsys.acnet.errors import ERR_RETRY, ERR_TIMEOUT, FACILITY_DMQ
 from pacsys.backends.dmq import (
     DMQBackend,
+    _ReadJob,
     _reply_to_reading,
     _resolve_reply,
+    _SelectSubscription,
     _WriteCompletionTracker,
     _WriteSession,
 )
@@ -461,6 +463,120 @@ class TestMockPikaBehavior:
             connection.close()
 
 
+class TestDMQSetupRaces:
+    """Stop/close arriving while a channel is still being set up."""
+
+    @staticmethod
+    def _bare_backend():
+        backend = DMQBackend.__new__(DMQBackend)
+        conn = MockSelectConnection()
+        conn._is_open = True
+        conn.ioloop._running = True
+        backend._select_connection = conn
+        backend._stream_lock = threading.Lock()
+        backend._subscriptions = {}
+        backend._dispatcher = mock.MagicMock()
+        backend._read_jobs = set()
+        return backend, conn
+
+    @staticmethod
+    def _sub(stopped: bool) -> _SelectSubscription:
+        handle = mock.MagicMock(_stopped=stopped, _on_error=None)
+        return _SelectSubscription(
+            sub_id="sub-1",
+            drfs=[TEMP_DEVICE],
+            drf_to_idx={},
+            drf_to_all_indices={},
+            handle=handle,
+            callback=None,
+            exchange_name="ex",
+        )
+
+    def test_channel_closed_by_open_hook_skips_topology_setup(self):
+        """pika raises on a CLOSING channel, which would tear down the shared connection."""
+        backend, conn = self._bare_backend()
+
+        class StrictChannel(MockSelectChannel):
+            def queue_declare(self, *a, **kw):
+                if not self._is_open:
+                    raise ChannelWrongStateError("channel is closing")
+                return super().queue_declare(*a, **kw)
+
+        conn.channel = lambda on_open_callback=None: conn.ioloop.add_callback_threadsafe(
+            lambda: on_open_callback(StrictChannel(conn, [], []))
+        )
+        on_ready = mock.MagicMock()
+        backend._setup_channel_async(on_ready=on_ready, on_channel_open=lambda ch: ch.close())
+        conn.ioloop._process_callbacks()  # raises without the is_open guard
+        on_ready.assert_not_called()
+
+    def test_stop_during_setup_unblocks_subscribe(self):
+        backend, conn = self._bare_backend()
+        sub = self._sub(stopped=True)
+        backend._open_channel_for_subscription(sub, b"", {})
+        conn.ioloop._process_callbacks()
+        assert sub.setup_complete.is_set()
+        assert isinstance(sub.setup_error, RuntimeError) and "stopped during setup" in str(sub.setup_error)
+        assert sub.channel is None
+
+    def test_channel_closed_during_setup_fails_subscribe_promptly(self):
+        backend, _conn = self._bare_backend()
+        sub = self._sub(stopped=False)
+        backend._subscriptions[sub.sub_id] = sub
+        reason = ChannelWrongStateError("broker closed channel")
+
+        backend._on_channel_closed(mock.MagicMock(), reason, sub)
+
+        assert sub.setup_complete.is_set() and sub.setup_error is reason
+        assert sub.sub_id not in backend._subscriptions
+        sub.handle._signal_error.assert_called_once_with(reason)
+
+    def test_read_channel_closed_by_broker_fails_job(self):
+        backend, _conn = self._bare_backend()
+        job = _ReadJob(drfs=[TEMP_DEVICE], prepared_drfs=[TEMP_DEVICE], drf_to_idx={TEMP_DEVICE: 0})
+        backend._read_jobs.add(job)
+
+        backend._on_read_channel_closed(job, RuntimeError("404 NOT_FOUND"))
+
+        assert job.done_event.is_set() and "404" in str(job.error)
+        assert not backend._read_jobs
+
+    def test_deliberate_read_cleanup_does_not_fail_job(self):
+        """_complete_read unregisters before closing, so the synchronous close callback is ignored."""
+        backend, conn = self._bare_backend()
+        backend._send_drop = mock.MagicMock()
+        job = _ReadJob(drfs=[TEMP_DEVICE], prepared_drfs=[TEMP_DEVICE], drf_to_idx={TEMP_DEVICE: 0})
+        job.channel = MockSelectChannel(conn, [], [])
+        job.channel.add_on_close_callback(lambda _ch, reason: backend._on_read_channel_closed(job, reason))
+        backend._read_jobs.add(job)
+
+        backend._complete_read(job)
+
+        assert job.done_event.is_set() and job.error is None
+
+    def test_connection_loss_fails_in_flight_read_promptly(self):
+        with _mock_dmq_backend(replies=[]) as backend:  # no replies: would otherwise wait the full budget
+            errors = []
+            t = threading.Thread(target=lambda: errors.append(_catch(lambda: backend.get(TEMP_DEVICE, timeout=5.0))))
+            t.start()
+            time.sleep(0.2)
+            conn = backend._select_connection
+            assert conn is not None
+            conn.ioloop.add_callback_threadsafe(lambda: backend._on_connection_closed(conn, RuntimeError("boom")))
+            t.join(timeout=2.0)
+            assert not t.is_alive()
+            (err,) = errors
+            assert isinstance(err, ReadError) and "DMQ read failed: boom" in str(err)
+            assert err.readings[0].error_code == ERR_RETRY
+
+
+def _catch(fn):
+    try:
+        return fn()
+    except Exception as e:  # noqa: BLE001
+        return e
+
+
 class TestDMQCleanup:
     @staticmethod
     def _write_session(**overrides):
@@ -483,6 +599,7 @@ class TestDMQCleanup:
 
     def test_cancel_failure_still_closes_read_channel(self):
         backend = DMQBackend.__new__(DMQBackend)
+        backend._read_jobs = set()
         backend._send_drop = mock.MagicMock()
         channel = mock.MagicMock()
         channel.is_open = True
@@ -501,6 +618,7 @@ class TestDMQCleanup:
 
     def test_unexpected_close_error_propagates_after_signalling_done(self):
         backend = DMQBackend.__new__(DMQBackend)
+        backend._read_jobs = set()
         backend._send_drop = mock.MagicMock()
         channel = mock.MagicMock()
         channel.is_open = True
@@ -586,6 +704,8 @@ class TestDMQCleanup:
         queued = ([(0, TEMP_DEVICE, 1.0)], results, tracker)
         session = self._write_session(init_timer=object(), queued_sends=[queued])
         backend._write_sessions = {session.init_drf: session}
+        job = _ReadJob(drfs=[TEMP_DEVICE], prepared_drfs=[TEMP_DEVICE], drf_to_idx={TEMP_DEVICE: 0})
+        backend._read_jobs = {job}
         backend._stream_lock = threading.Lock()
         backend._subscriptions = {}
         backend._dispatcher = mock.MagicMock()
@@ -597,6 +717,9 @@ class TestDMQCleanup:
         assert results[0] is not None
         tracker.device_complete.assert_called_once_with()
         assert not backend._write_sessions
+        # In-flight one-shot reads fail at once instead of waiting out their budget
+        assert job.done_event.is_set() and "connection closed" in str(job.error)
+        assert not backend._read_jobs
         connection.ioloop.stop.assert_called_once_with()
         assert "Failed to cancel INIT timer after connection loss" in caplog.text
 
@@ -809,7 +932,7 @@ class TestDMQJobLevelErrors:
         )
         with _mock_dmq_backend(replies=[error], routing_keys=["R"]) as backend:
             start = time.monotonic()
-            with pytest.raises(ReadError, match="job start failed") as exc_info:
+            with pytest.raises(ReadError, match="DMQ read failed") as exc_info:
                 backend.get(TEMP_DEVICE, timeout=5.0)
             assert time.monotonic() - start < 2.0  # not a timeout
             reading = exc_info.value.readings[0]
@@ -1433,21 +1556,32 @@ class TestDMQBackendWrite:
         # After context exit (close), sessions cleared
         assert len(backend._write_sessions) == 0
 
-    def test_write_bytes_returns_error(self):
-        """DMQ server rejects BinarySample; writing bytes must fail."""
-        factory, mock_conn = create_write_select_connection_factory()
-        with (
-            _mock_gssapi(),
-            mock.patch("pika.BlockingConnection"),
-            mock.patch.object(SelectConnection, "__new__", side_effect=factory),
-        ):
-            backend = DMQBackend(host="localhost", auth=_create_mock_auth())
-            try:
-                result = backend.write(TEMP_DEVICE, b"\x00\x01\x02\x03", timeout=5.0)
-                assert not result.success
-                assert "does not support writing bytes" in result.message
-            finally:
-                backend.close()
+    @pytest.mark.parametrize(
+        ("value", "match"),
+        [
+            pytest.param(b"\x00\x01\x02\x03", "does not support writing bytes", id="bytes"),
+            pytest.param((1.0, 2.0), "Unsupported", id="tuple"),
+            pytest.param([1.0, "x"], "only strings", id="mixed-array"),
+            pytest.param(np.zeros((2, 2)), "one-dimensional", id="2d-array"),
+        ],
+    )
+    def test_write_invalid_value_raises_before_io(self, value, match):
+        """Client-side value errors raise on the caller thread; no session is opened or poisoned."""
+        with _mock_dmq_write_backend() as backend:
+            with pytest.raises(TypeError, match=match):
+                backend.write_many([(TEMP_DEVICE, 1.0), (TEMP_DEVICE, value)], timeout=5.0)
+            assert backend._write_sessions == {}
+            assert backend._pending_session_setups == {}
+
+    def test_write_invalid_value_does_not_poison_existing_session(self):
+        """A bad value in a later batch must not close the device's live session (pending writes)."""
+        with _mock_dmq_write_backend() as backend:
+            assert backend.write(TEMP_DEVICE, 72.5, timeout=5.0).success
+            session = next(iter(backend._write_sessions.values()))
+            with pytest.raises(TypeError):
+                backend.write(TEMP_DEVICE, b"\x00", timeout=5.0)
+            assert backend._write_sessions.get(session.init_drf) is session
+            assert backend.write(TEMP_DEVICE, 73.5, timeout=5.0).success
 
     def test_write_auth_failure_returns_error_result(self):
         """Test that GSS context failure during async write returns error WriteResult."""

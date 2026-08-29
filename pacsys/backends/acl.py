@@ -16,6 +16,7 @@ Usage:
 import logging
 import os
 import re
+import time
 import urllib.parse
 from datetime import datetime, timezone
 
@@ -238,11 +239,13 @@ def _parse_acl_line(text: str) -> tuple[Value, ValueType]:
         except ValueError:
             pass
 
-    # 4. Try first token as float → scalar + units (e.g. "12.34 DegF")
-    try:
-        return float(tokens[0]), ValueType.SCALAR
-    except ValueError:
-        pass
+    # 4. Number + one units token → scalar (e.g. "12.34 DegF"; ACNET units are a single token).
+    #    Longer numeric-leading text ("1 of 2") is text, not a number with odd units.
+    if len(tokens) == 2:
+        try:
+            return float(tokens[0]), ValueType.SCALAR
+        except ValueError:
+            pass
 
     # 5. Text
     return raw, ValueType.TEXT
@@ -262,15 +265,33 @@ def _is_error_response(text: str) -> tuple[bool, str | None]:
     if text.startswith("!"):
         return True, text[1:].strip()
 
-    # ACL errors end with " - ERROR_CODE" or " - DEVICE ERROR_CODE"
+    # ACL errors end with " - ERROR_CODE" or " - DEVICE ERROR_CODE" and never contain "=",
+    # whereas every value line is "DEVICE = value" (so "M:X = MODE - MAIN_INJ" is a value)
     if " - " in text:
-        tail = text.rsplit(" - ", 1)[-1].strip()
+        head, tail = text.rsplit(" - ", 1)
+        if "=" in head:
+            return False, None
+        tail = tail.strip()
         # Bare error code (e.g. "DIO_NO_SUCH") or device-prefixed (e.g. "Z:ACLTST DIO_NOATT")
         error_code = tail.rsplit(None, 1)[-1] if " " in tail else tail
         if _ACL_ERROR_CODE_RE.match(error_code):
             return True, text
 
     return False, None
+
+
+def _error_reading(drf: str, e: DeviceError, now: datetime) -> Reading:
+    return Reading(drf=drf, facility_code=e.facility_code, error_code=e.error_code, message=e.message, timestamp=now)
+
+
+def _timeout_reading(drf: str, now: datetime) -> Reading:
+    return Reading(drf=drf, error_code=ERR_TIMEOUT, message="ACL request timeout: budget exhausted", timestamp=now)
+
+
+def _remaining(deadline: float) -> float:
+    """Budget left for the next request; ``<= 0`` means issue none (per-phase httpx timeout,
+    so a single request can still overrun the budget by up to a few phases)."""
+    return deadline - time.monotonic()
 
 
 class ACLBackend(Backend):
@@ -451,6 +472,15 @@ class ACLBackend(Backend):
         Basic-status DRFs (e.g. ``N|LGXS``, ``Z:ACLTST.STATUS``) are routed
         through per-field reads automatically.
 
+        ``timeout`` bounds the whole call: batch, per-device fallback and
+        per-field status reads share one deadline. If it runs out, the
+        remaining devices get ``ERR_TIMEOUT`` readings and ``ReadError`` is
+        raised with the complete, ordered list.
+
+        Raises:
+            ValueError: malformed DRF or nonpositive timeout (before any I/O)
+            ReadError: the time budget was exhausted
+
         .. todo:: When all DRFs share the same property, use ``device_list``
            + ``read_list`` for a true simultaneous batch read instead of
            sequential ``read`` commands.
@@ -462,42 +492,51 @@ class ACLBackend(Backend):
             return []
 
         effective_timeout = timeout if timeout is not None else self._timeout
+        if effective_timeout <= 0:
+            raise ValueError(f"timeout must be positive, got {effective_timeout}")
+        deadline = time.monotonic() + effective_timeout
+        now = datetime.now(timezone.utc)
 
-        # Route basic-status DRFs through per-field reads (5 HTTP requests each).
-        # Remaining DRFs go through the normal batch path (recursive, safe
-        # because the recursive call contains no status DRFs).
-        status_indices = {i for i, d in enumerate(drfs) if _is_basic_status_request(d)}
-        if status_indices:
-            normal_drfs = [d for i, d in enumerate(drfs) if i not in status_indices]
-            normal_iter = iter(self.get_many(normal_drfs, timeout=timeout) if normal_drfs else [])
-            return [
-                self._get_basic_status(drf, effective_timeout) if i in status_indices else next(normal_iter)
-                for i, drf in enumerate(drfs)
-            ]
+        # Classify every DRF before any I/O: malformed ones raise ValueError; unsupported
+        # (periodic) events become per-DRF error readings instead of aborting the batch
+        results: list[Reading | None] = [None] * len(drfs)
+        batch: list[int] = []
+        status: list[int] = []
+        for i, drf in enumerate(drfs):
+            try:
+                _acl_read_command(drf)
+            except DeviceError as e:
+                results[i] = _error_reading(drf, e, now)
+            else:
+                (status if _is_basic_status_request(drf) else batch).append(i)
 
+        if batch:
+            for i, reading in zip(batch, self._get_many_batch([drfs[i] for i in batch], deadline), strict=True):
+                results[i] = reading
+        for i in status:  # 5 HTTP requests each
+            results[i] = self._get_basic_status(drfs[i], deadline)
+
+        readings = [r for r in results if r is not None]
+        assert len(readings) == len(drfs)
+        if any(r.error_code == ERR_TIMEOUT for r in readings):
+            raise ReadError(readings, "ACL request timeout")
+        return readings
+
+    def _get_many_batch(self, drfs: list[str], deadline: float) -> list[Reading]:
+        """One ``read`` script for all devices, falling back to per-device reads to isolate errors."""
         url = self._build_url(drfs)
         logger.debug("ACL batch request: %s", url)
 
         try:
-            response_text = self._fetch(url, effective_timeout, drf=drfs[0])
+            response_text = self._fetch(url, _remaining(deadline), drf=drfs[0])
         except DeviceError as e:
             if e.error_code == ERR_TIMEOUT:
                 # Server is unresponsive - individual reads would each timeout too.
-                readings = [
-                    Reading(
-                        drf=drf,
-                        facility_code=e.facility_code,
-                        error_code=e.error_code,
-                        message=e.message,
-                        timestamp=datetime.now(timezone.utc),
-                    )
-                    for drf in drfs
-                ]
-                raise ReadError(readings, e.message or "ACL request timeout") from e
+                return [_error_reading(drf, e, datetime.now(timezone.utc)) for drf in drfs]
             # HTTP/URL error (e.g. 400 from one bad DRF) - fall back to
             # individual reads to isolate which devices actually failed.
             logger.debug("ACL batch HTTP error, falling back to individual reads: %s", e.message)
-            return self._get_many_individual(drfs, effective_timeout)
+            return self._get_many_individual(drfs, deadline)
 
         logger.debug("ACL batch response: %s", response_text[:200])
 
@@ -512,7 +551,7 @@ class ACLBackend(Backend):
                 len(lines),
                 len(drfs),
             )
-            return self._get_many_individual(drfs, effective_timeout)
+            return self._get_many_individual(drfs, deadline)
 
         # Happy path: one line per device, in order
         readings: list[Reading] = []
@@ -526,14 +565,16 @@ class ACLBackend(Backend):
             readings.append(Reading(drf=drf, value_type=value_type, value=value, error_code=ERR_OK, timestamp=now))
         return readings
 
-    def _get_many_individual(self, drfs: list[str], timeout: float) -> list[Reading]:
+    def _get_many_individual(self, drfs: list[str], deadline: float) -> list[Reading]:
         """Fallback: read each device individually to isolate errors."""
         readings: list[Reading] = []
         now = datetime.now(timezone.utc)
         for drf in drfs:
-            url = self._build_url([drf])
+            if (remaining := _remaining(deadline)) <= 0:
+                readings.append(_timeout_reading(drf, now))
+                continue
             try:
-                response_text = self._fetch(url, timeout, drf=drf)
+                response_text = self._fetch(self._build_url([drf]), remaining, drf=drf)
                 lines = response_text.strip().splitlines()
                 if not lines:
                     readings.append(
@@ -574,18 +615,10 @@ class ACLBackend(Backend):
                         Reading(drf=drf, value_type=value_type, value=value, error_code=ERR_OK, timestamp=now)
                     )
             except DeviceError as e:
-                readings.append(
-                    Reading(
-                        drf=drf,
-                        facility_code=e.facility_code,
-                        error_code=e.error_code,
-                        message=e.message,
-                        timestamp=now,
-                    )
-                )
+                readings.append(_error_reading(drf, e, now))
         return readings
 
-    def _get_basic_status(self, drf: str, timeout: float) -> Reading:
+    def _get_basic_status(self, drf: str, deadline: float) -> Reading:
         """Build a BASIC_STATUS dict by reading individual status fields.
 
         Issues one HTTP request per field (ON, READY, REMOTE, POSITIVE, RAMP).
@@ -598,17 +631,13 @@ class ACLBackend(Backend):
         status: dict[str, bool] = {}
 
         for key, field in zip(_BASIC_STATUS_KEYS, _BASIC_STATUS_FIELDS, strict=True):
+            if (remaining := _remaining(deadline)) <= 0:
+                return _timeout_reading(drf, now)
             url = self._build_url([f"{device}.STATUS.{field}"])
             try:
-                lines = self._fetch(url, timeout, drf=drf).strip().splitlines()
+                lines = self._fetch(url, remaining, drf=drf).strip().splitlines()
             except DeviceError as e:
-                return Reading(
-                    drf=drf,
-                    facility_code=e.facility_code,
-                    error_code=e.error_code,
-                    message=e.message,
-                    timestamp=now,
-                )
+                return _error_reading(drf, e, now)
             if not lines:
                 return Reading(
                     drf=drf,

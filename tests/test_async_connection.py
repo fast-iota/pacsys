@@ -17,6 +17,7 @@ from pacsys.acnet.async_connection import (
     _AcnetUDPDataProtocol,
 )
 from pacsys.acnet.constants import (
+    ACNET_FLG_CAN,
     ACNET_FLG_MLT,
     ACNET_FLG_REQ,
     ACNET_FLG_RPY,
@@ -25,8 +26,10 @@ from pacsys.acnet.constants import (
     CMD_CONNECT,
     CMD_DISCONNECT_SINGLE,
     CMD_RECEIVE_REQUESTS,
+    CMD_REQUEST_ACK,
+    CMD_SEND_REPLY,
 )
-from pacsys.acnet.errors import ACNET_DISCONNECTED, AcnetError, AcnetUnavailableError
+from pacsys.acnet.errors import ACNET_DISCONNECTED, ACNET_ENDMULT, AcnetError, AcnetUnavailableError
 from pacsys.acnet.packet import AcnetPacket, AcnetReply, RequestId
 from pacsys.acnet.rad50 import encode as _rad50_encode
 
@@ -700,10 +703,18 @@ class TestAsyncXact:
         async def _test():
             conn = _make_tcp_conn()
             content = struct.pack(">H2I", CMD_CONNECT, 0, 0)
+            calls = []
 
-            with patch("pacsys.acnet.async_connection.asyncio.wait_for", side_effect=asyncio.TimeoutError):
+            async def ack_wait_times_out(aw, timeout):
+                calls.append(aw)
+                if len(calls) == 1:
+                    raise asyncio.TimeoutError  # the ACK wait; transport close still awaits normally
+                return await aw
+
+            with patch("pacsys.acnet.async_connection.asyncio.wait_for", new=ack_wait_times_out):
                 with pytest.raises(AcnetUnavailableError):
                     await conn._xact(content)
+            assert conn._writer is None
 
         _run(_test())
 
@@ -912,20 +923,209 @@ class TestTCPSendFrame:
         _run(_test())
 
 
-class TestRequestAckErrorHandling:
-    """Fire-and-forget ack must never leak an unretrieved task exception."""
+def _make_request(status: int = 0, client: int = 0, msg_id: int = 42, mult: bool = False):
+    flags = ACNET_FLG_REQ | (ACNET_FLG_MLT if mult else 0)
+    return AcnetPacket.parse(struct.pack("<HhHHIHHH", flags, status, 0, client, 0, 0, msg_id, 18))
 
-    def test_request_ack_swallows_transport_failure(self, caplog):
+
+def _make_cancel(status: int = 0, client: int = 0, msg_id: int = 42):
+    return AcnetPacket.parse(struct.pack("<HhHHIHHH", ACNET_FLG_CAN, status, 0, client, 0, 0, msg_id, 18))
+
+
+def _commands(xact: AsyncMock) -> list[int]:
+    return [struct.unpack_from(">H", c.args[0])[0] for c in xact.call_args_list]
+
+
+_ACK_OK = struct.pack(">Hh", 0, 0)
+
+
+class TestIncomingRequests:
+    """ACK, dispatch and termination of incoming requests (Java AcnetRequest.handle)."""
+
+    def test_no_handler_ends_request_after_ack(self):
         async def _test():
             conn = _make_tcp_conn()
-            conn._writer = None
-            from pacsys.acnet.packet import ReplyId
+            conn._xact = AsyncMock(return_value=_ACK_OK)
+            request = _make_request()
+            conn._handle_request(request)
+            await asyncio.gather(*conn._background_tasks)
 
-            await conn._request_ack(ReplyId(1))  # must not raise
+            assert _commands(conn._xact) == [CMD_REQUEST_ACK, CMD_SEND_REPLY]
+            _flags, status = struct.unpack_from(">Hh", conn._xact.call_args.args[0], 12)  # after cmd,handle,vnode,id
+            assert status == ACNET_ENDMULT
+            assert not conn._requests_in
+            assert request.cancelled
+
+        _run(_test())
+
+    def test_handler_invoked_after_ack_and_request_stays_registered(self):
+        async def _test():
+            conn = _make_tcp_conn()
+            conn._xact = AsyncMock(return_value=_ACK_OK)
+            seen = []
+            conn._request_handler = lambda r: (seen.append(r), 1 / 0)  # raising handler keeps the request
+            request = _make_request()
+            conn._handle_request(request)
+            await asyncio.gather(*conn._background_tasks)
+
+            assert seen == [request]
+            assert _commands(conn._xact) == [CMD_REQUEST_ACK]
+            assert conn._requests_in[request.reply_id] is request
+
+        _run(_test())
+
+    @pytest.mark.parametrize("ack", [b"", struct.pack(">Hh", 0, -1), AcnetUnavailableError()])
+    def test_ack_failure_cancels_request_without_dispatch(self, ack, caplog):
+        async def _test():
+            conn = _make_tcp_conn()
+            conn._xact = AsyncMock(side_effect=ack) if isinstance(ack, Exception) else AsyncMock(return_value=ack)
+            handler = MagicMock()
+            conn._request_handler = handler
+            request = _make_request()
+            conn._handle_request(request)
+            await asyncio.gather(*conn._background_tasks)
+
+            handler.assert_not_called()
+            assert request.cancelled
+            assert not conn._requests_in
 
         with caplog.at_level("WARNING"):
             _run(_test())
         assert any("Failed to send request ack" in r.message for r in caplog.records)
+
+    def test_cancel_during_ack_skips_dispatch(self):
+        async def _test():
+            conn = _make_tcp_conn()
+            request = _make_request()
+
+            async def ack_then_cancel(content):
+                conn._handle_cancel(_make_cancel())  # cancel arrives while the ACK is in flight
+                return _ACK_OK
+
+            conn._xact = AsyncMock(side_effect=ack_then_cancel)
+            handler = MagicMock()
+            conn._request_handler = handler
+            conn._handle_request(request)
+            await asyncio.gather(*conn._background_tasks)
+
+            handler.assert_not_called()
+            assert request.cancelled
+            assert not conn._requests_in
+
+        _run(_test())
+
+    @pytest.mark.parametrize(
+        ("request_args", "cancel_args"),
+        [
+            pytest.param({"client": 5, "msg_id": 7}, {"client": 5, "msg_id": 7}, id="client-id"),
+            pytest.param({"status": -1}, {"status": -1}, id="status-16bit"),
+            pytest.param({"status": -1}, {"client": 0, "msg_id": 0xFFFF}, id="cross-form"),
+        ],
+    )
+    def test_cancel_removes_matching_request_before_handler(self, request_args, cancel_args):
+        conn = _make_tcp_conn()
+        request = _make_request(**request_args)
+        conn._requests_in[request.reply_id] = request
+        order = []
+        conn._cancel_handler = lambda c: order.append((c.reply_id, request.cancelled, dict(conn._requests_in)))
+
+        conn._handle_cancel(_make_cancel(**cancel_args))
+
+        assert order == [(request.reply_id, True, {})]
+        # An unmatched cancel still reaches the handler
+        conn._handle_cancel(_make_cancel(client=9, msg_id=9))
+        assert len(order) == 2
+
+    def test_connection_loss_cancels_incoming_requests(self):
+        conn = _make_tcp_conn()
+        request = _make_request()
+        conn._requests_in[request.reply_id] = request
+        conn._on_connection_lost()
+        assert request.cancelled
+        assert not conn._requests_in
+
+
+class TestSendReply:
+    @pytest.mark.parametrize(
+        ("ack", "exc"),
+        [(struct.pack(">Hh", 0, -24), AcnetError), (b"", AcnetUnavailableError)],
+    )
+    def test_rejected_reply_raises_and_final_request_stays_cancelled(self, ack, exc):
+        async def _test():
+            conn = _make_tcp_conn()
+            conn._xact = AsyncMock(return_value=ack)
+            request = _make_request()
+            conn._requests_in[request.reply_id] = request
+            with pytest.raises(exc):
+                await conn.send_reply(request, b"", 0)
+            assert request.cancelled
+            assert not conn._requests_in
+
+        _run(_test())
+
+    def test_failed_intermediate_reply_keeps_request_active(self):
+        async def _test():
+            conn = _make_tcp_conn()
+            conn._xact = AsyncMock(return_value=struct.pack(">Hh", 0, -24))
+            request = _make_request(mult=True)
+            conn._requests_in[request.reply_id] = request
+            with pytest.raises(AcnetError):
+                await conn.send_reply(request, b"", 0, last=False)
+            assert not request.cancelled
+            assert conn._requests_in[request.reply_id] is request
+
+        _run(_test())
+
+
+class TestReadLoopTransportCleanup:
+    @pytest.mark.parametrize("read", [b"", struct.pack(">I", 1), OSError("reset"), RuntimeError("boom")])
+    def test_read_loop_exit_closes_transport(self, read):
+        async def _test():
+            conn = _make_tcp_conn()
+            writer = conn._writer
+            conn._reader.read = (
+                AsyncMock(side_effect=read) if isinstance(read, Exception) else AsyncMock(return_value=read)
+            )
+            await conn._tcp_read_loop()
+            assert not conn._connected
+            assert conn._writer is None and conn._reader is None
+            writer.close.assert_called_once()
+            writer.wait_closed.assert_awaited_once()
+
+        _run(_test())
+
+    def test_close_transport_aborts_after_timeout(self):
+        async def _test():
+            conn = _make_tcp_conn()
+            writer = conn._writer
+
+            async def hang():
+                await asyncio.sleep(10)
+
+            writer.wait_closed = hang
+            with patch("pacsys.acnet.async_connection._TRANSPORT_CLOSE_TIMEOUT", 0.01):
+                await conn._close_transport()
+            writer.transport.abort.assert_called_once()
+            assert conn._writer is None
+
+        _run(_test())
+
+    def test_close_transport_detaches_before_await(self):
+        """A concurrent closer sees no writer and cannot double-close it."""
+
+        async def _test():
+            conn = _make_tcp_conn()
+            writer = conn._writer
+            seen = []
+
+            async def wait_closed():
+                seen.append(conn._writer)
+
+            writer.wait_closed = wait_closed
+            await conn._close_transport()
+            assert seen == [None]
+
+        _run(_test())
 
 
 # ======================================================================

@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 
 from pacsys.acnet.errors import ERR_RETRY, ERR_TIMEOUT, FACILITY_ACNET
 from pacsys.aio._backends import AsyncBackend
@@ -169,7 +170,14 @@ class AsyncDPMHTTPBackend(AsyncBackend):
                     raise PoolExhaustedError("Connection pool exhausted (all cores busy)") from None
 
         try:
-            return await self._create_core()
+            # The connect shares the borrow budget, like the sync pool's connection
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise DPMConnectionError("DPM connect skipped: read budget exhausted")
+            try:
+                return await asyncio.wait_for(self._create_core(), timeout=remaining)
+            except (TimeoutError, asyncio.TimeoutError) as e:  # distinct classes on 3.10
+                raise DPMConnectionError(f"DPM connect timed out after {remaining:.2f}s") from e
         except BaseException:
             async with self._pool_condition:
                 self._pool_count = max(0, self._pool_count - 1)
@@ -237,9 +245,10 @@ class AsyncDPMHTTPBackend(AsyncBackend):
     async def get_many(self, drfs: list[str], timeout: float | None = None) -> list[Reading]:
         if not drfs:
             return []
-        effective_timeout = timeout if timeout is not None else self._timeout
+        # One budget across pool wait, connect and read, like the sync twin
+        deadline = _make_deadline(timeout, self._timeout)
         try:
-            core = await self._borrow_core(effective_timeout)
+            core = await self._borrow_core(_remaining_timeout(deadline, "DPM read"))
         except (PoolExhaustedError, DPMConnectionError, OSError) as e:
             readings = [
                 Reading(
@@ -253,7 +262,8 @@ class AsyncDPMHTTPBackend(AsyncBackend):
             ]
             raise ReadError(readings, str(e)) from e
         try:
-            result = await core.read_many(drfs, effective_timeout)
+            # An exhausted budget yields ERR_TIMEOUT readings from read_many itself
+            result = await core.read_many(drfs, max(deadline - time.monotonic(), 0.0))
             # read_many closes its connection on repeating-event DRFs or failures —
             # such cores must be discarded, not re-pooled.
             if core.connected:

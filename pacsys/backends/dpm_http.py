@@ -890,8 +890,8 @@ class DPMHTTPBackend(Backend):
             return []
         self._check_not_reactor_thread()
 
-        effective_timeout = timeout if timeout is not None else self._timeout
-        deadline = time.monotonic() + effective_timeout
+        deadline = _make_deadline(timeout, self._timeout)
+        effective_timeout = deadline - time.monotonic()
 
         prepared_drfs = [ensure_immediate_event(drf) for drf in drfs]
 

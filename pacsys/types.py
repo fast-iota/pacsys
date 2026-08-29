@@ -26,6 +26,9 @@ if TYPE_CHECKING:
 else:
     Value = float | int | str | bytes | list | dict
 
+_LIST_DTYPE = "list"  # value_dtype tag for list-valued array readings (see _value_dtype)
+_NDARRAY_HASH_MARKER = "<ndarray>"  # see _value_hashable
+
 
 def _loaded_numpy_types(*names: str) -> tuple[type, ...]:
     """Return requested numpy types without importing numpy."""
@@ -57,17 +60,25 @@ def _value_to_json(value: object) -> object:
 def _value_from_json(
     value: object, value_type: "ValueType | None", dtype: "str | dict[str, str] | None" = None
 ) -> "Value | None":
-    """Reconstruct a Value from its JSON representation, ValueType, and recorded dtype(s)."""
+    """Reconstruct a Value from its JSON representation, ValueType, and recorded dtype(s).
+
+    Array values without a recorded dtype (serialized before ``value_dtype`` existed)
+    become ndarrays; ``_LIST_DTYPE`` marks values that were lists and stay lists.
+    """
     if value is None:
         return None
     if value_type is None:
         return cast("Value", value)
     if value_type in (ValueType.SCALAR_ARRAY, ValueType.TIMED_SCALAR_ARRAY):
+        if dtype == _LIST_DTYPE:
+            return cast("Value", value)
         import numpy as np
 
         if isinstance(value, dict):
             dtypes = dtype if isinstance(dtype, dict) else {}
-            return {k: np.array(v, dtype=dtypes.get(k)) for k, v in value.items()}
+            return {
+                k: v if dtypes.get(k) == _LIST_DTYPE else np.array(v, dtype=dtypes.get(k)) for k, v in value.items()
+            }
         return np.array(value, dtype=dtype if isinstance(dtype, str) else None)
     if value_type == ValueType.RAW and isinstance(value, str):
         return base64.b64decode(value, validate=True)
@@ -75,17 +86,21 @@ def _value_from_json(
 
 
 def _value_dtype(value: object) -> "str | dict[str, str] | None":
-    """Dtype string(s) of ndarray content in a Value, recorded for exact round-trip.
+    """Dtype string(s) of array content in a Value, recorded for exact round-trip.
 
     Uses ``dtype.str`` (e.g. ``'<f8'``, ``'<U2'``) — unlike ``dtype.name``, it is
-    valid ``np.dtype()`` input for every dtype (``'str64'`` is not).
+    valid ``np.dtype()`` input for every dtype (``'str64'`` is not). Lists (and
+    tuples, which come back as lists) record ``_LIST_DTYPE`` so ``from_dict`` does
+    not promote them to ndarrays.
     """
-    ndarray_types = _loaded_numpy_types("ndarray")
-    if isinstance(value, ndarray_types):
+    if isinstance(value, _loaded_numpy_types("ndarray")):
         return cast("Any", value).dtype.str
+    if isinstance(value, (list, tuple)):
+        return _LIST_DTYPE
     if isinstance(value, dict):
-        dtypes = {k: cast("Any", v).dtype.str for k, v in value.items() if isinstance(v, ndarray_types)}
-        return cast("dict[str, str]", dtypes) or None
+        items = cast("dict[str, Any]", value).items()
+        dtypes = {k: dt for k, v in items if isinstance(dt := _value_dtype(v), str)}
+        return dtypes or None
     return None
 
 
@@ -262,7 +277,7 @@ def _frozen_value(value: object) -> object:
     if value.base is not None:
         value = value.copy()
     value.flags.writeable = False
-    # MaskedArray: the mask is a separate buffer that also feeds tobytes()/hash.
+    # MaskedArray: the mask is a separate buffer that also feeds tobytes().
     # Freeze the stored _mask — the .mask property returns a fresh view per access
     mask = getattr(value, "_mask", None)
     if isinstance(mask, ndarray_types):
@@ -277,8 +292,10 @@ def _value_hashable(value: object) -> object:
     if value is None:
         return None
     if isinstance(value, _loaded_numpy_types("ndarray")):
-        value = cast("Any", value)
-        return (value.dtype.str, value.tobytes())
+        # Equality is by value (array_equal: -0.0 == 0.0, NaN == NaN, masks ignored), so a
+        # byte-level hash would split equal readings; shape/dtype stay reassignable behind
+        # writeable=False. Only a constant is both consistent with __eq__ and stable.
+        return _NDARRAY_HASH_MARKER
     if isinstance(value, (dict, list)):
         # Mutable after construction - a hash would drift and corrupt any set/dict holding it
         raise TypeError(f"unhashable value of type {type(value).__name__}")

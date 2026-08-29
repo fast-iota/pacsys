@@ -69,6 +69,50 @@ class TestAsyncDPMRead:
         assert result[1].value == 1.0
 
     @pytest.mark.asyncio
+    async def test_get_many_shares_one_budget_across_connect_and_read(self):
+        """Connect time is charged against the call timeout; read_many gets only the remainder."""
+        backend = AsyncDPMHTTPBackend(host="localhost", port=6802)
+        budgets = []
+
+        async def slow_read(drfs, timeout):
+            budgets.append(timeout)
+            await asyncio.sleep(timeout)
+            return [_make_reading(error_code=ERR_TIMEOUT)]
+
+        async def slow_create():
+            await asyncio.sleep(0.06)
+            core = _mock_core()
+            core.read_many = slow_read
+            return core
+
+        backend._create_core = slow_create
+        started = asyncio.get_running_loop().time()
+        await backend.get_many(["M:OUTTMP"], timeout=0.1)
+        assert asyncio.get_running_loop().time() - started < 0.2
+        assert 0 < budgets[0] < 0.05
+
+    @pytest.mark.asyncio
+    async def test_get_many_connect_timeout_is_bounded_and_retryable(self):
+        backend = AsyncDPMHTTPBackend(host="localhost", port=6802)
+
+        async def slow_create():
+            await asyncio.sleep(1.0)
+
+        backend._create_core = slow_create
+        started = asyncio.get_running_loop().time()
+        with pytest.raises(ReadError) as exc_info:
+            await backend.get_many(["M:OUTTMP"], timeout=0.05)
+        assert asyncio.get_running_loop().time() - started < 0.3
+        assert exc_info.value.readings[0].error_code == ERR_RETRY  # sync twin: connect timeout is retryable
+        assert "connect timed out" in exc_info.value.readings[0].message
+        assert backend._pool_count == 0
+
+    @pytest.mark.asyncio
+    async def test_get_many_rejects_nonpositive_timeout(self, backend):
+        with pytest.raises(ValueError, match="timeout must be positive"):
+            await backend.get_many(["M:OUTTMP"], timeout=0)
+
+    @pytest.mark.asyncio
     async def test_get_many_empty(self, backend):
         result = await backend.get_many([])
         assert result == []

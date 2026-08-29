@@ -69,8 +69,9 @@ The ACL CGI only decodes `+`/`%20` (space) and `%27` (quote) from the query stri
 ## Limitations
 
 - **URL length**: `get_many()` builds a single HTTP GET URL with semicolon-separated `read` commands. Most servers enforce an ~8 KB URL limit (~200 simple devices per call). For large batches, use DPM or gRPC instead.
-- **No writes or streaming**: Read-only, request/response only.
+- **No writes or streaming**: Read-only, request/response only. Periodic DRFs (`@p`, `@q`) in `get_many()` come back as per-device error readings; the other devices are still read.
 - **Error handling**: ACL aborts the entire script on the first bad device. `get_many()` detects this and falls back to individual reads so valid devices still return data.
+- **Timeouts**: `timeout` bounds the whole `get_many()` call — the batch, any per-device fallback and the five per-field requests behind a `.STATUS` read share one deadline. When it runs out, the remaining devices get `ERR_TIMEOUT` readings and `ReadError` is raised with the complete list.
 
 ## When to Use
 
