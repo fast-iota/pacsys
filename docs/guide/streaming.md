@@ -54,6 +54,13 @@ with pacsys.subscribe(["M:OUTTMP@p,1000"]) as stream:
 
 Breaking out of the `for` loop also works - the context manager calls `stop()` on exit.
 
+After `stop()` returns, reading callbacks still queued for that handle are discarded (an
+`on_error` callback is always delivered). A callback that is already executing when `stop()`
+is called runs to completion.
+
+`handle.dropped` counts readings discarded because the iterator buffer or the callback queue
+was full (cumulative for the life of the handle; a throttled warning is logged as well).
+
 ---
 
 ## Callback Mode
@@ -104,6 +111,8 @@ with pacsys.dpm(dispatch_mode=DispatchMode.DIRECT) as backend:
     In DIRECT mode, slow callbacks block the reactor thread and delay all readings on that connection. Only use DIRECT when your callback is very fast.
 
 Dispatch mode is configured per-backend, not per-subscription. The global backend (used by `pacsys.subscribe()`) always uses `WORKER`.
+
+One worker thread serves every subscription on a backend, so one slow callback delays all of them and, if the queue fills, readings are dropped (`handle.dropped`). Give a slow consumer its own backend instance, or hand the work off to your own thread/executor from the callback.
 
 ---
 

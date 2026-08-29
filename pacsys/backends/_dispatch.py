@@ -112,6 +112,7 @@ class CallbackDispatcher:
         try:
             self._queue.put_nowait(item)
         except queue.Full:
+            item[2]._note_dispatch_drop()
             now = time.monotonic()
             if now - self._last_drop_warn_time >= _WARN_INTERVAL:
                 logger.warning(
@@ -139,6 +140,8 @@ class CallbackDispatcher:
             if item is None:  # sentinel
                 break
             fn, arg, handle, is_error = item
+            if handle.stopped and not is_error:  # reading queued before stop(); errors are always delivered
+                continue
             try:
                 fn(arg, handle)
             except Exception:

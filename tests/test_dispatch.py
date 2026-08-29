@@ -17,6 +17,12 @@ class _FakeHandle:
 
     stopped = False
 
+    def __init__(self):
+        self.dispatch_drops = 0
+
+    def _note_dispatch_drop(self):
+        self.dispatch_drops += 1
+
 
 # ─── WORKER mode ─────────────────────────────────────────────────────────
 
@@ -241,3 +247,56 @@ class TestDirectMode:
         """close() on DIRECT dispatcher with no worker is safe."""
         d = CallbackDispatcher(DispatchMode.DIRECT)
         d.close()  # should not raise
+
+
+class TestStopAndDropAccounting:
+    def test_queued_callbacks_skipped_after_stop(self):
+        """Readings queued before stop() must not reach the callback afterwards."""
+        d = CallbackDispatcher(DispatchMode.WORKER)
+        handle = _FakeHandle()
+        gate = threading.Event()
+        delivered = []
+
+        def cb(reading, h):
+            gate.wait(1.0)  # hold the worker so later items pile up in the queue
+            delivered.append(reading.value)
+
+        try:
+            d.dispatch_reading(cb, _make_reading(value=1.0), handle)
+            time.sleep(0.05)  # worker is now inside cb(1.0)
+            for v in (2.0, 3.0):
+                d.dispatch_reading(cb, _make_reading(value=v), handle)
+            handle.stopped = True
+            gate.set()
+            time.sleep(0.1)
+        finally:
+            d.close()
+        assert delivered == [1.0]
+
+    def test_error_callback_delivered_after_stop(self):
+        """A stream error stops the handle before its on_error is queued; it must still arrive."""
+        d = CallbackDispatcher(DispatchMode.WORKER)
+        handle = _FakeHandle()
+        handle.stopped = True
+        got = threading.Event()
+        try:
+            d.dispatch_error(lambda exc, h: got.set(), RuntimeError("boom"), handle)
+            assert got.wait(1.0)
+        finally:
+            d.close()
+
+    def test_queue_full_counted_on_handle(self):
+        d = CallbackDispatcher(DispatchMode.WORKER)
+        handle = _FakeHandle()
+        gate = threading.Event()
+        try:
+            d.dispatch_reading(lambda r, h: gate.wait(2.0), _make_reading(), handle)
+            time.sleep(0.05)
+            from pacsys.backends import _dispatch
+
+            for _ in range(_dispatch._QUEUE_MAX_SIZE + 3):
+                d.dispatch_reading(lambda r, h: None, _make_reading(), handle)
+            assert handle.dispatch_drops == 3
+        finally:
+            gate.set()
+            d.close()
