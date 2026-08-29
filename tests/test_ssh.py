@@ -1,6 +1,5 @@
 """Tests for pacsys.ssh - SSH client with multi-hop support."""
 
-import sys
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -18,12 +17,6 @@ from pacsys.ssh import (
     _normalize_hops,
 )
 from tests.ssh_helpers import make_exec_channel
-
-# pacsys.__init__ defines a function named 'ssh' that shadows the pacsys.ssh
-# module. On Python <=3.12, patch("pacsys.ssh.X") resolves via getattr and
-# finds the function instead of the module, breaking all mock targets.
-# We grab the real module from sys.modules for patch.object() calls.
-_ssh_mod = sys.modules["pacsys.ssh"]
 
 
 @pytest.fixture(autouse=True)
@@ -72,7 +65,7 @@ class TestSSHHop:
             SSHHop("host", auth_method="password")
 
     def test_effective_username_gssapi(self):
-        with patch.object(_ssh_mod, "_gssapi_username", return_value="kerbuser"):
+        with patch("pacsys.ssh._gssapi_username", return_value="kerbuser"):
             hop = SSHHop("host")  # auth_method="gssapi" by default, no username
             assert hop.effective_username == "kerbuser"
 
@@ -814,7 +807,7 @@ class TestAuthDispatch:
         ssh._ensure_connected()
         mock_transport.auth_gssapi_with_mic.assert_called_once_with("user", "host", gss_deleg_creds=True)
 
-    @patch.object(_ssh_mod, "_gssapi_username", return_value="kerbuser")
+    @patch("pacsys.ssh._gssapi_username", return_value="kerbuser")
     @patch("paramiko.Transport")
     @patch("socket.create_connection")
     def test_gssapi_auth_from_principal(self, mock_connect, mock_transport_cls, mock_gssapi):

@@ -70,7 +70,7 @@ The typical workflow retrieves scaling parameters from the device database:
 import pacsys
 from pacsys import Scaler
 
-with pacsys.devdb(host="...") as db:
+with pacsys.DevDBClient(host="...") as db:
     info = db.get_device_info(["M:OUTTMP"])
     prop = info["M:OUTTMP"].reading  # PropertyInfo
 

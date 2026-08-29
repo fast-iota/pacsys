@@ -7,17 +7,19 @@ information like scaling parameters, control commands, and status bit definition
 Usage:
     import pacsys
 
-    with pacsys.devdb() as db:
+    with pacsys.DevDBClient() as db:
         info = db.get_device_info(["Z:ACLTST", "M:OUTTMP"])
         print(info["Z:ACLTST"].description)
 """
 
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import threading
 import time
+import weakref
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar, cast
@@ -25,6 +27,19 @@ from typing import Any, Generic, TypeVar, cast
 from pacsys.errors import DeviceError
 
 logger = logging.getLogger(__name__)
+
+# Live clients closed at interpreter exit; WeakSet so closed+dereferenced ones are dropped.
+_live_clients: weakref.WeakSet = weakref.WeakSet()
+
+
+@atexit.register
+def _close_live_clients() -> None:
+    for client in list(_live_clients):
+        try:
+            client.close()
+        except Exception:
+            logger.debug("Error closing DevDB client during atexit", exc_info=True)
+
 
 _import_error = ""
 try:
@@ -387,6 +402,7 @@ class DevDBClient:
         target = self._host if "/" in self._host else f"{self._host}:{self._port}"
         self._channel = grpc.insecure_channel(target)
         self._stub = DevDB_pb2_grpc.DevDBStub(self._channel)
+        _live_clients.add(self)
         logger.debug("DevDB client connected to %s", target)
 
     def get_device_info(self, names: list[str], timeout: float | None = None) -> dict[str, DeviceInfoResult]:

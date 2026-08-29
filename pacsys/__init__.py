@@ -8,9 +8,7 @@ import importlib
 import logging
 import math
 import os
-import sys
 import threading
-import types as _stdlib_types
 import weakref
 from typing import TYPE_CHECKING, Optional
 
@@ -42,10 +40,8 @@ if TYPE_CHECKING:
     from pacsys.backends.dpm_http import DPMHTTPBackend
     from pacsys.backends.grpc_backend import GRPCBackend
     from pacsys.devdb import DevDBClient
-    from pacsys.ssh import SSHClient, SSHHop
-    from pacsys.supervised import SupervisedServer
 
-__version__ = "0.2.3"
+__version__ = "0.3.0"
 
 logger = logging.getLogger(__name__)
 
@@ -409,9 +405,6 @@ def _get_global_devdb() -> Optional["DevDBClient"]:
         port = _config_devdb_port or _env_devdb_port or 6802
         _global_devdb = DevDBClient(host=host, port=port)
         _devdb_initialized = True
-        # DevDB clients share backend atexit cleanup.
-        with _live_backends_lock:
-            _live_backends.add(_global_devdb)
         return _global_devdb
 
 
@@ -909,134 +902,6 @@ def dmq(
     return _track(DMQBackend(**kwargs))
 
 
-def devdb(
-    host: str | None = None,
-    port: int | None = None,
-    timeout: float | None = None,
-    cache_ttl: float = 3600.0,
-) -> "DevDBClient":
-    """Create a DevDB client for device metadata queries.
-
-    DevDB provides device information like scaling parameters, control commands,
-    and status bit definitions from the master PostgreSQL database.
-
-    Args:
-        host: DevDB gRPC hostname (default: from PACSYS_DEVDB_HOST or ad-services.fnal.gov/services.devdb)
-        port: DevDB gRPC port (default: from PACSYS_DEVDB_PORT or 6802)
-        timeout: RPC timeout in seconds (default: 5.0)
-        cache_ttl: Cache TTL in seconds (default: 3600.0)
-
-    Returns:
-        DevDBClient instance (use as context manager or call close() when done)
-
-    Raises:
-        ImportError: If grpc package is not available
-
-    Example:
-        with pacsys.devdb() as db:
-            info = db.get_device_info(["Z:ACLTST"])
-            print(info["Z:ACLTST"].description)
-    """
-    from pacsys.devdb import DevDBClient
-
-    return _track(DevDBClient(host=host, port=port, timeout=timeout, cache_ttl=cache_ttl))
-
-
-def ssh(
-    hops: "str | SSHHop | list[str | SSHHop]",
-    auth: Auth | None = None,
-    connect_timeout: float = 10.0,
-) -> "SSHClient":
-    """Create an SSH client for remote command execution, tunneling, and SFTP.
-
-    Supports multi-hop connections through jump hosts using Kerberos (GSSAPI),
-    key-based, or password authentication.
-
-    Args:
-        hops: Target host(s). Accepts a hostname string, SSHHop, or list of either.
-              Multiple hops create a chain (jump hosts).
-        auth: Optional KerberosAuth for GSSAPI hops. If None and any hop uses
-              gssapi auth, credentials are validated at construction time.
-        connect_timeout: TCP connection timeout in seconds (default 10.0).
-
-    Returns:
-        SSHClient instance (use as context manager or call close() when done)
-
-    Example (single hop):
-        with pacsys.ssh("target.fnal.gov") as client:
-            result = client.exec("hostname")
-            print(result.stdout)
-
-    Example (multi-hop with Kerberos):
-        auth = KerberosAuth()
-        with pacsys.ssh(["jump.fnal.gov", "target.fnal.gov"], auth=auth) as client:
-            result = client.exec("ls /data")
-
-    Example (port forwarding):
-        with pacsys.ssh("jump.fnal.gov") as client:
-            with client.forward(23456, "grpc-host.fnal.gov", 50051) as tunnel:
-                # Use gRPC backend via tunnel
-                with pacsys.grpc(port=tunnel.local_port) as backend:
-                    value = backend.read("M:OUTTMP")
-    """
-    from pacsys.ssh import SSHClient as _SSHClient
-
-    return _SSHClient(hops=hops, auth=auth, connect_timeout=connect_timeout)
-
-
-def supervised(
-    backend: "Backend",
-    port: int = 50051,
-    host: str = "[::]",
-    policies: list | None = None,
-) -> "SupervisedServer":
-    """Create a supervised gRPC proxy server with logging and policy enforcement.
-
-    Wraps any Backend and exposes it as a gRPC DAQ service, forwarding
-    requests while enforcing access policies and logging all traffic.
-
-    Args:
-        backend: Backend instance to proxy requests to
-        port: Port to listen on (default: 50051). Use 0 for OS-assigned.
-        host: Host to bind (default: "[::]" for all interfaces)
-        policies: Optional list of Policy instances for access control
-
-    Returns:
-        SupervisedServer instance (use as context manager or call start()/stop())
-
-    Example:
-        from pacsys.supervised import ReadOnlyPolicy
-
-        with pacsys.dpm() as backend:
-            with pacsys.supervised(backend, port=50051, policies=[ReadOnlyPolicy()]) as srv:
-                srv.wait()  # Block until interrupted
-    """
-    from pacsys.supervised import SupervisedServer
-
-    return SupervisedServer(backend=backend, port=port, host=host, policies=policies)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Submodule Shadowing Protection
-# ─────────────────────────────────────────────────────────────────────────────
-# Factory functions ssh(), devdb(), supervised() share names with submodule
-# files. When Python imports a submodule, it does setattr(parent, child_name,
-# module), overwriting the factory function. A custom module class with
-# __setattr__ blocks this for protected names.
-
-
-class _PacsysModule(_stdlib_types.ModuleType):
-    _PROTECTED = frozenset({"ssh", "devdb", "supervised"})
-
-    def __setattr__(self, name: str, value: object) -> None:
-        if name in self._PROTECTED and isinstance(value, _stdlib_types.ModuleType):
-            return
-        super().__setattr__(name, value)
-
-
-sys.modules[__name__].__class__ = _PacsysModule
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Lazy Imports
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1073,14 +938,20 @@ _LAZY_IMPORTS: dict[str, str] = {
     # acl_session
     "ACLSession": "pacsys.acl_session",
     # devdb
+    "DevDBClient": "pacsys.devdb",
     "DeviceInfoResult": "pacsys.devdb",
     "PropertyInfo": "pacsys.devdb",
     "StatusBitDef": "pacsys.devdb",
     "ExtStatusBitDef": "pacsys.devdb",
     "ControlCommandDef": "pacsys.devdb",
+    # supervised
+    "SupervisedServer": "pacsys.supervised",
     # mcp
     "create_server": "pacsys.mcp",
 }
+
+# Submodules importable as attributes without an explicit `import pacsys.<name>`
+_LAZY_SUBMODULES = frozenset({"acnet", "ssh", "devdb", "supervised"})
 
 
 def __getattr__(name: str):
@@ -1089,10 +960,8 @@ def __getattr__(name: str):
         val = getattr(mod, name)
         globals()[name] = val
         return val
-    if name == "acnet":
-        acnet = importlib.import_module("pacsys.acnet")
-        globals()["acnet"] = acnet
-        return acnet
+    if name in _LAZY_SUBMODULES:
+        return importlib.import_module(f"pacsys.{name}")  # import sets the attribute
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -1191,9 +1060,9 @@ __all__ = [
     "grpc",
     "dmq",
     "acl",
-    "ssh",
-    "devdb",
-    "supervised",
+    # Clients / servers
+    "DevDBClient",
+    "SupervisedServer",
     # Submodule
     "acnet",
     # Internal (for Device)

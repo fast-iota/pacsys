@@ -284,7 +284,7 @@ The scaling parameters can be found in the device database or looked up via DevD
 ```python
 from pacsys import Scaler
 
-with pacsys.devdb() as db:
+with pacsys.DevDBClient() as db:
     info = db.get_device_info(["B:HS23T"])
     prop = info["B:HS23T"].setting
     scaler = Scaler.from_property_info(prop, input_len=2)

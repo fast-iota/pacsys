@@ -12,7 +12,7 @@ remote commands, transferring files, and setting up tunnels (e.g., for gRPC).
 import pacsys
 
 # Execute a remote command
-with pacsys.ssh("target.fnal.gov") as client:
+with pacsys.SSHClient("target.fnal.gov") as client:
     result = client.exec("hostname")
     print(result.stdout)      # "target.fnal.gov\n"
     print(result.ok)          # True
@@ -24,13 +24,13 @@ Chain through jump hosts. Each hop can use a different auth method.
 
 ```python
 # Simple multi-hop (all Kerberos)
-with pacsys.ssh(["jump.fnal.gov", "target.fnal.gov"]) as client:
+with pacsys.SSHClient(["jump.fnal.gov", "target.fnal.gov"]) as client:
     result = client.exec("whoami")
 
 # Mixed auth per hop
 from pacsys.ssh import SSHHop
 
-with pacsys.ssh([
+with pacsys.SSHClient([
     SSHHop("jump.fnal.gov"),  # Kerberos (default)
     SSHHop("target.fnal.gov", auth_method="key",
            key_filename="~/.ssh/id_ed25519"),
@@ -104,7 +104,7 @@ Create local port forwards through the SSH connection:
 
 ```python
 # Forward local:23456 -> dce08.fnal.gov:50051 through jump host
-with pacsys.ssh("jump.fnal.gov") as client:
+with pacsys.SSHClient("jump.fnal.gov") as client:
     with client.forward(23456, "dce08.fnal.gov", 50051) as tunnel:
         print(f"Listening on 127.0.0.1:{tunnel.local_port}")
 
@@ -147,7 +147,7 @@ interactive programs that read stdin and write stdout (REPLs, calculators,
 custom protocols). It does not decode bytes -- that's the caller's job.
 
 ```python
-with pacsys.ssh("host.fnal.gov") as client:
+with pacsys.SSHClient("host.fnal.gov") as client:
     with client.remote_process("bc -q") as proc:
         proc.send_line("2 + 3")
         result = proc.read_until(b"\n", timeout=5.0)
@@ -256,7 +256,7 @@ ACNET console hosts via SSH.
 list of strings (written to a temp script file):
 
 ```python
-with pacsys.ssh(["jump.fnal.gov", "clx01.fnal.gov"]) as ssh:
+with pacsys.SSHClient(["jump.fnal.gov", "clx01.fnal.gov"]) as ssh:
     # Single command
     output = ssh.acl("read M:OUTTMP")
     print(output)  # "M:OUTTMP       =  72.500 DegF"
@@ -276,7 +276,7 @@ separate script execution - state (variables, symbols) does **not** persist
 between calls. Combine dependent commands with semicolons in a single `send()`:
 
 ```python
-with pacsys.ssh(["jump.fnal.gov", "clx01.fnal.gov"]) as ssh:
+with pacsys.SSHClient(["jump.fnal.gov", "clx01.fnal.gov"]) as ssh:
     with ssh.acl_session() as acl:
         # Each send() is separate - use semicolons for dependencies
         acl.send("read M:OUTTMP")
@@ -327,11 +327,11 @@ All hops use GSSAPI (Kerberos) by default. Requires a valid ticket (`kinit`).
 
 ```python
 # Implicit -- validates GSSAPI availability at init
-client = pacsys.ssh("host.fnal.gov")
+client = pacsys.SSHClient("host.fnal.gov")
 
 # Explicit -- reuse KerberosAuth from other pacsys operations
 from pacsys import KerberosAuth
-client = pacsys.ssh("host.fnal.gov", auth=KerberosAuth())
+client = pacsys.SSHClient("host.fnal.gov", auth=KerberosAuth())
 ```
 
 ### Key-Based
@@ -339,7 +339,7 @@ client = pacsys.ssh("host.fnal.gov", auth=KerberosAuth())
 ```python
 from pacsys.ssh import SSHHop
 
-client = pacsys.ssh(SSHHop(
+client = pacsys.SSHClient(SSHHop(
     "host.fnal.gov",
     auth_method="key",
     key_filename="~/.ssh/id_ed25519",
@@ -349,7 +349,7 @@ client = pacsys.ssh(SSHHop(
 ### Password
 
 ```python
-client = pacsys.ssh(SSHHop(
+client = pacsys.SSHClient(SSHHop(
     "host.fnal.gov",
     auth_method="password",
     password="secret",  # excluded from repr
@@ -370,7 +370,7 @@ client = pacsys.ssh(SSHHop(
 from pacsys.ssh import SSHConnectionError
 
 try:
-    with pacsys.ssh("unreachable.fnal.gov") as client:
+    with pacsys.SSHClient("unreachable.fnal.gov") as client:
         client.exec("ls")
 except SSHConnectionError as e:
     print(f"Failed: {e}")

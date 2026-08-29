@@ -143,12 +143,12 @@ Port tunneling, SFTP, and interactive processes over multi-hop SSH.
 import pacsys
 
 # Execute commands with automatic Kerberos auth
-with pacsys.ssh(["jump.fnal.gov", "target.fnal.gov"]) as ssh:
+with pacsys.SSHClient(["jump.fnal.gov", "target.fnal.gov"]) as ssh:
     result = ssh.exec("hostname")
     print(result.stdout) # target
 
 # ACL can be run on the fly - beam switch, DB, etc.
-with pacsys.ssh("clx01.fnal.gov") as ssh:
+with pacsys.SSHClient("clx01.fnal.gov") as ssh:
     result = ssh.acl("read M:OUTTMP") # "M:OUTTMP       =  72.500 DegF"
 ```
 
