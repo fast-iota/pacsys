@@ -124,6 +124,10 @@ class FTPDevice:
     data_length: int = 2  # Data word size: 2 or 4 bytes
 
     def __post_init__(self):
+        if not 0 <= self.di <= 0xFFFFFF:  # anything wider would spill into the PI byte of dipi
+            raise ValueError(f"di must be 0..16777215, got {self.di}")
+        if not 0 <= self.pi <= 0xFF:
+            raise ValueError(f"pi must be 0..255, got {self.pi}")
         if len(self.ssdn) != 8:
             raise ValueError(f"SSDN must be 8 bytes, got {len(self.ssdn)}")
         if self.data_length not in (2, 4):

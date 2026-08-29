@@ -557,6 +557,10 @@ class SubscriptionHandle:
         sub.stop()
     """
 
+    # Set once the consumer asked for the stop (stop()/remove()/stop_streaming()); queued reading
+    # callbacks are discarded only then, so a stream that ends on its own still delivers its tail.
+    _stop_requested: bool = False
+
     @property
     def ref_ids(self) -> list[int]:
         """Reference IDs for devices in this subscription."""

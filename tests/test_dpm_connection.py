@@ -309,14 +309,16 @@ class TestTimeoutHandling:
     """Tests for timeout handling."""
 
     def test_socket_timeout_on_connect(self):
-        """Test socket timeout during connection."""
+        """A connect timeout stays a TimeoutError (callers map it to ERR_TIMEOUT, not ERR_RETRY)."""
         mock_socket = mock.Mock(spec=socket.socket)
         mock_socket.connect.side_effect = TimeoutError("Connection timed out")
 
         with mock.patch("socket.socket", return_value=mock_socket):
             conn = DPMConnection(timeout=1.0)
-            with pytest.raises(DPMConnectionError, match="Failed to connect"):
+            with pytest.raises(TimeoutError, match="Connection timed out"):
                 conn.connect()
+        mock_socket.close.assert_called_once()
+        assert not conn.connected
 
     def test_recv_message_timeout(self):
         """Test recv_message timeout."""

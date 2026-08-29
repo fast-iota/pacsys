@@ -374,6 +374,15 @@ class TestDigitalStatusFromDevdbBits:
         for bit in status:
             assert bit.is_set is False
 
+    @pytest.mark.parametrize(("raw", "active"), [(0b00, False), (0b01, False), (0b10, True), (0b11, False)])
+    def test_multibit_invert_matches_server(self, raw, active):
+        """Server inverts the raw word before mask/match (BasicStatusScaling.getState), not the result."""
+        from dataclasses import replace
+
+        bd = replace(ACLTST_STATUS_BITS[0], mask=0b11, match=0b01, invert=True)
+        status = DigitalStatus.from_devdb_bits("Z:TEST", raw_value=raw, bit_defs=(bd,))
+        assert status["On"].is_set is active
+
     def test_invert_logic(self):
         """Test that invert=True flips the evaluation."""
         inverted_bit = StatusBitDef(

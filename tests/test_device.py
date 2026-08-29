@@ -93,6 +93,17 @@ class TestDeviceImmutability:
         restored = pickle.loads(pickle.dumps(original))
         assert restored == original
 
+    def test_request_is_a_snapshot(self, fake):
+        """Mutating the returned DataRequest (or its nested range) must not retarget the device."""
+        dev = Device("B:HS23T[0:10]", backend=fake)
+        req = dev.request
+        req.device = "Z:ACLTST"
+        req.range.low = 5
+        assert dev.drf == "B:HS23T.READING[0:10]"
+        assert hash(dev) == hash(Device("B:HS23T[0:10]"))
+        dev.write([1.0] * 11)
+        assert fake.was_written("B:HS23T.SETTING[0:10]")
+
     def test_with_event_returns_new_device(self):
         original = Device("M:OUTTMP")
         modified = original.with_event("p,1000")
@@ -939,6 +950,32 @@ class TestDeviceVerify:
         assert not result.skipped
         assert result.verified is True
         mock_backend.write.assert_called_once()
+
+    @pytest.mark.parametrize(("method", "readback"), [("on", 1.0), ("off", 0.0), ("on", np.float64(1.0)), ("reset", 1)])
+    def test_control_check_first_accepts_dpm_numeric_status(self, mock_backend, method, readback):
+        """DPM delivers STATUS.<field> as a 0.0/1.0 double; it must compare equal to the bool target."""
+        mock_backend.read.return_value = readback
+        dev = Device("Z:ACLTST", backend=mock_backend)
+        result = getattr(dev, method)(verify=Verify(check_first=True, initial_delay=0))
+        assert result.skipped is True
+        assert result.readback is bool(readback)
+        mock_backend.write.assert_not_called()
+
+    def test_control_verify_float_status_after_write(self, mock_backend):
+        mock_backend.read.side_effect = [0.0, 1.0]
+        dev = Device("Z:ACLTST", backend=mock_backend)
+        result = dev.on(verify=Verify(check_first=True, initial_delay=0, retry_delay=0, max_attempts=1))
+        assert not result.skipped
+        assert result.verified is True
+        assert result.readback is True
+        mock_backend.write.assert_called_once()
+
+    def test_control_verify_other_numbers_do_not_match(self, mock_backend):
+        mock_backend.read.return_value = 2.0
+        dev = Device("Z:ACLTST", backend=mock_backend)
+        result = dev.on(verify=Verify(initial_delay=0, retry_delay=0, max_attempts=1))
+        assert result.verified is False
+        assert result.readback == 2.0
 
     def test_control_verify_unmapped_command_raises(self, fake):
         """Verify raises ValueError for commands without a STATUS field mapping."""

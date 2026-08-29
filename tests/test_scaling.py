@@ -346,6 +346,36 @@ class TestPrimaryUnscale:
         # The BCD encode adds 0xC000 bits, so check mantissa and exponent
         assert _primary_scale(recovered, 14, 2) == pytest.approx(primary, rel=1e-4)
 
+    def test_p14_max_exponent_roundtrips(self):
+        assert _primary_scale(_primary_unscale(1023e7, 14, 2), 14, 2) == pytest.approx(1023e7)
+
+    @pytest.mark.parametrize("value", [1.5e10, -1.0, float("nan"), float("inf")])
+    def test_p14_out_of_domain_raises(self, value):
+        """3-bit exponent: 1.5e10 used to encode as 57494, which decodes to 150; inf used to loop forever."""
+        with pytest.raises(ScalingError):
+            _primary_unscale(value, 14, 2)
+
+    @pytest.mark.parametrize("value", [0.0, 127.0, 128.0, 255.0])
+    def test_p36_roundtrips_full_high_byte(self, value):
+        assert _primary_scale(_primary_unscale(value, 36, 2), 36, 2) == value
+
+    @pytest.mark.parametrize("value", [-1.0, -0.5, 256.0, float("nan")])
+    def test_p36_out_of_domain_raises(self, value):
+        with pytest.raises(ScalingError, match="Overflow"):
+            _primary_unscale(value, 36, 2)
+
+    @pytest.mark.parametrize("value", [0.0, 2147483647.0, 2147483648.0, 4294967295.0])
+    def test_p46_roundtrips_full_unsigned_range(self, value):
+        """Upper half used to saturate at 2**31-1; the raw must be a signed 32-bit pattern."""
+        raw = _primary_unscale(value, 46, 4)
+        assert -2147483648 <= raw <= 2147483647
+        assert _primary_scale(raw, 46, 4) == value
+
+    @pytest.mark.parametrize("value", [-1.0, 4294967296.0, float("nan")])
+    def test_p46_out_of_domain_raises(self, value):
+        with pytest.raises(ScalingError, match="Corrupt data"):
+            _primary_unscale(value, 46, 4)
+
 
 # ---- Primary round-trip (for all transforms that support it) ----------------
 

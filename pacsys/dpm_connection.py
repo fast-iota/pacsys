@@ -216,6 +216,7 @@ class DPMConnection:
 
         Raises:
             DPMConnectionError: If connection fails or server returns HTTP error
+            TimeoutError: If the connect deadline or a socket timeout expires
             ValueError: If response is not a valid OpenList reply
         """
         if self._connected:
@@ -265,6 +266,9 @@ class DPMConnection:
 
             logger.info("Connected to DPM at %s:%s, list_id=%s", self._host, self._port, self._list_id)
 
+        except TimeoutError:  # deadline/socket timeout: callers map this to ERR_TIMEOUT, not ERR_RETRY
+            self._cleanup_socket()
+            raise
         except OSError as e:
             self._cleanup_socket()
             raise DPMConnectionError(f"Failed to connect to {self._host}:{self._port}: {e}") from e

@@ -718,6 +718,34 @@ class TestAsyncXact:
 
         _run(_test())
 
+    def test_xact_cancelled_during_send_drops_transport(self):
+        """Cancel while the frame is being written must not leave _pending_ack for the next command."""
+
+        async def _test():
+            conn = _make_tcp_conn()
+            sending = asyncio.Event()
+
+            async def slow_drain():
+                sending.set()
+                await asyncio.sleep(10)
+
+            conn._writer.drain = slow_drain
+            content = struct.pack(">H2I", CMD_CONNECT, 0, 0)
+            task = asyncio.create_task(conn._xact(content))
+            await sending.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+            assert conn._pending_ack is None
+            assert conn._writer is None
+            assert not conn._connected
+            conn._dispatch_frame(ACNETD_ACK, b"OLD-ACK")  # late ACK for the cancelled command
+            with pytest.raises(AcnetUnavailableError):  # transport gone: cannot bind it to a new command
+                await conn._xact(content)
+
+        _run(_test())
+
 
 class TestAsyncReadLoop:
     """Test read loop packet parsing and dispatch."""

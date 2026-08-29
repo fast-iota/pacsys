@@ -449,9 +449,9 @@ class Ramp:
         from pacsys.errors import DeviceError
 
         _validate_device_name(device)
-        be = _get_backend(backend)
         name = get_device_name(device)
-        drf = cls._make_drf(name, slot)
+        drf = cls._make_drf(name, slot)  # validate slot before resolving the (global) backend
+        be = _get_backend(backend)
 
         reading = be.get(drf)
         if not reading.ok:
@@ -495,9 +495,9 @@ class Ramp:
         if slot is None:
             raise ValueError("No slot specified and none stored from read()")
 
-        be = _get_backend(backend)
         name = get_device_name(device)
         drf = self._make_drf(name, slot)
+        be = _get_backend(backend)
 
         result = be.write(drf, self.to_bytes())
         if not result.success:
@@ -689,9 +689,9 @@ class _RampModifyContext:
         from pacsys.drf_utils import get_device_name
         from pacsys.errors import DeviceError
 
-        be = _get_backend(self._backend)
         name = get_device_name(self._device)
         drf = self._cls._make_drf(name, self._slot)
+        be = _get_backend(self._backend)
 
         reading = be.get(drf)
         if not reading.ok:
@@ -754,9 +754,9 @@ def read_ramps(
     from pacsys.drf_utils import get_device_name
     from pacsys.errors import DeviceError
 
-    be = _get_backend(backend)
     names = [get_device_name(d) for d in devices]
     drfs = [cls._make_drf(name, slot) for name in names]
+    be = _get_backend(backend)
 
     readings = be.get_many(drfs)
     ramps: list[Ramp] = []
@@ -802,7 +802,6 @@ def write_ramps(
         else:
             flat.append(item)
 
-    be = _get_backend(backend)
     settings: list[tuple[str, Value]] = []
     for ramp in flat:
         dev = ramp.device
@@ -814,7 +813,7 @@ def write_ramps(
         name = get_device_name(dev)
         drf = type(ramp)._make_drf(name, s)
         settings.append((drf, ramp.to_bytes()))
-    return be.write_many(settings)
+    return _get_backend(backend).write_many(settings)
 
 
 class RampGroup:

@@ -425,7 +425,7 @@ class _AsyncDPMConnection:
 
         try:
             await asyncio.wait_for(connect_and_handshake(), timeout=effective_timeout)
-        except TimeoutError as e:
+        except (TimeoutError, asyncio.TimeoutError) as e:  # distinct classes on 3.10
             await self.close()
             raise DPMConnectionError(f"Connection to {self._host}:{self._port} timed out") from e
         except BaseException:
@@ -2044,6 +2044,7 @@ class DPMHTTPBackend(Backend):
         if not isinstance(handle, _DPMHTTPSubscriptionHandle):
             raise TypeError(f"Expected _DPMHTTPSubscriptionHandle, got {type(handle).__name__}")
 
+        handle._stop_requested = True
         handle._signal_stop()
 
         if handle._task is not None and self._loop is not None:
@@ -2062,6 +2063,7 @@ class DPMHTTPBackend(Backend):
             self._handles.clear()
 
         for handle in handles:
+            handle._stop_requested = True
             handle._signal_stop()
             if handle._task is not None and self._loop is not None:
                 self._loop.call_soon_threadsafe(handle._task.cancel)

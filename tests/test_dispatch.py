@@ -16,6 +16,7 @@ class _FakeHandle:
     """Minimal stand-in for SubscriptionHandle in tests."""
 
     stopped = False
+    _stop_requested = False
 
     def __init__(self):
         self.dispatch_drops = 0
@@ -250,8 +251,8 @@ class TestDirectMode:
 
 
 class TestStopAndDropAccounting:
-    def test_queued_callbacks_skipped_after_stop(self):
-        """Readings queued before stop() must not reach the callback afterwards."""
+    @staticmethod
+    def _deliver_then_stop(requested: bool) -> list[float]:
         d = CallbackDispatcher(DispatchMode.WORKER)
         handle = _FakeHandle()
         gate = threading.Event()
@@ -267,11 +268,20 @@ class TestStopAndDropAccounting:
             for v in (2.0, 3.0):
                 d.dispatch_reading(cb, _make_reading(value=v), handle)
             handle.stopped = True
+            handle._stop_requested = requested
             gate.set()
             time.sleep(0.1)
         finally:
             d.close()
-        assert delivered == [1.0]
+        return delivered
+
+    def test_queued_callbacks_skipped_after_stop(self):
+        """Readings queued before stop() must not reach the callback afterwards."""
+        assert self._deliver_then_stop(requested=True) == [1.0]
+
+    def test_queued_callbacks_delivered_after_stream_end(self):
+        """A stream ending on its own (stopped, but no stop() call) still delivers its queued tail."""
+        assert self._deliver_then_stop(requested=False) == [1.0, 2.0, 3.0]
 
     def test_error_callback_delivered_after_stop(self):
         """A stream error stops the handle before its on_error is queued; it must still arrive."""

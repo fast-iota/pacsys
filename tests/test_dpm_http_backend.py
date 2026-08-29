@@ -753,6 +753,20 @@ class TestWriteConnectionAuthContext:
         finally:
             backend.close()
 
+    def test_connect_deadline_expiry_returns_err_timeout(self):
+        """Deadline expiry inside DPMConnection.connect() is ERR_TIMEOUT, not a retryable connection error."""
+        backend = DPMHTTPBackend(auth=create_mock_kerberos_auth())
+        conn = MagicMock()
+        conn.connect.side_effect = TimeoutError("Timed out during DPM connection")
+        try:
+            with mock.patch("pacsys.backends.dpm_http.DPMConnection", return_value=conn):
+                results = backend.write_many([(TEMP_DEVICE, 1.0)], timeout=0.5)
+        finally:
+            backend.close()
+        assert results[0].error_code == ERR_TIMEOUT
+        conn.close.assert_called_once()
+        assert backend._write_in_flight == 0
+
     def test_expired_setup_sends_nothing_and_returns_timeout(self):
         backend = DPMHTTPBackend(auth=create_mock_kerberos_auth())
         wc = MagicMock()

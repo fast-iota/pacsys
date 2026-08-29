@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
@@ -163,7 +164,8 @@ class _DeviceBase:
 
     @property
     def request(self) -> DataRequest:
-        return self._request
+        """Snapshot of the parsed DRF; DataRequest is mutable, so never hand out the live one."""
+        return copy.deepcopy(self._request)
 
     @property
     def has_event(self) -> bool:

@@ -33,7 +33,8 @@ class AsyncSubscriptionHandle:
         self._exc: Exception | None = None
         self._task: asyncio.Task | None = None
         self._callback_task: asyncio.Task | None = None
-        self._drop_count = 0
+        self._drop_count = 0  # cumulative, never reset
+        self._drops_since_log = 0
         self._last_drop_log = 0.0
         self._core: Any = None
         self._drfs: list[str] = []
@@ -47,6 +48,10 @@ class AsyncSubscriptionHandle:
     def exc(self) -> Exception | None:
         return self._exc
 
+    @property
+    def dropped(self) -> int:
+        return self._drop_count
+
     # -- Producer API (called from core's dispatch_fn) -------------------------
 
     def _dispatch(self, reading: Reading) -> None:
@@ -56,17 +61,17 @@ class AsyncSubscriptionHandle:
             self._queue.put_nowait(reading)
         except asyncio.QueueFull:
             self._drop_count += 1
+            self._drops_since_log += 1
             now = time.monotonic()
             if now - self._last_drop_log >= 5.0:
-                drf_summary = summarize_drfs(self._drfs)
                 logger.warning(
                     "Async subscription buffer full (%d), dropped %d readings (devices: %s)",
                     self._maxsize,
-                    self._drop_count,
-                    drf_summary,
+                    self._drops_since_log,
+                    summarize_drfs(self._drfs),
                 )
-                self._drop_count = 0
                 self._last_drop_log = now
+                self._drops_since_log = 0
 
     def _signal_stop(self) -> None:
         if self._stopped:
@@ -192,6 +197,8 @@ async def _callback_feeder(handle: AsyncSubscriptionHandle, callback, on_error) 
 
     try:
         async for reading, h in handle._readings():
+            if handle._stopping:  # set only by stop(): a stream that ends on its own still delivers its tail
+                continue  # queued before stop(); keep draining so a pending error is still raised below
             try:
                 if is_async_cb:
                     await callback(reading, h)

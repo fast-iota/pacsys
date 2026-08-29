@@ -56,7 +56,8 @@ Breaking out of the `for` loop also works - the context manager calls `stop()` o
 
 After `stop()` returns, reading callbacks still queued for that handle are discarded (an
 `on_error` callback is always delivered). A callback that is already executing when `stop()`
-is called runs to completion.
+is called runs to completion (an `async` callback stopped from another task is cancelled at its
+next `await`). A stream that ends on its own still delivers every queued reading.
 
 `handle.dropped` counts readings discarded because the iterator buffer or the callback queue
 was full (cumulative for the life of the handle; a throttled warning is logged as well).

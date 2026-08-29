@@ -176,6 +176,21 @@ class TestAsyncDeviceWrite:
         assert fb.was_written("Z:ACLTST.CONTROL")
 
     @pytest.mark.asyncio
+    async def test_control_check_first_accepts_dpm_float_status(self):
+        """DPM delivers STATUS.ON as a 1.0/0.0 double; check_first must short-circuit on it."""
+        from pacsys.verify import Verify
+
+        fb = AsyncFakeBackend()
+        fb.set_reading("Z:ACLTST.STATUS.ON@I", 1.0)
+        device = AsyncDevice("Z:ACLTST", backend=fb)
+
+        result = await device.on(verify=Verify(check_first=True, initial_delay=0))
+
+        assert result.skipped is True
+        assert result.readback is True
+        assert not fb.was_written("Z:ACLTST.CONTROL")
+
+    @pytest.mark.asyncio
     async def test_control_on(self):
         fb = AsyncFakeBackend()
         fb.set_reading("M:OUTTMP.CONTROL", 0)

@@ -81,8 +81,8 @@ class PropertyInfo:
 class StatusBitDef:
     """One status bit definition from DevDB (not a runtime value).
 
-    Uses mask/match/invert for proper bit evaluation:
-      is_active = ((raw_value & mask) == match) ^ invert
+    Uses mask/match/invert for proper bit evaluation (as the DPM server does):
+      is_active = ((~raw_value if invert else raw_value) & mask) == match
     """
 
     mask: int

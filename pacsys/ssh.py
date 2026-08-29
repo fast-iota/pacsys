@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import getpass
 import logging
+import re
 import select
 import socket
 import socketserver
@@ -37,6 +38,7 @@ if TYPE_CHECKING:
     import paramiko
 
     from pacsys.acl_session import ACLSession
+    from pacsys.auth import KerberosAuth
 
 _paramiko_import_error = ""
 try:
@@ -96,12 +98,20 @@ class SSHTimeoutError(SSHError):
 # ---------------------------------------------------------------------------
 
 
-def _gssapi_username() -> str:
-    """Username from the validated default Kerberos principal."""
+_ACL_SCRIPT_PATH_RE = re.compile(r"/tmp/pacsys_acl_[A-Za-z0-9]{8}\.acl")
+
+
+def _default_principal() -> str:
+    """Validated default Kerberos principal - the only one paramiko's GSSAPI auth can present."""
     from pacsys.auth import KerberosAuth
 
     _, principal = KerberosAuth()._inspect_credentials()
-    return principal.split("@")[0]
+    return principal
+
+
+def _gssapi_username() -> str:
+    """Username from the validated default Kerberos principal."""
+    return _default_principal().split("@")[0]
 
 
 @dataclass(frozen=True)
@@ -115,6 +125,9 @@ class SSHHop:
         auth_method: "gssapi", "key", or "password"
         key_filename: Path to private key (required when auth_method="key")
         password: Password (required when auth_method="password", excluded from repr)
+        delegate_credentials: Forward the Kerberos TGT to this hop (GSSAPI only). Off by
+            default: multi-hop chains do not need it, and a compromised hop could
+            impersonate you until the ticket expires.
     """
 
     hostname: str
@@ -123,6 +136,7 @@ class SSHHop:
     auth_method: str = "gssapi"
     key_filename: str | None = None
     password: str | None = field(default=None, repr=False)
+    delegate_credentials: bool = False
 
     def __post_init__(self):
         if not self.hostname or not self.hostname.strip():
@@ -490,8 +504,11 @@ class SSHClient:
     Args:
         hops: Target host(s). Accepts a hostname string, SSHHop, or list of either.
               Multiple hops create a chain (jump hosts).
-        auth: Optional KerberosAuth for GSSAPI hops. If None and any hop uses
-              gssapi auth, credentials are validated at init (fail fast).
+        auth: Optional KerberosAuth for GSSAPI hops; its principal supplies the login
+              name for hops without an explicit username. paramiko can only present the
+              default credential-cache principal, so a ``KerberosAuth(name=...)`` that is
+              not the cache default is rejected at init. If None, GSSAPI availability is
+              checked at init and the default principal is resolved on first connect.
         connect_timeout: TCP connection timeout in seconds (default 10.0).
 
     Example:
@@ -508,21 +525,25 @@ class SSHClient:
     ):
         _require_paramiko()
         self._hops = _normalize_hops(hops)
-        self._auth = auth
+        self._auth: KerberosAuth | None = cast("KerberosAuth | None", auth)  # isinstance-checked below
         self._connect_timeout = connect_timeout
 
         # Validate GSSAPI availability if any hop needs it
         needs_gssapi = any(h.auth_method == "gssapi" for h in self._hops)
         if needs_gssapi:
-            if self._auth is not None:
-                from pacsys.auth import KerberosAuth
-
-                if not isinstance(self._auth, KerberosAuth):
-                    raise ValueError(f"GSSAPI hops require KerberosAuth, got {type(self._auth).__name__}")
             # Validate GSSAPI is available (fail fast)
-            from pacsys.auth import _require_gssapi
+            from pacsys.auth import KerberosAuth, _require_gssapi
+            from pacsys.errors import AuthenticationError
 
             _require_gssapi()
+            if self._auth is not None:
+                if not isinstance(self._auth, KerberosAuth):
+                    raise ValueError(f"GSSAPI hops require KerberosAuth, got {type(self._auth).__name__}")
+                if self._auth.name is not None and self._auth.principal != (default := _default_principal()):
+                    raise AuthenticationError(
+                        f"SSH GSSAPI can only authenticate as the default credential-cache principal "
+                        f"{default}, not {self._auth.principal}; run kswitch/kinit for that principal first"
+                    )
 
         # Lazy connection state (protected by lock)
         self._lock = threading.Lock()
@@ -627,9 +648,13 @@ class SSHClient:
             from pacsys.errors import AuthenticationError
 
             try:
-                # effective_username may hit GSS credential lookup
-                username = hop.effective_username
-                transport.auth_gssapi_with_mic(username, hop.hostname, gss_deleg_creds=True)
+                if hop.username:
+                    username = hop.username
+                elif self._auth is not None:
+                    username = self._auth.principal.split("@")[0]
+                else:
+                    username = hop.effective_username  # default-cache principal (GSS credential lookup)
+                transport.auth_gssapi_with_mic(username, hop.hostname, gss_deleg_creds=hop.delegate_credentials)
             except (GSSError, GeneralError, AuthenticationError) as e:
                 raise SSHConnectionError(f"GSSAPI authentication failed: {e}", hop=hop) from e
             return
@@ -861,7 +886,9 @@ class SSHClient:
         """Execute ACL command(s) and return output text.
 
         Commands are written to a temp script file on the remote host and
-        executed as ``acl /tmp/pacsys_acl_XXXX.acl``.
+        executed as ``acl /tmp/pacsys_acl_XXXX.acl``. The remote ``acl`` runs with
+        whatever credentials exist on that host: commands that need a Kerberos
+        ticket there (e.g. settings) require the hop's ``delegate_credentials=True``.
 
         Args:
             command: ACL command string, or list of commands
@@ -887,20 +914,26 @@ class SSHClient:
 
     def _acl_script(self, commands: list[str], timeout: float, strip_fn) -> str:
         """Write commands to a temp script on the remote host and run via acl."""
-        import uuid
+        import shlex
 
         from pacsys.errors import ACLError
 
         script = "\n".join(commands) + "\n"
-        name = f"/tmp/pacsys_acl_{uuid.uuid4().hex[:8]}.acl"
-
-        # Write script file
-        write_result = self.exec(f"cat > {name}", input=script, timeout=timeout)
-        if not write_result.ok:
-            raise ACLError(f"Failed to write ACL script: {write_result.stderr.strip()}")
+        # Remote mktemp (0600, O_EXCL): a client-chosen /tmp name could be pre-created or
+        # symlinked by another local user and run with our credentials.
+        made = self.exec("mktemp --suffix=.acl /tmp/pacsys_acl_XXXXXXXX", timeout=timeout)
+        # Only ever touch a path of exactly the shape mktemp creates; skip login/logout banner lines.
+        paths = [ln.strip() for ln in made.stdout.splitlines() if _ACL_SCRIPT_PATH_RE.fullmatch(ln.strip())]
+        if not made.ok or not paths:
+            raise ACLError(f"Failed to create ACL script file: {made.stderr.strip() or made.stdout.strip()}")
+        name = paths[-1]
+        qname = shlex.quote(name)
 
         try:
-            result = self.exec(f"acl {name}", timeout=timeout)
+            write_result = self.exec(f"cat > {qname}", input=script, timeout=timeout)
+            if not write_result.ok:
+                raise ACLError(f"Failed to write ACL script: {write_result.stderr.strip()}")
+            result = self.exec(f"acl {qname}", timeout=timeout)
             # ACL exits non-zero on script errors (bad device, etc.) but
             # still produces useful output. Only raise on real failures.
             if not result.ok and (result.stderr.strip() or not result.stdout.strip()):
@@ -908,7 +941,7 @@ class SSHClient:
                 raise ACLError(f"ACL script failed: {msg}")
             return strip_fn(result.stdout)
         finally:
-            self.exec(f"rm -f {name}", timeout=5.0)
+            self.exec(f"rm -f {qname}", timeout=5.0)
 
     def acl_session(self, *, timeout: float = 30.0) -> ACLSession:
         """Open a persistent ACL interpreter session.
