@@ -5,7 +5,7 @@ import logging
 from typing import Any, cast
 
 from pacsys.aio._backends import AsyncBackend
-from pacsys.aio._subscription import AsyncSubscriptionHandle, _callback_feeder
+from pacsys.aio._subscription import AsyncSubscriptionHandle, _call_on_error, _callback_feeder
 from pacsys.drf_utils import prepare_for_write
 from pacsys.errors import AuthenticationError, DeviceError
 from pacsys.types import (
@@ -35,21 +35,13 @@ class AsyncGRPCBackend(AsyncBackend):
         host: str | None = None,
         port: int | None = None,
         auth=None,
-        timeout: float = 5.0,
+        timeout: float | None = None,
     ):
         if not GRPC_AVAILABLE:
             raise ImportError("grpc package not available")
-        from pacsys.backends.grpc_backend import DEFAULT_HOST, DEFAULT_PORT
+        from pacsys.backends.grpc_backend import _resolve_config
 
-        self._host = host if host is not None else DEFAULT_HOST
-        self._port = port if port is not None else DEFAULT_PORT
-        if auth is not None:
-            self._auth = auth
-        else:
-            from pacsys.backends.grpc_backend import JWTAuth
-
-            self._auth = JWTAuth.from_env()
-        self._timeout = timeout
+        self._host, self._port, self._auth, self._timeout = _resolve_config(host, port, auth, timeout)
         self._core: _DaqCore | None = None
         self._connected = False
         self._closed = False
@@ -153,8 +145,10 @@ class AsyncGRPCBackend(AsyncBackend):
         def _error_adapter(exc, fatal=False):
             if fatal:
                 handle._signal_error(exc)
-            else:
-                logger.warning("gRPC stream transient error (will retry): %s", exc)
+            # Sync parity: on_error sees every error. A callback feeder forwards fatal ones itself
+            # (raised out of _readings); retryable ones are logged by the core and never end the handle.
+            if on_error is not None and (callback is None or not fatal):
+                handle._spawn(_call_on_error(on_error, exc, handle))
 
         core = self._core
 

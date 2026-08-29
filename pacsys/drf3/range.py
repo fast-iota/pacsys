@@ -1,17 +1,18 @@
 import re
 from typing import Literal
 
-RANGE_RE = re.compile("(\\[(\\d*)(?::(\\d*))?\\])|(\\{(\\d*)(?::(\\d*))?\\})" + "$")
+RANGE_RE = re.compile("(\\[(\\d*)(?::(\\d*))?\\])|(\\{(\\d*)(?::(\\d*))?\\})")
 
 # Sentinel for an unbounded byte-range length
 MAXIMUM = -2147483648
 MAX_UPPER_BOUND = 2147483648
+MAX_INDEX = 2147483647  # Java Integer.MAX_VALUE (ArrayRange bound)
 
 
 def parse_range(raw_string: str | None):
     if raw_string is None:
         return None
-    match = RANGE_RE.match(raw_string)
+    match = RANGE_RE.fullmatch(raw_string)
     if match is None:
         raise ValueError(f"Bad range {raw_string}")
     if match.group(1) is not None:
@@ -51,6 +52,12 @@ class ARRAY_RANGE:  # noqa: N801 -- established DRF API
         low: int | None = None,
         high: int | None = None,
     ):
+        if low is not None and not 0 <= low <= MAX_INDEX:
+            raise ValueError(f"array range start must be 0..{MAX_INDEX}, got {low}")
+        if high is not None and not 0 <= high <= MAX_INDEX:
+            raise ValueError(f"array range end must be 0..{MAX_INDEX}, got {high}")
+        if low is not None and high is not None and high < low:
+            raise ValueError(f"array range end must not precede start, got [{low}:{high}]")
         self.low = low
         self.high = high
         self.mode: Literal["full", "std", "single"] = mode or ("full" if (low is None and high is None) else "std")

@@ -191,8 +191,78 @@ class TestAsyncGRPCSubscribe:
         assert handle.stopped
         assert handle not in backend._handles
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("async_on_error", [False, True])
+    async def test_transient_error_reaches_on_error_without_ending_handle(self, backend, async_on_error):
+        """Retryable stream errors are reported to on_error while the subscription keeps running (sync parity)."""
+        errors: list[Exception] = []
+        collected: list[float] = []
+        release = asyncio.Event()
+
+        async def fake_stream(drfs, dispatch_fn, stop_check, error_fn):
+            dispatch_fn(_make_reading(val=1.0))
+            error_fn(RuntimeError("UNAVAILABLE"), fatal=False)
+            await release.wait()  # "reconnected": keep streaming after the transient error
+            dispatch_fn(_make_reading(val=2.0))
+
+        backend._core.stream = fake_stream
+
+        def on_reading(reading, handle):
+            collected.append(reading.value)
+
+        if async_on_error:
+
+            async def on_error(exc, handle):
+                errors.append(exc)
+        else:
+
+            def on_error(exc, handle):
+                errors.append(exc)
+
+        handle = await backend.subscribe(["M:OUTTMP@p,1000"], callback=on_reading, on_error=on_error)
+        await asyncio.sleep(0.05)
+        assert [str(e) for e in errors] == ["UNAVAILABLE"]
+        assert not handle.stopped
+        release.set()
+        assert handle._callback_task is not None
+        await asyncio.wait_for(handle._callback_task, timeout=2.0)
+        assert collected == [1.0, 2.0]
+        assert len(errors) == 1
+
+    @pytest.mark.asyncio
+    async def test_fatal_error_reaches_on_error_in_iterator_mode(self, backend):
+        """Without a callback feeder, on_error is still notified of a fatal error (sync parity)."""
+        errors: list[Exception] = []
+
+        async def fake_stream(drfs, dispatch_fn, stop_check, error_fn):
+            error_fn(RuntimeError("PERMISSION_DENIED"), fatal=True)
+
+        backend._core.stream = fake_stream
+        handle = await backend.subscribe(["M:OUTTMP@p,1000"], on_error=lambda exc, h: errors.append(exc))
+        with pytest.raises(RuntimeError, match="PERMISSION_DENIED"):
+            async for _ in handle.readings(timeout=0.5):
+                pass
+        await handle.stop()  # reaps the on_error task
+        assert [str(e) for e in errors] == ["PERMISSION_DENIED"]
+
 
 class TestAsyncGRPCMisc:
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"host": ""}, "host cannot be empty"),
+            ({"port": 0}, "port must be positive"),
+            ({"timeout": 0}, "timeout must be positive"),
+            ({"timeout": float("inf")}, "timeout must be positive"),
+            ({"timeout": float("nan")}, "timeout must be positive"),
+            ({"auth": object()}, "auth must be JWTAuth"),
+        ],
+    )
+    def test_invalid_init_params(self, kwargs, match):
+        """Same validation as the sync backend (shared _resolve_config)."""
+        with pytest.raises(ValueError, match=match):
+            AsyncGRPCBackend(**kwargs)
+
     @pytest.mark.asyncio
     async def test_context_manager_closes(self, backend):
         close_mock = mock.AsyncMock()

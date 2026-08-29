@@ -405,7 +405,8 @@ class Monitor:
             raise ValueError(f"buffer_size must be >= 1, got {buffer_size}")
         if stale_after is not None and stale_after <= 0:
             raise ValueError("stale_after must be positive")
-        self._drfs = [resolve_drf(d) for d in devices]
+        # Dedupe: buffers are keyed by DRF, and backends may deliver once per duplicate ref
+        self._drfs = list(dict.fromkeys(resolve_drf(d) for d in devices))
         self._buffer_size = buffer_size
         self._backend = backend
         self._lock = threading.Condition(threading.Lock())

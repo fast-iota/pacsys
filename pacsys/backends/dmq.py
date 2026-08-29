@@ -6,6 +6,7 @@ server (reference_code/gov/fnal/controls/service/dmq/impl/).
 """
 
 import logging
+import math
 import os
 import socket
 import threading
@@ -72,6 +73,7 @@ from pacsys.types import (
     Value,
     ValueType,
     WriteResult,
+    _normalize_numpy_scalar,
     _validate_callback,
 )
 
@@ -530,8 +532,8 @@ class DMQBackend(Backend):
             raise ValueError("host cannot be empty")
         if port <= 0 or port > 65535:
             raise ValueError(f"port must be between 1 and 65535, got {port}")
-        if timeout is not None and timeout <= 0:
-            raise ValueError(f"timeout must be positive, got {timeout}")
+        if timeout is None or not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError(f"timeout must be positive and finite, got {timeout}")
         if auth is None:
             raise AuthenticationError("DMQ requires KerberosAuth for all operations (run kinit first)")
         if not isinstance(auth, KerberosAuth):
@@ -1752,6 +1754,7 @@ class DMQBackend(Backend):
             Sample reply object suitable for sending as a SETTING/CONTROL message
         """
         timestamp_ms = int(time.time() * 1000)
+        value = _normalize_numpy_scalar(value)  # NumPy scalars (int64, bool_, ...) behave like their Python peers
 
         # BasicControl enum → BasicControlSample for commands 0-6,
         # DoubleSample for LOCAL/REMOTE/TRIP (7-9) since the DMQ proto
@@ -2231,8 +2234,11 @@ class DMQBackend(Backend):
     def _on_channel_closed(self, channel: Channel, reason: Exception, sub: _SelectSubscription) -> None:
         """Channel closed callback (runs in IO thread)."""
         logger.debug("Channel closed for sub %s: %s", sub.sub_id[:8], reason)
-        # Unblock a subscribe() still waiting on setup (a no-op once setup completed)
-        sub.setup_error = reason
+        # Unblock a subscribe() still waiting on setup (a no-op once setup completed).
+        # First error wins: _fail_subscription closes the channel itself after recording
+        # the server's DeviceError, which must not be overwritten by the generic close reason.
+        if sub.setup_error is None:
+            sub.setup_error = reason
         sub.setup_complete.set()
         with self._stream_lock:
             was_active = self._subscriptions.pop(sub.sub_id, None) is not None

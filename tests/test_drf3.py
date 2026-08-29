@@ -337,6 +337,12 @@ def test_parse_simple_event_rejects_trailing_text(event):
         parse_event(event)
 
 
+def test_parse_event_out_of_int_range_period_is_value_error():
+    """Beyond Java's Integer.parseInt range: ValueError, never an OverflowError from the ms division."""
+    with pytest.raises(ValueError, match="Bad time-freq"):
+        parse_event("P," + "9" * 400 + "U")
+
+
 @pytest.mark.parametrize(
     ("raw", "expected_ms"),
     [
@@ -390,3 +396,19 @@ def test_prepare_for_write(drf, expected):
 )
 def test_field_explicit(drf, expected):
     assert parse_request(drf).field_explicit is expected
+
+
+@pytest.mark.parametrize("raw", ["[1:2]junk", "{1:2}junk"])  # both alternatives must be end-anchored
+def test_parse_range_rejects_trailing_text(raw):
+    with pytest.raises(ValueError, match="Bad range"):
+        parse_range(raw)
+
+
+@pytest.mark.parametrize(("low", "high"), [(-1, None), (None, -1), (5, 2), (0, 2**31)])  # Java ArrayRange rules
+def test_array_range_rejects_negative_or_reversed_bounds(low, high):
+    with pytest.raises(ValueError, match="array range"):
+        ARRAY_RANGE(mode="std", low=low, high=high)
+
+
+def test_array_range_single_element_span_allowed():
+    assert parse_request("M:OUTTMP[5:5]").range == ARRAY_RANGE("std", 5, 5)

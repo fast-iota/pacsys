@@ -10,6 +10,7 @@ Requires grpcio package. See specs/backends.md for protocol details.
 
 import asyncio
 import logging
+import math
 import os
 import threading
 import time
@@ -35,6 +36,7 @@ from pacsys.types import (
     Value,
     ValueType,
     WriteResult,
+    _normalize_numpy_scalar,
     _validate_callback,
 )
 
@@ -98,9 +100,30 @@ def _grpc_facility_code(e: "grpc.aio.AioRpcError") -> int:
     return 0
 
 
+def _resolve_config(
+    host: str | None, port: int | None, auth: Auth | None, timeout: float | None
+) -> "tuple[str, int, JWTAuth | None, float]":
+    """Apply defaults and validate constructor arguments (shared by the sync and async backends)."""
+    host = host if host is not None else DEFAULT_HOST
+    port = port if port is not None else DEFAULT_PORT
+    timeout = timeout if timeout is not None else DEFAULT_TIMEOUT
+    if auth is not None and not isinstance(auth, JWTAuth):
+        raise ValueError(f"auth must be JWTAuth or None, got {type(auth).__name__}")
+    if not host:
+        raise ValueError("host cannot be empty")
+    if port <= 0:
+        raise ValueError(f"port must be positive, got {port}")
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError(f"timeout must be positive and finite, got {timeout}")
+    return host, port, auth if auth is not None else JWTAuth.from_env(), timeout
+
+
 def _value_to_proto_value(value: Value, *, for_write: bool = False) -> "device_pb2.Value":
     """Convert Python value to proto Value message."""
     proto_value = device_pb2.Value()
+    value = _normalize_numpy_scalar(value)  # NumPy scalars (int64, bool_, ...) behave like their Python peers
+    if isinstance(value, (list, tuple)):
+        value = [_normalize_numpy_scalar(v) for v in value]
 
     if isinstance(value, float):
         proto_value.scalar = value
@@ -874,23 +897,7 @@ class GRPCBackend(Backend):
                 f"Install with: pip install grpcio grpcio-tools. Error: {_import_error}"
             )
 
-        self._host = host if host is not None else DEFAULT_HOST
-        self._port = port if port is not None else DEFAULT_PORT
-        self._timeout = timeout if timeout is not None else DEFAULT_TIMEOUT
-
-        if auth is not None:
-            if not isinstance(auth, JWTAuth):
-                raise ValueError(f"auth must be JWTAuth or None, got {type(auth).__name__}")
-            self._auth: JWTAuth | None = auth
-        else:
-            self._auth = JWTAuth.from_env()
-
-        if not self._host:
-            raise ValueError("host cannot be empty")
-        if self._port <= 0:
-            raise ValueError(f"port must be positive, got {self._port}")
-        if self._timeout <= 0:
-            raise ValueError(f"timeout must be positive, got {self._timeout}")
+        self._host, self._port, self._auth, self._timeout = _resolve_config(host, port, auth, timeout)
 
         # Reactor state -- all lazy
         self._loop: asyncio.AbstractEventLoop | None = None

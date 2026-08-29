@@ -158,7 +158,7 @@ def read_fresh(
         nonlocal channels_done
         with lock:
             drf = reading.drf
-            if drf in collected:
+            if drf in collected and usable_counts[drf] < count:  # cap: late deliveries must not overfill
                 collected[drf].append(reading)
                 if reading.ok:
                     usable_counts[drf] += 1

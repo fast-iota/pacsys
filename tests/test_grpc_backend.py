@@ -279,6 +279,8 @@ class TestGRPCBackendInit:
             ({"port": -1}, "port must be positive"),
             ({"timeout": 0}, "timeout must be positive"),
             ({"timeout": -1.0}, "timeout must be positive"),
+            ({"timeout": float("inf")}, "timeout must be positive"),
+            ({"timeout": float("nan")}, "timeout must be positive"),
         ],
     )
     def test_invalid_init_params(self, kwargs, match):
@@ -680,6 +682,18 @@ class TestValueConversion:
     def test_text_array_conversion(self):
         proto = grpc_backend._value_to_proto_value(["a", "b", "c"])
         assert list(proto.textArr.value) == ["a", "b", "c"]
+
+    def test_numpy_scalars_match_python_peers(self):
+        """NumPy scalars (alone or in lists) are accepted like DPM does."""
+        import numpy as np
+
+        assert grpc_backend._value_to_proto_value(np.int64(3)).scalar == 3.0
+        assert grpc_backend._value_to_proto_value(np.bool_(True)).scalar == 1.0
+        assert grpc_backend._value_to_proto_value(np.longdouble(1.5)).scalar == 1.5
+        proto = grpc_backend._value_to_proto_value([np.int64(1), np.float64(2.5)])
+        assert list(proto.scalarArr.value) == [1.0, 2.5]
+        with pytest.raises(TypeError):  # never silently encoded as a number
+            grpc_backend._value_to_proto_value(np.datetime64("2020-01-01T00:00:00.000000001"))
 
     @pytest.mark.parametrize(
         ("field", "set_val", "expected_val", "expected_type"),

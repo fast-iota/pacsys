@@ -13,6 +13,7 @@ own branch and a full live-server test pass (royal test flush).
 """
 
 import logging
+import math
 import socket
 import struct
 import threading
@@ -673,6 +674,7 @@ class _DpmStreamCore:
                     if reply.status != 0:
                         facility, error = parse_error(reply.status)
                         message = status_message(facility, error) or f"status={reply.status}"
+                        logger.error("DPM job start failed: %s (devices: %s)", message, summarize_drfs(drfs))
                         error_fn(DPMConnectionError(f"DPM job start failed: {message}"))
                         return
                     continue
@@ -692,6 +694,9 @@ class _DpmStreamCore:
         except (asyncio.IncompleteReadError, DPMConnectionError, OSError) as e:
             if not stop_check():
                 drf_summary = summarize_drfs(drfs)
+                # Logged here (not only via error_fn): a callback subscription without on_error
+                # would otherwise stop silently, breaking the Backend.subscribe contract
+                logger.error("DPM stream connection lost: %s (devices: %s)", e, drf_summary)
                 wrapped = DPMConnectionError(f"{e} (devices: {drf_summary})")
                 wrapped.__cause__ = e
                 error_fn(wrapped)
@@ -750,8 +755,8 @@ class DPMHTTPBackend(Backend):
             raise ValueError(f"port must be between 1 and 65535, got {port}")
         if pool_size <= 0:
             raise ValueError(f"pool_size must be positive, got {pool_size}")
-        if timeout is not None and timeout <= 0:
-            raise ValueError(f"timeout must be positive, got {timeout}")
+        if timeout is None or not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError(f"timeout must be positive and finite, got {timeout}")
         if auth is not None and not isinstance(auth, KerberosAuth):
             raise ValueError(f"auth must be KerberosAuth or None, got {type(auth).__name__}")
 

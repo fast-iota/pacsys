@@ -81,6 +81,35 @@ class TestFTD:
         assert ftd.period_ticks == 0
         assert ftd.to_word() == 0
 
+    @pytest.mark.parametrize(
+        ("make", "match"),
+        [
+            (lambda: FTD.on_event(0x1FF), "clock_event"),
+            (lambda: FTD.on_event(0x0F, delay_ms=-10), "delay_ms"),
+            (lambda: FTD.on_event(0x0F, delay_ms=5000), "delay_ms"),
+            (lambda: FTD.periodic_hz(0), "hz must be positive"),
+            (lambda: FTD.periodic_hz(120), "not exceed 60"),
+            (lambda: FTD.periodic_ticks(0x8000), "period_ticks"),
+            (lambda: FTD(is_periodic=False, delay_10ms=0x80), "delay_10ms"),
+        ],
+    )
+    def test_out_of_range_values_rejected(self, make, match):
+        """Values that the 16-bit encoding would silently mask into a different FTD must raise."""
+        with pytest.raises(ValueError, match=match):
+            make()
+
+    def test_boundary_values_round_trip(self):
+        assert FTD.on_event(0xFF, delay_ms=1270).to_word() == 0xFFFF
+        assert FTD.periodic_ticks(0x7FFF).to_word() == 0x7FFF
+        assert FTD.periodic_hz(60.0).period_ticks == 1
+        assert FTD.from_word(0xFFFF) == FTD.on_event(0xFF, delay_ms=1270)
+
+    def test_to_word_rejects_mutated_field(self):
+        ftd = FTD.on_event(0x0F)
+        ftd.clock_event = 0x1FF
+        with pytest.raises(ValueError, match="clock_event"):
+            ftd.to_word()
+
 
 class TestAnalogAlarm:
     def test_parse_from_bytes(self):

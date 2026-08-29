@@ -257,6 +257,18 @@ class TestReadFreshMultiCount:
         assert len(results[0]) >= 5
         assert results[0].requested_count == 5
 
+    def test_count_caps_late_deliveries(self, fake):
+        """Readings beyond count are dropped: a late delivery cannot overfill a channel."""
+        drf = "M:OUTTMP@p,1000"
+
+        def emit():
+            for i in range(8):
+                fake.emit_reading(drf, float(i))
+
+        with _emit_after_subscriptions(fake, [drf], emit):
+            results = read_fresh([drf], count=5, timeout=2.0, backend=fake)
+        assert results[0].values == [0.0, 1.0, 2.0, 3.0, 4.0]
+
     def test_count_1_default(self, fake):
         def emit():
             fake.emit_reading("M:OUTTMP@p,1000", 72.5)

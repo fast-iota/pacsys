@@ -2,6 +2,7 @@
 
 import threading
 import time
+from unittest import mock
 
 import pytest
 
@@ -37,6 +38,19 @@ class TestMonitorInit:
     def test_accepts_drf_strings(self, fake):
         mon = Monitor(["M:OUTTMP@p,1000"], backend=fake)
         assert not mon.running
+
+    def test_duplicate_drfs_collapse_to_one_channel(self, fake):
+        """Duplicates share one buffer, so the backend must be subscribed once per channel."""
+        drf = "M:OUTTMP@p,1000"
+        mon = Monitor([drf, drf], backend=fake)
+        with mock.patch.object(fake, "subscribe", wraps=fake.subscribe) as subscribe:
+            mon.start()
+        try:
+            assert subscribe.call_args.args[0] == [drf]
+            fake.emit_reading(drf, 72.0)
+            assert mon.tags == {drf: 1}
+        finally:
+            mon.stop()
 
     def test_stale_after_zero_raises(self):
         with pytest.raises(ValueError, match="stale_after must be positive"):

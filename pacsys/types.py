@@ -38,6 +38,27 @@ def _loaded_numpy_types(*names: str) -> tuple[type, ...]:
     return tuple(candidate for name in names if isinstance((candidate := getattr(np, name, None)), type))
 
 
+def _normalize_numpy_scalar(value: "Value") -> "Value":
+    """Convert supported NumPy scalar families to their Python peers; anything else passes through.
+
+    Only bool/integer/floating/str/bytes are mapped (datetime64, complex, structured scalars are
+    left for the caller's type check to reject rather than silently encoded as numbers).
+    """
+    np = sys.modules.get("numpy")
+    if np is None or not isinstance(value, np.generic):
+        return value
+    for family, convert in (
+        (np.bool_, bool),
+        (np.integer, int),
+        (np.floating, float),
+        (np.str_, str),
+        (np.bytes_, bytes),
+    ):
+        if isinstance(value, family):
+            return convert(value)
+    return value
+
+
 def _value_to_json(value: object) -> object:
     """Convert a Value to a JSON-serializable Python object.
 

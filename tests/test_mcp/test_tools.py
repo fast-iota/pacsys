@@ -46,7 +46,28 @@ def test_read_device_backend_exception(backend):
     assert result["error"] == "backend failed"
 
 
+def test_read_device_malformed_drf_returns_error_dict(backend):
+    result = tool_read_device(backend, "M:OUTTMP[[", [DeviceAccessPolicy(patterns=["Z:*"], mode="deny", action="read")])
+    assert result["ok"] is False
+    assert result["drf"] == "M:OUTTMP[["
+    assert result["value"] is None
+    assert result["error"]
+
+
 # ── write_device ─────────────────────────────────────────────
+
+
+def test_write_device_malformed_drf_returns_error_dict(backend, tmp_path):
+    policies = [DeviceAccessPolicy(patterns=["M:*"], mode="allow", action="set")]
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    result = tool_write_device(backend, "M:OUTTMP[[", 1.0, policies, audit)
+    audit.close()
+    assert result["ok"] is False
+    assert result["drf"] == "M:OUTTMP[["
+    assert result["error"]
+    assert backend.writes == []
+    entries = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()]
+    assert [(e["allowed"], e["drfs"]) for e in entries] == [(False, ["M:OUTTMP[["])]  # denial is audited too
 
 
 def test_write_device_no_policies(backend):

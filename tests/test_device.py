@@ -563,6 +563,11 @@ class TestEdgeCases:
         modified = Device("B:HS23T").with_range(end=5)
         assert str(modified.request.range) == "[:5]"
 
+    @pytest.mark.parametrize("kwargs", [{"start": 5, "end": 2}, {"at": -1}])  # std and single construction paths
+    def test_with_range_rejects_invalid_bounds(self, kwargs):
+        with pytest.raises(ValueError, match="array range"):
+            Device("B:HS23T").with_range(**kwargs)
+
     def test_device_with_lowercase_drf(self):
         dev = Device("m:outtmp")
         assert dev.name.upper() == "M:OUTTMP"

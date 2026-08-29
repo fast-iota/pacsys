@@ -215,6 +215,34 @@ class TestAsyncSubscriptionHandle:
         await asyncio.wait_for(handle._callback_task, timeout=1.0)
         assert len(errors) == 1 and str(errors[0]) == "boom"
 
+    @pytest.mark.asyncio
+    async def test_stop_propagates_external_cancellation(self):
+        """Cancelling the task that runs stop() must not be swallowed while it awaits its children."""
+        from pacsys.aio._subscription import AsyncSubscriptionHandle
+
+        handle = AsyncSubscriptionHandle()
+        unwinding = asyncio.Event()
+
+        async def slow_child():
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                unwinding.set()
+                await asyncio.sleep(0.2)  # stop() is awaiting us during this window
+                raise
+
+        handle._task = asyncio.ensure_future(slow_child())
+        handle._callback_task = asyncio.ensure_future(slow_child())
+        stopper = asyncio.ensure_future(handle.stop())
+        await asyncio.wait_for(unwinding.wait(), timeout=1.0)
+        stopper.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stopper
+        assert handle._stop_complete.is_set()
+        # Both children were cancelled before the interrupted reap, so nothing keeps running
+        done, pending = await asyncio.wait({handle._task, handle._callback_task}, timeout=1.0)
+        assert not pending
+
     def test_dropped_is_cumulative_across_log_windows(self, make_reading, monkeypatch):
         """Sync on purpose: patching time.monotonic under a running loop would freeze the loop clock."""
         from pacsys.aio._subscription import AsyncSubscriptionHandle

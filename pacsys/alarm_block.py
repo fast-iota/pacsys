@@ -125,6 +125,20 @@ class FTD:
     clock_event: int = 0  # TCLK event if event-based
     delay_10ms: int = 0  # Delay after event (max 127 = 1.27s)
 
+    def __post_init__(self) -> None:
+        self._validate()
+
+    def _validate(self) -> None:
+        """Reject values that would not survive the 16-bit encoding unchanged."""
+        if self.is_periodic:
+            if not 0 <= self.period_ticks <= 0x7FFF:
+                raise ValueError(f"period_ticks must be 0-32767, got {self.period_ticks}")
+        else:
+            if not 0 <= self.clock_event <= 0xFF:
+                raise ValueError(f"clock_event must be 0-255, got {self.clock_event}")
+            if not 0 <= self.delay_10ms <= 0x7F:
+                raise ValueError(f"delay_10ms must be 0-127, got {self.delay_10ms}")
+
     @classmethod
     def from_word(cls, value: int) -> FTD:
         """Parse 16-bit FTD value."""
@@ -138,9 +152,10 @@ class FTD:
 
     def to_word(self) -> int:
         """Convert to 16-bit FTD value."""
+        self._validate()  # fields are mutable; never mask an out-of-range value into another FTD
         if self.is_periodic:
-            return self.period_ticks & 0x7FFF
-        return 0x8000 | ((self.delay_10ms & 0x7F) << 8) | (self.clock_event & 0xFF)
+            return self.period_ticks
+        return 0x8000 | (self.delay_10ms << 8) | self.clock_event
 
     @property
     def rate_hz(self) -> float:
@@ -151,19 +166,25 @@ class FTD:
 
     @classmethod
     def periodic_hz(cls, hz: float) -> FTD:
-        """Create periodic FTD at given Hz rate."""
-        ticks = int(60.0 / hz) if hz > 0 else 0
+        """Create periodic FTD at given Hz rate (60 Hz down to 60/32767 Hz)."""
+        if hz <= 0:
+            raise ValueError(f"hz must be positive, got {hz}")
+        ticks = int(60.0 / hz)
+        if ticks < 1:
+            raise ValueError(f"hz must not exceed 60 (one 60Hz tick), got {hz}")
         return cls(is_periodic=True, period_ticks=ticks)
 
     @classmethod
     def periodic_ticks(cls, ticks: int) -> FTD:
-        """Create periodic FTD with 60Hz tick count."""
+        """Create periodic FTD with 60Hz tick count (0 = device default)."""
         return cls(is_periodic=True, period_ticks=ticks)
 
     @classmethod
     def on_event(cls, event: int, delay_ms: int = 0) -> FTD:
-        """Create event-triggered FTD."""
-        return cls(is_periodic=False, clock_event=event, delay_10ms=min(delay_ms // 10, 127))
+        """Create event-triggered FTD (delay in 10ms steps, max 1270ms)."""
+        if delay_ms < 0 or delay_ms // 10 > 0x7F:
+            raise ValueError(f"delay_ms must be 0-1279, got {delay_ms}")
+        return cls(is_periodic=False, clock_event=event, delay_10ms=delay_ms // 10)
 
     @classmethod
     def default(cls) -> FTD:
