@@ -7,13 +7,14 @@ from typing import TYPE_CHECKING
 
 from typing_extensions import Self
 
-from pacsys._device_base import CONTROL_STATUS_MAP, _DeviceBase, _require_str_list
-from pacsys.drf3 import parse_event, parse_request
-from pacsys.drf3.event import NeverEvent
+from pacsys._device_base import _as_array, _as_scalar, _as_text, _DeviceBase, _require_str_list, _WritePlan
+from pacsys.drf3 import parse_request
 from pacsys.drf3.property import DRF_PROPERTY
 from pacsys.types import BasicControl, ErrorCallback, Reading, ReadingCallback, Value, WriteResult, _validate_callback
 
 if TYPE_CHECKING:
+    import numpy as np
+
     from pacsys.aio._backends import AsyncBackend
     from pacsys.aio._subscription import AsyncSubscriptionHandle
     from pacsys.verify import Verify
@@ -129,36 +130,7 @@ class AsyncDevice(_DeviceBase):
         timeout: float | None = None,
     ) -> WriteResult:
         """Write to SETTING property."""
-        from pacsys.verify import resolve_verify, values_match
-
-        if isinstance(value, BasicControl):
-            raise TypeError(
-                f"BasicControl.{value.name} targets the CONTROL property - use control() instead of write()"
-            )
-        v = resolve_verify(verify)
-        resolved_field = self._resolve_field(field, DRF_PROPERTY.SETTING)
-        write_drf = self._build_drf(DRF_PROPERTY.SETTING, resolved_field, "N")
-        backend = self._get_backend()
-
-        if v is not None and v.check_first:
-            read_drf = self._build_drf(DRF_PROPERTY.SETTING, resolved_field, "I")
-            if v.readback:
-                read_drf = v.readback
-            current = await backend.read(read_drf, timeout)
-            if values_match(current, value, v.tolerance):
-                return WriteResult(drf=write_drf, verified=True, readback=current, skipped=True, attempts=0)
-
-        result = await backend.write(write_drf, value, timeout=timeout)
-        if not result.success:
-            return result
-
-        if v is not None:
-            read_drf = self._build_drf(DRF_PROPERTY.SETTING, resolved_field, "I")
-            if v.readback:
-                read_drf = v.readback
-            return await self._verify_readback(result, read_drf, value, v, timeout)
-
-        return result
+        return await self._execute(self._plan_write(value, field, verify), timeout)
 
     async def control(
         self,
@@ -168,37 +140,19 @@ class AsyncDevice(_DeviceBase):
         timeout: float | None = None,
     ) -> WriteResult:
         """Write CONTROL command."""
-        from pacsys.verify import _normalize_control_readback, resolve_verify, values_match
+        return await self._execute(self._plan_control(command, verify), timeout)
 
-        v = resolve_verify(verify)
-        write_drf = self._build_drf(DRF_PROPERTY.CONTROL, None, "N")
+    async def _execute(self, plan: _WritePlan, timeout: float | None) -> WriteResult:
         backend = self._get_backend()
-
-        mapping = CONTROL_STATUS_MAP.get(command)
-        status_field_name: str | None = mapping[0] if mapping else None
-        expected: bool | None = mapping[1] if mapping else None
-
-        if v is not None and status_field_name is None:
-            raise ValueError(f"Cannot verify control command {command!r}: no STATUS field mapping")
-        if v is not None and v.check_first and expected is not None:
-            assert status_field_name is not None
-            status_field = self._resolve_field(status_field_name, DRF_PROPERTY.STATUS)
-            read_drf = v.readback or self._build_drf(DRF_PROPERTY.STATUS, status_field, "I")
-            current = _normalize_control_readback(await backend.read(read_drf, timeout), status_field_name)
-            if values_match(current, expected, v.tolerance):
-                return WriteResult(drf=write_drf, verified=True, readback=current, skipped=True, attempts=0)
-
-        result = await backend.write(write_drf, command, timeout=timeout)
-        if not result.success:
+        if plan.check_first:
+            assert plan.read_drf is not None
+            current = plan.normalize(await backend.read(plan.read_drf, timeout))
+            if plan.matches(current):
+                return plan.skipped(current)
+        result = await backend.write(plan.write_drf, plan.value, timeout=timeout)
+        if not result.success or plan.read_drf is None:
             return result
-
-        if v is not None and expected is not None:
-            assert status_field_name is not None
-            status_field = self._resolve_field(status_field_name, DRF_PROPERTY.STATUS)
-            read_drf = v.readback or self._build_drf(DRF_PROPERTY.STATUS, status_field, "I")
-            return await self._verify_readback(result, read_drf, expected, v, timeout, readback_field=status_field_name)
-
-        return result
+        return await self._verify_readback(result, plan, timeout)
 
     # ─── Control Shortcuts ────────────────────────────────────────────────
 
@@ -269,86 +223,49 @@ class AsyncDevice(_DeviceBase):
             ValueError: If no event available, or field given without prop
         """
         _validate_callback(callback, on_error, event_hint=True)
-
-        if prop is None:
-            if field is not None:
-                raise ValueError("field requires prop to be specified")
-            p = DRF_PROPERTY.READING
-        else:
-            p = self._parse_prop(prop)
-        resolved_field = self._resolve_field(field, p)
-
-        # Resolve event
-        if event is not None:
-            parsed = parse_event(event)
-            if isinstance(parsed, NeverEvent):
-                raise ValueError("subscribe cannot use @N (never) event")
-            event_str = parsed.raw_string
-        elif self.has_event:
-            if isinstance(self._request.event, NeverEvent):
-                raise ValueError("subscribe cannot use @N (never) event")
-            event_str = self._request.event.raw_string
-        else:
-            raise ValueError("subscribe requires an event — use event= or dev.with_event()")
-
-        drf = self._build_drf(p, resolved_field, event_str)
+        drf = self._stream_drf(prop, field, event, "subscribe")
         return await self._get_backend().subscribe([drf], callback, on_error)
+
+    async def await_next(
+        self,
+        *,
+        prop: str | None = None,
+        field: str | None = None,
+        event: str | None = None,
+        timeout: float = 5.0,
+    ) -> Reading:
+        """Wait for the next reading and return it (subscribe, take one, unsubscribe)."""
+        drf = self._stream_drf(prop, field, event, "await_next")
+        handle = await self._get_backend().subscribe([drf])
+        try:
+            async for reading, _ in handle.readings(timeout=timeout):
+                return reading
+        finally:
+            await handle.stop()
+        raise TimeoutError(f"No reading within {timeout}s for {drf}")
 
     # ─── Verify Internals ─────────────────────────────────────────────────
 
-    async def _verify_readback(
-        self,
-        write_result: WriteResult,
-        read_drf: str,
-        expected: Value,
-        v: Verify,
-        timeout: float | None,
-        readback_field: str | None = None,
-    ) -> WriteResult:
+    async def _verify_readback(self, result: WriteResult, plan: _WritePlan, timeout: float | None) -> WriteResult:
         from pacsys.errors import DeviceError
-        from pacsys.verify import _normalize_control_readback, values_match
 
-        backend = self._get_backend()
+        assert plan.verify is not None and plan.read_drf is not None
+        v, backend = plan.verify, self._get_backend()
         await asyncio.sleep(v.initial_delay)
-
         last_readback: Value | None = None
         last_error: DeviceError | None = None
         for attempt in range(1, v.max_attempts + 1):
             try:
-                last_readback = await backend.read(read_drf, timeout)
-                if readback_field is not None:
-                    last_readback = _normalize_control_readback(last_readback, readback_field)
+                last_readback = plan.normalize(await backend.read(plan.read_drf, timeout))
                 last_error = None
             except DeviceError as e:
                 last_error = e
-                if attempt < v.max_attempts:
-                    await asyncio.sleep(v.retry_delay)
-                continue
-            if values_match(last_readback, expected, v.tolerance):
-                return WriteResult(
-                    drf=write_result.drf,
-                    facility_code=write_result.facility_code,
-                    error_code=write_result.error_code,
-                    message=write_result.message,
-                    verified=True,
-                    readback=last_readback,
-                    attempts=attempt,
-                )
+            else:
+                if plan.matches(last_readback):
+                    return plan.verified(result, last_readback, attempt)
             if attempt < v.max_attempts:
                 await asyncio.sleep(v.retry_delay)
-
-        msg = write_result.message
-        if last_error is not None:
-            msg = f"Readback failed: {last_error}"
-        return WriteResult(
-            drf=write_result.drf,
-            facility_code=write_result.facility_code,
-            error_code=write_result.error_code,
-            message=msg,
-            verified=False,
-            readback=last_readback,
-            attempts=v.max_attempts,
-        )
+        return plan.failed(result, last_readback, last_error)
 
     # ─── Fluent Modifications ─────────────────────────────────────────────
 
@@ -372,3 +289,24 @@ class AsyncDevice(_DeviceBase):
         from pacsys.aio import _get_global_async_backend
 
         return _get_global_async_backend()
+
+
+class AsyncScalarDevice(AsyncDevice):
+    """AsyncDevice that returns scalar values (float)."""
+
+    async def read(self, *, field: str | None = None, timeout: float | None = None) -> float:
+        return _as_scalar(await AsyncDevice.read(self, field=field, timeout=timeout))
+
+
+class AsyncArrayDevice(AsyncDevice):
+    """AsyncDevice that returns array values."""
+
+    async def read(self, *, field: str | None = None, timeout: float | None = None) -> np.ndarray:
+        return _as_array(await AsyncDevice.read(self, field=field, timeout=timeout))
+
+
+class AsyncTextDevice(AsyncDevice):
+    """AsyncDevice that returns text/string values."""
+
+    async def read(self, *, field: str | None = None, timeout: float | None = None) -> str:
+        return _as_text(await AsyncDevice.read(self, field=field, timeout=timeout))

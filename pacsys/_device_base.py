@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from typing import cast
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, cast
 
 from typing_extensions import Self
 
 from pacsys.drf3 import DataRequest, parse_event, parse_extra
-from pacsys.drf3.event import DefaultEvent, PeriodicEvent
+from pacsys.drf3.event import DefaultEvent, NeverEvent, PeriodicEvent
 from pacsys.drf3.field import (
     ALLOWED_FIELD_FOR_PROPERTY,
     DEFAULT_FIELD_FOR_PROPERTY,
@@ -16,7 +17,12 @@ from pacsys.drf3.field import (
 )
 from pacsys.drf3.property import DRF_PROPERTY, parse_property
 from pacsys.drf3.range import ARRAY_RANGE
-from pacsys.types import BasicControl
+from pacsys.types import BasicControl, Value, WriteResult
+
+if TYPE_CHECKING:
+    import numpy as np
+
+    from pacsys.verify import Verify
 
 CONTROL_STATUS_MAP: dict[BasicControl, tuple[str, bool]] = {
     BasicControl.ON: ("on", True),
@@ -38,6 +44,87 @@ def _require_str_list(value: object, field: str) -> list[str]:
     if not all(isinstance(item, str) for item in value):
         raise TypeError(f"Expected list[str] for {field}")
     return cast("list[str]", value)
+
+
+def _as_scalar(value: Value) -> float:
+    if not isinstance(value, (int, float)):
+        raise TypeError(f"Expected scalar, got {type(value).__name__}")
+    return float(value)
+
+
+def _as_array(value: Value) -> np.ndarray:
+    import numpy as np
+
+    if isinstance(value, np.ndarray):
+        return value
+    if isinstance(value, (list, tuple)):
+        return np.array(value)
+    raise TypeError(f"Expected array, got {type(value).__name__}")
+
+
+def _as_text(value: Value) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"Expected string, got {type(value).__name__}")
+    return value
+
+
+@dataclass(frozen=True)
+class _WritePlan:
+    """Backend-free plan for one write: what to send and, if verifying, how to read it back.
+
+    Device and AsyncDevice both drive this; only the I/O calls and the sleep flavor differ.
+    """
+
+    write_drf: str
+    value: Value  # payload sent to the backend
+    expected: Value  # what the readback must match
+    verify: Verify | None
+    read_drf: str | None  # None when no readback happens
+    readback_field: str | None = None  # STATUS field name for control readback normalization
+
+    @property
+    def check_first(self) -> bool:
+        return self.verify is not None and self.verify.check_first
+
+    def normalize(self, readback: Value) -> Value:
+        if self.readback_field is None:
+            return readback
+        from pacsys.verify import _normalize_control_readback
+
+        return _normalize_control_readback(readback, self.readback_field)
+
+    def matches(self, readback: Value) -> bool:
+        from pacsys.verify import values_match
+
+        assert self.verify is not None
+        return values_match(readback, self.expected, self.verify.tolerance)
+
+    def skipped(self, current: Value) -> WriteResult:
+        return WriteResult(drf=self.write_drf, verified=True, readback=current, skipped=True, attempts=0)
+
+    @staticmethod
+    def verified(result: WriteResult, readback: Value, attempt: int) -> WriteResult:
+        return WriteResult(
+            drf=result.drf,
+            facility_code=result.facility_code,
+            error_code=result.error_code,
+            message=result.message,
+            verified=True,
+            readback=readback,
+            attempts=attempt,
+        )
+
+    def failed(self, result: WriteResult, readback: Value | None, last_error: Exception | None) -> WriteResult:
+        assert self.verify is not None
+        return WriteResult(
+            drf=result.drf,
+            facility_code=result.facility_code,
+            error_code=result.error_code,
+            message=f"Readback failed: {last_error}" if last_error is not None else result.message,
+            verified=False,
+            readback=readback,
+            attempts=self.verify.max_attempts,
+        )
 
 
 class _DeviceBase:
@@ -128,6 +215,52 @@ class _DeviceBase:
         if f not in allowed:
             raise ValueError(f"Field '{field}' not allowed for {prop.name}")
         return f
+
+    def _plan_write(self, value: Value, field: str | None, verify: bool | Verify | None) -> _WritePlan:
+        from pacsys.verify import resolve_verify
+
+        if isinstance(value, BasicControl):
+            raise TypeError(
+                f"BasicControl.{value.name} targets the CONTROL property - use control() instead of write()"
+            )
+        v = resolve_verify(verify)
+        f = self._resolve_field(field, DRF_PROPERTY.SETTING)
+        read_drf = (v.readback or self._build_drf(DRF_PROPERTY.SETTING, f, "I")) if v is not None else None
+        return _WritePlan(self._build_drf(DRF_PROPERTY.SETTING, f, "N"), value, value, v, read_drf)
+
+    def _plan_control(self, command: BasicControl, verify: bool | Verify | None) -> _WritePlan:
+        from pacsys.verify import resolve_verify
+
+        v = resolve_verify(verify)
+        write_drf = self._build_drf(DRF_PROPERTY.CONTROL, None, "N")
+        if v is None:
+            return _WritePlan(write_drf, command, command, None, None)
+        mapping = CONTROL_STATUS_MAP.get(command)
+        if mapping is None:
+            raise ValueError(f"Cannot verify control command {command!r}: no STATUS field mapping defined")
+        field_name, expected = mapping
+        status_field = self._resolve_field(field_name, DRF_PROPERTY.STATUS)
+        read_drf = v.readback or self._build_drf(DRF_PROPERTY.STATUS, status_field, "I")
+        return _WritePlan(write_drf, command, expected, v, read_drf, readback_field=field_name)
+
+    def _stream_drf(self, prop: str | None, field: str | None, event: str | None, what: str) -> str:
+        """DRF for subscribe()/await_next(): device event unless overridden; @N is rejected."""
+        if prop is None:
+            if field is not None:
+                raise ValueError("field requires prop to be specified")
+            p = DRF_PROPERTY.READING
+        else:
+            p = self._parse_prop(prop)
+        resolved = self._resolve_field(field, p)
+        if event is not None:
+            ev = parse_event(event)
+        elif self.has_event:
+            ev = self._request.event
+        else:
+            raise ValueError(f"{what} requires an event — use event= or dev.with_event()")
+        if isinstance(ev, NeverEvent):
+            raise ValueError(f"{what} cannot use @N (never) event")  # noqa: TRY004 - documented ValueError
+        return self._build_drf(p, resolved, ev.raw_string)
 
     def with_event(self, event: str) -> Self:
         new_event = parse_event(event)
