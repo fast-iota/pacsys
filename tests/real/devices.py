@@ -77,12 +77,11 @@ def acl_server_available() -> bool:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        req = urllib.request.Request(
-            f"{ACL_TEST_URL}?acl=read+M:OUTTMP",
-            method="HEAD",
-        )
-        with urllib.request.urlopen(req, timeout=3.0, context=ctx):
-            return True
+        req = urllib.request.Request(f"{ACL_TEST_URL}?acl=read+M:OUTTMP")
+        with urllib.request.urlopen(req, timeout=3.0, context=ctx) as resp:
+            # Any 200 from a generic proxy is not enough - the body must show
+            # ACL actually processed the request (value or device-prefixed error)
+            return b"M:OUTTMP" in resp.read()
     except Exception:  # noqa: BLE001
         return False
 
@@ -98,13 +97,26 @@ def dmq_server_available() -> bool:
 
 
 def acnet_tcp_server_available() -> bool:
-    """Check if acnetd is reachable via TCP tunnel."""
+    """Check if acnetd is reachable via TCP tunnel.
+
+    Does a full anonymous CONNECT (acnetd sends nothing until commanded, so a
+    plain TCP connect would accept any listener).
+    """
+    import concurrent.futures
+
+    from pacsys.acnet import AcnetConnectionTCP
+    from pacsys.acnet.errors import AcnetError
+
     try:
-        sock = socket.create_connection((ACNET_TCP_TEST_HOST, ACNET_TCP_TEST_PORT), timeout=2.0)
-        sock.sendall(b"RAW\r\n\r\n")
-        sock.close()
+        conn = AcnetConnectionTCP(ACNET_TCP_TEST_HOST, ACNET_TCP_TEST_PORT)
+        try:
+            conn.connect()
+        finally:
+            conn.close()
         return True
-    except (TimeoutError, ConnectionRefusedError, OSError, socket.gaierror):
+    # concurrent.futures.TimeoutError is distinct from asyncio's on py3.10
+    # (sync wrapper delegates via Future.result(timeout))
+    except (AcnetError, OSError, asyncio.TimeoutError, concurrent.futures.TimeoutError):
         return False
 
 
@@ -118,8 +130,8 @@ requires_dpm_http = pytest.mark.skipif(
 )
 
 requires_dpm_acnet = pytest.mark.skipif(
-    not dpm_server_available(),
-    reason=f"DPM/ACNET server not available at {DPM_TEST_HOST}:{DPM_TEST_PORT}",
+    not acnet_tcp_server_available(),
+    reason=f"acnetd not available at {ACNET_TCP_TEST_HOST}:{ACNET_TCP_TEST_PORT}",
 )
 
 requires_grpc = pytest.mark.skipif(
@@ -422,14 +434,19 @@ DEVICE_TYPES = [
 
 
 def kerberos_available() -> bool:
-    """Check if valid Kerberos credentials are available."""
-    try:
-        from pacsys.auth import KerberosAuth
+    """Check if valid Kerberos credentials are available.
 
-        auth = KerberosAuth()
-        _ = auth.principal
+    Only missing gssapi (ImportError) and missing/expired credentials
+    (AuthenticationError) mean "skip" - any other exception is a bug in
+    KerberosAuth and must fail loudly, not silently skip all write tests.
+    """
+    from pacsys.auth import KerberosAuth
+    from pacsys.errors import AuthenticationError
+
+    try:
+        _ = KerberosAuth().principal
         return True
-    except Exception:  # noqa: BLE001
+    except (ImportError, AuthenticationError):
         return False
 
 

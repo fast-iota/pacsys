@@ -1190,14 +1190,15 @@ class TestEmitReading:
                 cycle=42,
             )
 
-            for reading, _ in handle.readings(timeout=0.1):
-                assert reading.value == 72.5
-                assert reading.value_type == ValueType.SCALAR
-                assert reading.meta.units == "degF"
-                assert reading.meta.description == "Test device"
-                assert reading.timestamp == ts
-                assert reading.cycle == 42
-                break
+            items = [reading for reading, _ in handle.readings(timeout=0.1)]
+            assert len(items) == 1
+            reading = items[0]
+            assert reading.value == 72.5
+            assert reading.value_type == ValueType.SCALAR
+            assert reading.meta.units == "degF"
+            assert reading.meta.description == "Test device"
+            assert reading.timestamp == ts
+            assert reading.cycle == 42
 
     def test_emit_reading_only_matching_subscriptions(self):
         """emit_reading only delivers to subscriptions with matching DRF."""

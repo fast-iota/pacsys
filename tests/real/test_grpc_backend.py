@@ -76,6 +76,7 @@ class TestGRPCBackendMultipleReads:
                 t.start()
             for t in threads:
                 t.join(timeout=TIMEOUT_THREAD_JOIN)
+            assert not any(t.is_alive() for t in threads), "reader threads still alive after join"
         elapsed = time.time() - start
 
         assert len(errors) == 0, f"Errors: {errors}"

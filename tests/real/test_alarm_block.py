@@ -87,7 +87,10 @@ class TestAnalogAlarm:
         assert alarm.abort == s["abort"], "abort mismatch"
         assert alarm.abort_inhibit == s["abort_inhibit"], "abort_inhibit mismatch"
 
-        # Compare min/max in engineering units (now fetched automatically)
+        # Compare min/max in engineering units (now fetched automatically);
+        # alarm._structured comes from the same structured read as s, so a
+        # regression to None must not silently skip the cross-check
+        assert (alarm.minimum is None) == ("minimum" not in s), "minimum None mismatch"
         if alarm.minimum is not None:
             assert alarm.minimum == pytest.approx(s["minimum"], rel=1e-4), "minimum mismatch"
             assert alarm.maximum == pytest.approx(s["maximum"], rel=1e-4), "maximum mismatch"
@@ -143,8 +146,7 @@ class TestDigitalAlarm:
         # Basic sanity
         assert isinstance(alarm, DigitalAlarm)
         assert len(alarm.to_bytes()) == 20
-        if not alarm.is_digital:
-            print(f"  WARNING: {device} digital alarm has AD bit = 0 (database issue?)")
+        assert alarm.is_digital, f"{device} digital alarm has AD bit = 0"
 
         # Cross-check with structured read
         structured = dpm_http_backend_cls.get(f"{device}.DIGITAL", timeout=TIMEOUT_READ)

@@ -178,6 +178,11 @@ class TestBuildClassInfoRequest:
         _, num_devices = struct.unpack_from("<HH", pkt, 0)
         assert num_devices == 2
 
+        assert struct.unpack_from("<I", pkt, 4)[0] == mouttmp.dipi
+        assert pkt[8:16] == MOUTTMP_SSDN
+        assert struct.unpack_from("<I", pkt, 16)[0] == dev2.dipi
+        assert pkt[20:28] == dev2.ssdn
+
 
 class TestBuildContinuousSetup:
     def test_packet_structure(self, mouttmp):

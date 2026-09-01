@@ -87,6 +87,7 @@ class TestDPMHTTPBackendPool:
                 t.start()
             for t in threads:
                 t.join(timeout=TIMEOUT_THREAD_JOIN)
+            assert not any(t.is_alive() for t in threads), "reader threads still alive after join"
 
         assert len(errors) == 0, f"Errors: {errors}"
         assert len(results) == 4
@@ -324,8 +325,6 @@ class TestRamp:
         """Read slots 0-1, verify structure, cross-check with scalar read."""
         import numpy as np
 
-        qualifier = device.replace(":", "_")
-
         with DPMHTTPBackend(host=DPM_TEST_HOST, port=DPM_TEST_PORT) as backend:
             for slot in [0, 1]:
                 idx = 64 * slot + 1
@@ -342,7 +341,7 @@ class TestRamp:
                 print(f"  values:     {ramp.values}")
 
                 # Cross-check: scalar read at same index should match ramp value
-                scalar = backend.read(f"{qualifier}[{idx}]", timeout=TIMEOUT_READ)
+                scalar = backend.read(f"{device}.SETTING[{idx}]", timeout=TIMEOUT_READ)
                 assert isinstance(scalar, (int, float)) and not isinstance(scalar, bool)
                 assert math.isfinite(scalar)
                 assert math.isfinite(ramp.values[1])
