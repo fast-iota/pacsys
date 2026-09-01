@@ -55,7 +55,9 @@ See [Backends](backends/index.md) for details.
 ## Installation
 
 ```bash
-pip install pacsys[all]
+pip install pacsys             # reads (DPM/gRPC/ACL) and gRPC token writes
+pip install pacsys[kerberos]   # + Kerberos writes, DMQ backend, SSH
+pip install pacsys[all]        # kerberos + parquet + mcp
 ```
 
 ## Next Steps

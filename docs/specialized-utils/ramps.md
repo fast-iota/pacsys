@@ -96,7 +96,7 @@ For `RampGroup`, `.cumtimes` operates column-wise (per device).
 ## Read/Write
 
 ```python
-from pacsys import BoosterHVRamp
+from pacsys.ramp import BoosterHVRamp
 
 # Read - stores device and slot on the ramp
 ramp = BoosterHVRamp.read("B:HS23T", slot=0)
@@ -127,7 +127,7 @@ ramp.write(device="B:HS24T", slot=1)
 The `modify()` context manager handles read-modify-write automatically:
 
 ```python
-from pacsys import BoosterHVRamp
+from pacsys.ramp import BoosterHVRamp
 
 with BoosterHVRamp.modify("B:HS23T", slot=1) as ramp:
     ramp.values[0] += 1.0   # bump first point by 1 Amp
@@ -142,7 +142,7 @@ Ramp state is read on context entrance and changes are written on context exit; 
 Read or write multiple devices in a single backend call using `read_ramps()` / `write_ramps()` or the `Ramp.read_many()` classmethod:
 
 ```python
-from pacsys import BoosterHVRamp, read_ramps, write_ramps
+from pacsys.ramp import BoosterHVRamp, read_ramps, write_ramps
 
 # Batched read - single get_many call
 ramps = BoosterHVRamp.read_many(["B:HS23T", "B:HS24T", "B:HS25T"], slot=0)
@@ -173,7 +173,7 @@ write_ramps(ramps, slot=2)              # override slot for all
 `RampGroup` stores ramp data for multiple devices as 2D numpy arrays with shape `(64, N_devices)`. Axis 0 is the point index, axis 1 is the device.
 
 ```python
-from pacsys import BoosterHVRampGroup
+from pacsys.ramp import BoosterHVRampGroup
 
 group = BoosterHVRampGroup.read(["B:HS23T", "B:HS24T", "B:HS25T"], slot=0)
 group.values          # shape (64, 3) float64 - engineering units
@@ -268,7 +268,8 @@ MyRamp.from_dict(d)              # works — bypasses registry
 Set the `scaler` class variable to a `Scaler` instance with the device's scaling parameters from the database (`p_index`, `c_index`, and constants). This is what `BoosterHVRamp` uses:
 
 ```python
-from pacsys import Ramp, Scaler
+from pacsys import Scaler
+from pacsys.ramp import Ramp
 
 class BoosterHVRamp(Ramp):
     update_rate_hz = 100_000  # 473 card: 100 KHz fixed
@@ -298,7 +299,7 @@ See [Scaling](scaling.md) for details on `Scaler`, transform indices, and suppor
 For non-standard scaling (e.g., nonlinear, lookup tables, or transforms not covered by the `Scaler`), subclass `Ramp` and override the four transform classmethods:
 
 ```python
-from pacsys import Ramp
+from pacsys.ramp import Ramp
 
 class MainInjectorRamp(Ramp):
     update_rate_hz = 5000  # 5 KHz card (200 us/tick)
@@ -346,7 +347,7 @@ group = MainInjectorRampGroup.read(["MI:DEV1", "MI:DEV2"], slot=0)
 For low-level access, `from_bytes()` and `to_bytes()` handle the binary encoding:
 
 ```python
-from pacsys import BoosterHVRamp
+from pacsys.ramp import BoosterHVRamp
 
 raw = b"\x00" * 256  # 64 zero points
 ramp = BoosterHVRamp.from_bytes(raw)
@@ -360,7 +361,7 @@ raw_out = ramp.to_bytes()
 ## Error Handling
 
 ```python
-from pacsys import BoosterHVRamp
+from pacsys.ramp import BoosterHVRamp
 from pacsys.errors import DeviceError
 
 try:
