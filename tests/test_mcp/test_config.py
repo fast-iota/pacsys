@@ -3,7 +3,7 @@ import sys
 import pytest
 
 from pacsys.mcp._config import MCPConfig, build_policies, load_config
-from pacsys.supervised._policies import DeviceAccessPolicy, SlewRatePolicy, ValueRangePolicy
+from pacsys.supervised._policies import DeviceAccessPolicy, ValueRangePolicy
 
 
 def test_default_config():
@@ -47,9 +47,6 @@ allow_raw = ["B:HS*"]
 
 [policies.value_ranges]
 "Z:ACLTST" = [0.0, 100.0]
-
-[policies.slew_rates]
-"Z:ACLTST" = { max_step = 5.0 }
 """
     data = tomllib.loads(raw)
     cfg = MCPConfig.from_dict(data)
@@ -59,8 +56,14 @@ allow_raw = ["B:HS*"]
     assert cfg.write_devices == ["Z:ACLTST", "Z:CUBE_Z"]
     assert cfg.allow_raw == ["B:HS*"]
     assert cfg.value_ranges == {"Z:ACLTST": (0.0, 100.0)}
-    assert cfg.slew_rates == {"Z:ACLTST": {"max_step": 5.0}}
     assert cfg.audit_log == "audit.jsonl"
+
+
+def test_removed_slew_rates_config_rejected(tmp_path):
+    path = tmp_path / "mcp.toml"
+    path.write_text('[policies.slew_rates]\n"Z:ACLTST" = { max_step = 5.0 }\n')
+    with pytest.raises(ValueError, match="slew_rates"):
+        load_config(str(path))
 
 
 def test_build_policies_empty():
@@ -81,13 +84,11 @@ def test_build_policies_full():
     cfg = MCPConfig(
         write_devices=["Z:ACLTST"],
         value_ranges={"Z:ACLTST": (0.0, 100.0)},
-        slew_rates={"Z:ACLTST": {"max_step": 5.0}},
     )
     policies = build_policies(cfg)
-    assert len(policies) == 3
+    assert len(policies) == 2
     assert isinstance(policies[0], DeviceAccessPolicy)
     assert isinstance(policies[1], ValueRangePolicy)
-    assert isinstance(policies[2], SlewRatePolicy)
 
 
 def test_transport_options_are_validated_after_overrides():

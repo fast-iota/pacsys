@@ -11,8 +11,6 @@ from pacsys.supervised._policies import (
     Policy,
     PolicyDecision,
     RequestContext,
-    SlewLimit,
-    SlewRatePolicy,
     ValueRangePolicy,
 )
 from pacsys.testing import FakeBackend
@@ -32,7 +30,6 @@ def write_policies():
     return [
         DeviceAccessPolicy(patterns=["Z:ACLTST"], mode="allow", action="set"),
         ValueRangePolicy(limits={"Z:ACLTST": (0.0, 100.0)}),
-        SlewRatePolicy(limits={"Z:ACLTST": SlewLimit(max_step=10.0)}),
     ]
 
 
@@ -91,16 +88,6 @@ def test_write_denied_out_of_range(backend, write_policies):
     result = tool_write_device(backend, "Z:ACLTST", 200.0, policies=write_policies)
     assert result["ok"] is False
     assert "outside range" in result["error"].lower()
-
-
-def test_write_denied_slew_rate(backend, write_policies):
-    """Second write exceeding step limit is denied."""
-    w1 = tool_write_device(backend, "Z:ACLTST", 15.0, policies=write_policies)
-    assert w1["ok"] is True
-
-    w2 = tool_write_device(backend, "Z:ACLTST", 50.0, policies=write_policies)
-    assert w2["ok"] is False
-    assert "step" in w2["error"].lower() or "slew" in w2["error"].lower()
 
 
 def test_write_executes_transformed_value(backend):

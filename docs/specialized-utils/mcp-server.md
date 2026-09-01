@@ -21,7 +21,7 @@ Three tools are exposed:
 Write safety comes from two layers:
 
 1. **Claude Code's tool permission prompt** — human-in-the-loop approval for each write call
-2. **Server-side policy chain** — `DeviceAccessPolicy` → `ValueRangePolicy` → `SlewRatePolicy`
+2. **Server-side policy chain** — `DeviceAccessPolicy` → `ValueRangePolicy`
 
 Without a policy config, all writes are denied. Reads are always allowed — the TOML config only expresses write policies, and `create_server` accepts no others. This is the same policy system used by [Supervised Mode](supervised.md); for read restrictions, run the supervised proxy instead.
 
@@ -95,17 +95,12 @@ transport = "stdio"    # "stdio" or "sse"
 # Devices allowed for writing (glob patterns).
 # Without this list, ALL writes are denied.
 write_devices = ["Z:ACLTST", "Z:CUBE_Z"]
-# Raw writes to range/slew-limited devices are denied unless explicitly exempted.
+# Raw writes to range-limited devices are denied unless explicitly exempted.
 allow_raw = ["B:HS*"]
 
 # Value range limits per device pattern.
 [policies.value_ranges]
 "Z:ACLTST" = [0.0, 100.0]
-
-# Slew rate limits per device pattern.
-[policies.slew_rates]
-"Z:ACLTST" = { max_step = 5.0 }
-"Z:CUBE_Z" = { max_step = 10.0, max_rate = 2.0 }
 ```
 
 A sample config is provided at `scripts/pacsys-mcp.toml`.

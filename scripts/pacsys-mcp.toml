@@ -16,16 +16,10 @@ transport = "stdio"
 # Devices allowed for writing (glob patterns).
 # Without this list, ALL writes are denied.
 write_devices = ["Z:ACLTST"]
-# Raw writes to range/slew-limited devices are denied unless explicitly exempted.
+# Raw writes to range-limited devices are denied unless explicitly exempted.
 # allow_raw = ["B:HS*"]
 
 # Optional value range limits (per device glob pattern).
 # Writes outside these bounds are rejected.
 [policies.value_ranges]
 "Z:ACLTST" = [0.0, 100.0]
-
-# Optional slew rate limits (per device glob pattern).
-# Prevents large jumps between consecutive writes.
-[policies.slew_rates]
-"Z:ACLTST" = { max_step = 5.0 }
-# "Z:CUBE_Z" = { max_step = 10.0, max_rate = 2.0 }  # step AND rate limit

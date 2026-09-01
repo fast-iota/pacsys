@@ -77,6 +77,7 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
         self._audit = audit_log
         # Serializes policy check + write so stateful policies see no interleaving
         self._set_lock = asyncio.Lock()
+        self._subscription_cleanups: set[asyncio.Task[None]] = set()
 
     def _check_token(self, context) -> bool:
         """Validate bearer token from gRPC metadata. Returns True if ok."""
@@ -152,21 +153,34 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
             return ctx, PolicyDecision(allowed=True, ctx=ctx)
         return ctx, evaluate_policies(self._policies, ctx)
 
-    def _check_unapproved(self, drfs, decision, peer, rpc_method, context) -> bool:
-        """Check for unapproved slots after policy chain. Returns True if denied."""
+    def _unapproved_decision(self, drfs, decision) -> PolicyDecision | None:
+        """Return a denial for unapproved slots after an allowed policy chain."""
         assert decision.ctx is not None
         unapproved = set(range(len(drfs))) - set(decision.ctx.allowed)
         if not unapproved:
-            return False
+            return None
         names = ", ".join(get_device_name(drfs[i]) for i in sorted(unapproved))
         if not any(p.allows_writes for p in self._policies):
             reason = "No policy explicitly allows write operations"
         else:
             reason = f"No write policy approves: {names}"
-        logger.warning("rpc=%s peer=%s devices=%s decision=denied reason=%s", rpc_method, peer, names, reason)
-        context.set_code(grpc.StatusCode.PERMISSION_DENIED)
-        context.set_details(reason)
-        return True
+        return PolicyDecision(allowed=False, reason=reason)
+
+    async def _stop_after_subscription_acquisition(self, acquisition: asyncio.Task, peer: str) -> None:
+        try:
+            handle = await acquisition
+        except Exception:
+            logger.exception("stream peer=%s subscription acquisition failed after cancellation", peer)
+            return
+        try:
+            await asyncio.to_thread(handle.stop)
+        except Exception:
+            logger.exception("stream peer=%s late subscription stop failed", peer)
+
+    def _defer_subscription_stop(self, acquisition: asyncio.Task, peer: str) -> None:
+        cleanup = asyncio.create_task(self._stop_after_subscription_acquisition(acquisition, peer))
+        self._subscription_cleanups.add(cleanup)
+        cleanup.add_done_callback(self._subscription_cleanups.discard)
 
     async def Read(self, request, context):  # noqa: N802 -- gRPC method name
         drfs = list(request.drf)
@@ -186,15 +200,14 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
             context.set_details(f"Policy error: {e}")
             return
 
+        if decision.allowed:
+            decision = self._unapproved_decision(drfs, decision) or decision
         seq = self._audit_request(req_ctx, decision)
 
         if not decision.allowed:
             logger.warning("rpc=Read peer=%s devices=%s decision=denied reason=%s", peer, devices, decision.reason)
             context.set_code(grpc.StatusCode.PERMISSION_DENIED)
             context.set_details(decision.reason)
-            return
-
-        if self._check_unapproved(drfs, decision, peer, "Read", context):
             return
 
         logger.info("rpc=Read peer=%s devices=%s decision=allowed", peer, devices)
@@ -272,8 +285,24 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
                             pass
 
                     logger.debug("stream peer=%s event=started items=%d", peer, len(drfs))
-                    handle = await asyncio.to_thread(self._backend.subscribe, drfs, on_reading, on_error)
+                    acquisition = asyncio.create_task(
+                        asyncio.to_thread(self._backend.subscribe, drfs, on_reading, on_error)
+                    )
+                    handle = None
                     try:
+                        try:
+                            handle = await asyncio.shield(acquisition)
+                        except asyncio.CancelledError:
+                            if acquisition.done():
+                                try:
+                                    handle = acquisition.result()
+                                except Exception:
+                                    logger.exception(
+                                        "stream peer=%s subscription acquisition failed during cancellation", peer
+                                    )
+                            else:
+                                self._defer_subscription_stop(acquisition, peer)
+                            raise
                         while not context.cancelled():
                             try:
                                 item = await asyncio.wait_for(queue.get(), timeout=1.0)
@@ -295,7 +324,8 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
                                 yield reply_proto
                                 item_count += 1
                     finally:
-                        await asyncio.to_thread(handle.stop)
+                        if handle is not None:
+                            await asyncio.to_thread(handle.stop)
                         logger.debug("stream peer=%s event=stopped items=%d", peer, item_count)
 
         except ValueError as e:
@@ -352,6 +382,8 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
             context.set_details(f"Policy error: {e}")
             return DAQ_pb2.SettingReply()
 
+        if decision.allowed:
+            decision = self._unapproved_decision(drfs, decision) or decision
         try:
             seq = self._audit_request(req_ctx, decision, required=decision.allowed)
         except Exception as e:  # noqa: BLE001 - already logged in _audit_request
@@ -363,9 +395,6 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
             logger.warning("rpc=Set peer=%s devices=%s decision=denied reason=%s", peer, devices, decision.reason)
             context.set_code(grpc.StatusCode.PERMISSION_DENIED)
             context.set_details(decision.reason)
-            return DAQ_pb2.SettingReply()
-
-        if self._check_unapproved(drfs, decision, peer, "Set", context):
             return DAQ_pb2.SettingReply()
 
         logger.info("rpc=Set peer=%s devices=%s decision=allowed", peer, devices)
