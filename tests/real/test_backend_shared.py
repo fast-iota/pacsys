@@ -798,38 +798,45 @@ class TestBackendWrite:
         valid_drf = PERIODIC_DEVICE
         invalid_drf = f"{NONEXISTENT_DEVICE}@p,500"
         handle = write_backend_cls.subscribe([valid_drf, invalid_drf], callback=on_reading)
-        h1 = write_backend_cls.subscribe([SCALAR_DEVICE + "@p,500"])
-
-        time.sleep(0.1)
-
-        read1 = write_backend_cls.read(SCALAR_DEVICE_2)
-        assert isinstance(read1, float)
-        assert math.isfinite(read1)
-        read2 = write_backend_cls.get_many([SCALAR_DEVICE_2, SCALAR_ELEMENT, ARRAY_DEVICE])
-        assert all(r.ok for r in read2)
-        for i in range(5):
-            read3 = write_backend_cls.get_many([SCALAR_DEVICE, SCALAR_DEVICE_2, SCALAR_ELEMENT, SCALAR_SETPOINT])
-            assert all(r.ok for r in read3)
-            write = write_backend_cls.write(STATUS_CONTROL_DEVICE, BasicControl.NEGATIVE, timeout=TIMEOUT_READ)
-            assert write.ok
-
+        h1 = None
         try:
-            event.wait(timeout=TIMEOUT_STREAM_EVENT)
+            h1 = write_backend_cls.subscribe([SCALAR_DEVICE + "@p,500"])
+            time.sleep(0.1)
+
+            read1 = write_backend_cls.read(SCALAR_DEVICE_2)
+            assert isinstance(read1, float)
+            assert math.isfinite(read1)
+            read2 = write_backend_cls.get_many([SCALAR_DEVICE_2, SCALAR_ELEMENT, ARRAY_DEVICE])
+            assert all(r.ok for r in read2)
+            for i in range(5):
+                read3 = write_backend_cls.get_many([SCALAR_DEVICE, SCALAR_DEVICE_2, SCALAR_ELEMENT, SCALAR_SETPOINT])
+                assert all(r.ok for r in read3)
+                write = write_backend_cls.write(STATUS_CONTROL_DEVICE, BasicControl.NEGATIVE, timeout=TIMEOUT_READ)
+                assert write.ok
+
+            try:
+                event.wait(timeout=TIMEOUT_STREAM_EVENT)
+            finally:
+                handle.stop()
+
+            valid_name = parse_request(valid_drf).device
+            invalid_name = parse_request(invalid_drf).device
+            valid_readings = [r for r in readings if r.name == valid_name]
+            invalid_readings = [r for r in readings if r.name == invalid_name]
+            assert valid_readings and all(r.ok for r in valid_readings)
+
+            # DPM_PEND can arrive after this stress test's short window; dedicated
+            # subscription tests above require the delayed invalid-device reply.
+            assert all(not r.ok for r in invalid_readings)
+
+            j = 0
+            for j, r in enumerate(h1.readings(timeout=TIMEOUT_STREAM_ITER), start=1):
+                if j > 3:
+                    h1.stop()
+            assert j > 3, f"h1 delivered only {j} readings"
         finally:
             handle.stop()
-
-        valid_name = parse_request(valid_drf).device
-        invalid_name = parse_request(invalid_drf).device
-        valid_readings = [r for r in readings if r.name == valid_name]
-        invalid_readings = [r for r in readings if r.name == invalid_name]
-        assert valid_readings and all(r.ok for r in valid_readings)
-
-        # DPM_PEND can arrive after this stress test's short window; dedicated
-        # subscription tests above require the delayed invalid-device reply.
-        assert all(not r.ok for r in invalid_readings)
-
-        for j, r in enumerate(h1.readings(), start=1):
-            if j > 3:
+            if h1 is not None:
                 h1.stop()
 
         status = write_backend_cls.get(STATUS_CONTROL_DEVICE, timeout=TIMEOUT_READ)

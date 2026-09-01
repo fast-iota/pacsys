@@ -11,6 +11,7 @@ Tests cover:
 - dpm() factory function
 """
 
+import importlib
 import os
 from unittest import mock
 
@@ -456,60 +457,51 @@ class TestEnvironmentVariables:
 
     def test_env_dpm_host(self):
         """PACSYS_DPM_HOST environment variable is read."""
-        with mock.patch.dict(os.environ, {"PACSYS_DPM_HOST": "env-proxy.fnal.gov"}):
-            # Re-import to pick up new env value
-            import importlib
-
+        try:
+            with mock.patch.dict(os.environ, {"PACSYS_DPM_HOST": "env-proxy.fnal.gov"}):
+                # Re-import to pick up new env value
+                importlib.reload(pacsys)
+                assert pacsys._env_dpm_host == "env-proxy.fnal.gov"
+        finally:
+            # Restore original module state (env is back after patch.dict exits)
             importlib.reload(pacsys)
-
-            assert pacsys._env_dpm_host == "env-proxy.fnal.gov"
-
-        # Restore original module state
-        importlib.reload(pacsys)
 
     def test_env_dpm_port(self):
         """PACSYS_DPM_PORT environment variable is read as int."""
-        with mock.patch.dict(os.environ, {"PACSYS_DPM_PORT": "7000"}):
-            import importlib
-
+        try:
+            with mock.patch.dict(os.environ, {"PACSYS_DPM_PORT": "7000"}):
+                importlib.reload(pacsys)
+                assert pacsys._env_dpm_port == 7000
+        finally:
             importlib.reload(pacsys)
-
-            assert pacsys._env_dpm_port == 7000
-
-        importlib.reload(pacsys)
 
     def test_env_pool_size(self):
         """PACSYS_POOL_SIZE environment variable is read as int."""
-        with mock.patch.dict(os.environ, {"PACSYS_POOL_SIZE": "16"}):
-            import importlib
-
+        try:
+            with mock.patch.dict(os.environ, {"PACSYS_POOL_SIZE": "16"}):
+                importlib.reload(pacsys)
+                assert pacsys._env_pool_size == 16
+        finally:
             importlib.reload(pacsys)
-
-            assert pacsys._env_pool_size == 16
-
-        importlib.reload(pacsys)
 
     def test_env_timeout(self):
         """PACSYS_TIMEOUT environment variable is read as float."""
-        with mock.patch.dict(os.environ, {"PACSYS_TIMEOUT": "30.5"}):
-            import importlib
-
+        try:
+            with mock.patch.dict(os.environ, {"PACSYS_TIMEOUT": "30.5"}):
+                importlib.reload(pacsys)
+                assert pacsys._env_timeout == 30.5
+        finally:
             importlib.reload(pacsys)
-
-            assert pacsys._env_timeout == 30.5
-
-        importlib.reload(pacsys)
 
     def test_env_invalid_port_raises(self):
         """Invalid PACSYS_DPM_PORT raises ValueError on import."""
-        with mock.patch.dict(os.environ, {"PACSYS_DPM_PORT": "not-a-number"}):
-            import importlib
-
-            with pytest.raises(ValueError, match="must be an integer"):
-                importlib.reload(pacsys)
-
-        # Restore (need to remove the bad env var first)
-        with mock.patch.dict(os.environ, clear=True):
+        try:
+            with mock.patch.dict(os.environ, {"PACSYS_DPM_PORT": "not-a-number"}):
+                with pytest.raises(ValueError, match="must be an integer"):
+                    importlib.reload(pacsys)
+        finally:
+            # patch.dict has already removed the bad var here; plain reload
+            # restores module state from the original environment
             importlib.reload(pacsys)
 
 
@@ -632,7 +624,14 @@ class TestGlobalBackendInitialization:
         auth = mock.MagicMock(spec=KerberosAuth)
         pacsys.configure(auth=auth, role="testing")
 
-        with mock.patch("pacsys.backends.dpm_http.DPMHTTPBackend") as mock_dpm:
+        with (
+            # Isolate from ambient PACSYS_* env captured at module import
+            mock.patch.object(pacsys, "_env_dpm_host", None),
+            mock.patch.object(pacsys, "_env_dpm_port", None),
+            mock.patch.object(pacsys, "_env_pool_size", None),
+            mock.patch.object(pacsys, "_env_timeout", None),
+            mock.patch("pacsys.backends.dpm_http.DPMHTTPBackend") as mock_dpm,
+        ):
             mock_instance = mock.MagicMock(spec=DPMHTTPBackend)
             mock_dpm.return_value = mock_instance
 

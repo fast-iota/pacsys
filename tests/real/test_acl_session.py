@@ -10,6 +10,8 @@ Run:
     source tests/real/.env.ssh && PACSYS_TEST_REAL=1 python -m pytest tests/real/test_acl_session.py -v -s
 """
 
+import re
+
 import pytest
 
 from pacsys.errors import ACLError
@@ -90,7 +92,8 @@ class TestACLSession:
         with self.ssh.acl_session() as acl:
             output = acl.send("deviceValue = M:OUTTMP ; print deviceValue")
             print(f"  var result: {output}")
-            assert output
+            assert re.search(r"-?\d+(\.\d+)?", output), f"no numeric value in ACL output: {output!r}"
+            assert "DBM_" not in output and "ACL_" not in output, f"ACL error in output: {output!r}"
 
     def test_multiple_sends(self):
         with self.ssh.acl_session() as acl:

@@ -18,7 +18,7 @@ import pytest
 
 from pacsys.auth import KerberosAuth
 from pacsys.backends.dmq import DMQBackend
-from pacsys.drf_utils import strip_event
+from pacsys.drf_utils import get_device_name, strip_event
 from pacsys.types import BackendCapability, Reading, SubscriptionHandle
 
 from .devices import (
@@ -140,11 +140,12 @@ class TestDMQBackendStreaming:
             seen_devices = set()
             for reading, h in handle.readings(timeout=TIMEOUT_STREAM_ITER):
                 readings.append(reading)
-                seen_devices.add(reading.drf.split("@")[0])
+                seen_devices.add(get_device_name(reading.drf))
                 if len(readings) >= 4:
                     break
 
         assert len(readings) >= 2
+        assert seen_devices == {get_device_name(SCALAR_DEVICE), get_device_name(SCALAR_DEVICE_2)}
 
     def test_iterator_mode_error_callback(self, dmq_backend):
         """Iterator mode raises exception if callback was provided."""

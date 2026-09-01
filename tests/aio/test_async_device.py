@@ -210,6 +210,7 @@ class TestAsyncDeviceFluent:
         d2 = device.with_event("p,1000")
         assert isinstance(d2, AsyncDevice)
         assert d2.is_periodic
+        assert "p,1000" in d2.drf.lower()
 
     def test_with_range(self):
         device = AsyncDevice("B:HS23T")
