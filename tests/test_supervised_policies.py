@@ -5,8 +5,6 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from pacsys.drf3.field import DRF_FIELD
-from pacsys.drf3.property import DRF_PROPERTY
 from pacsys.supervised import _policies as policies
 from pacsys.supervised._policies import (
     DeviceAccessPolicy,
@@ -15,8 +13,6 @@ from pacsys.supervised._policies import (
     RateLimitPolicy,
     ReadOnlyPolicy,
     RequestContext,
-    SlewLimit,
-    SlewRatePolicy,
     ValueRangePolicy,
     evaluate_policies,
 )
@@ -39,10 +35,6 @@ def _ctx(
         raw_request=raw_request,
         allowed=allowed if allowed is not None else frozenset(),
     )
-
-
-_NO_EPICS = (None, None)
-_SETTING_KEY = ("M:OUTTMP", DRF_PROPERTY.SETTING, DRF_FIELD.SCALED, (0, 0), _NO_EPICS)
 
 
 @pytest.fixture
@@ -106,7 +98,6 @@ class TestPolicyAllowsWrites:
         assert ReadOnlyPolicy().allows_writes is False
         assert RateLimitPolicy(max_requests=10).allows_writes is False
         assert ValueRangePolicy(limits={"M:*": (0, 100)}).allows_writes is False
-        assert SlewRatePolicy(limits={"M:*": SlewLimit(max_step=10)}).allows_writes is False
 
 
 # ── ReadOnlyPolicy ────────────────────────────────────────────────────────
@@ -151,9 +142,22 @@ class TestDeviceAccessPolicy:
         p = DeviceAccessPolicy(patterns=["Z:*"], mode="deny")
         assert p.check(_ctx(drfs=["M:OUTTMP"])).allowed
 
-    def test_case_insensitive(self):
+    def test_acnet_glob_case_insensitive(self):
         p = DeviceAccessPolicy(patterns=["m:*"], mode="allow")
-        assert p.check(_ctx(drfs=["M:OUTTMP"])).allowed
+        assert p.check(_ctx(drfs=["M:OUTTMP"])).ctx.allowed == frozenset({0})
+
+    @pytest.mark.parametrize("syntax", ["glob", "regex"])
+    @pytest.mark.parametrize("mode", ["allow", "deny"])
+    def test_epics_matching_is_case_sensitive(self, syntax, mode):
+        p = DeviceAccessPolicy(patterns=["SR:diag:rawbuf"], mode=mode, syntax=syntax)
+        exact = p.check(_ctx(drfs=["SR:diag:rawbuf"]))
+        different = p.check(_ctx(drfs=["SR:DIAG:RAWBUF"]))
+        if mode == "allow":
+            assert exact.ctx.allowed == frozenset({0})
+            assert different.ctx is None
+        else:
+            assert not exact.allowed
+            assert different.allowed
 
     def test_multiple_patterns(self):
         p = DeviceAccessPolicy(patterns=["M:*", "G:*"], mode="allow")
@@ -197,9 +201,9 @@ class TestDeviceAccessPolicy:
         assert not p.check(_ctx(drfs=["Z:ACLTST"])).allowed
         assert p.check(_ctx(drfs=["M:OUTTMP"])).allowed
 
-    def test_regex_case_insensitive(self):
+    def test_acnet_regex_case_insensitive(self):
         p = DeviceAccessPolicy(patterns=[r"m:outtmp"], mode="allow", syntax="regex")
-        assert p.check(_ctx(drfs=["M:OUTTMP"])).allowed
+        assert p.check(_ctx(drfs=["M:OUTTMP"])).ctx.allowed == frozenset({0})
 
     def test_regex_fullmatch(self):
         p = DeviceAccessPolicy(patterns=[r"M:OUT"], mode="allow", syntax="regex")
@@ -383,7 +387,7 @@ class TestValueRangePolicy:
         p = ValueRangePolicy(limits={"M:*": (0.0, 100.0)})
         d = p.check(_ctx(rpc_method="Set", drfs=[drf], values=[(drf, 50.0)]))
         assert not d.allowed and "not comparable" in d.reason
-        exempt = ValueRangePolicy(limits={"M:*": (0.0, 100.0)}, allow_raw=["M:OUT*"])
+        exempt = ValueRangePolicy(limits={"M:*": (0.0, 100.0)}, allow_raw=["m:out*"])
         assert exempt.check(_ctx(rpc_method="Set", drfs=[drf], values=[(drf, 30000.0)])).allowed  # unchecked
 
     def test_control_commands_pass_through(self):
@@ -466,6 +470,39 @@ class TestValueRangePolicy:
         d = p.check(_ctx(rpc_method="Set", drfs=["G:AMANDA"], values=[("G:AMANDA", 999.0)]))
         assert not d.allowed
 
+    def test_acnet_limit_matching_is_case_insensitive(self):
+        p = ValueRangePolicy(limits={"m:outtmp": (0.0, 1.0)})
+        d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 2.0)]))
+        assert not d.allowed
+
+    def test_epics_limit_matching_is_case_sensitive(self):
+        p = ValueRangePolicy(limits={"SR:diag:rawbuf": (0.0, 1.0)})
+        exact = p.check(_ctx(rpc_method="Set", drfs=["SR:diag:rawbuf"], values=[("SR:diag:rawbuf", 2.0)]))
+        different = p.check(_ctx(rpc_method="Set", drfs=["SR:DIAG:RAWBUF"], values=[("SR:DIAG:RAWBUF", 2.0)]))
+        assert not exact.allowed
+        assert different.allowed
+
+    def test_epics_allow_raw_matching_is_case_sensitive(self):
+        p = ValueRangePolicy(limits={"SR:*": (0.0, 1.0)}, allow_raw=["SR:diag:rawbuf"])
+        exact = p.check(_ctx(rpc_method="Set", drfs=["SR:diag:rawbuf"], values=[("SR:diag:rawbuf", b"raw")]))
+        different = p.check(_ctx(rpc_method="Set", drfs=["SR:DIAG:RAWBUF"], values=[("SR:DIAG:RAWBUF", b"raw")]))
+        assert exact.allowed
+        assert not different.allowed
+
+    def test_all_matching_bounds_are_intersected(self):
+        p = ValueRangePolicy(limits={"M:*": (0.0, 1000.0), "M:OUTTMP": (0.0, 1.0)})
+        denied = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 500.0)]))
+        allowed = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 0.5)]))
+        assert not denied.allowed
+        assert allowed.allowed
+
+    def test_empty_bound_intersection_denied(self):
+        p = ValueRangePolicy(limits={"M:*": (0.0, 10.0), "M:OUTTMP": (20.0, 30.0)})
+        d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 5.0)]))
+        assert not d.allowed
+        assert "M:OUTTMP" in d.reason
+        assert "Contradictory" in d.reason
+
     def test_boundary_values(self):
         p = ValueRangePolicy(limits={"M:*": (0.0, 100.0)})
         assert p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 0.0)])).allowed
@@ -474,272 +511,6 @@ class TestValueRangePolicy:
     def test_empty_limits_raises(self):
         with pytest.raises(ValueError, match="empty"):
             ValueRangePolicy(limits={})
-
-
-# ── SlewLimit ─────────────────────────────────────────────────────────────
-
-
-class TestSlewLimit:
-    def test_max_step_only(self):
-        s = SlewLimit(max_step=10.0)
-        assert s.max_step == 10.0
-        assert s.max_rate is None
-
-    def test_max_rate_only(self):
-        s = SlewLimit(max_rate=5.0)
-        assert s.max_rate == 5.0
-        assert s.max_step is None
-
-    def test_both(self):
-        s = SlewLimit(max_step=10.0, max_rate=5.0)
-        assert s.max_step == 10.0
-        assert s.max_rate == 5.0
-
-    def test_neither_raises(self):
-        with pytest.raises(ValueError, match="at least one"):
-            SlewLimit()
-
-    @pytest.mark.parametrize("value", [float("nan"), float("inf"), 0.0, -1.0])
-    def test_rejects_non_positive_or_non_finite(self, value):
-        """nan silently disables the comparison - must fail at construction, not at check time."""
-        with pytest.raises(ValueError, match="finite and positive"):
-            SlewLimit(max_step=value)
-        with pytest.raises(ValueError, match="finite and positive"):
-            SlewLimit(max_rate=value)
-
-    @pytest.mark.parametrize("value", [True, "10"])
-    def test_rejects_non_numeric(self, value):
-        with pytest.raises(TypeError, match="real number"):
-            SlewLimit(max_step=value)
-
-
-# ── SlewRatePolicy ───────────────────────────────────────────────────────
-
-
-class TestSlewRatePolicy:
-    def test_first_write_always_allowed(self):
-        p = SlewRatePolicy(limits={"M:*": SlewLimit(max_rate=10.0)})
-        d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 50.0)]))
-        assert d.allowed
-
-    def test_within_rate_allowed(self, clock):
-        p = SlewRatePolicy(limits={"M:*": SlewLimit(max_rate=1000.0)})
-        p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 50.0)]))
-        clock(0.05)
-        d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 51.0)]))
-        assert d.allowed
-
-    def test_exceeds_rate_denied(self):
-        p = SlewRatePolicy(limits={"M:*": SlewLimit(max_rate=1.0)})
-        p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 0.0)]))
-        d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 100.0)]))
-        assert not d.allowed
-        assert "Slew rate" in d.reason
-
-    def test_max_step_allowed(self):
-        p = SlewRatePolicy(limits={"M:*": SlewLimit(max_step=10.0)})
-        p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 50.0)]))
-        d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 55.0)]))
-        assert d.allowed
-
-    def test_max_step_denied(self):
-        p = SlewRatePolicy(limits={"M:*": SlewLimit(max_step=5.0)})
-        p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 50.0)]))
-        d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 70.0)]))
-        assert not d.allowed
-        assert "Step" in d.reason
-
-    def test_duplicate_target_in_batch_denied(self):
-        """[-1, +1] for one device would pass slot-by-slot yet apply a 2-unit step."""
-        p = SlewRatePolicy(limits={"M:*": SlewLimit(max_step=1.0)})
-        p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 0.0)]))
-        drfs = ["M:OUTTMP.SETTING@N", "M:OUTTMP"]
-        d = p.check(_ctx(rpc_method="Set", drfs=drfs, values=[(drfs[0], -1.0), (drfs[1], 1.0)]))
-        assert not d.allowed
-        assert "Duplicate target M:OUTTMP.SETTING.SCALED" in d.reason
-        assert p._history[_SETTING_KEY][0] == 0.0  # denied batch leaves history untouched
-
-    def test_properties_of_one_device_are_distinct_targets(self):
-        """SETTING and an ANALOG alarm limit of the same device are separate targets with separate history."""
-        p = SlewRatePolicy(limits={"M:*": SlewLimit(max_step=1.0)})
-        p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 0.0)]))
-        drfs = ["M_OUTTMP", "M@OUTTMP.MIN"]
-        d = p.check(_ctx(rpc_method="Set", drfs=drfs, values=[(drfs[0], 0.5), (drfs[1], 100.0)]))
-        assert d.allowed
-        d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 1.0)]))  # vs 0.5, not 100
-        assert d.allowed
-        assert set(p._history) == {_SETTING_KEY, ("M:OUTTMP", DRF_PROPERTY.ANALOG, DRF_FIELD.MIN, (0, 0), _NO_EPICS)}
-
-    def test_elements_and_alarm_fields_are_distinct_targets(self):
-        """[0]/[5] and ANALOG.MIN/.MAX of one device are separate targets (no false duplicate, own history)."""
-        p = SlewRatePolicy(limits={"Z:*": SlewLimit(max_step=1.0)})
-        d = p.check(
-            _ctx(rpc_method="Set", drfs=["Z:DEV[0]", "Z:DEV[5]"], values=[("Z:DEV[0]", 1.0), ("Z:DEV[5]", 2.0)])
-        )
-        assert d.allowed
-        drfs = ["Z:DEV.ANALOG.MIN", "Z:DEV.ANALOG.MAX"]
-        assert p.check(_ctx(rpc_method="Set", drfs=drfs, values=[(drfs[0], 1.0), (drfs[1], 9.0)])).allowed
-        assert p.check(_ctx(rpc_method="Set", drfs=["Z:DEV[5]"], values=[("Z:DEV[5]", 2.5)])).allowed
-        d = p.check(_ctx(rpc_method="Set", drfs=["Z:DEV[0]"], values=[("Z:DEV[0]", 100.0)]))
-        assert not d.allowed and "Step" in d.reason
-
-    @pytest.mark.parametrize("drf", ["Z:ACLTST.SETTING.RAW", "Z:ACLTST.SETTING.PRIMARY", "Z:ACLTST.SETTING.VOLTS"])
-    def test_unscaled_field_write_denied(self, drf):
-        """Counts/volts are not comparable to an engineering-unit limit: RAW history could mask a scaled step."""
-        p = SlewRatePolicy(limits={"Z:*": SlewLimit(max_step=1.0)})
-        d = p.check(_ctx(rpc_method="Set", drfs=[drf], values=[(drf, 30000.0)]))
-        assert not d.allowed and "not comparable" in d.reason
-        assert p._history == {}
-        exempt = SlewRatePolicy(limits={"Z:*": SlewLimit(max_step=1.0)}, allow_raw=["Z:ACL*"])
-        assert exempt.check(_ctx(rpc_method="Set", drfs=[drf], values=[(drf, 30000.0)])).allowed
-
-    def test_epics_pv_case_is_preserved(self):
-        p = SlewRatePolicy(limits={"pv:*": SlewLimit(max_step=1.0)})
-        p.check(_ctx(rpc_method="Set", drfs=["PV:A"], values=[("PV:A", 100.0)]))
-        d = p.check(_ctx(rpc_method="Set", drfs=["pv:a"], values=[("pv:a", 0.0)]))  # first write for pv:a
-        assert d.allowed
-        assert len(p._history) == 2
-
-    def test_epics_record_fields_are_distinct_targets(self):
-        p = SlewRatePolicy(limits={"pv:*": SlewLimit(max_step=1.0)})
-        p.check(_ctx(rpc_method="Set", drfs=["PV:X.RVAL"], values=[("PV:X.RVAL", 30000.0)]))
-        assert p.check(_ctx(rpc_method="Set", drfs=["PV:X.VAL"], values=[("PV:X.VAL", 5.0)])).allowed  # own history
-        drfs = ["PV:Y.VAL", "PV:Y.RBV"]
-        assert p.check(_ctx(rpc_method="Set", drfs=drfs, values=[(drfs[0], 1.0), (drfs[1], 1.0)])).allowed
-        assert len(p._history) == 4
-
-    @pytest.mark.parametrize(
-        ("first", "second"),
-        [
-            ("M:ARR[3]", "M:ARR[3:3]"),
-            ("M:ARR", "M:ARR[0]"),
-            ("M:ARR[:]", "M:ARR[0:0]"),
-            ("M:ARR", "M:ARR.SETTING.COMMON"),
-            ("M:ARR.SETTING{4}", "M:ARR.SETTING{4:1}"),
-            ("M:ARR.SETTING[]", "M:ARR.SETTING{}"),  # both are DPM's FullRange
-            ("PV:X", "PV:X.VAL"),
-        ],
-    )
-    def test_server_aliases_share_one_target(self, first, second):
-        """DPM treats [i]/[i:i], bare/[0]/[:], {i}/{i:1}, COMMON/SCALED and PV/PV.VAL as one thing; so must history."""
-        p = SlewRatePolicy(limits={"M:*": SlewLimit(max_step=1.0), "PV:*": SlewLimit(max_step=1.0)})
-        p.check(_ctx(rpc_method="Set", drfs=[first], values=[(first, 0.0)]))
-        d = p.check(_ctx(rpc_method="Set", drfs=[second], values=[(second, 900.0)]))
-        assert not d.allowed and "Step" in d.reason
-        d = p.check(_ctx(rpc_method="Set", drfs=[first, second], values=[(first, 0.5), (second, 0.5)]))
-        assert not d.allowed and "Duplicate target" in d.reason
-
-    def test_control_commands_pass_through(self):
-        p = SlewRatePolicy(limits={"M:*": SlewLimit(max_step=1.0)})
-        p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP.CONTROL"], values=[("M:OUTTMP.CONTROL", 1.0)]))
-        assert p.check(_ctx(rpc_method="Set", drfs=["M&OUTTMP"], values=[("M&OUTTMP", 3.0)])).allowed
-        assert p.check(_ctx(rpc_method="Set", drfs=["M|OUTTMP"], values=[("M|OUTTMP", 5.0)])).allowed
-        assert p.check(
-            _ctx(rpc_method="Set", drfs=["M:OUTTMP.STATUS.ON"], values=[("M:OUTTMP.STATUS.ON", 7.0)])
-        ).allowed
-        assert p._history == {}
-
-    def test_device_key_is_case_insensitive(self):
-        """Alternating case/qualifier spellings must share one history and count as duplicates."""
-        p = SlewRatePolicy(limits={"M:*": SlewLimit(max_step=1.0)})
-        p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 0.0)]))
-        d = p.check(
-            _ctx(rpc_method="Set", drfs=["M:OUTTMP", "m:outtmp"], values=[("M:OUTTMP", -1.0), ("m:outtmp", 1.0)])
-        )
-        assert not d.allowed and "Duplicate target" in d.reason
-        d = p.check(_ctx(rpc_method="Set", drfs=["m_outtmp"], values=[("m_outtmp", 100.0)]))
-        assert not d.allowed and "Step" in d.reason
-        assert set(p._history) == {_SETTING_KEY}
-
-    def test_duplicate_unlimited_device_allowed(self):
-        p = SlewRatePolicy(limits={"M:*": SlewLimit(max_step=1.0)})
-        d = p.check(
-            _ctx(rpc_method="Set", drfs=["G:AMANDA", "G:AMANDA"], values=[("G:AMANDA", 0.0), ("G:AMANDA", 9.0)])
-        )
-        assert d.allowed
-
-    def test_both_limits_rate_denied(self):
-        p = SlewRatePolicy(limits={"M:*": SlewLimit(max_step=100.0, max_rate=1.0)})
-        p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 0.0)]))
-        # Step is fine (50 < 100), but rate is not (50/~0s >> 1/s)
-        d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 50.0)]))
-        assert not d.allowed
-        assert "Slew rate" in d.reason
-
-    def test_both_limits_step_denied(self, clock):
-        p = SlewRatePolicy(limits={"M:*": SlewLimit(max_step=5.0, max_rate=1000.0)})
-        p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 0.0)]))
-        clock(0.05)
-        # Rate is fine (20/0.05 = 400 < 1000), but step is not (20 > 5)
-        d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 20.0)]))
-        assert not d.allowed
-        assert "Step" in d.reason
-
-    def test_window_decay(self, clock):
-        p = SlewRatePolicy(limits={"M:*": SlewLimit(max_rate=10.0)})
-        p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 0.0)]))
-        clock(0.6)
-        d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 5.0)]))
-        assert d.allowed
-
-    def test_denied_does_not_update_history(self, clock):
-        p = SlewRatePolicy(limits={"M:*": SlewLimit(max_rate=1.0)})
-        p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 0.0)]))
-        d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 100.0)]))
-        assert not d.allowed
-        clock(0.2)
-        d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 0.1)]))
-        assert d.allowed
-
-    def test_reads_pass_through(self):
-        p = SlewRatePolicy(limits={"M:*": SlewLimit(max_rate=1.0)})
-        assert p.check(_ctx(rpc_method="Read")).allowed
-
-    def test_empty_limits_raises(self):
-        with pytest.raises(ValueError, match="empty"):
-            SlewRatePolicy(limits={})
-
-    @pytest.mark.parametrize(
-        "value",
-        ["100", [1.0, 2.0], float("nan")],
-    )
-    def test_non_scalar_denied_for_limited_device(self, value):
-        """Fail closed: non-scalar/non-finite values must not bypass a slew limit."""
-        p = SlewRatePolicy(limits={"M:*": SlewLimit(max_step=5.0)})
-        d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", value)]))
-        assert not d.allowed
-        assert "slew-limited" in d.reason
-
-    def test_raw_write_requires_explicit_exemption(self):
-        ctx = _ctx(
-            rpc_method="Set",
-            drfs=["M:OUTTMP.SETTING{0:64}.RAW"],
-            values=[("M:OUTTMP.SETTING{0:64}.RAW", b"\x01\x02")],
-        )
-        assert not SlewRatePolicy(limits={"M:*": SlewLimit(max_step=5.0)}).check(ctx).allowed
-        assert SlewRatePolicy(limits={"M:*": SlewLimit(max_step=5.0)}, allow_raw=["M:OUTTMP"]).check(ctx).allowed
-
-    @pytest.mark.parametrize("value", [[100.0], np.array([100.0])])
-    def test_single_element_container_enforced(self, value):
-        """A length-1 list/array is treated as its scalar — enforced, not bypassed."""
-        p = SlewRatePolicy(limits={"M:*": SlewLimit(max_step=5.0)})
-        p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 0.0)]))
-        d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", value)]))
-        assert not d.allowed
-        assert "Step" in d.reason
-
-    def test_non_scalar_allowed_for_unlimited_device(self):
-        p = SlewRatePolicy(limits={"G:*": SlewLimit(max_step=5.0)})
-        d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", [100.0])]))
-        assert d.allowed
-
-    def test_numpy_scalar_enforced(self):
-        """NumPy scalars are subject to slew-rate limits."""
-        p = SlewRatePolicy(limits={"M:*": SlewLimit(max_step=5.0)})
-        p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", np.int32(0))]))
-        d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", np.int32(100))]))
-        assert not d.allowed
-        assert "Step" in d.reason
 
 
 # ── Chain Evaluation ──────────────────────────────────────────────────────

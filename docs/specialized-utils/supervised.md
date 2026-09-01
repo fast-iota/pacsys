@@ -14,7 +14,7 @@ Use cases:
 
 - **Testing** -- expose a `FakeBackend` as a real gRPC server for integration tests
 - **Digital twins** -- connect to arbitrary data sources, similarly to EPICS soft IOC
-- **Access control** -- restrict which operations are allowed, apply value/slew/rate limits, etc.
+- **Access control** -- restrict which operations are allowed, apply value/rate limits, etc.
 - **Audit logging** -- log client info, timing, data, and policy decisions
 - **Custom logic** -- MCR killswitch, status GUI, etc.
 
@@ -30,7 +30,7 @@ This means:
 - A server with no policies allows all reads and denies all writes
 - Policies like `RateLimitPolicy` or `ValueRangePolicy` do not unlock writes — they only constrain already-approved writes
 - A request containing a DRF that is empty, has surrounding whitespace or non-printable characters, does not parse (for a Set: as the write would be issued), uses a device-index alias (`0:1234`, `#:1234` — DPM resolves these to any device), or starts with `#` (DPM list directives such as `#LOG:N` are not devices) is denied (`PERMISSION_DENIED`, "Malformed or disallowed DRF") before any policy runs — such names would otherwise match no device pattern
-- `ValueRangePolicy`/`SlewRatePolicy` never gate `.CONTROL` writes: a command ordinal is not a value. Restrict commands with `DeviceAccessPolicy`
+- `ValueRangePolicy` never gates `.CONTROL` writes: a command ordinal is not a value. Restrict commands with `DeviceAccessPolicy`
 
 ## Quick Start
 
@@ -143,7 +143,7 @@ policies = [DeviceAccessPolicy(patterns=[r"M:OUT.*", r"G:AMANDA"], action="set",
 | `patterns` | `list[str]` | *(required)* | Patterns against device names |
 | `mode` | `str` | `"allow"` | `"allow"` = approve matching devices for writes, `"deny"` = block matching devices |
 | `action` | `str` | `"all"` | `"all"` = both Read and Set, `"read"` = Read only, `"set"` = Set only |
-| `syntax` | `str` | `"glob"` | `"glob"` (fnmatch) or `"regex"` (full-match, case-insensitive) |
+| `syntax` | `str` | `"glob"` | `"glob"` (fnmatch) or `"regex"` (full-match); case-insensitive for ACNET devices and case-sensitive for EPICS PVs |
 
 **Per-slot approval (writes only):** In `mode="allow"`, the policy tracks which request slots (device indices) it approves. Multiple `DeviceAccessPolicy` instances compose — each adds its approved slots. After the full policy chain, any unapproved **write** slots cause `PERMISSION_DENIED`. Read slots are pre-approved by default and unaffected by allow-mode policies.
 
@@ -165,7 +165,7 @@ policies = [RateLimitPolicy(max_requests=100, window_seconds=60)]
 
 ### ValueRangePolicy
 
-Deny writes where numeric values fall outside allowed ranges. Unmatched devices are passed through. For range-limited devices the policy fails closed: array/list values are checked element-by-element, and non-numeric values (including raw bytes), NaN, and infinity are denied. Structured raw writes such as ramp or alarm blocks, and writes to `.RAW`/`.PRIMARY`/`.VOLTS` fields (device counts are not comparable to engineering-unit bounds), require an explicit `allow_raw` device pattern.
+Deny writes where numeric values fall outside allowed ranges. Device patterns are case-insensitive for ACNET devices and case-sensitive for EPICS PVs. Every matching rule applies: their bounds are intersected, and an empty intersection denies the write as contradictory. Unmatched devices are passed through. For range-limited devices the policy fails closed: array/list values are checked element-by-element, and non-numeric values (including raw bytes), NaN, and infinity are denied. Structured raw writes such as ramp or alarm blocks, and writes to `.RAW`/`.PRIMARY`/`.VOLTS` fields (device counts are not comparable to engineering-unit bounds), require an explicit `allow_raw` device pattern, matched with the same case rules.
 
 ```python
 from pacsys.supervised import ValueRangePolicy
@@ -181,42 +181,6 @@ policies = [ValueRangePolicy(
 |-----------|------|---------|-------------|
 | `limits` | `dict[str, tuple[float, float]]` | *(required)* | Glob pattern to (min, max) bounds |
 | `allow_raw` | `list[str]` | `None` | Device patterns explicitly exempted for raw writes |
-
-### SlewRatePolicy
-
-Enforce maximum step size and/or rate of change per device. Stateful -- tracks the last written value and timestamp. First write to any device is always allowed. Accepts that failed backend writes will leave stale history. The server serializes policy check and write, so concurrent writes cannot both pass a limit measured from the same history.
-
-For slew-limited devices the policy fails closed: only finite numeric scalars (or single-element lists/arrays) are accepted; text, raw bytes, multi-element arrays, and NaN/inf are denied since slew against them is undefined. Structured raw writes, and writes to `.RAW`/`.PRIMARY`/`.VOLTS` fields (not comparable to engineering-unit history), require an explicit `allow_raw` device pattern. History is kept per target — device, property, field, array element and EPICS record field (`M:OUTTMP`, `M:OUTTMP[5]`, `M:OUTTMP.ANALOG.MIN`, `PV:X.RBV` are distinct; `M:OUTTMP`, `M:OUTTMP[0]`, `M:OUTTMP[0:0]` and `.COMMON`/`.SCALED` are the same) — and a single `Set` naming the same target more than once is denied, since each slot is checked against pre-batch history.
-
-Each device pattern maps to a `SlewLimit(max_step=..., max_rate=...)`. At least one must be set; both can be combined.
-
-```python
-from pacsys.supervised import SlewRatePolicy, SlewLimit
-
-# Max 10 units per write from last one (absolute step)
-policies = [SlewRatePolicy(
-    limits={"M:*": SlewLimit(max_step=10.0)},
-    allow_raw=["M:RAMP*"],
-)]
-
-# Max 5 units/second (rate)
-policies = [SlewRatePolicy(limits={"M:*": SlewLimit(max_rate=5.0)})]
-
-# Both: max 10 units per step AND max 5 units/second
-policies = [SlewRatePolicy(limits={"M:*": SlewLimit(max_step=10.0, max_rate=5.0)})]
-```
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `limits` | `dict[str, SlewLimit]` | *(required)* | Glob pattern to slew constraints |
-| `allow_raw` | `list[str]` | `None` | Device patterns explicitly exempted for raw writes |
-
-`SlewLimit` fields:
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `max_step` | `float` or `None` | `None` | Max absolute change per write (finite, > 0) |
-| `max_rate` | `float` or `None` | `None` | Max units/second (finite, > 0) |
 
 ### AuditLog
 
@@ -282,7 +246,7 @@ Policies compose naturally -- stack them in order of priority:
 ```python
 from pacsys.supervised import (
     SupervisedServer, DeviceAccessPolicy,
-    RateLimitPolicy, ValueRangePolicy, SlewRatePolicy, SlewLimit,
+    RateLimitPolicy, ValueRangePolicy,
     AuditLog,
 )
 
@@ -293,7 +257,6 @@ policies = [
     DeviceAccessPolicy(patterns=["Z:*"], mode="deny"),                         # block Z: from all operations
     RateLimitPolicy(max_requests=200, window_seconds=60),                      # throttle per client
     ValueRangePolicy(limits={"M:*": (0.0, 100.0)}),                           # safe range for M:
-    SlewRatePolicy(limits={"M:*": SlewLimit(max_step=10.0, max_rate=5.0)}),
 ]
 
 with SupervisedServer(backend, port=50051, policies=policies, audit_log=audit) as srv:

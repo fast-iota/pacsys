@@ -24,8 +24,6 @@ from ._policies import (
     RateLimitPolicy,
     ReadOnlyPolicy,
     RequestContext,
-    SlewLimit,
-    SlewRatePolicy,
     ValueRangePolicy,
     evaluate_policies,
 )
@@ -41,7 +39,5 @@ __all__ = [
     "DeviceAccessPolicy",
     "RateLimitPolicy",
     "ValueRangePolicy",
-    "SlewLimit",
-    "SlewRatePolicy",
     "evaluate_policies",
 ]

@@ -11,20 +11,13 @@ if sys.version_info >= (3, 11):
 else:
     import tomli as tomllib  # type: ignore[import-not-found,no-redef]
 
-from pacsys.supervised._policies import (
-    DeviceAccessPolicy,
-    Policy,
-    SlewLimit,
-    SlewRatePolicy,
-    ValueRangePolicy,
-)
+from pacsys.supervised._policies import DeviceAccessPolicy, Policy, ValueRangePolicy
 
 logger = logging.getLogger("pacsys.mcp")
 
 _TOP_LEVEL_KEYS = frozenset({"server", "policies"})
 _SERVER_KEYS = frozenset({"transport", "port", "role", "audit_log"})
-_POLICY_KEYS = frozenset({"write_devices", "value_ranges", "slew_rates", "allow_raw"})
-_SLEW_KEYS = frozenset({"max_step", "max_rate"})
+_POLICY_KEYS = frozenset({"write_devices", "value_ranges", "allow_raw"})
 
 
 def _reject_unknown_keys(data: dict, allowed: frozenset[str], section: str) -> None:
@@ -55,7 +48,6 @@ class MCPConfig:
     audit_log: str | None = None
     write_devices: list[str] = field(default_factory=list)
     value_ranges: dict[str, tuple[float, float]] = field(default_factory=dict)
-    slew_rates: dict[str, dict] = field(default_factory=dict)
     allow_raw: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -94,31 +86,8 @@ class MCPConfig:
                 raise ValueError(f"policies.value_ranges.{device} must contain finite bounds in ascending order")
             value_ranges[device] = (lower, upper)
 
-        if not isinstance(self.slew_rates, dict):
-            raise TypeError("policies.slew_rates must be a TOML table")
-        slew_rates: dict[str, dict[str, float]] = {}
-        for device, raw_params in self.slew_rates.items():
-            device = _nonempty_string(device, "policies.slew_rates key")
-            params = _require_table(raw_params, f"policies.slew_rates.{device}")
-            _reject_unknown_keys(params, _SLEW_KEYS, f"[policies.slew_rates.{device}]")
-            if not params:
-                raise ValueError(f"policies.slew_rates.{device} requires max_step or max_rate")
-            normalized = {}
-            for name, raw_value in params.items():
-                if isinstance(raw_value, bool):
-                    raise TypeError(f"policies.slew_rates.{device}.{name} must be a positive finite number")
-                try:
-                    value = float(raw_value)
-                except (TypeError, ValueError) as e:
-                    raise ValueError(f"policies.slew_rates.{device}.{name} must be a positive finite number") from e
-                if not math.isfinite(value) or value <= 0:
-                    raise ValueError(f"policies.slew_rates.{device}.{name} must be a positive finite number")
-                normalized[name] = value
-            slew_rates[device] = normalized
-
         object.__setattr__(self, "write_devices", write_devices)
         object.__setattr__(self, "value_ranges", value_ranges)
-        object.__setattr__(self, "slew_rates", slew_rates)
         object.__setattr__(self, "allow_raw", allow_raw)
 
     def finalized(self) -> "MCPConfig":
@@ -146,7 +115,6 @@ class MCPConfig:
             audit_log=server.get("audit_log"),
             write_devices=policies.get("write_devices", []),
             value_ranges=policies.get("value_ranges", {}),
-            slew_rates=policies.get("slew_rates", {}),
             allow_raw=policies.get("allow_raw", []),
         )
 
@@ -169,11 +137,5 @@ def build_policies(cfg: MCPConfig) -> list[Policy]:
 
     if cfg.value_ranges:
         policies.append(ValueRangePolicy(limits=cfg.value_ranges, allow_raw=cfg.allow_raw))
-
-    if cfg.slew_rates:
-        limits = {}
-        for dev, params in cfg.slew_rates.items():
-            limits[dev] = SlewLimit(**params)
-        policies.append(SlewRatePolicy(limits=limits, allow_raw=cfg.allow_raw))
 
     return policies

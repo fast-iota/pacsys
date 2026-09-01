@@ -1,7 +1,9 @@
 """Tests for supervised gRPC proxy server using FakeBackend + in-process channel."""
 
+import asyncio
 import threading
 import time
+from dataclasses import replace
 from unittest import mock
 
 import grpc
@@ -11,14 +13,13 @@ from pacsys._proto.controls.service.DAQ.v1 import DAQ_pb2, DAQ_pb2_grpc
 from pacsys.supervised import (
     DeviceAccessPolicy,
     ReadOnlyPolicy,
-    SlewLimit,
-    SlewRatePolicy,
     SupervisedServer,
     ValueRangePolicy,
 )
 from pacsys.supervised._conversions import reading_to_proto_reply, write_result_to_proto_status
 from pacsys.supervised._event_classify import all_oneshot, is_oneshot_event
 from pacsys.supervised._policies import Policy, PolicyDecision, RequestContext
+from pacsys.supervised._server import _DAQServicer
 from pacsys.testing import AsyncFakeBackend, FakeBackend
 from pacsys.types import Reading, ValueType, WriteResult
 
@@ -141,6 +142,23 @@ def _wait_subscribed(backend, timeout=2.0):
     raise TimeoutError("No new subscription appeared within timeout")
 
 
+class _BlockingSubscribeBackend(FakeBackend):
+    def __init__(self):
+        super().__init__()
+        self.subscribe_started = threading.Event()
+        self.subscribe_release = threading.Event()
+        self.handle_ready = threading.Event()
+        self.handle = None
+
+    def subscribe(self, drfs, callback=None, on_error=None):
+        self.subscribe_started.set()
+        if not self.subscribe_release.wait(timeout=2.0):
+            raise TimeoutError("Test did not release subscribe")
+        self.handle = super().subscribe(drfs, callback, on_error)
+        self.handle_ready.set()
+        return self.handle
+
+
 # ── Server Lifecycle Tests ────────────────────────────────────────────────
 
 
@@ -231,6 +249,31 @@ class TestOneshotRead:
 
 
 class TestStreamingRead:
+    @pytest.mark.asyncio
+    async def test_cancel_during_subscribe_acquisition_stops_late_handle(self):
+        backend = _BlockingSubscribeBackend()
+        servicer = _DAQServicer(backend, [])
+        context = mock.Mock()
+        context.peer.return_value = "test-peer"
+        context.invocation_metadata.return_value = []
+        context.cancelled.return_value = False
+        request = DAQ_pb2.ReadingList(drf=["M:OUTTMP@p,1000"])
+
+        stream = servicer.Read(request, context)
+        read = asyncio.create_task(anext(stream))
+        assert await asyncio.to_thread(backend.subscribe_started.wait, 1.0)
+        read.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await read
+
+        backend.subscribe_release.set()
+        assert await asyncio.to_thread(backend.handle_ready.wait, 1.0)
+        for _ in range(100):
+            if backend.handle.stopped:
+                break
+            await asyncio.sleep(0.01)
+        assert backend.handle.stopped
+
     def test_streaming_read(self, fake_backend):
         with SupervisedServer(fake_backend, port=0) as srv:
             with _make_channel(srv) as ch:
@@ -403,32 +446,63 @@ class TestSetAuditAndCommit:
         finally:
             srv.stop()
 
-    def test_concurrent_sets_are_serialized(self):
-        """Two in-flight Sets must not both pass a slew limit measured from the same history."""
+    def test_unapproved_set_is_audited_as_denied_best_effort(self):
         fb = FakeBackend()
         _seed_backend(fb)
-        policies = [_ALLOW_ALL_WRITES, SlewRatePolicy(limits={"M:OUTTMP": SlewLimit(max_step=10.0)})]
-        srv = SupervisedServer(fb, port=0, policies=policies)
+        decisions = []
+        audit = mock.Mock()
+
+        def fail_audit(ctx, decision):
+            decisions.append(decision)
+            raise OSError("disk full")
+
+        audit.log_request.side_effect = fail_audit
+        policy = DeviceAccessPolicy(patterns=["M:*"], action="set", mode="allow")
+        srv = SupervisedServer(fb, port=0, policies=[policy], audit_log=audit)
         srv.start()
         try:
             with _make_channel(srv) as ch:
                 stub = DAQ_pb2_grpc.DAQStub(ch)
-                assert stub.Set(_set_request("M:OUTTMP", 0.0), timeout=5.0).status[0].status_code == 0
-                outcomes = []
+                request = DAQ_pb2.SettingList()
+                request.setting.extend(_set_request("M:OUTTMP", 1.0).setting)
+                request.setting.extend(_set_request("G:AMANDA", 1.0).setting)
+                with pytest.raises(grpc.RpcError) as exc_info:
+                    stub.Set(request, timeout=5.0)
+                assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED
+            assert len(decisions) == 1
+            assert not decisions[0].allowed
+            assert "G:AMANDA" in decisions[0].reason
+            assert fb.writes == []
+        finally:
+            srv.stop()
 
-                def attempt(value):
-                    try:
-                        stub.Set(_set_request("M:OUTTMP", value), timeout=5.0)
-                        outcomes.append("ok")
-                    except grpc.RpcError as e:
-                        outcomes.append(e.code())
+    def test_unapproved_read_is_audited_as_denied_best_effort(self):
+        class RevokeReadPolicy(Policy):
+            def check(self, ctx: RequestContext) -> PolicyDecision:
+                return PolicyDecision(allowed=True, ctx=replace(ctx, allowed=frozenset()))
 
-                threads = [threading.Thread(target=attempt, args=(v,)) for v in (10.0, -10.0)]
-                for t in threads:
-                    t.start()
-                for t in threads:
-                    t.join(timeout=5.0)
-            assert sorted(outcomes, key=str) == sorted(["ok", grpc.StatusCode.PERMISSION_DENIED], key=str)
+        fb = FakeBackend()
+        _seed_backend(fb)
+        decisions = []
+        audit = mock.Mock()
+
+        def fail_audit(ctx, decision):
+            decisions.append(decision)
+            raise OSError("disk full")
+
+        audit.log_request.side_effect = fail_audit
+        srv = SupervisedServer(fb, port=0, policies=[RevokeReadPolicy()], audit_log=audit)
+        srv.start()
+        try:
+            with _make_channel(srv) as ch:
+                stub = DAQ_pb2_grpc.DAQStub(ch)
+                request = DAQ_pb2.ReadingList(drf=["M:OUTTMP@I"])
+                with pytest.raises(grpc.RpcError) as exc_info:
+                    list(stub.Read(request, timeout=5.0))
+                assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED
+            assert len(decisions) == 1
+            assert not decisions[0].allowed
+            assert fb.reads == []
         finally:
             srv.stop()
 
