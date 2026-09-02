@@ -429,6 +429,11 @@ class _AsyncDPMConnection:
         except (TimeoutError, asyncio.TimeoutError) as e:  # distinct classes on 3.10
             await self.close()
             raise DPMConnectionError(f"Connection to {self._host}:{self._port} timed out") from e
+        except asyncio.IncompleteReadError as e:
+            await self.close()
+            raise DPMConnectionError(
+                f"Connection closed by server during handshake (got {len(e.partial)}/{e.expected} bytes)"
+            ) from e
         except BaseException:
             await self.close()
             raise
@@ -483,6 +488,9 @@ class _AsyncDPMConnection:
             raise DPMConnectionError(
                 f"No data received for {self._RECV_TIMEOUT}s (missed heartbeats), connection presumed dead"
             ) from e
+        except asyncio.IncompleteReadError as e:
+            await self.close()
+            raise DPMConnectionError(f"Connection closed by server (got {len(e.partial)}/{e.expected} bytes)") from e
         length = struct.unpack(">I", len_bytes)[0]
         if length == 0 or length > MAX_MESSAGE_SIZE:
             await self.close()
@@ -498,6 +506,9 @@ class _AsyncDPMConnection:
             if timeout is not None:
                 raise asyncio.TimeoutError("Receive timeout") from e
             raise DPMConnectionError(f"Timed out reading {length}-byte message body") from e
+        except asyncio.IncompleteReadError as e:
+            await self.close()
+            raise DPMConnectionError(f"Connection closed by server (got {len(e.partial)}/{e.expected} bytes)") from e
         try:
             return unmarshal_reply(_Cursor(data))
         except (ProtocolError, StopIteration) as e:
@@ -584,6 +595,7 @@ class _DPMHTTPSubscriptionHandle(BufferedSubscriptionHandle):
 
     def stop(self) -> None:
         """Stop this subscription and cancel its async task."""
+        self._stop_requested = True
         if not self._stopped:
             self._backend.remove(self)
 

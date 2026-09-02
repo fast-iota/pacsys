@@ -183,6 +183,41 @@ async def test_async_connection_connect_timeout_is_connection_error():
     assert conn._writer is None
 
 
+@pytest.mark.asyncio
+async def test_async_connection_recv_eof_is_connection_error():
+    """Peer disconnect mid-frame maps to DPMConnectionError (never IncompleteReadError) and closes."""
+
+    async def readexactly(size):
+        if size == 4:
+            return struct.pack(">I", 100)
+        raise asyncio.IncompleteReadError(partial=b"xx", expected=100)
+
+    conn = _AsyncDPMConnection("localhost", 6802)
+    conn._reader = mock.AsyncMock()
+    conn._reader.readexactly.side_effect = readexactly
+
+    with pytest.raises(DPMConnectionError, match=r"closed by server \(got 2/100 bytes\)"):
+        await conn.recv_message(timeout=1.0)
+    assert conn._reader is None
+
+
+@pytest.mark.asyncio
+async def test_async_connection_connect_eof_is_connection_error():
+    """Server closing the socket during the handshake maps to DPMConnectionError and closes."""
+    reader = mock.AsyncMock()
+    reader.readexactly.side_effect = asyncio.IncompleteReadError(partial=b"", expected=4)
+    writer = mock.MagicMock()
+    writer.drain = mock.AsyncMock()
+    writer.wait_closed = mock.AsyncMock()
+    writer.get_extra_info.return_value = None
+
+    conn = _AsyncDPMConnection("localhost", 6802)
+    with mock.patch("asyncio.open_connection", new=mock.AsyncMock(return_value=(reader, writer))):
+        with pytest.raises(DPMConnectionError, match="during handshake"):
+            await conn.connect(timeout=1.0)
+    assert conn._writer is None
+
+
 @pytest.fixture
 def make_core():
     def _make(replies, auth=None, role=None):

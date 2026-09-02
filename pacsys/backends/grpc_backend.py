@@ -847,6 +847,7 @@ class _GRPCSubscriptionHandle(BufferedSubscriptionHandle):
             self._backend._dispatcher.dispatch_error(self._on_error, exc, self)
 
     def stop(self) -> None:
+        self._stop_requested = True
         if not self._stopped:
             self._backend.remove(self)
 

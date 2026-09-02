@@ -216,6 +216,31 @@ class TestAsyncSubscriptionHandle:
         assert len(errors) == 1 and str(errors[0]) == "boom"
 
     @pytest.mark.asyncio
+    async def test_pending_stream_error_delivered_when_external_stop_cancels_feeder(self, make_reading):
+        from pacsys.aio._subscription import AsyncSubscriptionHandle, _callback_feeder
+
+        handle = AsyncSubscriptionHandle()
+        callback_started = asyncio.Event()
+        errors = []
+
+        async def callback(reading, h):
+            callback_started.set()
+            await asyncio.Event().wait()
+
+        for i in range(3):
+            handle._dispatch(make_reading(float(i)))
+        handle._callback_task = asyncio.create_task(
+            _callback_feeder(handle, callback, lambda exc, h: errors.append(exc))
+        )
+        await asyncio.wait_for(callback_started.wait(), timeout=1.0)
+        error = RuntimeError("boom")
+        handle._signal_error(error)
+
+        await handle.stop()
+
+        assert errors == [error]
+
+    @pytest.mark.asyncio
     async def test_stop_propagates_external_cancellation(self):
         """Cancelling the task that runs stop() must not be swallowed while it awaits its children."""
         from pacsys.aio._subscription import AsyncSubscriptionHandle

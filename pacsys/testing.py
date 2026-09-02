@@ -369,8 +369,8 @@ class FakeSubscriptionHandle(SubscriptionHandle):
 
     def stop(self) -> None:
         """Stop this subscription."""
+        self._stop_requested = True
         if not self._stopped:
-            self._stop_requested = True
             self._stopped = True
             self._queue.put(None)  # Poison pill to unblock readings()
             self._remover(self)

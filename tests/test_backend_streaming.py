@@ -1,11 +1,12 @@
 """Tests for backend streaming functionality."""
 
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from pacsys.backends.grpc_backend import GRPC_AVAILABLE
-from pacsys.types import DispatchMode
+from pacsys.types import DispatchMode, Reading, ValueType
 
 
 class TestDPMHTTPBackendStreaming:
@@ -58,6 +59,43 @@ class TestDPMHTTPBackendStreaming:
             with pytest.raises(RuntimeError, match="Cannot iterate subscription with callback"):
                 list(handle.readings(timeout=0))
         finally:
+            backend.close()
+
+    def test_stop_after_stream_error_suppresses_queued_readings(self):
+        from pacsys.backends.dpm_http import DPMHTTPBackend, _DPMHTTPSubscriptionHandle
+
+        backend = DPMHTTPBackend()
+        entered = threading.Event()
+        release = threading.Event()
+        error_delivered = threading.Event()
+        delivered = []
+        errors = []
+
+        def callback(reading, handle):
+            entered.set()
+            release.wait(1.0)
+            delivered.append(reading.value)
+
+        def on_error(exc, handle):
+            errors.append(exc)
+            error_delivered.set()
+
+        handle = _DPMHTTPSubscriptionHandle(backend, ["M:OUTTMP"], callback, on_error)
+        error = RuntimeError("stream failed")
+        try:
+            handle._dispatch(Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR, value=1.0))
+            assert entered.wait(1.0)
+            handle._dispatch(Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR, value=2.0))
+            handle._dispatch_error(error)
+
+            handle.stop()
+            release.set()
+
+            assert error_delivered.wait(1.0)
+            assert delivered == [1.0]
+            assert errors == [error]
+        finally:
+            release.set()
             backend.close()
 
     def test_close_calls_stop_streaming(self):
