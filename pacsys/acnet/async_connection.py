@@ -333,7 +333,7 @@ class AsyncAcnetConnectionBase:
         if self._disposed:
             raise AcnetError(ACNET_NOT_CONNECTED, "Connection disposed")
         if self._connected:
-            raise AcnetError(ACNET_NOT_CONNECTED, "Already connected")
+            raise RuntimeError("already connected")
 
         try:
             await self._open_transport()

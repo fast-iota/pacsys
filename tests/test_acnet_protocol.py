@@ -467,7 +467,7 @@ async def test_async_connect_rejects_second_connection():
     conn = AsyncAcnetConnectionTCP("localhost", port=9999)
     conn._connected = True
 
-    with pytest.raises(AcnetError, match="Already connected"):
+    with pytest.raises(RuntimeError, match="already connected"):
         await conn.connect()
 
 

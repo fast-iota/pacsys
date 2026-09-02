@@ -166,21 +166,33 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
             reason = f"No write policy approves: {names}"
         return PolicyDecision(allowed=False, reason=reason)
 
-    async def _stop_after_subscription_acquisition(self, acquisition: asyncio.Task, peer: str) -> None:
+    async def _stop_late_handle(self, acquisition: asyncio.Task, peer: str) -> None:
+        """Stop a handle whose subscribe() completed after its stream was cancelled."""
         try:
             handle = await acquisition
         except Exception:
             logger.exception("stream peer=%s subscription acquisition failed after cancellation", peer)
             return
         try:
-            await asyncio.to_thread(handle.stop)
+            if isinstance(self._backend, AsyncBackend):
+                await handle.stop()
+            else:
+                await asyncio.to_thread(handle.stop)
         except Exception:
             logger.exception("stream peer=%s late subscription stop failed", peer)
 
-    def _defer_subscription_stop(self, acquisition: asyncio.Task, peer: str) -> None:
-        cleanup = asyncio.create_task(self._stop_after_subscription_acquisition(acquisition, peer))
-        self._subscription_cleanups.add(cleanup)
-        cleanup.add_done_callback(self._subscription_cleanups.discard)
+    async def _acquire_subscription(self, acquisition: asyncio.Task, peer: str):
+        """Await subscribe(); on cancellation stop the late handle (deferred while still pending)."""
+        try:
+            return await asyncio.shield(acquisition)
+        except asyncio.CancelledError:
+            if acquisition.done():
+                await self._stop_late_handle(acquisition, peer)
+            else:
+                cleanup = asyncio.create_task(self._stop_late_handle(acquisition, peer))
+                self._subscription_cleanups.add(cleanup)
+                cleanup.add_done_callback(self._subscription_cleanups.discard)
+            raise
 
     async def Read(self, request, context):  # noqa: N802 -- gRPC method name
         drfs = list(request.drf)
@@ -235,7 +247,8 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
 
                 if isinstance(self._backend, AsyncBackend):
                     logger.debug("stream peer=%s event=started items=%d", peer, len(drfs))
-                    handle = await self._backend.subscribe(drfs)
+                    acquisition = asyncio.create_task(self._backend.subscribe(drfs))
+                    handle = await self._acquire_subscription(acquisition, peer)
                     try:
                         while not context.cancelled():
                             async for reading, _ in handle.readings(timeout=1.0):
@@ -288,21 +301,8 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
                     acquisition = asyncio.create_task(
                         asyncio.to_thread(self._backend.subscribe, drfs, on_reading, on_error)
                     )
-                    handle = None
+                    handle = await self._acquire_subscription(acquisition, peer)
                     try:
-                        try:
-                            handle = await asyncio.shield(acquisition)
-                        except asyncio.CancelledError:
-                            if acquisition.done():
-                                try:
-                                    handle = acquisition.result()
-                                except Exception:
-                                    logger.exception(
-                                        "stream peer=%s subscription acquisition failed during cancellation", peer
-                                    )
-                            else:
-                                self._defer_subscription_stop(acquisition, peer)
-                            raise
                         while not context.cancelled():
                             try:
                                 item = await asyncio.wait_for(queue.get(), timeout=1.0)
@@ -324,8 +324,7 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
                                 yield reply_proto
                                 item_count += 1
                     finally:
-                        if handle is not None:
-                            await asyncio.to_thread(handle.stop)
+                        await asyncio.to_thread(handle.stop)
                         logger.debug("stream peer=%s event=stopped items=%d", peer, item_count)
 
         except ValueError as e:
@@ -529,6 +528,8 @@ class SupervisedServer:
             await stop_requested.wait()
         finally:
             await server.stop(grace=0)
+            if servicer._subscription_cleanups:
+                await asyncio.wait(set(servicer._subscription_cleanups), timeout=5.0)
 
     def _run_loop(self):
         """Thread target: create event loop and run the server."""

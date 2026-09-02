@@ -328,12 +328,11 @@ def build_class_info_request(devices: list[FTPDevice]) -> bytes:
 def _calculate_msg_size(num_devices: int, num_data_words: int, rate: float, return_period: int) -> int:
     """Calculate the FTP reply buffer size in 16-bit words.
 
-    Follows the documented FTPMAN sizing::
+    Matches ``FTPPool.startFTPPool`` in ``reference_code/data-pool-manager``::
 
         1.5 * (4 + 3*num_devices + num_data_words*rate*return_period/15)
 
-    Java ``FTPPool`` divides by ``2 * returnPeriod`` instead; that
-    dimensionally inconsistent expression is not reproduced here.
+    (The older monorepo ``FTPPool`` divides by ``2 * returnPeriod`` instead.)
     """
     msg_size = int(OVERSIZE_BUFFER_FACTOR * (4 + 3 * num_devices + num_data_words * rate * return_period / 15))
     return min(msg_size, MAX_ACNET_MSG_SIZE // 2)
