@@ -332,6 +332,8 @@ class AsyncAcnetConnectionBase:
         """
         if self._disposed:
             raise AcnetError(ACNET_NOT_CONNECTED, "Connection disposed")
+        if self._connected:
+            raise AcnetError(ACNET_NOT_CONNECTED, "Already connected")
 
         try:
             await self._open_transport()
@@ -526,7 +528,7 @@ class AsyncAcnetConnectionBase:
 
     async def _keepalive_loop(self):
         try:
-            while not self._disposed:
+            while not self._disposed and self._connected:
                 await asyncio.sleep(KEEPALIVE_INTERVAL)
                 try:
                     await self._send_keepalive()
@@ -685,7 +687,7 @@ class AsyncAcnetConnectionBase:
         timeout: int = DEFAULT_TIMEOUT,
     ) -> AsyncRequestContext:
         """Send a request and register a reply handler."""
-        task_rad50 = _rad50_encode(task)
+        task_rad50 = _encode_connection_name(task, "Task name", allow_empty=False)
         mult_flag = 1 if multiple_reply else 0
         tmo = timeout if timeout > 0 else INFINITE_TIMEOUT
 
@@ -792,7 +794,7 @@ class AsyncAcnetConnectionBase:
 
     async def get_node(self, name: str) -> int:
         """Look up a node address by name."""
-        name_rad50 = _rad50_encode(name)
+        name_rad50 = _encode_connection_name(name, "Node name", allow_empty=False)
         content = struct.pack(">H3I", CMD_NAME_LOOKUP, self._raw_handle, self._raw_vnode, name_rad50)
         ack = await self._xact(content)
 
@@ -871,7 +873,7 @@ class AsyncAcnetConnectionBase:
 
     async def send_message(self, node: int, task: str, data: bytes):
         """Send an unsolicited message (no reply expected)."""
-        task_rad50 = _rad50_encode(task)
+        task_rad50 = _encode_connection_name(task, "Task name", allow_empty=False)
         content = (
             struct.pack(
                 ">H3IH",
@@ -930,7 +932,7 @@ class AsyncAcnetConnectionBase:
 
     async def get_task_pid(self, task: str) -> int:
         """Get the OS process ID for an ACNET task."""
-        task_rad50 = _rad50_encode(task)
+        task_rad50 = _encode_connection_name(task, "Task name", allow_empty=False)
         content = struct.pack(">H3I", CMD_TASK_PID, self._raw_handle, self._raw_vnode, task_rad50)
         ack = await self._xact(content)
 

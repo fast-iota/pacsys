@@ -319,10 +319,10 @@ class TestPacketParsing:
         with pytest.raises(ValueError, match="Bad packet length"):
             AcnetPacket.parse(bytes(raw))
 
-    def test_available_bytes_may_exceed_declared_length(self):
-        raw = self._make_packet(ACNET_FLG_RPY) + b"padding"
+    def test_payload_excludes_bytes_beyond_declared_length(self):
+        raw = self._make_packet(ACNET_FLG_RPY, data=b"payload") + b"padding"
         packet = AcnetPacket.parse(raw)
-        assert packet.data == b"padding"
+        assert packet.data == b"payload"
 
     def test_server_task_name(self):
         """Test getting server task name from packet."""
@@ -442,6 +442,35 @@ def conn():
         c.close()
 
 
+def test_sync_method_from_reactor_thread_raises_immediately():
+    conn = AcnetConnectionTCP("localhost", port=9999)
+    conn._async = AsyncAcnetConnectionTCP("localhost", port=9999)
+    conn._reactor_thread = threading.current_thread()
+
+    with pytest.raises(RuntimeError, match="cannot be called from the ACNET reactor thread"):
+        conn.get_local_node()
+
+
+def test_sync_connect_rejects_second_connection():
+    conn = AcnetConnectionTCP("localhost", port=9999)
+    conn._async = MagicMock()
+
+    with patch.object(conn, "_start_reactor") as start_reactor:
+        with pytest.raises(RuntimeError, match="already connected"):
+            conn.connect()
+
+    start_reactor.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_async_connect_rejects_second_connection():
+    conn = AsyncAcnetConnectionTCP("localhost", port=9999)
+    conn._connected = True
+
+    with pytest.raises(AcnetError, match="Already connected"):
+        await conn.connect()
+
+
 class TestTCPGetDefaultNode:
     """Tests for get_default_node (cmdDefaultNode)."""
 
@@ -498,6 +527,14 @@ class TestTCPRenameTask:
         with patch.object(conn._async, "_xact", new=AsyncMock(return_value=ack)):
             with pytest.raises(AcnetError):
                 conn.rename_task("FOO")
+
+
+def test_get_node_rejects_long_name_before_io(conn):
+    with patch.object(conn._async, "_xact", new=AsyncMock()) as xact:
+        with pytest.raises(ValueError, match="Node name must be 1-6 characters"):
+            conn.get_node("TOOLONGNAME")
+
+    xact.assert_not_awaited()
 
 
 class TestTCPSendMessage:
@@ -774,6 +811,16 @@ class TestTCPKeepalive:
         cmd = struct.unpack(">H", buf[:2])[0]
         assert cmd == CMD_KEEPALIVE
 
+    @pytest.mark.asyncio
+    async def test_loop_stops_after_connection_loss(self):
+        conn = AsyncAcnetConnectionTCP("localhost", 6802)
+        conn._connected = False
+        conn._send_keepalive = AsyncMock()
+
+        await conn._keepalive_loop()
+
+        conn._send_keepalive.assert_not_awaited()
+
 
 class TestXactCancelledError:
     """_xact must close transport on CancelledError, same as TimeoutError."""
@@ -834,6 +881,25 @@ class TestDPMAcnetOpenList:
 
         with pytest.raises(DPMError, match="expected OpenList_reply, got ListStatus_reply"):
             d._open_list()
+
+
+class TestDPMAcnetSendRequest:
+    def test_negative_reply_status_is_preserved(self):
+        dpm = DPMAcnet()
+        dpm._dpm_node = 1
+
+        def request_single(**kwargs):
+            kwargs["reply_handler"](SimpleNamespace(last=True, status=-42, data=b""))
+            return MagicMock()
+
+        dpm._con = MagicMock(request_single=request_single)
+        msg = MagicMock()
+        msg.marshal.return_value = b""
+
+        with pytest.raises(DPMError) as exc_info:
+            dpm._send_request(msg)
+
+        assert exc_info.value.status == -42
 
 
 class TestDPMAcnetStreamTermination:
@@ -910,6 +976,15 @@ class TestDPMAcnetStreamTermination:
         dpm._reply_queue.put(DPMReading(ref_id=1))
         handler(self._terminal_reply(ACNET_DISCONNECTED))
         assert list(dpm.readings(timeout=0.5)) == []
+
+    def test_nonnegative_terminal_reply_ends_stream_cleanly(self):
+        dpm = DPMAcnet()
+        handler = self._open(dpm)
+
+        handler(self._terminal_reply(0))
+
+        assert list(dpm.readings(timeout=0.5)) == []
+        assert dpm._terminal_status == 0
 
     def test_read_reports_termination_not_timeout(self):
         from pacsys.acnet.errors import ACNET_DISCONNECTED
