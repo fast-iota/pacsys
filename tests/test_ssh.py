@@ -971,6 +971,23 @@ class TestACLScript:
         assert commands == [self._MKTEMP, f"cat > {q}", f"acl {q}", f"rm -f {q}"]
         assert ex.call_args_list[1].kwargs["input"] == "read M:OUTTMP\n"
 
+    def test_failure_message_keeps_stdout_reason(self):
+        """stderr may be console noise (xprop) while the real ACL error is in stdout."""
+        from pacsys.errors import ACLError
+
+        ssh = self._client()
+
+        def fake_exec(command, timeout=None, input=None):
+            if command == self._MKTEMP:
+                return self._result(command, stdout="/tmp/pacsys_acl_a1b2c3d4.acl\n")
+            if command.startswith("acl "):
+                return self._result(command, exit_code=1, stdout="... - CLIB_NOPRIV\n", stderr="xprop: no display\n")
+            return self._result(command)
+
+        with patch.object(ssh, "exec", side_effect=fake_exec):
+            with pytest.raises(ACLError, match="xprop: no display; ... - CLIB_NOPRIV"):
+                ssh.acl("set Z:ACLTST 1")
+
     def test_mktemp_failure_runs_nothing_else(self):
         from pacsys.errors import ACLError
 

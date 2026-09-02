@@ -944,7 +944,10 @@ class SSHClient:
             # ACL exits non-zero on script errors (bad device, etc.) but
             # still produces useful output. Only raise on real failures.
             if not result.ok and (result.stderr.strip() or not result.stdout.strip()):
-                msg = result.stderr.strip() or f"exit code {result.exit_code}"
+                # stderr can be console noise (e.g. xprop DISPLAY warning) while the real
+                # reason (CLIB_NOPRIV, ...) is in stdout - keep both.
+                parts = [p for p in (result.stderr.strip(), result.stdout.strip()) if p]
+                msg = "; ".join(parts) or f"exit code {result.exit_code}"
                 raise ACLError(f"ACL script failed: {msg}")
             return strip_fn(result.stdout)
         finally:
