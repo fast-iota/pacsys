@@ -331,6 +331,10 @@ def test_parse_simple_event_is_case_insensitive(event, event_type):
     assert isinstance(parse_event(event), event_type)
 
 
+def test_lowercase_periodic_event_is_continuous():
+    assert parse_event("p,1000").cont is True
+
+
 @pytest.mark.parametrize("event", ["Ujunk", "Ifoo"])
 def test_parse_simple_event_rejects_trailing_text(event):
     with pytest.raises(ValueError, match=f"Invalid event: {event}"):

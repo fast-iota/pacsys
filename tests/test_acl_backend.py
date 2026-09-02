@@ -191,6 +191,10 @@ class TestAclReadCommand:
         with pytest.raises(DeviceError, match="periodic"):
             _acl_read_command("M:OUTTMP@q,500")
 
+    def test_logger_extra_raises(self):
+        with pytest.raises(DeviceError, match="extra/logger qualifier.*DPM.*gRPC"):
+            _acl_read_command("M:OUTTMP<-LOGGER:1736942400000:1736946000000")
+
 
 class TestParseRawHex:
     """Tests for _parse_raw_hex - parses ACL /raw hex output."""
@@ -564,6 +568,15 @@ class TestBasicStatusRead:
                 assert reading.value_type == ValueType.BASIC_STATUS
                 assert "remote" not in reading.value
                 assert reading.value == {"on": False, "ready": True, "positive": False, "ramp": False}
+
+    def test_unparseable_field_returns_error(self):
+        line = "N:LGXS status is unknown"
+        with mock.patch("httpx.Client.get", return_value=MockACLResponse(line)):
+            with ACLBackend() as backend:
+                reading = backend.get("N|LGXS")
+
+        assert reading.error_code == ERR_RETRY
+        assert reading.message == f"Unparseable ON line: {line!r}"
 
     def test_nonexistent_device_returns_error(self):
         """First non-NOATT error (DBM_NOREC) immediately fails the whole read."""

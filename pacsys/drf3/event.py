@@ -96,7 +96,7 @@ class PeriodicEvent(DRF_EVENT):
             freq = _parse_time_freq(match.group(2))
             if match.group(3) is not None:
                 imm = match.group(3)[0].upper() == "T"
-        self.cont = match.group(1)[0] == "P"
+        self.cont = match.group(1)[0].upper() == "P"
         self.imm = imm
         self.freq = freq
 

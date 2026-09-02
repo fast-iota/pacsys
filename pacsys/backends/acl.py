@@ -121,6 +121,13 @@ def _acl_read_command(drf: str) -> tuple[str, str, str]:
         e.g. ``("read/pendwait", "M:OUTTMP.RAW", "/raw/event='e,02'")``
     """
     req = parse_request(drf)
+    if req.extra is not None:
+        raise DeviceError(
+            drf=drf,
+            facility_code=0,
+            error_code=ERR_RETRY,
+            message=f"ACL does not support the <- extra/logger qualifier ({drf}). Use DPM or gRPC for logger data.",
+        )
     command = "read"
     qualifiers = ""
 
@@ -660,6 +667,13 @@ class ACLBackend(Backend):
                 status[key] = True
             elif "= False" in line:
                 status[key] = False
+            else:
+                return Reading(
+                    drf=drf,
+                    error_code=ERR_RETRY,
+                    message=f"Unparseable {field} line: {line!r}",
+                    timestamp=now,
+                )
 
         return Reading(drf=drf, value_type=ValueType.BASIC_STATUS, value=status, error_code=ERR_OK, timestamp=now)
 

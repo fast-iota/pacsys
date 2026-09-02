@@ -337,7 +337,7 @@ print(result.restored)  # True if original value was restored
 | `values` | `list[float]` | `None` | Explicit scan values |
 | `start` / `stop` / `steps` | `float` / `float` / `int` | `None` | Linear range (alternative to `values`) |
 | `settle` | `float` | `0.5` | Seconds to wait after each write |
-| `readings_per_step` | `int` | `1` | Readings to average per step |
+| `readings_per_step` | `int` | `1` | Readings to average per step (arrays element-wise; non-numeric values raise) |
 | `verify` | `bool \| Verify` | `None` | Verify writes (see [Writing](../guide/writing.md)) |
 | `restore` | `bool` | `True` | Restore original setting on completion |
 | `abort_if` | `Callable` | `None` | Abort predicate receiving step readings |
