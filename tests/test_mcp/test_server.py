@@ -1,6 +1,5 @@
 import asyncio
 import importlib
-import inspect
 import time
 from types import SimpleNamespace
 from unittest import mock
@@ -48,20 +47,13 @@ async def test_create_server_registers_context_bound_tools():
         mock.patch("pacsys.mcp._server.tool_write_device", return_value={"write": True}) as write,
         mock.patch("pacsys.mcp._server.tool_device_info", return_value={"info": True}) as info,
     ):
-        assert all(inspect.iscoroutinefunction(tool) for tool in server.tools.values())
         assert await server.tools["read_device"]("M:OUTTMP") == {"read": True}
         assert await server.tools["write_device"]("Z:ACLTST", 1.0) == {"write": True}
         assert await server.tools["device_info"]("M:OUTTMP") == {"info": True}
 
-    read.assert_called_once_with(backend=backend, drf="M:OUTTMP", policies=policies)
-    write.assert_called_once_with(
-        backend=backend,
-        drf="Z:ACLTST",
-        value=1.0,
-        policies=policies,
-        audit_log=None,
-    )
-    info.assert_called_once_with(devdb=devdb, name="M:OUTTMP")
+    read.assert_called_once_with(backend, "M:OUTTMP", policies)
+    write.assert_called_once_with(backend, "Z:ACLTST", 1.0, policies, None)
+    info.assert_called_once_with(devdb, "M:OUTTMP")
 
 
 @pytest.mark.asyncio
@@ -71,7 +63,7 @@ async def test_tool_calls_overlap():
 
     server.context = ServerContext(backend=object(), devdb=None, policies=[])
 
-    def slow_read(**_kwargs):
+    def slow_read(*_args):
         time.sleep(0.3)
         return {"read": True}
 

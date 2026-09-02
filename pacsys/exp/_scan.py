@@ -227,15 +227,12 @@ def _read_step(
             continue
 
         values = [r.value for r in ok_readings]
-        array_like = [isinstance(value, (np.ndarray, list, tuple)) for value in values]
-        if any(array_like):
-            if not all(array_like):
-                raise TypeError(f"Cannot average mixed scalar and array readings for {drf}")
-            arrays = [np.asarray(value) for value in values]
-            if any(array.dtype.kind not in "iufc" for array in arrays):
+        if any(isinstance(v, (np.ndarray, list, tuple)) for v in values):
+            arrays = [np.asarray(v) for v in values]
+            if any(a.dtype.kind not in "iufc" for a in arrays):  # np.mean would average bools
                 raise TypeError(f"Cannot average non-numeric array readings for {drf}")
             try:
-                avg = np.mean(np.stack(arrays), axis=0)
+                avg = np.mean(np.stack(arrays), axis=0)  # also rejects scalar/array mixes
             except ValueError as e:
                 raise ValueError(f"Cannot average array readings for {drf}: {e}") from None
         else:

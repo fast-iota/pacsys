@@ -484,6 +484,27 @@ class TestSetAuditAndCommit:
         finally:
             srv.stop()
 
+    def test_concurrent_sets_are_serialized(self):
+        """One Set's policy check + write completes before the next Set's policy check runs."""
+        fb = _SlowWriteBackend()
+        _seed_backend(fb)
+        srv = SupervisedServer(fb, port=0, policies=[_ALLOW_ALL_WRITES, _RecordingPolicy(fb)])
+        srv.start()
+        try:
+            with _make_channel(srv) as ch:
+                stub = DAQ_pb2_grpc.DAQStub(ch)
+                threads = [
+                    threading.Thread(target=stub.Set, args=(_set_request("M:OUTTMP", v),), kwargs={"timeout": 5.0})
+                    for v in (1.0, 2.0)
+                ]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join(timeout=5.0)
+        finally:
+            srv.stop()
+        assert fb.events == ["check", "write-start", "write-end"] * 2
+
     def test_unapproved_set_is_audited_as_denied_best_effort(self):
         fb = FakeBackend()
         _seed_backend(fb)
@@ -1071,6 +1092,34 @@ class TestTokenAuthentication:
 
 
 # ── Backend Exception Mapping Tests ──────────────────────────────────────
+
+
+class _SlowWriteBackend(FakeBackend):
+    """Records policy-check/write ordering; write_many sleeps so unserialized Sets would interleave."""
+
+    def __init__(self):
+        super().__init__()
+        self.events: list[str] = []
+        self.events_lock = threading.Lock()
+
+    def record(self, event: str) -> None:
+        with self.events_lock:
+            self.events.append(event)
+
+    def write_many(self, settings, timeout=None):
+        self.record("write-start")
+        time.sleep(0.2)
+        self.record("write-end")
+        return super().write_many(settings, timeout)
+
+
+class _RecordingPolicy(Policy):
+    def __init__(self, backend: _SlowWriteBackend):
+        self._backend = backend
+
+    def check(self, ctx: RequestContext) -> PolicyDecision:
+        self._backend.record("check")
+        return PolicyDecision(allowed=True)
 
 
 class _ErrorBackend(FakeBackend):

@@ -694,6 +694,25 @@ class SSHClient:
         self._ensure_connected()
         return self._transports[-1]
 
+    def _open_session(self, command: str, timeout: float | None) -> tuple[paramiko.Channel, float | None]:
+        """Open an exec channel; the returned deadline also covers session setup."""
+        transport = self._final_transport
+        if not transport.is_active():
+            raise SSHConnectionError("Transport is no longer active")
+        deadline = time.monotonic() + timeout if timeout is not None else None
+        try:
+            chan = transport.open_session(timeout=timeout)
+        except paramiko.SSHException as e:
+            if deadline is not None and "timeout" in str(e).lower():
+                raise SSHTimeoutError(f"Command timed out after {timeout}s: {command!r}") from e
+            raise
+        remaining = deadline - time.monotonic() if deadline is not None else None
+        if remaining is not None and remaining <= 0:
+            chan.close()
+            raise SSHTimeoutError(f"Command timed out after {timeout}s: {command!r}")
+        chan.settimeout(remaining)
+        return chan, deadline
+
     def exec(self, command: str, timeout: float | None = None, input: str | None = None) -> CommandResult:
         """Execute a command on the remote host.
 
@@ -709,23 +728,8 @@ class SSHClient:
             SSHTimeoutError: If timeout is exceeded
             SSHConnectionError: If transport is not active
         """
-        transport = self._final_transport
-        if not transport.is_active():
-            raise SSHConnectionError("Transport is no longer active")
-
-        deadline = time.monotonic() + timeout if timeout is not None else None
-        remaining = deadline - time.monotonic() if deadline is not None else None
+        chan, deadline = self._open_session(command, timeout)
         try:
-            chan = transport.open_session(timeout=remaining)
-        except (TimeoutError, paramiko.SSHException) as e:
-            if deadline is not None and (isinstance(e, TimeoutError) or "timeout" in str(e).lower()):
-                raise SSHTimeoutError(f"Command timed out after {timeout}s: {command!r}") from e
-            raise
-        try:
-            remaining = deadline - time.monotonic() if deadline is not None else None
-            if remaining is not None and remaining <= 0:
-                raise SSHTimeoutError(f"Command timed out after {timeout}s: {command!r}")
-            chan.settimeout(remaining)
             chan.exec_command(command)
 
             if input is not None:
@@ -780,23 +784,8 @@ class SSHClient:
             SSHCommandError: If command exits with non-zero status (after all output)
             SSHTimeoutError: If timeout is exceeded
         """
-        transport = self._final_transport
-        if not transport.is_active():
-            raise SSHConnectionError("Transport is no longer active")
-
-        deadline = time.monotonic() + timeout if timeout is not None else None
-        remaining = deadline - time.monotonic() if deadline is not None else None
+        chan, deadline = self._open_session(command, timeout)
         try:
-            chan = transport.open_session(timeout=remaining)
-        except (TimeoutError, paramiko.SSHException) as e:
-            if deadline is not None and (isinstance(e, TimeoutError) or "timeout" in str(e).lower()):
-                raise SSHTimeoutError(f"Command timed out after {timeout}s: {command!r}") from e
-            raise
-        try:
-            remaining = deadline - time.monotonic() if deadline is not None else None
-            if remaining is not None and remaining <= 0:
-                raise SSHTimeoutError(f"Command timed out after {timeout}s: {command!r}")
-            chan.settimeout(remaining)
             chan.exec_command(command)
             chan.shutdown_write()
 

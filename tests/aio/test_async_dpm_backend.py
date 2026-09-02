@@ -572,18 +572,10 @@ class TestAsyncDPMCloseRaces:
         with pytest.raises(ValueError, match="pool_size"):
             AsyncDPMHTTPBackend(host="localhost", port=6802, pool_size=0)
 
-    @pytest.mark.parametrize(
-        ("kwargs", "message"),
-        [
-            ({"host": ""}, "host cannot be empty"),
-            ({"port": 0}, "port must be between"),
-            ({"timeout": float("inf")}, "timeout must be positive and finite"),
-            ({"auth": object()}, "auth must be KerberosAuth or None"),
-        ],
-    )
-    def test_constructor_validates_arguments(self, kwargs, message):
-        with pytest.raises(ValueError, match=message):
-            AsyncDPMHTTPBackend(**kwargs)
+    def test_constructor_validates_arguments(self):
+        """Shares the sync validator (fully covered in test_dpm_http_backend); one case proves the wiring."""
+        with pytest.raises(ValueError, match="timeout must be positive and finite"):
+            AsyncDPMHTTPBackend(timeout=float("inf"))
 
     def test_make_deadline_rejects_nonfinite_per_call_timeout(self):
         with pytest.raises(ValueError, match="positive and finite"):

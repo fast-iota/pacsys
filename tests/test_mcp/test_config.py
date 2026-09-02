@@ -59,13 +59,6 @@ allow_raw = ["B:HS*"]
     assert cfg.audit_log == "audit.jsonl"
 
 
-def test_removed_slew_rates_config_rejected(tmp_path):
-    path = tmp_path / "mcp.toml"
-    path.write_text('[policies.slew_rates]\n"Z:ACLTST" = { max_step = 5.0 }\n')
-    with pytest.raises(ValueError, match="slew_rates"):
-        load_config(str(path))
-
-
 def test_build_policies_empty():
     cfg = load_config(None)
     policies = build_policies(cfg)

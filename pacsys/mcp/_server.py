@@ -113,30 +113,20 @@ def create_server(config: MCPConfig) -> FastMCP:
     )
     async def read_device(drf: str) -> dict:
         ctx: ServerContext = mcp.get_context().request_context.lifespan_context
-        call = partial(tool_read_device, backend=ctx.backend, drf=drf, policies=ctx.policies)
-        return await run_sync(call)
+        return await run_sync(tool_read_device, ctx.backend, drf, ctx.policies)
 
     @mcp.tool(
         description="Write a value to a device. Requires policy approval. Pass DRF and value (float, string, or list)."
     )
     async def write_device(drf: str, value: float | str | list) -> dict:
         ctx: ServerContext = mcp.get_context().request_context.lifespan_context
-        call = partial(
-            tool_write_device,
-            backend=ctx.backend,
-            drf=drf,
-            value=value,
-            policies=ctx.policies,
-            audit_log=ctx.audit_log,
-        )
-        return await run_sync(call)
+        return await run_sync(tool_write_device, ctx.backend, drf, value, ctx.policies, ctx.audit_log)
 
     @mcp.tool(
         description="Look up device metadata (description, units, limits, control commands) from the device database."
     )
     async def device_info(name: str) -> dict:
         ctx: ServerContext = mcp.get_context().request_context.lifespan_context
-        call = partial(tool_device_info, devdb=ctx.devdb, name=name)
-        return await run_sync(call)
+        return await run_sync(tool_device_info, ctx.devdb, name)
 
     return mcp

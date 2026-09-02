@@ -1149,11 +1149,10 @@ class DMQBackend(Backend):
         expected: _WriteSession | None = None,
     ) -> None:
         """Close a write session and release resources (IO thread)."""
-        current = self._write_sessions.get(init_drf)
-        if current is None or expected is not None and current is not expected:
+        session = self._write_sessions.get(init_drf)
+        if session is None or expected is not None and session is not expected:
             return
-        session = self._write_sessions.pop(init_drf, None)
-        assert session is not None
+        del self._write_sessions[init_drf]
 
         logger.debug("Closing write session for %s (%s): %s", session.device, init_drf, reason)
 
@@ -2144,7 +2143,7 @@ class DMQBackend(Backend):
 
     def _on_connection_closed(self, connection: SelectConnection, reason: Exception) -> None:
         """Called when SelectConnection is closed."""
-        if getattr(self, "_teardown_connection", None) is connection:
+        if self._teardown_connection is connection:
             return
         self._teardown_connection = connection
         logger.info("SelectConnection closed: %s", reason)

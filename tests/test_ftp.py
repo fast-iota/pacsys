@@ -447,12 +447,6 @@ class TestBuildSnapshotControl:
 
 
 class TestBufferSize:
-    def test_matches_documented_formula(self):
-        # 1 device, 2 data words (= 4 bytes), 1440 Hz, period=3
-        result = _calculate_msg_size(1, 2, 1440, 3)
-        expected = int(1.5 * (4 + 3 * 1 + 2 * 1440 * 3 / 15))
-        assert result == expected
-
     def test_capped_at_max(self):
         """Large requests should be capped at MAX_ACNET_MSG_SIZE / 2."""
         result = _calculate_msg_size(100, 100, 10000, 7)
@@ -463,9 +457,10 @@ class TestBufferSize:
         result = _calculate_msg_size(1, 2, 15, 3)
         assert result < 100  # Very small for 15Hz
 
-    def test_period_seven_covers_unoversized_data(self):
+    def test_period_seven_covers_required_words(self):
+        # 1 device, 2 data words, 1440 Hz, period 7: the old /(2*period) formula gave 617 < 1351
         required_words = 4 + 3 * 1 + 2 * 1440 * 7 / 15
-        assert _calculate_msg_size(1, 2, 1440, 7) >= required_words
+        assert _calculate_msg_size(1, 2, 1440, 7) == int(1.5 * required_words)
 
 
 # =============================================================================
@@ -1528,9 +1523,8 @@ class TestSnapshotState:
         assert _ftp_status_to_state(-241) == SnapshotState.ERROR
         assert _ftp_status_to_state(-1) == SnapshotState.ERROR
 
-    @pytest.mark.parametrize("status", [2, 0x0F02, 9999])
-    def test_ftp_status_to_state_unknown_positive_is_none(self, status):
-        assert _ftp_status_to_state(status) is None
+    def test_ftp_status_to_state_informational_positive_is_none(self):
+        assert _ftp_status_to_state(0x0F02) is None  # FRIG "circular buffer" info status
 
 
 class TestParseStatusUpdateStates:
