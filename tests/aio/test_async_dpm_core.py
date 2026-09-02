@@ -15,6 +15,7 @@ from pacsys.dpm_connection import DPMConnectionError
 from pacsys.dpm_protocol import (
     AddToList_reply,
     ApplySettings_reply,
+    ApplySettings_request,
     Authenticate_reply,
     Authenticate_request,
     DeviceInfo_reply,
@@ -406,11 +407,14 @@ class TestWriteMany:
         core, conn = make_core(replies)
         core._settings_enabled = True
         core._auth = mock.MagicMock()
-        core._auth.principal = "test@fnal.gov"
+        core._auth.principal = "uncached@fnal.gov"
+        core._principal = "test@fnal.gov"
 
         results = await core.write_many([("M:OUTTMP.SETTING@N", 72.5)], timeout=2.0)
         assert len(results) == 1
         assert results[0].success
+        apply = next(message for message in conn.sent if isinstance(message, ApplySettings_request))
+        assert apply.user_name == "test@fnal.gov"
 
     @pytest.mark.asyncio
     async def test_write_auto_authenticates(self, make_core):
@@ -442,7 +446,7 @@ class TestWriteMany:
         core, conn = make_core(replies, role="testing")
         core._settings_enabled = True
         core._auth = mock.MagicMock()
-        core._auth.principal = "test@fnal.gov"
+        core._principal = "test@fnal.gov"
 
         await core.write_many([("M:OUTTMP.SETTING@N", 72.5)], timeout=2.0)
         # Check that a #ROLE: AddToList was sent
@@ -467,7 +471,7 @@ class TestWriteMany:
         core, conn = make_core(replies)
         core._settings_enabled = True
         core._auth = mock.MagicMock()
-        core._auth.principal = "test@fnal.gov"
+        core._principal = "test@fnal.gov"
 
         results = await core.write_many([("M:NOSUCH.SETTING@N", 72.5)], timeout=2.0)
         assert len(results) == 1
@@ -482,7 +486,7 @@ class TestWriteMany:
         core, conn = make_core(replies)
         core._settings_enabled = True
         core._auth = mock.MagicMock()
-        core._auth.principal = "test@fnal.gov"
+        core._principal = "test@fnal.gov"
 
         results = await core.write_many([("M:OUTTMP.SETTING@N", 72.5)], timeout=1.0)
         assert len(results) == 1
@@ -801,13 +805,17 @@ def _make_auth_reply_with_token():
 
 @pytest.fixture
 def mock_kerberos_auth():
-    """Context manager that patches KerberosAuth._get_credentials."""
+    """Context manager that patches KerberosAuth._inspect_credentials."""
     from pacsys.auth import KerberosAuth
 
     def _make(mock_gssapi):
         auth = KerberosAuth(_lazy=True)
-        patcher = mock.patch.object(KerberosAuth, "_get_credentials", return_value=mock_gssapi.Credentials())
-        patcher.start()
+        patcher = mock.patch.object(
+            KerberosAuth,
+            "_inspect_credentials",
+            return_value=(mock_gssapi.Credentials(), "test@FNAL.GOV"),
+        )
+        factory.inspect_credentials = patcher.start()
         return auth, patcher
 
     patchers = []
@@ -816,6 +824,8 @@ def mock_kerberos_auth():
         auth, patcher = _make(mock_gssapi)
         patchers.append(patcher)
         return auth
+
+    factory.inspect_credentials = None
 
     yield factory
     for p in patchers:
@@ -835,6 +845,7 @@ class TestAuthenticate:
             replies = [make_auth_reply("dpm\\@host"), make_auth_reply()]
             core, conn = make_core(replies, auth=auth)
             await core.authenticate()
+            mock_kerberos_auth.inspect_credentials.assert_called_once_with()
             assert core._mic == b"mock_mic_signature"
             assert core._mic_message == b"1234"
             auth_reqs = [m for m in conn.sent if isinstance(m, Authenticate_request)]

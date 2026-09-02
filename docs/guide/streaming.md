@@ -180,7 +180,9 @@ Each `subscribe()` call creates its own TCP connection (on DPM/HTTP), so subscri
 
 Delivery through `CombinedStream` is at-most-once: readings it has prefetched but not yet
 yielded are discarded if you exit the loop early or a subscription errors. Iterate each
-handle directly if you need every buffered reading.
+handle directly if you need every buffered reading. The shared buffer is bounded (same
+cap as a single handle); a slow consumer backpressures the source handles, which drop
+newest and count in `handle.dropped` as usual.
 
 `CombinedStream` properties:
 

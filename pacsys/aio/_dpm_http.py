@@ -10,7 +10,7 @@ from pacsys.aio._subscription import AsyncSubscriptionHandle, _callback_feeder
 from pacsys.auth import KerberosAuth
 from pacsys.backends import ALARM_READONLY_KEYS
 from pacsys.backends._dpm_core import _AsyncDpmCore
-from pacsys.backends.dpm_http import _make_deadline, _value_to_setting
+from pacsys.backends.dpm_http import _make_deadline, _validate_backend_args, _value_to_setting
 from pacsys.dpm_connection import DPMConnectionError, _remaining_timeout
 from pacsys.drf_utils import prepare_for_write
 from pacsys.errors import AuthenticationError, DeviceError, ReadError
@@ -104,8 +104,7 @@ class AsyncDPMHTTPBackend(AsyncBackend):
         auth: KerberosAuth | None = None,
         role: str | None = None,
     ):
-        if pool_size < 1:
-            raise ValueError(f"pool_size must be >= 1, got {pool_size}")
+        _validate_backend_args(host, port, pool_size, timeout, auth)
         self._host = host
         self._port = port
         self._pool_size = pool_size

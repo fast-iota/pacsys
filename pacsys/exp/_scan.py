@@ -7,6 +7,8 @@ import time
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 from pacsys.exp._resolve import resolve_backend, resolve_drf
 from pacsys.exp._values import numeric_value
 
@@ -49,6 +51,14 @@ class ScanResult:
         return pd.DataFrame(rows)
 
 
+class ScanRestoreError(RuntimeError):
+    """A completed scan whose original setting could not be restored."""
+
+    def __init__(self, message: str, result: ScanResult):
+        super().__init__(message)
+        self.result = result
+
+
 def scan(
     write_device: DeviceSpec,
     read_devices: list[DeviceSpec],
@@ -70,6 +80,15 @@ def scan(
     Provide either `values` (any iterable of setpoints, e.g. list or
     np.linspace) or `start`/`stop`/`steps` (linear range). Exactly one
     mode must be used.
+
+    With ``readings_per_step > 1`` OK readings are averaged per step (arrays
+    element-wise); non-numeric values or mismatched array shapes raise.
+
+    Raises:
+        ScanRestoreError: If the scan completes but restoring the original
+            setting fails. The collected data is available on ``result``.
+        TypeError, ValueError: If ``readings_per_step > 1`` and a read
+            device returns values that cannot be averaged.
     """
     write_drf = resolve_drf(write_device)
     read_drfs = [resolve_drf(d) for d in read_devices]
@@ -92,6 +111,8 @@ def scan(
     all_readings: list[dict[str, Reading]] = []
     all_write_results: list[WriteResult] = []
     aborted = False
+    restored = False
+    restore_error: str | None = None
 
     try:
         for sv in scan_values:
@@ -129,16 +150,15 @@ def scan(
         raise
     else:
         # Normal completion — restore and raise on failure
-        restored = False
         if restore and original is not None:
             restore_result = write_dev.write(original, timeout=timeout)
             restored = restore_result.ok
             if not restored:
-                raise RuntimeError(
+                restore_error = (
                     f"Scan completed but failed to restore {write_drf} to {original}: {restore_result.message}"
                 )
 
-    return ScanResult(
+    result = ScanResult(
         write_device=write_drf,
         read_devices=read_drfs,
         set_values=[sv for sv, _ in zip(scan_values, all_write_results, strict=False)],
@@ -147,6 +167,9 @@ def scan(
         aborted=aborted,
         restored=restored,
     )
+    if restore_error is not None:
+        raise ScanRestoreError(restore_error, result)
+    return result
 
 
 def _build_values(
@@ -198,17 +221,28 @@ def _read_step(
 
     result: dict[str, Reading] = {}
     for drf, rs in accumulated.items():
-        ok_readings: list[tuple[Reading, float]] = []
-        for r in rs:
-            if not r.ok:
-                continue
-            try:
-                ok_readings.append((r, numeric_value(r.value)))
-            except (TypeError, ValueError):
-                pass
-        if ok_readings:
-            avg = sum(value for _, value in ok_readings) / len(ok_readings)
-            result[drf] = replace(ok_readings[-1][0], value=avg)
-        else:
+        ok_readings = [r for r in rs if r.ok]
+        if not ok_readings:
             result[drf] = rs[-1]
+            continue
+
+        values = [r.value for r in ok_readings]
+        array_like = [isinstance(value, (np.ndarray, list, tuple)) for value in values]
+        if any(array_like):
+            if not all(array_like):
+                raise TypeError(f"Cannot average mixed scalar and array readings for {drf}")
+            arrays = [np.asarray(value) for value in values]
+            if any(array.dtype.kind not in "iufc" for array in arrays):
+                raise TypeError(f"Cannot average non-numeric array readings for {drf}")
+            try:
+                avg = np.mean(np.stack(arrays), axis=0)
+            except ValueError as e:
+                raise ValueError(f"Cannot average array readings for {drf}: {e}") from None
+        else:
+            try:
+                numeric_values = [numeric_value(value) for value in values]
+            except (TypeError, ValueError) as e:
+                raise TypeError(f"Cannot average non-numeric readings for {drf}: {e}") from None
+            avg = sum(numeric_values) / len(numeric_values)
+        result[drf] = replace(ok_readings[-1], value=avg)
     return result

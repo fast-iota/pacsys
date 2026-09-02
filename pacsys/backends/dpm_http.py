@@ -110,10 +110,29 @@ _MAX_WRITE_CONNECTIONS = 4  # max concurrent write connections (pooled + in-flig
 _SettingPayload = tuple[RawSetting_struct | None, ScaledSetting_struct | None, TextSetting_struct | None]
 
 
+def _validate_backend_args(
+    host: str,
+    port: int,
+    pool_size: int,
+    timeout: float | None,
+    auth: Auth | None,
+) -> None:
+    if not host:
+        raise ValueError("host cannot be empty")
+    if port <= 0 or port > 65535:
+        raise ValueError(f"port must be between 1 and 65535, got {port}")
+    if pool_size <= 0:
+        raise ValueError(f"pool_size must be positive, got {pool_size}")
+    if timeout is None or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError(f"timeout must be positive and finite, got {timeout}")
+    if auth is not None and not isinstance(auth, KerberosAuth):
+        raise ValueError(f"auth must be KerberosAuth or None, got {type(auth).__name__}")
+
+
 def _make_deadline(timeout: float | None, default: float) -> float:
     effective_timeout = timeout if timeout is not None else default
-    if effective_timeout <= 0:
-        raise ValueError(f"timeout must be positive, got {effective_timeout}")
+    if not math.isfinite(effective_timeout) or effective_timeout <= 0:
+        raise ValueError(f"timeout must be positive and finite, got {effective_timeout}")
     return time.monotonic() + effective_timeout
 
 
@@ -761,22 +780,13 @@ class DPMHTTPBackend(Backend):
             auth: Authentication object (KerberosAuth for writes)
             role: Role for authenticated operations (e.g., "testing")
         """
-        if not host:
-            raise ValueError("host cannot be empty")
-        if port <= 0 or port > 65535:
-            raise ValueError(f"port must be between 1 and 65535, got {port}")
-        if pool_size <= 0:
-            raise ValueError(f"pool_size must be positive, got {pool_size}")
-        if timeout is None or not math.isfinite(timeout) or timeout <= 0:
-            raise ValueError(f"timeout must be positive and finite, got {timeout}")
-        if auth is not None and not isinstance(auth, KerberosAuth):
-            raise ValueError(f"auth must be KerberosAuth or None, got {type(auth).__name__}")
+        _validate_backend_args(host, port, pool_size, timeout, auth)
 
         self._host = host
         self._port = port
         self._pool_size = pool_size
         self._timeout = timeout
-        self._auth: KerberosAuth | None = auth
+        self._auth = cast("KerberosAuth | None", auth)
         self._role = role
         self._pool: ConnectionPool | None = None
         self._pool_lock = threading.Lock()

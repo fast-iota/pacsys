@@ -8,7 +8,7 @@ Usage:
 from pacsys.exp._logger import DataLogger
 from pacsys.exp._monitor import ChannelData, ChannelHealth, Monitor, MonitorResult
 from pacsys.exp._read_fresh import FreshResult, read_fresh
-from pacsys.exp._scan import ScanResult, scan
+from pacsys.exp._scan import ScanRestoreError, ScanResult, scan
 from pacsys.exp._watch import watch
 from pacsys.exp._writers import CsvWriter, LogWriter, ParquetWriter
 
@@ -21,6 +21,7 @@ __all__ = [
     "FreshResult",
     "watch",
     "scan",
+    "ScanRestoreError",
     "ScanResult",
     "DataLogger",
     "CsvWriter",

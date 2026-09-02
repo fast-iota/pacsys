@@ -2546,6 +2546,8 @@ class DMQBackend(Backend):
             with self._stream_lock:
                 self._subscriptions.pop(sub_id, None)
             # Cancel any partially-setup resources on IO loop
+            handle._stop_requested = True
+            handle._signal_stop()
             self._cancel_subscription_async(sub)
             raise RuntimeError("Timeout waiting for subscription setup")
 
@@ -2553,6 +2555,8 @@ class DMQBackend(Backend):
             with self._stream_lock:
                 self._subscriptions.pop(sub_id, None)
             # Cancel any partially-setup resources on IO loop
+            handle._stop_requested = True
+            handle._signal_stop()
             self._cancel_subscription_async(sub)
             raise sub.setup_error
 

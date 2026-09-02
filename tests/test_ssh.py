@@ -1,6 +1,7 @@
 """Tests for pacsys.ssh - SSH client with multi-hop support."""
 
 import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import paramiko
@@ -420,6 +421,25 @@ class TestSSHClientExec:
         ssh = SSHClient(SSHHop("host", auth_method="password", password="pw"))
         with pytest.raises(SSHTimeoutError, match="timed out"):
             ssh.exec("sleep 100", timeout=1.0)
+
+    @patch("paramiko.Transport")
+    @patch("socket.create_connection")
+    def test_exec_timeout_includes_session_open(self, mock_connect, mock_transport_cls):
+        mock_connect.return_value = MagicMock()
+        mock_transport = _make_mock_transport()
+        mock_transport_cls.return_value = mock_transport
+
+        def blocked_open_session(*, timeout=None):
+            time.sleep(0.2 if timeout is None else timeout)
+            raise paramiko.SSHException("Timeout opening channel.")
+
+        mock_transport.open_session.side_effect = blocked_open_session
+        ssh = SSHClient(SSHHop("host", auth_method="password", password="pw"))
+
+        start = time.monotonic()
+        with pytest.raises(SSHTimeoutError, match="timed out"):
+            ssh.exec("true", timeout=0.05)
+        assert time.monotonic() - start < 0.15
 
     @patch("paramiko.Transport")
     @patch("socket.create_connection")
@@ -959,6 +979,26 @@ class TestACLScript:
             with pytest.raises(ACLError, match="Failed to create ACL script file: ro fs"):
                 ssh.acl("read M:OUTTMP")
         assert [c.args[0] for c in ex.call_args_list] == [self._MKTEMP]
+
+    def test_cleanup_failure_does_not_mask_success(self, caplog):
+        path = "/tmp/pacsys_acl_a1b2c3d4.acl"
+        ssh = self._client()
+
+        def fake_exec(command, timeout=None, input=None):
+            if command == self._MKTEMP:
+                return self._result(command, stdout=f"{path}\n")
+            if command.startswith("rm -f "):
+                raise SSHTimeoutError("cleanup timed out")
+            if command.startswith("acl "):
+                return self._result(command, stdout="M:OUTTMP = 72.5\n")
+            return self._result(command)
+
+        with patch.object(ssh, "exec", side_effect=fake_exec):
+            result = ssh.acl("read M:OUTTMP")
+
+        assert result == "M:OUTTMP = 72.5"
+        assert path in caplog.text
+        assert "cleanup timed out" in caplog.text
 
     @pytest.mark.parametrize(
         "stdout", ["/etc/passwd\n", "/tmp/pacsys_acl_x/../../home/u/.bashrc\n", "/tmp/pacsys_acl_a b$c.acl\n", ""]

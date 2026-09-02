@@ -98,6 +98,7 @@ class _AsyncDpmCore:
         self._settings_enabled = False
         self._mic: bytes | None = None
         self._mic_message: bytes | None = None
+        self._principal: str | None = None
 
     async def connect(self, timeout: float | None = None) -> None:
         conn = _AsyncDPMConnection(self._host, self._port, self._timeout)
@@ -171,7 +172,7 @@ class _AsyncDpmCore:
         # Phase 2: GSSAPI context
         try:
             service_name = gssapi.Name(gss_name, gssapi.NameType.kerberos_principal)
-            creds = self._auth._get_credentials()
+            creds, principal = self._auth._inspect_credentials()
             ctx = gssapi.SecurityContext(
                 name=service_name,
                 usage="initiate",
@@ -229,7 +230,8 @@ class _AsyncDpmCore:
         _remaining_timeout(deadline, "Kerberos MIC generation")
         self._mic = bytes(mic)
         self._mic_message = message
-        logger.debug("Kerberos authentication complete for %s", self._auth.principal)
+        self._principal = principal
+        logger.debug("Kerberos authentication complete for %s", principal)
 
     async def enable_settings(self, deadline: float | None = None) -> None:
         """Enable settings on the connection after authentication."""
@@ -627,7 +629,7 @@ class _AsyncDpmCore:
 
         # Phase 2: Build and send ApplySettings
         apply_req = ApplySettings_request()
-        apply_req.user_name = self._auth.principal if self._auth else ""
+        apply_req.user_name = self._principal or ""
         apply_req.list_id = list_id
 
         raw_settings = []

@@ -934,14 +934,20 @@ class GRPCBackend(Backend):
             asyncio.set_event_loop(loop)
             loop_holder.append(loop)
             ready.set()
-            loop.run_forever()
-            # Cleanup pending tasks on shutdown
-            pending = asyncio.all_tasks(loop)
-            for task in pending:
-                task.cancel()
-            if pending:
-                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-            loop.close()
+            try:
+                loop.run_forever()
+            finally:
+                # Cleanup pending tasks on shutdown
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                loop.close()
+                if self._loop is loop:
+                    self._loop = None
+                if self._reactor_thread is threading.current_thread():
+                    self._reactor_thread = None
 
         self._reactor_thread = threading.Thread(target=_run, name="GRPCBackend-Reactor", daemon=True)
         self._reactor_thread.start()
@@ -1211,10 +1217,30 @@ class GRPCBackend(Backend):
         self.stop_streaming()
         self._dispatcher.close()
 
+        loop = self._loop
+        thread = self._reactor_thread
+
+        if loop is not None and thread is threading.current_thread():
+            # DIRECT callback: cannot block on the loop we are running on
+            core, self._core = self._core, None
+
+            async def close_from_reactor() -> None:
+                try:
+                    if core is not None:
+                        await core.close()
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("Error closing gRPC core: %s", e)
+                finally:
+                    loop.stop()
+
+            loop.create_task(close_from_reactor())
+            logger.debug("GRPCBackend close scheduled from reactor thread")
+            return
+
         # Close the async core
-        if self._core is not None and self._loop is not None:
+        if self._core is not None and loop is not None:
             try:
-                fut = asyncio.run_coroutine_threadsafe(self._core.close(), self._loop)
+                fut = asyncio.run_coroutine_threadsafe(self._core.close(), loop)
                 fut.result(timeout=2.0)
             except Exception as e:  # noqa: BLE001
                 logger.debug("Error closing gRPC core: %s", e)
@@ -1222,8 +1248,6 @@ class GRPCBackend(Backend):
 
         # Stop the event loop and join reactor thread
         # Note: set _loop to None AFTER join so reactor cleanup can finish
-        loop = self._loop
-        thread = self._reactor_thread
         if loop is not None:
             loop.call_soon_threadsafe(loop.stop)
         if thread is not None and thread is not threading.current_thread():

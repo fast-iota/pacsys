@@ -6,6 +6,7 @@ from unittest import mock
 import numpy as np
 import pytest
 
+from pacsys.exp import ScanRestoreError
 from pacsys.exp._scan import ScanResult, _build_values, _read_step, scan
 from pacsys.testing import FakeBackend
 from pacsys.types import Reading, ValueType, WriteResult
@@ -155,6 +156,30 @@ class TestScan:
 
         assert "Failed to restore Z:ACLTST to 42.0 during error cleanup: restore failed" in caplog.text
 
+    def test_failed_normal_restore_preserves_scan_result(self, fake):
+        write_device = mock.Mock()
+        write_device.setting.return_value = 42.0
+        write_device.write.side_effect = [
+            WriteResult(drf="Z:ACLTST.SETTING@N"),
+            WriteResult(drf="Z:ACLTST.SETTING@N", error_code=-1, message="restore failed"),
+        ]
+
+        with (
+            mock.patch("pacsys.device.Device", return_value=write_device),
+            pytest.raises(RuntimeError, match="failed to restore") as exc_info,
+        ):
+            scan(
+                write_device="Z:ACLTST",
+                read_devices=["M:OUTTMP"],
+                values=[1.0],
+                settle=0,
+                backend=fake,
+            )
+
+        assert exc_info.value.result.readings
+        assert exc_info.value.result.restored is False
+        assert isinstance(exc_info.value, ScanRestoreError)
+
     def test_no_restore(self, fake):
         fake.set_reading("Z:ACLTST.SETTING", 42.0)
         result = scan(
@@ -215,14 +240,44 @@ class TestScan:
         )
         assert len(result.readings) == 1
 
-    def test_readings_per_step_does_not_average_numpy_boolean(self):
+    def test_readings_per_step_rejects_numpy_boolean(self):
         reading = Reading(drf="Z:BOOL", value_type=ValueType.SCALAR, value=np.bool_(True))
         backend = mock.Mock()
         backend.get_many.return_value = [reading]
 
-        result = _read_step(backend, ["Z:BOOL"], readings_per_step=2, timeout=None)
+        with pytest.raises(TypeError, match="Z:BOOL"):
+            _read_step(backend, ["Z:BOOL"], readings_per_step=2, timeout=None)
 
-        assert result["Z:BOOL"] is reading
+    def test_readings_per_step_averages_arrays(self):
+        backend = mock.Mock()
+        backend.get_many.side_effect = [
+            [Reading(drf="Z:ARRAY", value_type=ValueType.SCALAR_ARRAY, value=np.array([1.0, 2.0]))],
+            [Reading(drf="Z:ARRAY", value_type=ValueType.SCALAR_ARRAY, value=[3.0, 4.0])],
+        ]
+
+        result = _read_step(backend, ["Z:ARRAY"], readings_per_step=2, timeout=None)
+
+        np.testing.assert_array_equal(result["Z:ARRAY"].value, [2.0, 3.0])
+        assert result["Z:ARRAY"].value_type == ValueType.SCALAR_ARRAY
+
+    def test_readings_per_step_rejects_mixed_array_shapes(self):
+        backend = mock.Mock()
+        backend.get_many.side_effect = [
+            [Reading(drf="Z:ARRAY", value_type=ValueType.SCALAR_ARRAY, value=np.array([1.0, 2.0]))],
+            [Reading(drf="Z:ARRAY", value_type=ValueType.SCALAR_ARRAY, value=np.array([3.0]))],
+        ]
+
+        with pytest.raises(ValueError, match="Z:ARRAY"):
+            _read_step(backend, ["Z:ARRAY"], readings_per_step=2, timeout=None)
+
+    @pytest.mark.parametrize("value", ["not numeric", {"data": [1.0]}, True])
+    def test_readings_per_step_rejects_non_numeric_values(self, value):
+        reading = Reading(drf="Z:BAD", value_type=ValueType.SCALAR, value=value)
+        backend = mock.Mock()
+        backend.get_many.return_value = [reading]
+
+        with pytest.raises(TypeError, match="Z:BAD"):
+            _read_step(backend, ["Z:BAD"], readings_per_step=2, timeout=None)
 
     def test_readings_per_step_zero_raises(self, fake):
         with pytest.raises(ValueError, match="readings_per_step must be >= 1"):

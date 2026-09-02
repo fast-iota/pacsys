@@ -28,6 +28,7 @@ else:
 
 _LIST_DTYPE = "list"  # value_dtype tag for list-valued array readings (see _value_dtype)
 _NDARRAY_HASH_MARKER = "<ndarray>"  # see _value_hashable
+_COMBINED_STREAM_BUFFER_MAXSIZE = 10_000  # Match the per-handle sync buffer cap
 
 
 def _loaded_numpy_types(*names: str) -> tuple[type, ...]:
@@ -744,24 +745,32 @@ class CombinedStream:
                 yield (reading, handle)
             return
 
-        shared: queue_mod.Queue = queue_mod.Queue()
+        shared: queue_mod.Queue = queue_mod.Queue(maxsize=_COMBINED_STREAM_BUFFER_MAXSIZE)
         stop_event = threading.Event()
         _sentinel = object()
         n_subs = len(self._subscriptions)
+
+        def put_shared(item: object) -> bool:
+            while not stop_event.is_set():
+                try:
+                    shared.put(item, timeout=0.1)
+                    return True
+                except queue_mod.Full:
+                    pass
+            return False
 
         def feeder(sub: "SubscriptionHandle") -> None:
             try:
                 while not stop_event.is_set():
                     for reading, handle in sub.readings(timeout=0.5):
-                        shared.put((reading, handle))
-                        if stop_event.is_set():
+                        if not put_shared((reading, handle)):
                             return
                     if sub.stopped:
                         return
             except Exception as exc:  # noqa: BLE001
-                shared.put(exc)
+                put_shared(exc)
             finally:
-                shared.put(_sentinel)
+                put_shared(_sentinel)
 
         threads = []
         for sub in self._subscriptions:

@@ -8,6 +8,7 @@ import pytest
 from pacsys.acnet.errors import ERR_RETRY, ERR_TIMEOUT
 from pacsys.aio._dpm_http import AsyncDPMHTTPBackend, _expand_alarm_dict
 from pacsys.auth import KerberosAuth
+from pacsys.backends.dpm_http import _make_deadline
 from pacsys.dpm_connection import DPMConnectionError
 from pacsys.errors import AuthenticationError, DeviceError, ReadError
 from pacsys.types import BackendCapability, Reading, ValueType, WriteResult
@@ -570,6 +571,23 @@ class TestAsyncDPMCloseRaces:
     def test_pool_size_zero_raises(self):
         with pytest.raises(ValueError, match="pool_size"):
             AsyncDPMHTTPBackend(host="localhost", port=6802, pool_size=0)
+
+    @pytest.mark.parametrize(
+        ("kwargs", "message"),
+        [
+            ({"host": ""}, "host cannot be empty"),
+            ({"port": 0}, "port must be between"),
+            ({"timeout": float("inf")}, "timeout must be positive and finite"),
+            ({"auth": object()}, "auth must be KerberosAuth or None"),
+        ],
+    )
+    def test_constructor_validates_arguments(self, kwargs, message):
+        with pytest.raises(ValueError, match=message):
+            AsyncDPMHTTPBackend(**kwargs)
+
+    def test_make_deadline_rejects_nonfinite_per_call_timeout(self):
+        with pytest.raises(ValueError, match="positive and finite"):
+            _make_deadline(float("inf"), 5.0)
 
     @pytest.mark.asyncio
     async def test_subscribe_empty_drfs_raises(self, backend):
