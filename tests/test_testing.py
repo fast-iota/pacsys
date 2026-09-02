@@ -1291,6 +1291,41 @@ class TestEmitError:
             for _ in handle.readings(timeout=0.1):
                 pass
 
+    def test_stop_after_emit_error_suppresses_queued_readings(self):
+        fake = FakeBackend(dispatch_mode=DispatchMode.WORKER)
+        entered = threading.Event()
+        release = threading.Event()
+        error_delivered = threading.Event()
+        delivered = []
+        errors = []
+
+        def callback(reading, handle):
+            entered.set()
+            release.wait(1.0)
+            delivered.append(reading.value)
+
+        def on_error(exc, handle):
+            errors.append(exc)
+            error_delivered.set()
+
+        handle = fake.subscribe(["M:OUTTMP"], callback, on_error)
+        error = RuntimeError("stream failed")
+        try:
+            fake.emit_reading("M:OUTTMP", 1.0)
+            assert entered.wait(1.0)
+            fake.emit_reading("M:OUTTMP", 2.0)
+            fake.emit_error(error)
+
+            handle.stop()
+            release.set()
+
+            assert error_delivered.wait(1.0)
+            assert delivered == [1.0]
+            assert errors == [error]
+        finally:
+            release.set()
+            fake.close()
+
 
 class TestSubscriptionStop:
     """Tests for subscription stop() method."""

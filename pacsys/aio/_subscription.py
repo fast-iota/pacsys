@@ -220,6 +220,17 @@ async def _call_on_error(on_error, exc: Exception, handle: AsyncSubscriptionHand
 async def _callback_feeder(handle: AsyncSubscriptionHandle, callback, on_error) -> None:
     """Feed readings from handle to callback (async or sync)."""
     is_async_cb = inspect.iscoroutinefunction(callback)
+    stream_error_delivered = False
+
+    async def deliver_stream_error(exc: Exception) -> None:
+        nonlocal stream_error_delivered
+        if stream_error_delivered:
+            return
+        stream_error_delivered = True
+        if on_error:
+            await _call_on_error(on_error, exc, handle)
+        else:
+            logger.error("Unhandled error in stream: %s", exc)
 
     try:
         async for reading, h in handle._readings():
@@ -236,9 +247,7 @@ async def _callback_feeder(handle: AsyncSubscriptionHandle, callback, on_error) 
                 else:
                     logger.error("Unhandled error in subscription callback: %s", exc)
     except asyncio.CancelledError:
-        pass
+        if handle._exc is not None:
+            await deliver_stream_error(handle._exc)
     except Exception as exc:  # noqa: BLE001
-        if on_error:
-            await _call_on_error(on_error, exc, handle)
-        else:
-            logger.error("Unhandled error in stream: %s", exc)
+        await deliver_stream_error(exc)

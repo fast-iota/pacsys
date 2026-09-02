@@ -13,6 +13,7 @@ import threading
 import time
 import uuid
 from collections import defaultdict
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -200,7 +201,7 @@ class _WriteSession:
     heartbeat_handle: object | None = None
     cleanup_handle: object | None = None  # idle TTL timer
     # Pending writes: correlation_id -> (index, drf, results_list, completion_tracker)
-    pending: dict[str, tuple[int, str, list, "_WriteCompletionTracker"]] = field(default_factory=dict)
+    pending: dict[str, tuple[int, str, list, "_WriteCompletionTracker | None"]] = field(default_factory=dict)
     # Writes queued until server confirms INIT via PENDING response (S.# binding ready)
     init_confirmed: bool = False
     queued_sends: list[tuple[list[tuple[int, str, bytes]], list, "_WriteCompletionTracker"]] = field(
@@ -347,6 +348,14 @@ _REPLY_VALUE_MAP: dict[type, tuple[ValueType, Any]] = {
 
 def _reply_to_reading(reply, drf: str) -> Reading:
     """Convert a DMQ reply to a Reading object."""
+    timestamp = None
+    reply_time = getattr(reply, "time", 0)
+    if reply_time:
+        try:
+            timestamp = timestamp_from_millis(reply_time)
+        except (ValueError, OverflowError, OSError):
+            logger.warning("Invalid DMQ reply timestamp: %r", reply_time)
+
     if isinstance(reply, ErrorSample_reply):
         return Reading(
             drf=drf,
@@ -354,7 +363,7 @@ def _reply_to_reading(reply, drf: str) -> Reading:
             error_code=reply.errorNumber,
             value=None,
             message=getattr(reply, "message", None),
-            timestamp=timestamp_from_millis(reply.time) if reply.time else None,
+            timestamp=timestamp,
             cycle=getattr(reply, "cycle_time", 0),
         )
 
@@ -366,7 +375,7 @@ def _reply_to_reading(reply, drf: str) -> Reading:
             value_type=vtype,
             error_code=ERR_OK,
             value=extract(reply),
-            timestamp=timestamp_from_millis(reply.time) if reply.time else None,
+            timestamp=timestamp,
             cycle=getattr(reply, "cycle_time", 0),
         )
 
@@ -462,6 +471,7 @@ class _DMQSubscriptionHandle(BufferedSubscriptionHandle):
         self._ref_ids = list(range(1, len(drfs) + 1))
 
     def stop(self) -> None:
+        self._stop_requested = True
         if not self._stopped:
             self._backend.remove(self)
             self._signal_stop()
@@ -558,6 +568,7 @@ class DMQBackend(Backend):
         self._io_thread: threading.Thread | None = None
         self._connection_ready = threading.Event()
         self._connection_error: Exception | None = None
+        self._teardown_connection: SelectConnection | None = None
 
         # Write state (unified with SelectConnection)
         self._write_sessions: dict[str, _WriteSession] = {}  # init_drf -> active session
@@ -876,6 +887,13 @@ class DMQBackend(Backend):
         job.done_event.set()
 
     def _on_read_message(self, job: _ReadJob, channel: Channel, method, properties, body: bytes) -> None:
+        """Handle a read reply without allowing delivery errors to escape."""
+        try:
+            self._handle_read_message(job, channel, method, properties, body)
+        except Exception:  # noqa: BLE001
+            logger.exception("Unhandled read reply for %s", summarize_drfs(job.drfs))
+
+    def _handle_read_message(self, job: _ReadJob, channel: Channel, method, properties, body: bytes) -> None:
         """Handle a message for an async read (IO thread)."""
         result = _resolve_reply(
             method.routing_key, body, job.prepared_drfs, job.drf_to_idx, properties, job.init_message_id
@@ -1076,11 +1094,11 @@ class DMQBackend(Backend):
         """Schedule heartbeat for write session (IO thread)."""
         if self._select_connection is None or not self._select_connection.is_open:
             return
-        if session.init_drf not in self._write_sessions:
+        if self._write_sessions.get(session.init_drf) is not session:
             return
 
         def send_heartbeat():
-            if session.init_drf not in self._write_sessions:
+            if self._write_sessions.get(session.init_drf) is not session:
                 return
             if session.channel is None or not session.channel.is_open:
                 return
@@ -1101,6 +1119,8 @@ class DMQBackend(Backend):
         """Schedule idle cleanup for write session (IO thread)."""
         if self._select_connection is None or not self._select_connection.is_open:
             return
+        if self._write_sessions.get(session.init_drf) is not session:
+            return
 
         # Cancel existing cleanup timer
         if session.cleanup_handle is not None:
@@ -1108,21 +1128,32 @@ class DMQBackend(Backend):
             session.cleanup_handle = None
 
         def do_cleanup():
-            if session.init_drf not in self._write_sessions:
+            if self._write_sessions.get(session.init_drf) is not session:
                 return
             # Don't cleanup if there are pending writes
-            if session.pending:
+            if any(tracker is not None for _, _, _, tracker in session.pending.values()):
                 self._schedule_write_session_cleanup(session)
                 return
-            self._close_write_session(session.init_drf, reason=f"idle for {self._write_session_ttl}s")
+            self._close_write_session(
+                session.init_drf,
+                reason=f"idle for {self._write_session_ttl}s",
+                expected=session,
+            )
 
         session.cleanup_handle = self._select_connection.ioloop.call_later(self._write_session_ttl, do_cleanup)
 
-    def _close_write_session(self, init_drf: str, reason: str = "") -> None:
+    def _close_write_session(
+        self,
+        init_drf: str,
+        reason: str = "",
+        expected: _WriteSession | None = None,
+    ) -> None:
         """Close a write session and release resources (IO thread)."""
-        session = self._write_sessions.pop(init_drf, None)
-        if session is None:
+        current = self._write_sessions.get(init_drf)
+        if current is None or expected is not None and current is not expected:
             return
+        session = self._write_sessions.pop(init_drf, None)
+        assert session is not None
 
         logger.debug("Closing write session for %s (%s): %s", session.device, init_drf, reason)
 
@@ -1158,7 +1189,8 @@ class DMQBackend(Backend):
                 results_list[i] = WriteResult(
                     drf=drf, facility_code=FACILITY_ACNET, error_code=ERR_RETRY, message=f"Session closed: {reason}"
                 )
-            trackers.setdefault(id(pending_tracker), pending_tracker)
+            if pending_tracker is not None:
+                trackers.setdefault(id(pending_tracker), pending_tracker)
         session.pending.clear()
         for tracker in trackers.values():
             tracker.device_complete()
@@ -1250,7 +1282,7 @@ class DMQBackend(Backend):
                     session.queued_sends.append((drf_settings, results, tracker))
                 return
             # Session dead, clean up properly
-            self._close_write_session(init_drf, reason="channel dead")
+            self._close_write_session(init_drf, reason="channel dead", expected=session)
 
         # Queue if channel setup already in progress for this device
         if init_drf in self._pending_session_setups:
@@ -1391,7 +1423,7 @@ class DMQBackend(Backend):
         session.queued_sends = [(s, r, t) for s, r, t in queued_writes]
 
         # Register session before consumer starts (channel close callback needs it)
-        channel.add_on_close_callback(lambda ch, reason: self._on_write_session_channel_closed(init_drf, reason))
+        channel.add_on_close_callback(lambda ch, reason: self._on_write_session_channel_closed(session, reason))
         self._write_sessions[init_drf] = session
 
         # Start consuming - PENDING may arrive immediately after this
@@ -1442,12 +1474,17 @@ class DMQBackend(Backend):
             session.device,
             session.init_drf,
         )
-        self._close_write_session(session.init_drf, reason="no INIT confirmation from server")
+        self._close_write_session(
+            session.init_drf,
+            reason="no INIT confirmation from server",
+            expected=session,
+        )
 
-    def _on_write_session_channel_closed(self, init_drf: str, reason: Exception) -> None:
+    def _on_write_session_channel_closed(self, session: _WriteSession, reason: Exception) -> None:
         """Write session channel closed (IO thread)."""
-        session = self._write_sessions.pop(init_drf, None)
-        if session is not None:
+        init_drf = session.init_drf
+        if self._write_sessions.get(init_drf) is session:
+            self._write_sessions.pop(init_drf)
             # Cancel timers
             conn = self._select_connection
             timers = (
@@ -1481,7 +1518,8 @@ class DMQBackend(Backend):
                     results_list[i] = WriteResult(
                         drf=drf, facility_code=FACILITY_ACNET, error_code=ERR_RETRY, message=f"Channel closed: {reason}"
                     )
-                trackers.setdefault(id(pending_tracker), pending_tracker)
+                if pending_tracker is not None:
+                    trackers.setdefault(id(pending_tracker), pending_tracker)
             session.pending.clear()
             for tracker in trackers.values():
                 tracker.device_complete()
@@ -1544,7 +1582,11 @@ class DMQBackend(Backend):
                         message=f"Session closed: {e}",
                     )
                 # _close_write_session handles already-published pending writes
-                self._close_write_session(session.init_drf, reason=f"sign/publish error: {e}")
+                self._close_write_session(
+                    session.init_drf,
+                    reason=f"sign/publish error: {e}",
+                    expected=session,
+                )
                 if pending_for_device == 0:
                     tracker.device_complete()
                 return
@@ -1556,6 +1598,20 @@ class DMQBackend(Backend):
             tracker.device_complete()
 
     def _on_write_message(
+        self,
+        session: _WriteSession,
+        channel: Channel,
+        method: pika.spec.Basic.Deliver,
+        properties: pika.BasicProperties,
+        body: bytes,
+    ) -> None:
+        """Handle write response without allowing delivery errors to escape."""
+        try:
+            self._handle_write_message(session, channel, method, properties, body)
+        except Exception:  # noqa: BLE001
+            logger.exception("Unhandled write reply for %s", session.init_drf)
+
+    def _handle_write_message(
         self,
         session: _WriteSession,
         channel: Channel,
@@ -1589,6 +1645,8 @@ class DMQBackend(Backend):
             else:
                 return
 
+            if tracker is None:
+                return
             results[i] = WriteResult(
                 drf=drf, facility_code=FACILITY_ACNET, error_code=ERR_RETRY, message=f"Unmarshal error: {e}"
             )
@@ -1657,6 +1715,9 @@ class DMQBackend(Backend):
         else:
             return
 
+        if tracker is None:
+            return
+
         # Build WriteResult
         if isinstance(reply, ErrorSample_reply):
             results[i] = WriteResult(
@@ -1693,19 +1754,25 @@ class DMQBackend(Backend):
                 results_list[i] = WriteResult(
                     drf=drf, facility_code=reply.facilityCode, error_code=reply.errorNumber, message=msg
                 )
-        self._close_write_session(session.init_drf, reason=msg)
+        self._close_write_session(session.init_drf, reason=msg, expected=session)
 
-    def _abort_pending_writes(self, init_drfs: set[str]) -> None:
+    def _abort_pending_writes(self, init_drfs: set[str], tracker: _WriteCompletionTracker) -> None:
         """Abort pending writes for given init_drfs (IO thread).
 
         Also drains writes queued in ``_pending_session_setups`` so that
         in-flight channel setups don't produce ghost writes after timeout.
-        Sessions with timed-out writes are closed since they're in a bad state.
+        Published writes remain as tombstones when another caller shares the
+        session, preserving FIFO matching for replies without correlation IDs.
         """
         for init_drf in init_drfs:
             # Drain writes queued during channel setup (prevents ghost writes)
-            queued = self._pending_session_setups.pop(init_drf, [])
+            queued = self._pending_session_setups.get(init_drf, [])
+            remaining_setups = []
+            completed = False
             for q_settings, q_results, q_tracker in queued:
+                if q_tracker is not tracker:
+                    remaining_setups.append((q_settings, q_results, q_tracker))
+                    continue
                 for i, drf, _ in q_settings:
                     if q_results[i] is None:
                         q_results[i] = WriteResult(
@@ -1714,34 +1781,45 @@ class DMQBackend(Backend):
                             error_code=ERR_TIMEOUT,
                             message="Request timeout",
                         )
-                q_tracker.device_complete()
+                completed = True
+            if remaining_setups:
+                self._pending_session_setups[init_drf] = remaining_setups
+            else:
+                self._pending_session_setups.pop(init_drf, None)
 
             session = self._write_sessions.get(init_drf)
             if session is None:
+                if completed:
+                    tracker.device_complete()
                 continue
-            if not session.pending and not session.queued_sends:
-                continue
-            # Mark all queued and pending writes as timed out - signal each tracker once
-            trackers: dict[int, _WriteCompletionTracker] = {}
+            remaining_sends = []
             for q_settings, q_results, q_tracker in session.queued_sends:
+                if q_tracker is not tracker:
+                    remaining_sends.append((q_settings, q_results, q_tracker))
+                    continue
                 for i, drf, _ in q_settings:
                     if q_results[i] is None:
                         q_results[i] = WriteResult(
                             drf=drf, facility_code=FACILITY_ACNET, error_code=ERR_TIMEOUT, message="Request timeout"
                         )
-                trackers.setdefault(id(q_tracker), q_tracker)
-            session.queued_sends = []
-            for corr_id, (i, drf, results, tracker) in list(session.pending.items()):
+                completed = True
+            session.queued_sends = remaining_sends
+            for corr_id, (i, drf, results, pending_tracker) in list(session.pending.items()):
+                if pending_tracker is not tracker:
+                    continue
                 if results[i] is None:
                     results[i] = WriteResult(
                         drf=drf, facility_code=FACILITY_ACNET, error_code=ERR_TIMEOUT, message="Request timeout"
                     )
-                trackers.setdefault(id(tracker), tracker)
-            session.pending.clear()
-            for tracker in trackers.values():
+                session.pending[corr_id] = (i, drf, results, None)
+                completed = True
+            if completed:
                 tracker.device_complete()
-            # Close the session - it's in a bad state (e.g. stuck after PENDING)
-            self._close_write_session(init_drf, reason="timed out")
+            has_other_work = bool(session.queued_sends) or any(
+                pending_tracker is not None for _, _, _, pending_tracker in session.pending.values()
+            )
+            if completed and not has_other_work:
+                self._close_write_session(init_drf, reason="timed out", expected=session)
 
     def _value_to_sample(self, value: Value, ref_id: int = 1):
         """Convert a Python value to an appropriate DMQ Sample reply object.
@@ -1916,7 +1994,7 @@ class DMQBackend(Backend):
 
             def do_abort():
                 try:
-                    self._abort_pending_writes(init_drfs_involved)
+                    self._abort_pending_writes(init_drfs_involved, tracker)
                 finally:
                     abort_done.set()
 
@@ -1977,7 +2055,8 @@ class DMQBackend(Backend):
         so a per-call budget also covers startup.
         """
         with self._stream_lock:
-            if self._io_thread is not None and self._io_thread.is_alive():
+            io_thread = self._io_thread  # snapshot: the IO thread nulls this attr on exit
+            if io_thread is not None and io_thread.is_alive():
                 # Thread exists - still verify connection is ready before returning
                 if self._connection_ready.is_set() and self._connection_error is None:
                     return
@@ -2017,22 +2096,34 @@ class DMQBackend(Backend):
             blocked_connection_timeout=self._timeout,
         )
 
+        conn = None
         try:
-            self._select_connection = SelectConnection(
+            conn = SelectConnection(
                 parameters=params,
                 on_open_callback=self._on_connection_open,
                 on_open_error_callback=self._on_connection_open_error,
                 on_close_callback=self._on_connection_closed,
             )
+            self._teardown_connection = None
+            self._select_connection = conn
             logger.debug("Starting SelectConnection ioloop")
-            self._select_connection.ioloop.start()
+            conn.ioloop.start()
         except Exception as e:  # noqa: BLE001
-            logger.error("IO loop thread error: %s", e)
+            logger.exception("IO loop thread failed")
             self._connection_error = e
+            if conn is not None:
+                try:
+                    self._on_connection_closed(conn, e)
+                except Exception:  # noqa: BLE001
+                    logger.exception("Failed to tear down DMQ connection after IO loop failure")
+                with suppress(Exception):
+                    conn.close()
             self._connection_ready.set()
         finally:
             # Reset connection so _ensure_io_thread can restart if needed
-            self._select_connection = None
+            # (_io_thread stays set; restart replaces the dead thread via is_alive())
+            if self._select_connection is conn:
+                self._select_connection = None
             logger.debug("IO loop thread exiting")
 
     def _on_connection_open(self, connection: SelectConnection) -> None:
@@ -2053,6 +2144,9 @@ class DMQBackend(Backend):
 
     def _on_connection_closed(self, connection: SelectConnection, reason: Exception) -> None:
         """Called when SelectConnection is closed."""
+        if getattr(self, "_teardown_connection", None) is connection:
+            return
+        self._teardown_connection = connection
         logger.info("SelectConnection closed: %s", reason)
         self._connection_ready.clear()
 
@@ -2106,7 +2200,8 @@ class DMQBackend(Backend):
                         error_code=ERR_RETRY,
                         message=f"Connection closed: {reason}",
                     )
-                note_completion(tracker, session.init_drf)
+                if tracker is not None:
+                    note_completion(tracker, session.init_drf)
             session.pending.clear()
         for tracker, init_drfs in completions.values():
             for _ in init_drfs:
@@ -2280,6 +2375,20 @@ class DMQBackend(Backend):
                 pass
 
     def _on_message(
+        self,
+        sub: _SelectSubscription,
+        channel: Channel,
+        method: pika.spec.Basic.Deliver,
+        properties: pika.BasicProperties,
+        body: bytes,
+    ) -> None:
+        """Handle a subscription reply without allowing delivery errors to escape."""
+        try:
+            self._handle_message(sub, channel, method, properties, body)
+        except Exception:  # noqa: BLE001
+            logger.exception("Unhandled subscription reply for %s", sub.sub_id)
+
+    def _handle_message(
         self,
         sub: _SelectSubscription,
         channel: Channel,
@@ -2490,23 +2599,28 @@ class DMQBackend(Backend):
             self._cancel_subscription_async(sub)
 
         # Close the SelectConnection and stop the IO thread
-        if self._select_connection is not None and self._select_connection.is_open:
+        conn = self._select_connection
+        io_thread = self._io_thread
+        if conn is not None and conn.is_open:
 
             def close_connection():
-                if self._select_connection is not None:
-                    self._select_connection.close()
+                if conn.is_open:
+                    conn.close()
 
             try:
-                self._select_connection.ioloop.add_callback_threadsafe(close_connection)
+                conn.ioloop.add_callback_threadsafe(close_connection)
             except OSError:
                 pass
 
-        if self._io_thread is not None:
-            self._io_thread.join(timeout=3.0)
-            if not self._io_thread.is_alive():
-                self._io_thread = None
-
-        self._select_connection = None
+        if io_thread is not None and io_thread is not threading.current_thread():
+            io_thread.join(timeout=3.0)
+            if io_thread.is_alive():
+                logger.warning("DMQ IO thread did not stop within 3s")
+            else:
+                if self._io_thread is io_thread:
+                    self._io_thread = None
+                if self._select_connection is conn:
+                    self._select_connection = None
         logger.info("All streaming stopped")
 
     def close(self) -> None:
@@ -2523,8 +2637,10 @@ class DMQBackend(Backend):
         self._dispatcher.close()
 
         # After IO thread has joined, safe to clear any remnants
-        self._write_sessions.clear()
-        self._pending_session_setups.clear()
+        io_thread = self._io_thread
+        if io_thread is None or not io_thread.is_alive():
+            self._write_sessions.clear()
+            self._pending_session_setups.clear()
 
         logger.info("DMQBackend closed")
 

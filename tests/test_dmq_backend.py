@@ -585,6 +585,60 @@ class TestDMQSetupRaces:
             assert isinstance(err, ReadError) and "DMQ read failed: boom" in str(err)
             assert err.readings[0].error_code == ERR_RETRY
 
+    def test_delivery_error_is_logged_without_stopping_io_loop(self, caplog):
+        with _mock_dmq_backend(replies=[]) as backend:
+            handle = backend.subscribe([TEMP_DEVICE])
+            conn = backend._select_connection
+            assert conn is not None
+            sub = backend._subscriptions[handle._sub_id]
+            method = mock.MagicMock(routing_key=f"R.{TEMP_DEVICE}", delivery_tag=1)
+            processed = threading.Event()
+
+            with mock.patch("pacsys.backends.dmq._reply_to_reading", side_effect=ValueError("bad reply")):
+                conn.ioloop.add_callback_threadsafe(
+                    lambda: backend._on_message(
+                        sub,
+                        sub.channel,
+                        method,
+                        mock.MagicMock(),
+                        make_double_reply(TEMP_VALUE, ref_id=1),
+                    )
+                )
+                conn.ioloop.add_callback_threadsafe(processed.set)
+                assert processed.wait(1.0)
+
+            assert backend._io_thread is not None and backend._io_thread.is_alive()
+            assert not handle.stopped
+            assert "Unhandled subscription reply" in caplog.text
+
+    def test_unexpected_io_callback_failure_tears_down_subscriptions(self):
+        error_event = threading.Event()
+        errors = []
+
+        def on_error(exc, _handle):
+            errors.append(exc)
+            error_event.set()
+
+        with _mock_dmq_backend(replies=[]) as backend:
+            handle = backend.subscribe([TEMP_DEVICE], on_error=on_error)
+            conn = backend._select_connection
+            assert conn is not None
+            io_thread = backend._io_thread
+            assert io_thread is not None
+            failure = RuntimeError("callback failed")
+
+            def fail():
+                raise failure
+
+            conn.ioloop.add_callback_threadsafe(fail)
+
+            assert error_event.wait(1.0)
+            io_thread.join(timeout=1.0)
+            assert errors == [failure]
+            assert handle.stopped and handle.exc is failure
+            assert not backend._subscriptions
+            assert not conn.is_open
+
 
 def _catch(fn):
     try:
@@ -658,6 +712,7 @@ class TestDMQCleanup:
         backend._select_connection.ioloop.remove_timeout.side_effect = RuntimeError("invalid timer")
         old_handle = object()
         session = mock.MagicMock(cleanup_handle=old_handle)
+        backend._write_sessions = {session.init_drf: session}
 
         with pytest.raises(RuntimeError, match="invalid timer"):
             backend._schedule_write_session_cleanup(session)
@@ -704,11 +759,77 @@ class TestDMQCleanup:
         session = self._write_session(cleanup_handle=object(), queued_sends=[queued])
         backend._write_sessions = {session.init_drf: session}
 
-        backend._on_write_session_channel_closed(session.init_drf, RuntimeError("channel closed"))
+        backend._on_write_session_channel_closed(session, RuntimeError("channel closed"))
 
         assert results[0] is not None
         tracker.device_complete.assert_called_once_with()
         assert "Failed to cancel cleanup timer" in caplog.text
+
+    def test_timeout_only_aborts_callers_writes_and_preserves_fifo(self):
+        backend = DMQBackend.__new__(DMQBackend)
+        backend._select_connection = mock.MagicMock()
+        timed_out = _WriteCompletionTracker(total_devices=2)
+        other = _WriteCompletionTracker(total_devices=2)
+        timed_out_results = [None, None]
+        other_results = [None, None]
+        session = self._write_session()
+        session.pending = {
+            "timed-out": (0, TEMP_DEVICE, timed_out_results, timed_out),
+            "other": (0, TEMP_DEVICE, other_results, other),
+        }
+        setup_drf = f"{TEMP_DEVICE_2}.SETTING@N"
+        backend._write_sessions = {session.init_drf: session}
+        backend._pending_session_setups = {
+            setup_drf: [
+                ([(1, TEMP_DEVICE_2, b"")], timed_out_results, timed_out),
+                ([(1, TEMP_DEVICE_2, b"")], other_results, other),
+            ]
+        }
+
+        backend._abort_pending_writes({session.init_drf, setup_drf}, timed_out)
+
+        assert timed_out.done_event.is_set() and timed_out.completed_devices == 2
+        assert all(result is not None and result.error_code == ERR_TIMEOUT for result in timed_out_results)
+        assert other_results == [None, None]
+        assert backend._write_sessions[session.init_drf] is session
+        assert session.pending["timed-out"][3] is None
+        assert session.pending["other"][3] is other
+        assert backend._pending_session_setups[setup_drf][0][2] is other
+        session.channel.close.assert_not_called()
+
+        method = mock.MagicMock(routing_key=f"R.{TEMP_DEVICE}", delivery_tag=1)
+        properties = mock.MagicMock(correlation_id=None)
+        body = make_double_reply(TEMP_VALUE, ref_id=1)
+        backend._on_write_message(session, session.channel, method, properties, body)
+        assert timed_out_results[0].error_code == ERR_TIMEOUT
+        assert other_results[0] is None
+
+        backend._on_write_message(session, session.channel, method, properties, body)
+        assert other_results[0].success
+        assert other.completed_devices == 1
+
+    def test_stale_write_session_callbacks_ignore_replacement(self):
+        backend = DMQBackend.__new__(DMQBackend)
+        backend._select_connection = mock.MagicMock()
+        backend._select_connection.is_open = True
+        backend._write_session_ttl = 10.0
+        old = self._write_session()
+        backend._write_sessions = {old.init_drf: old}
+        callbacks = []
+        backend._select_connection.ioloop.call_later.side_effect = lambda _delay, callback: callbacks.append(callback)
+
+        backend._schedule_write_session_heartbeat(old)
+        backend._schedule_write_session_cleanup(old)
+        replacement = self._write_session()
+        backend._write_sessions[old.init_drf] = replacement
+
+        for callback in callbacks:
+            callback()
+        backend._on_write_session_channel_closed(old, RuntimeError("old channel closed"))
+
+        assert backend._write_sessions[old.init_drf] is replacement
+        old.channel.basic_publish.assert_not_called()
+        replacement.channel.close.assert_not_called()
 
     def test_connection_close_timer_failure_logs_and_completes_tracker(self, caplog):
         backend = DMQBackend.__new__(DMQBackend)
@@ -1813,6 +1934,17 @@ class TestReplyToReading:
         assert reading.error_code == 0
         assert isinstance(reading.timestamp, datetime)
 
+    def test_out_of_range_timestamp_is_ignored(self, caplog):
+        reply = DoubleSample_reply()
+        reply.value = TEMP_VALUE
+        reply.time = 2**63 - 1
+
+        reading = _reply_to_reading(reply, TEMP_DEVICE)
+
+        assert reading.value == TEMP_VALUE
+        assert reading.timestamp is None
+        assert "Invalid DMQ reply timestamp" in caplog.text
+
     def test_double_array_sample_to_reading(self):
         """Test converting DoubleArraySample_reply to Reading."""
         reply = DoubleArraySample_reply()
@@ -1958,6 +2090,30 @@ class TestDMQBackendLifecycle:
             backend.stop_streaming()
             assert handle1.stopped
             assert handle2.stopped
+
+    def test_stop_timeout_retains_connection_and_captured_close(self, caplog):
+        backend = DMQBackend.__new__(DMQBackend)
+        backend._stream_lock = threading.Lock()
+        backend._subscriptions = {}
+        conn = mock.MagicMock()
+        conn.is_open = True
+        callbacks = []
+        conn.ioloop.add_callback_threadsafe.side_effect = callbacks.append
+        io_thread = mock.MagicMock()
+        io_thread.is_alive.return_value = True
+        backend._select_connection = conn
+        backend._io_thread = io_thread
+
+        backend.stop_streaming()
+
+        io_thread.join.assert_called_once_with(timeout=3.0)
+        assert backend._select_connection is conn
+        assert backend._io_thread is io_thread
+        assert "did not stop within 3s" in caplog.text
+
+        backend._select_connection = None
+        callbacks[0]()
+        conn.close.assert_called_once_with()
 
 
 # =============================================================================
