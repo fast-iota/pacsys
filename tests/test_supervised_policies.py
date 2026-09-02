@@ -470,15 +470,13 @@ class TestValueRangePolicy:
         d = p.check(_ctx(rpc_method="Set", drfs=["G:AMANDA"], values=[("G:AMANDA", 999.0)]))
         assert not d.allowed
 
-    def test_acnet_limit_matching_is_case_insensitive(self):
-        p = ValueRangePolicy(limits={"m:outtmp": (0.0, 1.0)})
-        d = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 2.0)]))
-        assert not d.allowed
-
-    def test_epics_limit_matching_is_case_sensitive(self):
-        p = ValueRangePolicy(limits={"SR:diag:rawbuf": (0.0, 1.0)})
+    def test_limit_matching_case_rules(self):
+        """ACNET names match case-insensitively; EPICS names must match exactly."""
+        p = ValueRangePolicy(limits={"m:outtmp": (0.0, 1.0), "SR:diag:rawbuf": (0.0, 1.0)})
+        acnet = p.check(_ctx(rpc_method="Set", drfs=["M:OUTTMP"], values=[("M:OUTTMP", 2.0)]))
         exact = p.check(_ctx(rpc_method="Set", drfs=["SR:diag:rawbuf"], values=[("SR:diag:rawbuf", 2.0)]))
         different = p.check(_ctx(rpc_method="Set", drfs=["SR:DIAG:RAWBUF"], values=[("SR:DIAG:RAWBUF", 2.0)]))
+        assert not acnet.allowed
         assert not exact.allowed
         assert different.allowed
 

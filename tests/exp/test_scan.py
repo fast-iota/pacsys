@@ -240,14 +240,6 @@ class TestScan:
         )
         assert len(result.readings) == 1
 
-    def test_readings_per_step_rejects_numpy_boolean(self):
-        reading = Reading(drf="Z:BOOL", value_type=ValueType.SCALAR, value=np.bool_(True))
-        backend = mock.Mock()
-        backend.get_many.return_value = [reading]
-
-        with pytest.raises(TypeError, match="Z:BOOL"):
-            _read_step(backend, ["Z:BOOL"], readings_per_step=2, timeout=None)
-
     def test_readings_per_step_averages_arrays(self):
         backend = mock.Mock()
         backend.get_many.side_effect = [
@@ -270,7 +262,7 @@ class TestScan:
         with pytest.raises(ValueError, match="Z:ARRAY"):
             _read_step(backend, ["Z:ARRAY"], readings_per_step=2, timeout=None)
 
-    @pytest.mark.parametrize("value", ["not numeric", {"data": [1.0]}, True])
+    @pytest.mark.parametrize("value", ["not numeric", {"data": [1.0]}, True, np.bool_(True), np.array([True])])
     def test_readings_per_step_rejects_non_numeric_values(self, value):
         reading = Reading(drf="Z:BAD", value_type=ValueType.SCALAR, value=value)
         backend = mock.Mock()

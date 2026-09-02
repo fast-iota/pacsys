@@ -857,6 +857,7 @@ class TestDMQCleanup:
         backend._connection_ready = threading.Event()
         backend._connection_ready.set()
         backend._pending_session_setups = {}
+        backend._teardown_connection = None
         tracker = mock.MagicMock()
         results = [None]
         queued = ([(0, TEMP_DEVICE, 1.0)], results, tracker)

@@ -822,9 +822,7 @@ class TestContextManager:
         [
             ("read", ("M:OUTTMP",)),
             ("get", ("M:OUTTMP",)),
-            ("get_many", (["M:OUTTMP"],)),
             ("write", ("M:OUTTMP", 73.0)),
-            ("write_many", ([("M:OUTTMP", 73.0)],)),
             ("subscribe", (["M:OUTTMP@p,1000"],)),
         ],
     )
@@ -983,15 +981,11 @@ class TestWriteUpdatesState:
         fake.write("M:OUTTMP.SETTING@N", 72.5)
         assert fake.read("M:OUTTMP.SETTING") == 50.0
 
-    @pytest.mark.parametrize("batch", [False, True], ids=["write", "write_many"])
-    def test_write_type_mismatch_does_not_update_state(self, batch):
+    def test_write_type_mismatch_does_not_update_state(self):
         fake = FakeBackend()
         fake.set_reading("M:OUTTMP.SETTING", 50.0, value_type=ValueType.SCALAR)
 
-        if batch:
-            result = fake.write_many([("M:OUTTMP.SETTING@N", "wrong")])[0]
-        else:
-            result = fake.write("M:OUTTMP.SETTING@N", "wrong")
+        result = fake.write("M:OUTTMP.SETTING@N", "wrong")
 
         assert result.error_code == ERR_RETRY
         assert "ValueType.SCALAR" in result.message

@@ -819,7 +819,6 @@ class FakeBackend(Backend):
         Returns:
             List of Reading objects in same order as input
         """
-        self._check_closed()
         return [self.get(drf, timeout) for drf in drfs]
 
     def write(
@@ -847,21 +846,16 @@ class FakeBackend(Backend):
         full = _full_key(drf)
         base = _base_key(drf)
 
-        # Check for configured write result (full key first, then base)
+        # Configured write result (full key first, then base); default is success
         result = self._write_results.get(full) or self._write_results.get(base)
-        if result is not None:
-            if result.success:
-                self._update_state(base, drf, value, validate_type=False)
-            return result
-
-        # Default: write succeeds and updates state
         try:
-            self._update_state(base, drf, value)
+            if result is None or result.success:
+                self._update_state(base, drf, value)
         except (TypeError, ValueError) as e:
             return WriteResult(drf=drf, error_code=ERR_RETRY, message=f"Invalid write value for {drf}: {e}")
-        return WriteResult(drf=drf, error_code=ERR_OK)
+        return result or WriteResult(drf=drf, error_code=ERR_OK)
 
-    def _update_state(self, key: str, drf: str, value: Value, *, validate_type: bool = True) -> None:
+    def _update_state(self, key: str, drf: str, value: Value) -> None:
         """Update device state after a successful write.
 
         If the write DRF includes a range and an existing array is stored,
@@ -878,7 +872,7 @@ class FakeBackend(Backend):
         # Ranged write: slice-assign into existing stored value
         if rng is not None and old is not None:
             merged = _write_range(old.value, value, rng)
-        if validate_type and old is not None:
+        if old is not None:
             self._validate_value_type(merged, old.value_type)
 
         # Clear errors for both keys -- device is now responsive
@@ -921,7 +915,6 @@ class FakeBackend(Backend):
         Returns:
             List of WriteResult objects
         """
-        self._check_closed()
         return [self.write(drf, value, timeout=timeout) for drf, value in settings]
 
     # ─────────────────────────────────────────────────────────────────────

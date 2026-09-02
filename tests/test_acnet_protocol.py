@@ -812,14 +812,13 @@ class TestTCPKeepalive:
         assert cmd == CMD_KEEPALIVE
 
     @pytest.mark.asyncio
-    async def test_loop_stops_after_connection_loss(self):
+    async def test_loop_stops_after_connection_loss(self, monkeypatch):
+        monkeypatch.setattr("pacsys.acnet.async_connection.KEEPALIVE_INTERVAL", 0)  # fail fast, not hang
         conn = AsyncAcnetConnectionTCP("localhost", 6802)
         conn._connected = False
-        conn._send_keepalive = AsyncMock()
+        conn._send_keepalive = AsyncMock(side_effect=AssertionError("keepalive sent after connection loss"))
 
         await conn._keepalive_loop()
-
-        conn._send_keepalive.assert_not_awaited()
 
 
 class TestXactCancelledError:
