@@ -50,6 +50,14 @@ class TestSetReading:
         with pytest.raises(TypeError, match="incompatible with ValueType.RAW"):
             fake.set_reading("M:OUTTMP", "not bytes", value_type=ValueType.RAW)
 
+    def test_set_reading_accepts_timed_scalar_array_dict(self):
+        fake = FakeBackend()
+        value = {"data": np.array([1.0, 2.0]), "micros": np.array([10, 20])}
+
+        fake.set_reading("M:TIMED", value, value_type=ValueType.TIMED_SCALAR_ARRAY)
+
+        assert fake.get("M:TIMED").value_type == ValueType.TIMED_SCALAR_ARRAY
+
     def test_set_reading_with_array_value(self):
         """set_reading handles array values."""
         fake = FakeBackend()
@@ -809,6 +817,25 @@ class TestContextManager:
             pass
         assert fake._closed is True
 
+    @pytest.mark.parametrize(
+        ("method", "args"),
+        [
+            ("read", ("M:OUTTMP",)),
+            ("get", ("M:OUTTMP",)),
+            ("get_many", (["M:OUTTMP"],)),
+            ("write", ("M:OUTTMP", 73.0)),
+            ("write_many", ([("M:OUTTMP", 73.0)],)),
+            ("subscribe", (["M:OUTTMP@p,1000"],)),
+        ],
+    )
+    def test_operations_after_close_raise(self, method, args):
+        fake = FakeBackend()
+        fake.set_reading("M:OUTTMP", 72.0)
+        fake.close()
+
+        with pytest.raises(RuntimeError, match="Backend is closed"):
+            getattr(fake, method)(*args)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DRF Normalization Tests
@@ -955,6 +982,31 @@ class TestWriteUpdatesState:
         fake.set_write_result("M:OUTTMP.SETTING", success=False)
         fake.write("M:OUTTMP.SETTING@N", 72.5)
         assert fake.read("M:OUTTMP.SETTING") == 50.0
+
+    @pytest.mark.parametrize("batch", [False, True], ids=["write", "write_many"])
+    def test_write_type_mismatch_does_not_update_state(self, batch):
+        fake = FakeBackend()
+        fake.set_reading("M:OUTTMP.SETTING", 50.0, value_type=ValueType.SCALAR)
+
+        if batch:
+            result = fake.write_many([("M:OUTTMP.SETTING@N", "wrong")])[0]
+        else:
+            result = fake.write("M:OUTTMP.SETTING@N", "wrong")
+
+        assert result.error_code == ERR_RETRY
+        assert "ValueType.SCALAR" in result.message
+        assert fake.read("M:OUTTMP.SETTING") == 50.0
+        assert fake.writes == [("M:OUTTMP.SETTING@N", "wrong")]
+
+    def test_ranged_write_type_mismatch_does_not_update_state(self):
+        fake = FakeBackend()
+        original = np.array([10, 20, 30])
+        fake.set_reading("B:HS23T", original, value_type=ValueType.SCALAR_ARRAY)
+
+        result = fake.write("B:HS23T.READING[1]@N", "wrong")
+
+        assert result.error_code == ERR_RETRY
+        np.testing.assert_array_equal(fake.read("B:HS23T"), original)
 
     def test_write_clears_error(self):
         """Successful write clears a configured error for that device+property."""

@@ -110,6 +110,18 @@ class TestMonitorLiveMode:
 
 
 class TestMonitorCollect:
+    def test_collect_while_running_preserves_buffer(self, fake):
+        drf = "M:OUTTMP@p,1000"
+        mon = Monitor([drf], backend=fake)
+        mon.start()
+        try:
+            fake.emit_reading(drf, 72.0)
+            with pytest.raises(RuntimeError, match="already running"):
+                mon.collect(duration=0.01)
+            assert [r.value for r in mon.snapshot().channels[drf].readings] == [72.0]
+        finally:
+            mon.stop()
+
     def test_collect_duration(self, fake):
         def emitter():
             assert fake.wait_for_subscription("M:OUTTMP@p,1000")

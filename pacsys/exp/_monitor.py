@@ -649,11 +649,9 @@ class Monitor:
                 raise ValueError(f"count must be >= 1, got {count}")
             if count > self._buffer_size:
                 raise ValueError(f"count ({count}) cannot exceed buffer_size ({self._buffer_size})")
+        if self.running:
+            raise RuntimeError("Monitor is already running")
 
-        # Clear stale data from previous runs
-        with self._lock:
-            for buf in self._buffers.values():
-                buf.clear()
         self.start()
         try:
             if duration is not None:

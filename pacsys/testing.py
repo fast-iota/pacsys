@@ -465,7 +465,10 @@ class FakeBackend(Backend):
             ValueType.TEXT_ARRAY: ((list,), "list of str"),
             ValueType.SCALAR: ((int, float, np.integer, np.floating, bool), "numeric (int/float)"),
             ValueType.SCALAR_ARRAY: ((list, tuple, np.ndarray), "array-like (list/tuple/ndarray)"),
-            ValueType.TIMED_SCALAR_ARRAY: ((list, tuple, np.ndarray), "array-like (list/tuple/ndarray)"),
+            ValueType.TIMED_SCALAR_ARRAY: (
+                (list, tuple, np.ndarray, dict),
+                "array-like or timed data dict (list/tuple/ndarray/dict)",
+            ),
             ValueType.ANALOG_ALARM: ((dict,), "dict"),
             ValueType.DIGITAL_ALARM: ((dict,), "dict"),
             ValueType.BASIC_STATUS: ((dict,), "dict"),
@@ -672,6 +675,10 @@ class FakeBackend(Backend):
     # Backend Interface Implementation
     # ─────────────────────────────────────────────────────────────────────
 
+    def _check_closed(self) -> None:
+        if self._closed:
+            raise RuntimeError("Backend is closed")
+
     @property
     def capabilities(self) -> BackendCapability:
         """FakeBackend supports everything."""
@@ -700,6 +707,7 @@ class FakeBackend(Backend):
         Raises:
             DeviceError: If an error was configured or no reading exists
         """
+        self._check_closed()
         self._read_history.append(drf)
 
         # @N means "never send data" - reading with it is semantically invalid
@@ -747,6 +755,7 @@ class FakeBackend(Backend):
         Returns:
             Reading object (may have ``ok == False``)
         """
+        self._check_closed()
         self._read_history.append(drf)
 
         # @N means "never send data" - reading with it is semantically invalid
@@ -810,6 +819,7 @@ class FakeBackend(Backend):
         Returns:
             List of Reading objects in same order as input
         """
+        self._check_closed()
         return [self.get(drf, timeout) for drf in drfs]
 
     def write(
@@ -831,6 +841,7 @@ class FakeBackend(Backend):
         Returns:
             Pre-configured WriteResult, or success by default
         """
+        self._check_closed()
         value = _copy_arrays(value)  # before history: inspection APIs must not see later caller mutation
         self._write_history.append((drf, value))
         full = _full_key(drf)
@@ -840,14 +851,17 @@ class FakeBackend(Backend):
         result = self._write_results.get(full) or self._write_results.get(base)
         if result is not None:
             if result.success:
-                self._update_state(base, drf, value)
+                self._update_state(base, drf, value, validate_type=False)
             return result
 
         # Default: write succeeds and updates state
-        self._update_state(base, drf, value)
+        try:
+            self._update_state(base, drf, value)
+        except (TypeError, ValueError) as e:
+            return WriteResult(drf=drf, error_code=ERR_RETRY, message=f"Invalid write value for {drf}: {e}")
         return WriteResult(drf=drf, error_code=ERR_OK)
 
-    def _update_state(self, key: str, drf: str, value: Value) -> None:
+    def _update_state(self, key: str, drf: str, value: Value, *, validate_type: bool = True) -> None:
         """Update device state after a successful write.
 
         If the write DRF includes a range and an existing array is stored,
@@ -857,22 +871,22 @@ class FakeBackend(Backend):
         subsequent reads (which check the full key first) see the write.
         """
         full = _full_key(drf)
+        rng = _get_range(drf)
+        merged = value
+        old = self._readings.get(key)
+
+        # Ranged write: slice-assign into existing stored value
+        if rng is not None and old is not None:
+            merged = _write_range(old.value, value, rng)
+        if validate_type and old is not None:
+            self._validate_value_type(merged, old.value_type)
 
         # Clear errors for both keys -- device is now responsive
         self._errors.pop(key, None)
         if full != key:
             self._errors.pop(full, None)
 
-        rng = _get_range(drf)
-        merged = value
-
-        # Ranged write: slice-assign into existing stored value
-        if rng is not None and key in self._readings:
-            existing = self._readings[key].value
-            merged = _write_range(existing, value, rng)
-
-        if key in self._readings:
-            old = self._readings[key]
+        if old is not None:
             updated = replace(old, value=merged, error_code=ERR_OK, timestamp=datetime.now(timezone.utc))
         else:
             device_name = get_device_name(drf)
@@ -907,6 +921,7 @@ class FakeBackend(Backend):
         Returns:
             List of WriteResult objects
         """
+        self._check_closed()
         return [self.write(drf, value, timeout=timeout) for drf, value in settings]
 
     # ─────────────────────────────────────────────────────────────────────
@@ -929,6 +944,7 @@ class FakeBackend(Backend):
         Returns:
             FakeSubscriptionHandle for managing subscription
         """
+        self._check_closed()
         _validate_callback(callback, on_error)
         handle = FakeSubscriptionHandle(drfs, callback, on_error, self._remove_subscription, self._dispatcher)
         with self._subscription_condition:
