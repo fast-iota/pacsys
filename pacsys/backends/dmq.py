@@ -2055,7 +2055,7 @@ class DMQBackend(Backend):
         so a per-call budget also covers startup.
         """
         with self._stream_lock:
-            io_thread = self._io_thread  # snapshot: the IO thread nulls this attr on exit
+            io_thread = self._io_thread
             if io_thread is not None and io_thread.is_alive():
                 # Thread exists - still verify connection is ready before returning
                 if self._connection_ready.is_set() and self._connection_error is None:

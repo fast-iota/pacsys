@@ -159,6 +159,20 @@ class _BlockingSubscribeBackend(FakeBackend):
         return self.handle
 
 
+class _BlockingAsyncSubscribeBackend(AsyncFakeBackend):
+    def __init__(self):
+        super().__init__()
+        self.subscribe_started = asyncio.Event()
+        self.subscribe_release = asyncio.Event()
+        self.handle = None
+
+    async def subscribe(self, drfs, callback=None, on_error=None):
+        self.subscribe_started.set()
+        await asyncio.wait_for(self.subscribe_release.wait(), timeout=2.0)
+        self.handle = await super().subscribe(drfs, callback, on_error)
+        return self.handle
+
+
 # ── Server Lifecycle Tests ────────────────────────────────────────────────
 
 
@@ -270,6 +284,30 @@ class TestStreamingRead:
         assert await asyncio.to_thread(backend.handle_ready.wait, 1.0)
         for _ in range(100):
             if backend.handle.stopped:
+                break
+            await asyncio.sleep(0.01)
+        assert backend.handle.stopped
+
+    @pytest.mark.asyncio
+    async def test_async_cancel_during_subscribe_acquisition_stops_late_handle(self):
+        backend = _BlockingAsyncSubscribeBackend()
+        servicer = _DAQServicer(backend, [])
+        context = mock.Mock()
+        context.peer.return_value = "test-peer"
+        context.invocation_metadata.return_value = []
+        context.cancelled.return_value = False
+        request = DAQ_pb2.ReadingList(drf=["M:OUTTMP@p,1000"])
+
+        stream = servicer.Read(request, context)
+        read = asyncio.create_task(anext(stream))
+        await asyncio.wait_for(backend.subscribe_started.wait(), timeout=1.0)
+        read.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await read
+
+        backend.subscribe_release.set()
+        for _ in range(100):
+            if backend.handle is not None and backend.handle.stopped:
                 break
             await asyncio.sleep(0.01)
         assert backend.handle.stopped
