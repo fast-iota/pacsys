@@ -596,14 +596,21 @@ class TestAsyncBackendWrite:
         result = await async_write_backend_cls.write(STATUS_CONTROL_DEVICE, BasicControl.NEGATIVE, timeout=TIMEOUT_READ)
         assert result.success
 
+        # Serializes the callback's POSITIVE write against the loop's NEGATIVE writes so
+        # the final state is deterministic; callback exceptions are swallowed, so record the result.
+        write_lock = asyncio.Lock()
+        callback_results = []
+
         async def on_reading(reading: Reading, handle: AsyncSubscriptionHandle):
             readings.append(reading)
-            if len(readings) >= 3:
-                r = await async_write_backend_cls.write(
-                    STATUS_CONTROL_DEVICE, BasicControl.POSITIVE, timeout=TIMEOUT_READ
-                )
-                assert r.success
-                event.set()
+            if len(readings) >= 3 and not event.is_set():
+                async with write_lock:
+                    callback_results.append(
+                        await async_write_backend_cls.write(
+                            STATUS_CONTROL_DEVICE, BasicControl.POSITIVE, timeout=TIMEOUT_READ
+                        )
+                    )
+                    event.set()
 
         valid_drf = PERIODIC_DEVICE
         invalid_drf = f"{NONEXISTENT_DEVICE}@p,500"
@@ -623,10 +630,12 @@ class TestAsyncBackendWrite:
                     [SCALAR_DEVICE, SCALAR_DEVICE_2, SCALAR_ELEMENT, SCALAR_SETPOINT]
                 )
                 assert all(r.ok for r in read3)
-                w = await async_write_backend_cls.write(
-                    STATUS_CONTROL_DEVICE, BasicControl.NEGATIVE, timeout=TIMEOUT_READ
-                )
-                assert w.ok
+                async with write_lock:
+                    if not event.is_set():
+                        w = await async_write_backend_cls.write(
+                            STATUS_CONTROL_DEVICE, BasicControl.NEGATIVE, timeout=TIMEOUT_READ
+                        )
+                        assert w.ok
 
             try:
                 await asyncio.wait_for(event.wait(), timeout=TIMEOUT_STREAM_EVENT)
@@ -652,6 +661,7 @@ class TestAsyncBackendWrite:
             if h1 is not None:
                 await h1.stop()
 
+        assert callback_results and all(r.success for r in callback_results)
         status = await async_write_backend_cls.get(STATUS_CONTROL_DEVICE, timeout=TIMEOUT_READ)
         assert status.ok, f"Failed to read status: {status.message}"
         assert status.value["positive"] is True

@@ -784,16 +784,22 @@ class TestBackendWrite:
         """Reads and writes remain usable alongside concurrent subscriptions."""
         readings = []
         event = threading.Event()
+        # Serializes the callback's POSITIVE write against the loop's NEGATIVE writes so
+        # the final state is deterministic; callback exceptions are swallowed, so record the result.
+        write_lock = threading.Lock()
+        callback_results = []
 
         result = write_backend_cls.write(STATUS_CONTROL_DEVICE, BasicControl.NEGATIVE, timeout=TIMEOUT_READ)
         assert result.success
 
         def on_reading(reading: Reading, handle: SubscriptionHandle):
             readings.append(reading)
-            if len(readings) >= 3:
-                result = write_backend_cls.write(STATUS_CONTROL_DEVICE, BasicControl.POSITIVE, timeout=TIMEOUT_READ)
-                assert result.success
-                event.set()
+            if len(readings) >= 3 and not event.is_set():
+                with write_lock:
+                    callback_results.append(
+                        write_backend_cls.write(STATUS_CONTROL_DEVICE, BasicControl.POSITIVE, timeout=TIMEOUT_READ)
+                    )
+                    event.set()
 
         valid_drf = PERIODIC_DEVICE
         invalid_drf = f"{NONEXISTENT_DEVICE}@p,500"
@@ -811,8 +817,12 @@ class TestBackendWrite:
             for i in range(5):
                 read3 = write_backend_cls.get_many([SCALAR_DEVICE, SCALAR_DEVICE_2, SCALAR_ELEMENT, SCALAR_SETPOINT])
                 assert all(r.ok for r in read3)
-                write = write_backend_cls.write(STATUS_CONTROL_DEVICE, BasicControl.NEGATIVE, timeout=TIMEOUT_READ)
-                assert write.ok
+                with write_lock:
+                    if not event.is_set():
+                        write = write_backend_cls.write(
+                            STATUS_CONTROL_DEVICE, BasicControl.NEGATIVE, timeout=TIMEOUT_READ
+                        )
+                        assert write.ok
 
             try:
                 event.wait(timeout=TIMEOUT_STREAM_EVENT)
@@ -839,8 +849,9 @@ class TestBackendWrite:
             if h1 is not None:
                 h1.stop()
 
+        assert callback_results and all(r.success for r in callback_results)
         status = write_backend_cls.get(STATUS_CONTROL_DEVICE, timeout=TIMEOUT_READ)
-        assert status.ok, f"Failed to read status after RESET: {status.message}"
+        assert status.ok, f"Failed to read status: {status.message}"
         assert status.value["positive"] is True
 
 

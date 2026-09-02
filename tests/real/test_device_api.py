@@ -549,8 +549,9 @@ class TestDeviceControl:
     def test_ramp_dc(self, dpm_write_backend):
         """dev.ramp() / dev.dc() toggle the ramp status bit."""
         dev = Device(SCALAR_DEVICE_3, backend=dpm_write_backend)
-        initial = dev.digital_status(timeout=TIMEOUT_READ)
-        assert isinstance(initial.ramp, bool)
+        # Basic status: without DevDB, digital_status() only sees the bits DPM names (no ramp bit)
+        initial_ramp = dev.status(field="ramp", timeout=TIMEOUT_READ)
+        assert isinstance(initial_ramp, bool)
         try:
             result = dev.ramp(timeout=TIMEOUT_READ)
             assert result.success
@@ -568,12 +569,12 @@ class TestDeviceControl:
                 description=f"{dev.name} dc",
             )
         finally:
-            result = (dev.ramp if initial.ramp else dev.dc)(timeout=TIMEOUT_READ)
+            result = (dev.ramp if initial_ramp else dev.dc)(timeout=TIMEOUT_READ)
             assert result.success, f"Restore failed: {result.error_code} {result.message}"
             wait_for_readback(
                 lambda: dev.status(field="ramp", timeout=TIMEOUT_READ),
-                lambda value: value is initial.ramp,
-                description=f"restore {dev.name} ramp={initial.ramp}",
+                lambda value: value is initial_ramp,
+                description=f"restore {dev.name} ramp={initial_ramp}",
             )
 
     @pytest.mark.write

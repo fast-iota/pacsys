@@ -381,13 +381,23 @@ def _text_is_true(text: str) -> bool:
     return text.strip().lower() not in false_patterns
 
 
+def _normalize_bit_name(name: str) -> str:
+    """Lowercase and drop separators so DevDB short names ("RampDC") match display names ("Ramp/DC")."""
+    return "".join(c for c in name.lower() if c.isalnum())
+
+
+_LEGACY_NORMALIZED_NAMES = {
+    key: frozenset(_normalize_bit_name(p) for p in patterns) for key, patterns in _LEGACY_DISPLAY_NAMES.items()
+}
+
+
 def _infer_legacy_from_bits(bits: list[StatusBit]) -> dict:
     """Try to match bits to legacy attribute slots by name."""
     result: dict[str, bool | None] = dict.fromkeys(_LEGACY_KEYS)
     for bit in bits:
-        name_lower = bit.name.strip().lower()
-        for legacy_key, patterns in _LEGACY_DISPLAY_NAMES.items():
-            if name_lower in patterns:
+        name = _normalize_bit_name(bit.name)
+        for legacy_key, patterns in _LEGACY_NORMALIZED_NAMES.items():
+            if name in patterns:
                 result[legacy_key] = bit.is_set
                 break
     return result
