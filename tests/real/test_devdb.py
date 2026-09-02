@@ -13,7 +13,7 @@ import pytest
 from pacsys.devdb import DEVDB_AVAILABLE, DevDBClient, DeviceInfoResult
 from pacsys.errors import DeviceError
 
-DEVDB_HOST = os.environ.get("PACSYS_DEVDB_HOST", "localhost")
+DEVDB_HOST = os.environ.get("PACSYS_DEVDB_HOST", "127.0.0.1")
 DEVDB_PORT = int(os.environ.get("PACSYS_DEVDB_PORT", "45678"))
 
 

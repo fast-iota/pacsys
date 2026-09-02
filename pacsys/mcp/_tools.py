@@ -163,11 +163,7 @@ def tool_device_info(devdb, name: str) -> dict:
         return {"ok": False, "name": name, "error": "DevDB client unavailable"}
 
     try:
-        info_map = devdb.get_device_info([name])
-        info = info_map.get(name)
-        if info is None:
-            return {"ok": False, "name": name, "error": f"Device {name} not found in DevDB"}
-
+        info = devdb.get_device_info([name])[name]
         d: dict = {
             "ok": True,
             "name": name,

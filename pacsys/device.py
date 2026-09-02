@@ -135,7 +135,7 @@ class Device(_DeviceBase):
         drf = self._build_drf(p, resolved, "I")
         return self._get_backend().get(drf, timeout)
 
-    def info(self, timeout: float | None = None):
+    def info(self, timeout: float | None = None) -> DeviceInfoResult:
         """Fetch device metadata from DevDB (cached)."""
 
         devdb = self._get_devdb()
@@ -144,13 +144,7 @@ class Device(_DeviceBase):
                 "DevDB not available. Configure with pacsys.configure(devdb_host=...) "
                 "or set PACSYS_DEVDB_HOST environment variable."
             )
-        results: dict[str, DeviceInfoResult] = devdb.get_device_info([self.name], timeout=timeout)
-        if self.name not in results:
-            from pacsys.acnet.errors import ERR_NOPROP, FACILITY_DBM
-            from pacsys.errors import DeviceError
-
-            raise DeviceError(self.drf, FACILITY_DBM, ERR_NOPROP, f"Device '{self.name}' not found in DevDB")
-        return results[self.name]
+        return devdb.get_device_info([self.name], timeout=timeout)[self.name]
 
     def digital_status(self, timeout: float | None = None) -> DigitalStatus:
         """Fetch full digital status (BIT_VALUE + BIT_NAMES + BIT_VALUES)."""

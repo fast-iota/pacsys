@@ -10,7 +10,12 @@ import time
 import pytest
 
 from pacsys.acnet import AcnetConnectionTCP, NodeStats, node_parts
-from tests.real.devices import ACNET_TCP_TEST_HOST, ACNET_TCP_TEST_PORT, requires_acnet_tcp
+from tests.real.devices import (
+    ACNET_TCP_TEST_HOST,
+    ACNET_TCP_TEST_PORT,
+    ACNETD_RECONNECT_SETTLE,
+    requires_acnet_tcp,
+)
 
 
 @pytest.fixture(scope="class")
@@ -20,13 +25,7 @@ def acnet_tcp_connection():
     conn.connect()
     yield conn
     conn.close()
-
-
-@pytest.fixture(autouse=True)
-def _settle():
-    """Brief pause between tests to let acnetd connections settle."""
-    yield
-    time.sleep(0.5)
+    time.sleep(ACNETD_RECONNECT_SETTLE)
 
 
 # Known ACNET front-end nodes used for testing.
@@ -134,6 +133,7 @@ class TestAcnetTCPTaskOperations:
             print(f"\n  Renamed: {old_name} -> {conn.name}")
         finally:
             conn.close()
+            time.sleep(ACNETD_RECONNECT_SETTLE)
 
 
 def _ping(conn, node_name, expected_addr, timeout=10):

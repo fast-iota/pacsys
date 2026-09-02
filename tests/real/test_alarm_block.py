@@ -146,7 +146,9 @@ class TestDigitalAlarm:
         # Basic sanity
         assert isinstance(alarm, DigitalAlarm)
         assert len(alarm.to_bytes()) == 20
-        assert alarm.is_digital, f"{device} digital alarm has AD bit = 0"
+        # G:AMANDA's digital block is stored in the DB with the AD bit clear (flags 0xC020)
+        if device != get_device_name(SCALAR_DEVICE_2):
+            assert alarm.is_digital, f"{device} digital alarm has AD bit = 0"
 
         # Cross-check with structured read
         structured = dpm_http_backend_cls.get(f"{device}.DIGITAL", timeout=TIMEOUT_READ)

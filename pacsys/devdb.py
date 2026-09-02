@@ -413,11 +413,12 @@ class DevDBClient:
             timeout: gRPC timeout in seconds (default: client's configured timeout).
 
         Returns:
-            Dict mapping device name to DeviceInfoResult. Unknown devices are
-            absent from the result.
+            Dict mapping device name to DeviceInfoResult.
 
         Raises:
-            DeviceError: If DevDB returns an error entry (errMsg) for a device.
+            DeviceError: If DevDB returns an error entry (errMsg) or a zeroed
+                (unknown device) entry. Known devices from the same batch are
+                still cached before raising.
             grpc.RpcError: On gRPC transport failure.
         """
         self._check_closed()
@@ -456,7 +457,8 @@ class DevDBClient:
                     and info.control is None
                     and info.status_bits is None
                 ):
-                    logger.debug("DevDB: Device '%s' not found", entry.name)
+                    if error is None:
+                        error = (entry.name, f"Device '{entry.name}' not found in DevDB")
                 else:
                     pending[entry.name] = info
             elif which == "errMsg" and error is None:

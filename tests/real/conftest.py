@@ -16,6 +16,7 @@ Run:
 import functools
 import logging
 import os
+import time
 
 import pytest
 import pytest_asyncio
@@ -27,6 +28,7 @@ from .devices import (
     ACL_TEST_URL,
     ACNET_TCP_TEST_HOST,
     ACNET_TCP_TEST_PORT,
+    ACNETD_RECONNECT_SETTLE,
     ALLOWED_WRITE_DEVICES,
     DPM_TEST_HOST,
     DPM_TEST_PORT,
@@ -409,6 +411,7 @@ def acnet_tcp_connection():
     conn.connect()
     yield conn
     conn.close()
+    time.sleep(ACNETD_RECONNECT_SETTLE)
 
 
 @pytest.fixture
@@ -420,6 +423,7 @@ def dpm_acnet():
     conn.connect()
     yield conn
     conn.close()
+    time.sleep(ACNETD_RECONNECT_SETTLE)
 
 
 # =============================================================================
