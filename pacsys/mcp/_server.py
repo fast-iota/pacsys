@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
 
+from anyio.to_thread import run_sync
 from mcp.server.fastmcp import FastMCP
 
 from pacsys.backends import Backend
@@ -110,22 +111,32 @@ def create_server(config: MCPConfig) -> FastMCP:
     @mcp.tool(
         description="Read a device value. Pass a DRF string like 'M:OUTTMP' or 'M:OUTTMP.SETTING' or 'M:OUTTMP[0:9]'."
     )
-    def read_device(drf: str) -> dict:
+    async def read_device(drf: str) -> dict:
         ctx: ServerContext = mcp.get_context().request_context.lifespan_context
-        return tool_read_device(ctx.backend, drf, ctx.policies)
+        call = partial(tool_read_device, backend=ctx.backend, drf=drf, policies=ctx.policies)
+        return await run_sync(call)
 
     @mcp.tool(
         description="Write a value to a device. Requires policy approval. Pass DRF and value (float, string, or list)."
     )
-    def write_device(drf: str, value: float | str | list) -> dict:
+    async def write_device(drf: str, value: float | str | list) -> dict:
         ctx: ServerContext = mcp.get_context().request_context.lifespan_context
-        return tool_write_device(ctx.backend, drf, value, ctx.policies, ctx.audit_log)
+        call = partial(
+            tool_write_device,
+            backend=ctx.backend,
+            drf=drf,
+            value=value,
+            policies=ctx.policies,
+            audit_log=ctx.audit_log,
+        )
+        return await run_sync(call)
 
     @mcp.tool(
         description="Look up device metadata (description, units, limits, control commands) from the device database."
     )
-    def device_info(name: str) -> dict:
+    async def device_info(name: str) -> dict:
         ctx: ServerContext = mcp.get_context().request_context.lifespan_context
-        return tool_device_info(ctx.devdb, name)
+        call = partial(tool_device_info, devdb=ctx.devdb, name=name)
+        return await run_sync(call)
 
     return mcp

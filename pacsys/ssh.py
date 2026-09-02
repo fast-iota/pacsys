@@ -713,40 +713,47 @@ class SSHClient:
         if not transport.is_active():
             raise SSHConnectionError("Transport is no longer active")
 
-        chan = transport.open_session()
+        deadline = time.monotonic() + timeout if timeout is not None else None
+        remaining = deadline - time.monotonic() if deadline is not None else None
         try:
+            chan = transport.open_session(timeout=remaining)
+        except (TimeoutError, paramiko.SSHException) as e:
+            if deadline is not None and (isinstance(e, TimeoutError) or "timeout" in str(e).lower()):
+                raise SSHTimeoutError(f"Command timed out after {timeout}s: {command!r}") from e
+            raise
+        try:
+            remaining = deadline - time.monotonic() if deadline is not None else None
+            if remaining is not None and remaining <= 0:
+                raise SSHTimeoutError(f"Command timed out after {timeout}s: {command!r}")
+            chan.settimeout(remaining)
             chan.exec_command(command)
 
             if input is not None:
                 chan.sendall(input.encode())
             chan.shutdown_write()
 
-            deadline = time.monotonic() + timeout if timeout is not None else None
             stdout_chunks: list[bytes] = []
             stderr_chunks: list[bytes] = []
 
             while True:
                 if deadline is not None and time.monotonic() >= deadline:
                     raise SSHTimeoutError(f"Command timed out after {timeout}s: {command!r}")
-                try:
-                    # Read stdout
-                    if chan.recv_ready():
-                        data = chan.recv(65536)
-                        if data:
-                            stdout_chunks.append(data)
-                    # Read stderr
-                    if chan.recv_stderr_ready():
-                        data = chan.recv_stderr(65536)
-                        if data:
-                            stderr_chunks.append(data)
-                    # Check if done
-                    if chan.exit_status_ready() and not chan.recv_ready() and not chan.recv_stderr_ready():
-                        break
-                    # Small sleep to avoid busy loop
-                    if not chan.recv_ready() and not chan.recv_stderr_ready() and not chan.exit_status_ready():
-                        chan.status_event.wait(0.1)
-                except TimeoutError as e:
-                    raise SSHTimeoutError(str(e)) from e
+                # Read stdout
+                if chan.recv_ready():
+                    data = chan.recv(65536)
+                    if data:
+                        stdout_chunks.append(data)
+                # Read stderr
+                if chan.recv_stderr_ready():
+                    data = chan.recv_stderr(65536)
+                    if data:
+                        stderr_chunks.append(data)
+                # Check if done
+                if chan.exit_status_ready() and not chan.recv_ready() and not chan.recv_stderr_ready():
+                    break
+                # Small sleep to avoid busy loop
+                if not chan.recv_ready() and not chan.recv_stderr_ready() and not chan.exit_status_ready():
+                    chan.status_event.wait(0.1)
 
             exit_code = chan.recv_exit_status()
             stdout = b"".join(stdout_chunks).decode(errors="replace")
@@ -754,6 +761,8 @@ class SSHClient:
 
             return CommandResult(command=command, exit_code=exit_code, stdout=stdout, stderr=stderr)
 
+        except TimeoutError as e:
+            raise SSHTimeoutError(str(e)) from e
         finally:
             chan.close()
 
@@ -775,12 +784,22 @@ class SSHClient:
         if not transport.is_active():
             raise SSHConnectionError("Transport is no longer active")
 
-        chan = transport.open_session()
+        deadline = time.monotonic() + timeout if timeout is not None else None
+        remaining = deadline - time.monotonic() if deadline is not None else None
         try:
+            chan = transport.open_session(timeout=remaining)
+        except (TimeoutError, paramiko.SSHException) as e:
+            if deadline is not None and (isinstance(e, TimeoutError) or "timeout" in str(e).lower()):
+                raise SSHTimeoutError(f"Command timed out after {timeout}s: {command!r}") from e
+            raise
+        try:
+            remaining = deadline - time.monotonic() if deadline is not None else None
+            if remaining is not None and remaining <= 0:
+                raise SSHTimeoutError(f"Command timed out after {timeout}s: {command!r}")
+            chan.settimeout(remaining)
             chan.exec_command(command)
             chan.shutdown_write()
 
-            deadline = time.monotonic() + timeout if timeout is not None else None
             buf = ""
             stderr_chunks: list[bytes] = []
 
@@ -788,24 +807,21 @@ class SSHClient:
                 if deadline is not None and time.monotonic() >= deadline:
                     raise SSHTimeoutError(f"Command timed out after {timeout}s: {command!r}")
 
-                try:
-                    if chan.recv_ready():
-                        data = chan.recv(65536).decode(errors="replace")
-                        buf += data
-                        while "\n" in buf:
-                            line, buf = buf.split("\n", 1)
-                            yield line
+                if chan.recv_ready():
+                    data = chan.recv(65536).decode(errors="replace")
+                    buf += data
+                    while "\n" in buf:
+                        line, buf = buf.split("\n", 1)
+                        yield line
 
-                    if chan.recv_stderr_ready():
-                        stderr_chunks.append(chan.recv_stderr(65536))
+                if chan.recv_stderr_ready():
+                    stderr_chunks.append(chan.recv_stderr(65536))
 
-                    if chan.exit_status_ready() and not chan.recv_ready() and not chan.recv_stderr_ready():
-                        break
+                if chan.exit_status_ready() and not chan.recv_ready() and not chan.recv_stderr_ready():
+                    break
 
-                    if not chan.recv_ready() and not chan.recv_stderr_ready() and not chan.exit_status_ready():
-                        chan.status_event.wait(0.1)
-                except TimeoutError as e:
-                    raise SSHTimeoutError(str(e)) from e
+                if not chan.recv_ready() and not chan.recv_stderr_ready() and not chan.exit_status_ready():
+                    chan.status_event.wait(0.1)
 
             # Yield remaining buffer
             if buf:
@@ -816,6 +832,8 @@ class SSHClient:
                 stderr = b"".join(stderr_chunks).decode(errors="replace")
                 raise SSHCommandError(command, exit_code, stderr)
 
+        except TimeoutError as e:
+            raise SSHTimeoutError(str(e)) from e
         finally:
             chan.close()
 
@@ -941,7 +959,10 @@ class SSHClient:
                 raise ACLError(f"ACL script failed: {msg}")
             return strip_fn(result.stdout)
         finally:
-            self.exec(f"rm -f {qname}", timeout=5.0)
+            try:
+                self.exec(f"rm -f {qname}", timeout=5.0)
+            except SSHError as e:
+                logger.warning("Failed to remove remote ACL script %s: %s", name, e)
 
     def acl_session(self, *, timeout: float = 30.0) -> ACLSession:
         """Open a persistent ACL interpreter session.

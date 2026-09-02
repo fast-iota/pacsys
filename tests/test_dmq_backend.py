@@ -547,6 +547,27 @@ class TestDMQSetupRaces:
         assert sub.sub_id not in backend._subscriptions
         sub.handle._signal_error.assert_called_once_with(reason)
 
+    def test_subscribe_setup_timeout_marks_handle_stopped(self):
+        backend = DMQBackend.__new__(DMQBackend)
+        backend._io_thread = None
+        backend._closed = False
+        backend._timeout = 0.01
+        backend._local_ip = "127.0.0.1"
+        backend._stream_lock = threading.Lock()
+        backend._subscriptions = {}
+        backend._ensure_io_thread = mock.MagicMock()
+        backend._create_gss_context = mock.MagicMock(return_value=_mock_gss_context())
+        backend._sign_message = mock.MagicMock(return_value=b"mic")
+        backend._start_subscription_async = mock.MagicMock()
+        backend._cancel_subscription_async = mock.MagicMock()
+
+        with pytest.raises(RuntimeError, match="Timeout waiting for subscription setup"):
+            backend.subscribe([TEMP_DEVICE])
+
+        sub = backend._cancel_subscription_async.call_args.args[0]
+        assert sub.handle._stop_requested is True
+        assert sub.handle.stopped
+
     def test_read_channel_closed_by_broker_fails_job(self):
         backend, _conn = self._bare_backend()
         job = _ReadJob(drfs=[TEMP_DEVICE], prepared_drfs=[TEMP_DEVICE], drf_to_idx={TEMP_DEVICE: 0})

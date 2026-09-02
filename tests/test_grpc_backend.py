@@ -952,6 +952,40 @@ class TestReactorLifecycle:
         finally:
             backend.close()
 
+    def test_close_from_direct_callback_awaits_core_without_blocking(self):
+        backend = grpc_backend.GRPCBackend(dispatch_mode=grpc_backend.DispatchMode.DIRECT)
+        backend._start_reactor()
+        callback_returned = threading.Event()
+        core_closed = threading.Event()
+        elapsed = []
+
+        class Core:
+            async def close(self):
+                core_closed.set()
+
+        backend._core = Core()
+        loop = backend._loop
+        thread = backend._reactor_thread
+        assert loop is not None and thread is not None
+
+        def callback(_reading, _handle):
+            start = time.monotonic()
+            backend.close()
+            elapsed.append(time.monotonic() - start)
+            callback_returned.set()
+
+        reading = Reading(drf="M:OUTTMP", value_type=ValueType.SCALAR, value=1.0)
+        loop.call_soon_threadsafe(backend._dispatcher.dispatch_reading, callback, reading, mock.MagicMock())
+
+        assert callback_returned.wait(0.5)
+        assert elapsed[0] < 0.5
+        assert core_closed.wait(1.0)
+        thread.join(timeout=1.0)
+        assert not thread.is_alive()
+        assert backend._core is None
+        assert backend._loop is None
+        assert backend._reactor_thread is None
+
     def test_properties_dont_start_reactor(self):
         """Accessing properties does not start the reactor thread."""
         backend = grpc_backend.GRPCBackend()

@@ -1,4 +1,7 @@
+import asyncio
 import importlib
+import inspect
+import time
 from types import SimpleNamespace
 from unittest import mock
 
@@ -29,7 +32,8 @@ class _FakeFastMCP:
         return SimpleNamespace(request_context=request_context)
 
 
-def test_create_server_registers_context_bound_tools():
+@pytest.mark.asyncio
+async def test_create_server_registers_context_bound_tools():
     with mock.patch("pacsys.mcp._server.FastMCP", _FakeFastMCP):
         server = create_server(MCPConfig())
 
@@ -44,13 +48,42 @@ def test_create_server_registers_context_bound_tools():
         mock.patch("pacsys.mcp._server.tool_write_device", return_value={"write": True}) as write,
         mock.patch("pacsys.mcp._server.tool_device_info", return_value={"info": True}) as info,
     ):
-        assert server.tools["read_device"]("M:OUTTMP") == {"read": True}
-        assert server.tools["write_device"]("Z:ACLTST", 1.0) == {"write": True}
-        assert server.tools["device_info"]("M:OUTTMP") == {"info": True}
+        assert all(inspect.iscoroutinefunction(tool) for tool in server.tools.values())
+        assert await server.tools["read_device"]("M:OUTTMP") == {"read": True}
+        assert await server.tools["write_device"]("Z:ACLTST", 1.0) == {"write": True}
+        assert await server.tools["device_info"]("M:OUTTMP") == {"info": True}
 
-    read.assert_called_once_with(backend, "M:OUTTMP", policies)
-    write.assert_called_once_with(backend, "Z:ACLTST", 1.0, policies, None)
-    info.assert_called_once_with(devdb, "M:OUTTMP")
+    read.assert_called_once_with(backend=backend, drf="M:OUTTMP", policies=policies)
+    write.assert_called_once_with(
+        backend=backend,
+        drf="Z:ACLTST",
+        value=1.0,
+        policies=policies,
+        audit_log=None,
+    )
+    info.assert_called_once_with(devdb=devdb, name="M:OUTTMP")
+
+
+@pytest.mark.asyncio
+async def test_tool_calls_overlap():
+    with mock.patch("pacsys.mcp._server.FastMCP", _FakeFastMCP):
+        server = create_server(MCPConfig())
+
+    server.context = ServerContext(backend=object(), devdb=None, policies=[])
+
+    def slow_read(**_kwargs):
+        time.sleep(0.3)
+        return {"read": True}
+
+    with mock.patch("pacsys.mcp._server.tool_read_device", side_effect=slow_read):
+        start = time.monotonic()
+        results = await asyncio.gather(
+            server.tools["read_device"]("M:OUTTMP"),
+            server.tools["read_device"]("G:AMANDA"),
+        )
+
+    assert results == [{"read": True}, {"read": True}]
+    assert time.monotonic() - start < 0.5
 
 
 def test_create_server_wires_sse_port():
