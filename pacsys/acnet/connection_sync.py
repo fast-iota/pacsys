@@ -183,7 +183,13 @@ class _SyncAcnetConnectionBase:
         return self._async
 
     def _run_sync(self, coro, timeout=10.0):
-        """Schedule a coroutine on the reactor and block for its result."""
+        """Block on a coroutine; handlers themselves run on the reactor thread."""
+        if threading.current_thread() is self._reactor_thread:
+            coro.close()
+            raise RuntimeError(
+                "Synchronous ACNET methods cannot be called from the ACNET reactor thread "
+                "(reply/request handlers run there); use the async API or a worker thread"
+            )
         assert self._loop is not None, "reactor not started"
         fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
         return fut.result(timeout=timeout)
@@ -198,6 +204,8 @@ class _SyncAcnetConnectionBase:
         A failed connect stops the reactor and clears state; the object can
         be re-connected (fresh reactor and core).
         """
+        if self._async is not None:
+            raise RuntimeError("already connected")
         try:
             self._start_reactor()
             self._async = self._create_async()

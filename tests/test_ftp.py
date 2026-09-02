@@ -272,6 +272,11 @@ class TestBuildContinuousSetup:
         with pytest.raises(ValueError, match="out of range"):
             build_continuous_setup(devices=[mouttmp], rate_hz=bad_rate)
 
+    @pytest.mark.parametrize("return_period", [0, 8])
+    def test_invalid_return_period_raises(self, mouttmp, return_period):
+        with pytest.raises(ValueError, match="return_period=.*out of range"):
+            build_continuous_setup(devices=[mouttmp], rate_hz=1440, return_period=return_period)
+
     def test_fractional_rate_not_truncated(self, mouttmp):
         """2.9 Hz must sample at 2.9 Hz, not silently at 2 Hz."""
         pkt = build_continuous_setup(devices=[mouttmp], rate_hz=2.9)
@@ -442,22 +447,11 @@ class TestBuildSnapshotControl:
 
 
 class TestBufferSize:
-    def test_matches_java_formula(self):
-        """Buffer size matches Java FTPPool formula exactly.
-
-        Java: msgSize = (numDataBytes + numDevices*2) * rate
-               msgSize += 6 * numDevices
-               msgSize += msgSize >> 1      // 50% oversize
-               msgSize /= returnPeriod * 2  // to words
-        """
+    def test_matches_documented_formula(self):
         # 1 device, 2 data words (= 4 bytes), 1440 Hz, period=3
         result = _calculate_msg_size(1, 2, 1440, 3)
-        # Java equivalent: (4 * 1440 + 6) * 1.5 / 6 = 8649 / 6 = 1441
-        msg = 2 * 2 * 1440  # num_data_words * 2 * rate = 5760
-        msg += 6 * 1  # per-device header = 5766
-        msg += msg >> 1  # 50% oversize = 8649
-        msg //= 3 * 2  # to words = 1441
-        assert result == msg
+        expected = int(1.5 * (4 + 3 * 1 + 2 * 1440 * 3 / 15))
+        assert result == expected
 
     def test_capped_at_max(self):
         """Large requests should be capped at MAX_ACNET_MSG_SIZE / 2."""
@@ -468,6 +462,10 @@ class TestBufferSize:
         """15 Hz device should produce a small buffer."""
         result = _calculate_msg_size(1, 2, 15, 3)
         assert result < 100  # Very small for 15Hz
+
+    def test_period_seven_covers_unoversized_data(self):
+        required_words = 4 + 3 * 1 + 2 * 1440 * 7 / 15
+        assert _calculate_msg_size(1, 2, 1440, 7) >= required_words
 
 
 # =============================================================================
@@ -537,10 +535,12 @@ class TestParseContinuousDataReply:
         with pytest.raises(ValueError, match="too short"):
             parse_continuous_data_reply(data, [dev])
 
-    def test_two_byte_negative_error_is_clean_no_data(self):
+    def test_two_byte_negative_error_raises(self):
         dev = FTPDevice(di=1, pi=12, ssdn=b"\x00" * 8)
 
-        assert parse_continuous_data_reply(struct.pack("<h", -5), [dev]) == {}
+        with pytest.raises(AcnetError) as exc_info:
+            parse_continuous_data_reply(struct.pack("<h", -5), [dev])
+        assert exc_info.value.status == -5
 
     def test_complete_non_data_reply_is_ignored(self):
         dev = FTPDevice(di=1, pi=12, ssdn=b"\x00" * 8)
@@ -923,6 +923,20 @@ class TestFTPStream:
 
         assert list(stream.readings(timeout=0.1)) == [{0: [FTPDataPoint(timestamp_us=5000, raw_value=42)]}]
         assert stream.stopped
+
+    def test_payload_error_stops_and_cancels_stream(self):
+        import queue as q
+
+        ctx = MagicMock()
+        reply_q = q.Queue()
+        stream = FTPStream(ctx=ctx, devices=[], reply_queue=reply_q, setup_statuses=[])
+        reply_q.put((0, struct.pack("<h", -5), False))
+
+        with pytest.raises(AcnetError) as exc_info:
+            next(stream.readings(timeout=0.1))
+        assert exc_info.value.status == -5
+        assert stream.stopped
+        ctx.cancel.assert_called_once()
 
     def test_nonnegative_final_reply_is_clean_completion(self):
         import queue as q
@@ -1514,9 +1528,9 @@ class TestSnapshotState:
         assert _ftp_status_to_state(-241) == SnapshotState.ERROR
         assert _ftp_status_to_state(-1) == SnapshotState.ERROR
 
-    def test_ftp_status_to_state_unknown_positive_is_error(self):
-        """Unknown positive status code maps to ERROR."""
-        assert _ftp_status_to_state(9999) == SnapshotState.ERROR
+    @pytest.mark.parametrize("status", [2, 0x0F02, 9999])
+    def test_ftp_status_to_state_unknown_positive_is_none(self, status):
+        assert _ftp_status_to_state(status) is None
 
 
 class TestParseStatusUpdateStates:
@@ -1654,6 +1668,14 @@ class TestSnapshotStateTracking:
         finally:
             handle.cancel()
 
+    def test_initial_informational_status_is_pending(self):
+        handle, rq = self._make_handle(per_device_errors=[2])
+        try:
+            assert handle.device_states[0] == SnapshotState.PENDING
+            assert not handle.is_ready
+        finally:
+            handle.cancel()
+
     def test_monitor_transitions_to_ready(self):
         """Monitor thread updates state from PENDING → READY on FTP_OK (0)."""
         handle, rq = self._make_handle(per_device_errors=[FTP_PEND])
@@ -1688,6 +1710,24 @@ class TestSnapshotStateTracking:
             rq.put((0, data, False))
             assert handle.wait(timeout=2.0)
             assert handle.state == SnapshotState.READY
+        finally:
+            handle.cancel()
+
+    def test_monitor_keeps_state_for_informational_status(self):
+        devices = [
+            FTPDevice(di=1, pi=12, ssdn=b"\x00" * 8),
+            FTPDevice(di=2, pi=12, ssdn=b"\x00" * 8),
+        ]
+        handle, rq = self._make_handle(
+            per_device_errors=[FTP_WAIT_EVENT, FTP_PEND],
+            devices=devices,
+        )
+        try:
+            rq.put((0, self._build_status_reply(0, [0x0F02, 0]), False))
+            self._wait_for_device_state(handle, 1, SnapshotState.READY)
+
+            assert handle.device_states[0] == SnapshotState.WAIT_EVENT
+            assert 0 not in handle._device_errors
         finally:
             handle.cancel()
 

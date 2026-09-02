@@ -209,8 +209,8 @@ class DPMAcnet:
         result = {"list_id": None, "error": None}
 
         def handle_reply(reply):
-            if reply.last and reply.status < 0:
-                self._terminate(reply.status)  # stream ended (e.g. connection lost)
+            if reply.last:
+                self._terminate(reply.status)  # any final reply ends the stream (acnetd drops the handler)
                 if not result_event.is_set():
                     result["error"] = f"stream terminated: status {reply.status}"
                     result_event.set()
@@ -254,12 +254,16 @@ class DPMAcnet:
 
         result_event = threading.Event()
         result = {"reply": None, "error": None}
+        status = 0
 
         def handle_reply(reply):
-            try:
-                result["reply"] = unmarshal_reply(_Cursor(reply.data))
-            except Exception as e:  # noqa: BLE001
-                result["error"] = str(e)
+            nonlocal status
+            status = reply.status
+            if status >= 0:
+                try:
+                    result["reply"] = unmarshal_reply(_Cursor(reply.data))
+                except Exception as e:  # noqa: BLE001
+                    result["error"] = str(e)
             result_event.set()
 
         assert self._con is not None, "not connected"
@@ -275,6 +279,9 @@ class DPMAcnet:
         if not result_event.wait(timeout=timeout + 1.0):
             ctx.cancel()
             raise DPMError(-1, "Timeout waiting for reply")
+
+        if status < 0:
+            raise DPMError(status, f"DPM request failed with status {status}")
 
         if result["error"]:
             raise DPMError(-1, result["error"])

@@ -162,7 +162,7 @@ class AcnetPacket:
             raise ValueError(f"Bad packet length: declared {length}, got {len(data)} bytes")
 
         # Extract payload
-        payload = data[ACNET_HEADER_SIZE:]
+        payload = data[ACNET_HEADER_SIZE:length]
 
         # Determine packet type from flags
         msg_type = flags & (ACNET_FLG_TYPE | ACNET_FLG_CAN)

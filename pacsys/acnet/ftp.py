@@ -180,18 +180,19 @@ _FTP_STATUS_TO_STATE: dict[int, SnapshotState] = {
 }
 
 
-def _ftp_status_to_state(composite_status: int, is_first_reply: bool = False) -> SnapshotState:
+def _ftp_status_to_state(composite_status: int, is_first_reply: bool = False) -> SnapshotState | None:
     """Map FTP composite status code to SnapshotState.
 
     On the first reply (setup ack), status == 0 means "accepted" not "ready"
     (CAMAC front-ends send 0 for some devices on the first reply).
+    Unknown positive statuses are informational and do not change state.
     """
     if composite_status < 0:
         return SnapshotState.ERROR
     if composite_status == 0:
         return SnapshotState.PENDING if is_first_reply else SnapshotState.READY
     # Old FRIG cryogenic front ends emitted 0x0002/0x0F02 here; the DAE ignored them.
-    return _FTP_STATUS_TO_STATE.get(composite_status, SnapshotState.ERROR)
+    return _FTP_STATUS_TO_STATE.get(composite_status)
 
 
 def _parse_status_update_states(data: bytes, num_devices: int) -> list[int]:
@@ -327,23 +328,14 @@ def build_class_info_request(devices: list[FTPDevice]) -> bytes:
 def _calculate_msg_size(num_devices: int, num_data_words: int, rate: float, return_period: int) -> int:
     """Calculate the FTP reply buffer size in 16-bit words.
 
-    Matches Java FTPPool formula exactly::
+    Follows the documented FTPMAN sizing::
 
-        msgSize = (numDataBytes + numDevices*2) * rate  // data + timestamps
-        msgSize += 6 * numDevices                       // per-device header
-        msgSize += msgSize >> 1                         // 50% oversize
-        msgSize /= returnPeriod * 2                     // to 16-bit words
+        1.5 * (4 + 3*num_devices + num_data_words*rate*return_period/15)
 
-    ``num_data_words`` is the total 16-bit words per sample (timestamp + value
-    words).  Multiplying by 2 converts back to bytes for the Java-equivalent
-    calculation.  Capped at ``MAX_ACNET_MSG_SIZE // 2``.
+    Java ``FTPPool`` divides by ``2 * returnPeriod`` instead; that
+    dimensionally inconsistent expression is not reproduced here.
     """
-    # bytes per second: (data_bytes + timestamp_bytes) * rate
-    # (Java casts the full product to int before overhead/shift steps)
-    msg_size = int(num_data_words * 2 * rate)
-    msg_size += 6 * num_devices  # per-device header overhead (error+index+npts)
-    msg_size += msg_size >> 1  # 50% oversize
-    msg_size //= return_period * 2  # to 16-bit words
+    msg_size = int(OVERSIZE_BUFFER_FACTOR * (4 + 3 * num_devices + num_data_words * rate * return_period / 15))
     return min(msg_size, MAX_ACNET_MSG_SIZE // 2)
 
 
@@ -375,6 +367,8 @@ def build_continuous_setup(
     # negative, NaN, and values that would wrap all fail consistently.
     if not 100_000 / 0x10000 < rate_hz <= 100_000:
         raise ValueError(f"rate_hz={rate_hz} out of range (~1.53 Hz to 100 kHz)")
+    if not 1 <= return_period <= 7:
+        raise ValueError(f"return_period={return_period} out of range (1-7)")
     sample_period_10us = int(100_000 / rate_hz)
     msg_size = _calculate_msg_size(len(devices), num_data_words, rate_hz, return_period)
 
@@ -622,7 +616,7 @@ def parse_continuous_data_reply(
 
     error = struct.unpack_from("<h", data, 0)[0]
     if error < 0:
-        return {}
+        raise AcnetError(error, "Continuous plot data failed")
     if len(data) < 4:
         raise ValueError(f"Continuous data reply too short: {len(data)} bytes")
 
@@ -881,7 +875,11 @@ class FTPStream:
                     raise AcnetError(status, "Continuous plot terminated")
                 continue
 
-            batch = parse_continuous_data_reply(data, self._devices)
+            try:
+                batch = parse_continuous_data_reply(data, self._devices)
+            except AcnetError:
+                self.stop()
+                raise
             if batch:
                 yield batch
 
@@ -991,6 +989,8 @@ class SnapshotHandle:
             if i < len(setup_reply.per_device_errors):
                 status = setup_reply.per_device_errors[i]
                 state = _ftp_status_to_state(status, is_first_reply=True)
+                if state is None:
+                    state = SnapshotState.PENDING
             else:
                 state = SnapshotState.PENDING
             self._device_states[i] = state
@@ -1067,6 +1067,13 @@ class SnapshotHandle:
                         if self._device_states[i] in (SnapshotState.READY, SnapshotState.ERROR):
                             continue
                         new_state = _ftp_status_to_state(per_device[i], is_first_reply=is_first_status)
+                        if new_state is None:
+                            logger.debug(
+                                "Ignoring informational FTP status 0x%04X for snapshot device %s",
+                                per_device[i],
+                                i,
+                            )
+                            continue
                         self._device_states[i] = new_state
                         if new_state == SnapshotState.ERROR:
                             self._device_errors[i] = per_device[i]
