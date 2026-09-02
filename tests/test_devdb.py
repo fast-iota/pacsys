@@ -596,8 +596,8 @@ class TestDevDBClientGetDeviceInfo:
         reply.set = [entry]
         client._stub.getDeviceInfo.return_value = reply
 
-        result = client.get_device_info(["X:NOTREAL"])
-        assert result == {}
+        with pytest.raises(DeviceError, match="X:NOTREAL.*not found"):
+            client.get_device_info(["X:NOTREAL"])
         client.close()
 
     def test_device_index_zero_with_description_is_valid(self):

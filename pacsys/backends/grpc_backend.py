@@ -21,7 +21,7 @@ import numpy as np
 
 from pacsys.acnet.errors import ERR_RETRY, ERR_TIMEOUT, FACILITY_ACNET, normalize_error_code
 from pacsys.auth import Auth, JWTAuth
-from pacsys.backends import Backend, summarize_drfs, validate_alarm_dict
+from pacsys.backends import ALARM_READONLY_KEYS, Backend, summarize_drfs, validate_alarm_dict
 from pacsys.backends._dispatch import CallbackDispatcher
 from pacsys.backends._subscription import BufferedSubscriptionHandle
 from pacsys.drf_utils import is_chunked_historical_drf, prepare_for_write
@@ -160,6 +160,7 @@ def _value_to_proto_value(value: Value, *, for_write: bool = False) -> "device_p
 
 
 _BASIC_STATUS_KEYS = frozenset({"on", "ready", "remote", "positive", "ramp"})
+_PROTO_STATUS_BOOL: dict[str, bool] = {"True": True, "False": False}
 
 
 def _is_basic_status_dict(d: dict) -> TypeGuard[dict[str, bool]]:
@@ -171,33 +172,33 @@ def _dict_to_proto_alarm(d: dict, proto_value: "device_pb2.Value") -> None:
     """Populate proto Value with an alarm dict (analog or digital).
 
     Requires at least one type-specific key (minimum/maximum for analog,
-    nominal/mask for digital) to disambiguate alarm type.
+    nominal/mask for digital) to disambiguate alarm type. This is the reply
+    direction (supervised proxy forwarding a backend reading), so the
+    read-only status keys are encoded when present.
     """
-    alarm_type = validate_alarm_dict(d)
+    alarm_type = validate_alarm_dict({k: v for k, v in d.items() if k not in ALARM_READONLY_KEYS})
     if alarm_type == "analog":
         a = proto_value.anaAlarm
         if "minimum" in d:
             a.minimum = float(d["minimum"])
         if "maximum" in d:
             a.maximum = float(d["maximum"])
-        if "alarm_enable" in d:
-            a.alarmEnable = bool(d["alarm_enable"])
-        if "abort_inhibit" in d:
-            a.abortInhibit = bool(d["abort_inhibit"])
-        if "tries_needed" in d:
-            a.triesNeeded = int(d["tries_needed"])
     else:
         a = proto_value.digAlarm
         if "nominal" in d:
             a.nominal = int(d["nominal"])
         if "mask" in d:
             a.mask = int(d["mask"])
-        if "alarm_enable" in d:
-            a.alarmEnable = bool(d["alarm_enable"])
-        if "abort_inhibit" in d:
-            a.abortInhibit = bool(d["abort_inhibit"])
-        if "tries_needed" in d:
-            a.triesNeeded = int(d["tries_needed"])
+    for key, field, conv in (
+        ("alarm_enable", "alarmEnable", bool),
+        ("abort_inhibit", "abortInhibit", bool),
+        ("tries_needed", "triesNeeded", int),
+        ("alarm_status", "alarmStatus", bool),
+        ("abort", "abort", bool),
+        ("tries_now", "triesNow", int),
+    ):
+        if key in d:
+            setattr(a, field, conv(d[key]))
 
 
 def _proto_value_to_python(proto_value: "device_pb2.Value") -> tuple[Value, ValueType]:
@@ -240,7 +241,11 @@ def _proto_value_to_python(proto_value: "device_pb2.Value") -> tuple[Value, Valu
             "tries_now": alarm.triesNow,
         }, ValueType.DIGITAL_ALARM
     if value_type == "basicStatus":
-        return {k: v == "True" for k, v in proto_value.basicStatus.value.items()}, ValueType.BASIC_STATUS
+        # DPM/gRPC sends per-bit display text (text0/text1 from the digital status DB,
+        # e.g. {"On": "Yes", "Shutter": "Closed"}); the supervised proxy forwards a
+        # backend bool dict as "True"/"False" strings, which map back to bool here.
+        status = proto_value.basicStatus.value
+        return {k: _PROTO_STATUS_BOOL.get(v, v) for k, v in status.items()}, ValueType.BASIC_STATUS
     if value_type is None:
         raise ValueError("Proto Value has no value set (empty oneof)")
     raise ValueError(f"Unknown proto value type: {value_type!r}")

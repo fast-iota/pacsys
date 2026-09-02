@@ -38,14 +38,12 @@ from .devices import (
     DPM_TEST_PORT,
     NONEXISTENT_DEVICE,
     PERIODIC_DEVICE,
-    RAW_DEVICE,
     SCALAR_DEVICE,
     SCALAR_DEVICE_2,
     SCALAR_ELEMENT,
     SCALAR_SETPOINT,
     SCALAR_SETPOINT_RAW,
     STATUS_CONTROL_DEVICE,
-    STATUS_DEVICE,
     TIMEOUT_BATCH,
     TIMEOUT_READ,
     TIMEOUT_STREAM_EVENT,
@@ -636,15 +634,16 @@ class TestSupervisedRateLimitPolicy:
 # Proxy vs Direct gRPC Comparison Tests
 # =============================================================================
 
-# DRFs to compare: (drf, description)
+# DRFs to compare: (drf, description). Raw uses a constant device so sequential live
+# reads match byte-for-byte. Status is excluded: DPM/gRPC returns per-bit display text
+# while the HTTP-backed proxy returns on/ready/remote/positive booleans (see specs/backends.md).
 _COMPARISON_DRFS = [
     (SCALAR_DEVICE, "scalar"),
     (SCALAR_DEVICE_2, "scalar 2"),
     (ARRAY_DEVICE, "array"),
     (SCALAR_ELEMENT, "array element"),
-    (RAW_DEVICE, "raw"),
+    (f"{SCALAR_DEVICE_2}.RAW", "raw"),
     (DESCRIPTION_DEVICE, "text/description"),
-    (STATUS_DEVICE, "basic status"),
     (ANALOG_ALARM_DEVICE, "analog alarm"),
     (DIGITAL_ALARM_DEVICE, "digital alarm"),
 ]

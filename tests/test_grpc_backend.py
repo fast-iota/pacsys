@@ -783,10 +783,21 @@ class TestValueConversion:
         assert proto.digAlarm.alarmEnable is False
         assert proto.digAlarm.triesNeeded == 2
 
-    @pytest.mark.parametrize("key", ["alarm_status", "abort", "tries_now"])
-    def test_alarm_dict_rejects_readonly_keys(self, key):
-        with pytest.raises(ValueError, match="Read-only alarm dict keys"):
-            grpc_backend._value_to_proto_value({"minimum": 1.0, key: 1})
+    def test_alarm_dict_readonly_keys_round_trip(self):
+        """A full backend alarm reading (with status keys) survives proxy forwarding."""
+        original = {
+            "nominal": 9,
+            "mask": 61,
+            "alarm_enable": False,
+            "alarm_status": True,
+            "abort": True,
+            "abort_inhibit": False,
+            "tries_needed": 1,
+            "tries_now": 3,
+        }
+        result, vtype = grpc_backend._proto_value_to_python(grpc_backend._value_to_proto_value(original))
+        assert vtype == ValueType.DIGITAL_ALARM
+        assert result == original
 
     def test_alarm_dict_unknown_keys_raises(self):
         with pytest.raises(ValueError, match="Unknown alarm dict keys"):
@@ -821,6 +832,14 @@ class TestValueConversion:
         assert vtype == ValueType.BASIC_STATUS
         assert result == original
         assert all(isinstance(v, bool) for v in result.values())
+
+    def test_basic_status_preserves_server_bit_text(self):
+        """Real DPM/gRPC sends per-bit display text, which must not collapse to False."""
+        proto = device_pb2.Value()
+        proto.basicStatus.value.update({"On": "Yes", "Shutter Status": "Closed", "Heartbeat": " [-]"})
+        result, vtype = grpc_backend._proto_value_to_python(proto)
+        assert vtype == ValueType.BASIC_STATUS
+        assert result == {"On": "Yes", "Shutter Status": "Closed", "Heartbeat": " [-]"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

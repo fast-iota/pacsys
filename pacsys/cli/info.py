@@ -15,6 +15,7 @@ from pacsys.cli._common import (
 )
 from pacsys.device import Device
 from pacsys.drf_utils import get_device_name
+from pacsys.errors import DeviceError
 
 
 @dataclass(frozen=True)
@@ -37,8 +38,6 @@ def _is_noprop(msg: str | Exception | None) -> bool:
 
 def _noprop_str(err: Exception | str | None, result=None) -> str:
     """Format a NOPROP error as 'DRF: message' without doubled suffixes."""
-    from pacsys.errors import DeviceError
-
     if isinstance(err, DeviceError):
         return f"{err.drf}: {err.message}"
     if err is not None:
@@ -374,6 +373,8 @@ def _get_devdb():
     try:
         devdb.get_device_info(["Z:NO_OP"], timeout=2.0)
         return devdb
+    except DeviceError:
+        return devdb  # server answered (Z:NO_OP is not in DevDB); only transport failures mean unreachable
     except Exception:  # noqa: BLE001
         print(
             f"Warning: DevDB unreachable at {devdb._host}:{devdb._port} — some metadata will be unavailable",

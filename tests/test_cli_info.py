@@ -460,3 +460,21 @@ class TestDeviceIndex:
         rc, out, _ = _run(["--format", "json", "M:OUTTMP"], _mock_device_factory(), devdb_return=None)
         data = json.loads(out.strip())
         assert "device_index" not in data
+
+
+class TestDevDBProbe:
+    def _probe(self, side_effect):
+        from pacsys.cli.info import _get_devdb
+
+        devdb = mock.Mock(_host="h", _port=1)
+        devdb.get_device_info.side_effect = side_effect
+        with mock.patch("pacsys._get_global_devdb", return_value=devdb), contextlib.redirect_stderr(io.StringIO()):
+            return _get_devdb()
+
+    def test_not_found_reply_means_reachable(self):
+        from pacsys.errors import DeviceError
+
+        assert self._probe(DeviceError("Z:NO_OP", 0, -1, "not found")) is not None
+
+    def test_transport_failure_means_unreachable(self):
+        assert self._probe(RuntimeError("connection refused")) is None

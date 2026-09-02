@@ -11,6 +11,7 @@ All real tests should import from this module.
 """
 
 import asyncio
+import functools
 import math
 import os
 import socket
@@ -29,15 +30,19 @@ _T = TypeVar("_T")
 # DPM Test Server
 # =============================================================================
 
-DPM_TEST_HOST = "localhost"
+DPM_TEST_HOST = "127.0.0.1"  # not "localhost": the ssh tunnel also listens on ::1, which drops connections
 DPM_TEST_PORT = 33232
 
 # =============================================================================
 # ACNET TCP Test Server (raw acnetd protocol, tunneled)
 # =============================================================================
 
-ACNET_TCP_TEST_HOST = "localhost"
+ACNET_TCP_TEST_HOST = "127.0.0.1"
 ACNET_TCP_TEST_PORT = 34567
+# acnetd drops a fresh TCP connection that arrives right after the previous one from this
+# client closed (~15% at zero gap, none at >= 1 s; see specs/protocols.md). Sleep this long
+# after closing an acnetd connection before opening another.
+ACNETD_RECONNECT_SETTLE = 1.0
 
 
 # =============================================================================
@@ -58,7 +63,7 @@ def dpm_server_available() -> bool:
 def grpc_server_available() -> bool:
     """Check if gRPC server is reachable at localhost:23456."""
     try:
-        sock = socket.create_connection(("localhost", 23456), timeout=2.0)
+        sock = socket.create_connection(("127.0.0.1", 23456), timeout=2.0)
         sock.close()
         return True
     except (TimeoutError, ConnectionRefusedError, OSError):
@@ -89,18 +94,19 @@ def acl_server_available() -> bool:
 def dmq_server_available() -> bool:
     """Check if RabbitMQ broker is reachable at localhost:5672."""
     try:
-        sock = socket.create_connection(("localhost", 5672), timeout=2.0)
+        sock = socket.create_connection(("127.0.0.1", 5672), timeout=2.0)
         sock.close()
         return True
     except (TimeoutError, ConnectionRefusedError, OSError, socket.gaierror):
         return False
 
 
+@functools.cache
 def acnet_tcp_server_available() -> bool:
     """Check if acnetd is reachable via TCP tunnel.
 
     Does a full anonymous CONNECT (acnetd sends nothing until commanded, so a
-    plain TCP connect would accept any listener).
+    plain TCP connect would accept any listener). Cached: two markers call it.
     """
     import concurrent.futures
 
@@ -113,6 +119,7 @@ def acnet_tcp_server_available() -> bool:
             conn.connect()
         finally:
             conn.close()
+            time.sleep(ACNETD_RECONNECT_SETTLE)
         return True
     # concurrent.futures.TimeoutError is distinct from asyncio's on py3.10
     # (sync wrapper delegates via Future.result(timeout))
@@ -328,7 +335,8 @@ LOGGER_DEVICE_WITH_EVENT = "M:OUTTMP@P,1000,true<-LOGGER:1736942400000:173694600
 # (DPM auto-selects best logger when omitted; see LoggerConfigCache.bestLoggers)
 LOGGER_DEVICE_EXPLICIT_NODE = "M:OUTTMP<-LOGGER:1736942400000:1736946000000:ArkIv"
 LOGGER_DEVICE_BAD_NODE = "M:OUTTMP<-LOGGER:1736942400000:1736946000000:BOGUSLOGGER99"
-LOGGER_SINGLE_DEVICE = "M:OUTTMP<-LOGGERSINGLE:ArkIv:1736944200:60"
+# ArkIv logs M:OUTTMP every 300 s; the +/- accuracy window must cover one full period
+LOGGER_SINGLE_DEVICE = "M:OUTTMP<-LOGGERSINGLE:ArkIv:1736944200:600"
 
 # =============================================================================
 # Alarm Value Transformations
