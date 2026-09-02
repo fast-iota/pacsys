@@ -354,6 +354,24 @@ class TestDigitalStatusFromDevdbBits:
         assert status["Polarity"].is_set is False
         assert status["Polarity"].value == "Minus"
 
+    def test_legacy_attrs_from_real_short_names(self):
+        """Real DevDB short names (OnOff, ReadyTripped, RampDC) map to on/ready/ramp."""
+
+        def bd(mask, short, long):
+            return StatusBitDef(
+                mask=mask, match=mask, invert=False, short_name=short, long_name=long,
+                true_str="T", false_str="F", true_color=0, true_char=".", false_color=0, false_char="*",
+            )  # fmt: skip
+
+        defs = (
+            bd(1, "OnOff", "On/Off"),
+            bd(2, "ReadyTripped", "Ready/Tripped"),
+            bd(8, "Polarity", "Polarity"),
+            bd(512, "RampDC", "Ramp/DC"),
+        )
+        status = DigitalStatus.from_devdb_bits("Z:ACLTST", raw_value=0b1000000011, bit_defs=defs)
+        assert (status.on, status.ready, status.positive, status.ramp, status.remote) == (True, True, False, True, None)
+
     def test_all_active(self):
         """All bits active."""
         status = DigitalStatus.from_devdb_bits(
