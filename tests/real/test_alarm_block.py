@@ -212,6 +212,62 @@ class TestDigitalAlarm:
         print(f"\n{device}: {exc_info.value}")
 
 
+def _flags_word(reading) -> int:
+    """FLAGS arrives as a float word from DPM/DMQ/gRPC and as hex text (e.g. 'C220') from ACL."""
+    assert reading.ok, f"FLAGS read failed: {reading.message}"
+    if reading.value_type == ValueType.TEXT:
+        return int(reading.value, 16)
+    assert reading.value_type == ValueType.SCALAR
+    assert float(reading.value).is_integer(), f"FLAGS not integral: {reading.value!r}"
+    return int(reading.value)
+
+
+class TestFlagsField:
+    """`.ANALOG.FLAGS` / `.DIGITAL.FLAGS` must equal the flags word of the raw 20-byte block."""
+
+    @pytest.mark.parametrize(
+        "drf,prop,alarm_cls",
+        [
+            (ANALOG_ALARM_DEVICE, "ANALOG", AnalogAlarm),
+            (SCALAR_DEVICE_2, "ANALOG", AnalogAlarm),
+            (DIGITAL_ALARM_DEVICE, "DIGITAL", DigitalAlarm),
+            (SCALAR_DEVICE_2, "DIGITAL", DigitalAlarm),
+        ],
+    )
+    def test_flags_matches_raw_block(self, read_backend_cls, drf, prop, alarm_cls):
+        device = get_device_name(drf)
+        try:
+            alarm = alarm_cls.read(device, read_backend_cls)
+        except DeviceError as e:
+            pytest.skip(f"{device} has no {prop.lower()} alarm: {e}")
+
+        reading = read_backend_cls.get(f"{device}.{prop}.FLAGS", timeout=TIMEOUT_READ)
+        flags = _flags_word(reading)
+        print(f"\n{device}.{prop}.FLAGS = {reading.value!r} -> 0x{flags:04X}, raw block flags 0x{alarm.flags:04X}")
+
+        assert 0 <= flags <= 0xFFFF
+        assert flags == alarm.flags, "FLAGS field disagrees with raw block flags word"
+
+        # Independent cross-check against server-side structured interpretation
+        structured = read_backend_cls.get(f"{device}.{prop}", timeout=TIMEOUT_READ)
+        if structured.ok and structured.value_type in (ValueType.ANALOG_ALARM, ValueType.DIGITAL_ALARM):
+            s = structured.value
+            assert bool(flags & AlarmFlags.ENABLE) == s["alarm_enable"], "ENABLE bit mismatch"
+            assert bool(flags & AlarmFlags.BAD) == s["alarm_status"], "BAD bit mismatch"
+            assert bool(flags & AlarmFlags.ABORT) == s["abort"], "ABORT bit mismatch"
+            assert bool(flags & AlarmFlags.ABORT_INHIBIT) == s["abort_inhibit"], "ABORT_INHIBIT bit mismatch"
+
+    @requires_dpm_http
+    @pytest.mark.parametrize("prop", ["ANALOG", "DIGITAL"])
+    def test_raw_block_bytes_match_dpm(self, read_backend_cls, dpm_http_backend_cls, prop):
+        """Every backend must return the alarm block in the same (little-endian wire) byte order as DPM."""
+        drf = f"{get_device_name(ANALOG_ALARM_DEVICE)}.{prop}{{0:20}}.RAW"
+        expected = dpm_http_backend_cls.read(drf, timeout=TIMEOUT_READ)
+        actual = read_backend_cls.read(drf, timeout=TIMEOUT_READ)
+        assert isinstance(actual, bytes) and len(actual) == 20
+        assert actual == expected, f"{drf}: {actual.hex()} != DPM {expected.hex()}"
+
+
 @requires_dpm_http
 class TestFTD:
     """Tests for FTD field interpretation."""

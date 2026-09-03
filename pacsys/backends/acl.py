@@ -162,13 +162,15 @@ def _acl_read_command(drf: str) -> tuple[str, str, str]:
 
 
 def _parse_raw_hex(text: str) -> bytes:
-    """Parse ACL ``/raw`` hex output into bytes.
+    """Parse ACL ``/raw`` output into little-endian wire bytes (same layout as DPM/gRPC ``.RAW``).
 
-    ACL ``/raw`` qualifier returns raw data in hex, e.g.::
+    ACL prints one big-endian hex number per field (structure-aware, not wire bytes), e.g.::
 
-        M:OUTTMP = 0x42900000
-        M:OUTTMP = 0x4290 0x0000
-        M:OUTTMP = 42 90 00 00
+        M:OUTTMP       = 2C9F                                        -> 9f 2c
+        Z:ACLTST       = 000042F0                                    -> f0 42 00 00
+        N:H801 = C220 0000E7D8 0000F4A4 00 01 00 00 0000 0002 0000   (20-byte alarm block)
+
+    so each token's bytes are reversed and the tokens concatenated.
     """
     text = text.strip()
     if "=" in text:
@@ -178,24 +180,16 @@ def _parse_raw_hex(text: str) -> bytes:
     if not text:
         return b""
 
-    # Collect hex digits from tokens, stopping at first non-hex token
-    hex_parts: list[str] = []
+    parts: list[bytes] = []
     for token in text.split():
         clean = token.lower().removeprefix("0x")
-        if clean and all(c in "0123456789abcdef" for c in clean):
-            hex_parts.append(clean)
-        else:
+        if not clean or any(c not in "0123456789abcdef" for c in clean):
             break  # units text or other non-hex suffix
+        parts.append(bytes.fromhex(clean.zfill(len(clean) + len(clean) % 2))[::-1])
 
-    hex_str = "".join(hex_parts)
-    if not hex_str:
+    if not parts:
         raise ValueError(f"No hex data found in ACL /raw output: {text!r}")
-
-    # Pad to even length for bytes.fromhex
-    if len(hex_str) % 2:
-        hex_str = "0" + hex_str
-
-    return bytes.fromhex(hex_str)
+    return b"".join(parts)
 
 
 def _parse_response_line(drf: str, line: str) -> tuple[Value, ValueType]:
