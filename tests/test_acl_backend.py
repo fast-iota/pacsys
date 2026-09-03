@@ -197,17 +197,21 @@ class TestAclReadCommand:
 
 
 class TestParseRawHex:
-    """Tests for _parse_raw_hex - parses ACL /raw hex output."""
+    """Tests for _parse_raw_hex - ACL prints big-endian numbers per field; we return LE wire bytes."""
 
     @pytest.mark.parametrize(
         ("line", "expected"),
         [
-            ("M:OUTTMP = 0x42900000", bytes.fromhex("42900000")),
-            ("M:OUTTMP = 0x4290 0x0000", bytes.fromhex("42900000")),
-            ("M:OUTTMP = 42900000", bytes.fromhex("42900000")),
-            ("M:OUTTMP = 42 90 00 00", bytes.fromhex("42900000")),
-            ("0x42900000", bytes.fromhex("42900000")),
+            ("M:OUTTMP       = 2C9F", bytes.fromhex("9f2c")),
+            ("Z:ACLTST       = 000042F0", bytes.fromhex("f0420000")),
+            # 20-byte alarm block: flags, value1, value2, 4 single bytes, 3 words
+            (
+                "N:H801 = C220 0000E7D8 0000F4A4 00 01 00 00 0000 0002 0000",
+                bytes.fromhex("20c2d8e70000a4f4000000010000000002000000"),
+            ),
+            ("0x42900000", bytes.fromhex("00009042")),
             ("M:OUTTMP = 0xA", bytes.fromhex("0a")),
+            ("M:OUTTMP = 2C9F degF", bytes.fromhex("9f2c")),
             ("M:OUTTMP = ", b""),
         ],
     )
@@ -320,19 +324,19 @@ class TestRawRead:
 
     def test_get_raw_returns_bytes(self):
         with mock.patch("httpx.Client.get") as mock_get:
-            mock_get.return_value = MockACLResponse("M:OUTTMP = 0x42900000")
+            mock_get.return_value = MockACLResponse("M:OUTTMP       = 2C9F")
             with ACLBackend() as backend:
                 reading = backend.get("M:OUTTMP.RAW")
-                assert reading.value == bytes.fromhex("42900000")
+                assert reading.value == bytes.fromhex("9f2c")
                 assert reading.value_type == ValueType.RAW
                 assert reading.ok
 
     def test_batch_mixed_raw_and_scaled(self):
         with mock.patch("httpx.Client.get") as mock_get:
-            mock_get.return_value = MockACLResponse("M:OUTTMP = 0x42900000\nG:AMANDA       =  66")
+            mock_get.return_value = MockACLResponse("M:OUTTMP       = 2C9F\nG:AMANDA       =  66")
             with ACLBackend() as backend:
                 readings = backend.get_many(["M:OUTTMP.RAW", "G:AMANDA"])
-                assert readings[0].value == bytes.fromhex("42900000")
+                assert readings[0].value == bytes.fromhex("9f2c")
                 assert readings[0].value_type == ValueType.RAW
                 assert readings[1].value == 66.0
                 assert readings[1].value_type == ValueType.SCALAR
@@ -344,13 +348,13 @@ class TestRawRead:
                 # Batch: error triggers fallback
                 MockACLResponse("Invalid device - DIO_NO_SUCH"),
                 # Individual: M:OUTTMP.RAW succeeds
-                MockACLResponse("M:OUTTMP = 0xDEADBEEF"),
+                MockACLResponse("M:OUTTMP       = DEADBEEF"),
                 # Individual: Z:BAD fails
                 MockACLResponse("Invalid device name (Z:BAD) - DIO_NO_SUCH"),
             ]
             with ACLBackend() as backend:
                 readings = backend.get_many(["M:OUTTMP.RAW", "Z:BAD"])
-                assert readings[0].value == bytes.fromhex("DEADBEEF")
+                assert readings[0].value == bytes.fromhex("EFBEADDE")
                 assert readings[0].value_type == ValueType.RAW
                 assert readings[1].is_error
 
