@@ -705,6 +705,8 @@ class TestLoggerRead:
         assert isinstance(r.value, dict)
         np.testing.assert_array_equal(r.value["data"], [1.0, 2.0, 3.0, 4.0, 5.0])
         np.testing.assert_array_equal(r.value["micros"], [100, 200, 300, 400, 500])
+        # Non-restartable server job: the list would ignore a repeat, so the core is closed
+        assert conn._closed is True
 
     @pytest.mark.asyncio
     async def test_logger_empty_window(self, make_core):
