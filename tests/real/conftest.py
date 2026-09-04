@@ -30,6 +30,8 @@ from .devices import (
     ACNET_TCP_TEST_PORT,
     ACNETD_RECONNECT_SETTLE,
     ALLOWED_WRITE_DEVICES,
+    DMQ_TEST_HOST,
+    DMQ_TEST_PORT,
     DPM_TEST_HOST,
     DPM_TEST_PORT,
     SSH_DEST_HOST,
@@ -136,7 +138,7 @@ def dmq_backend():
     from pacsys.backends.dmq import DMQBackend
 
     auth = KerberosAuth()
-    backend = DMQBackend(host="localhost", port=5672, auth=auth)
+    backend = DMQBackend(host=DMQ_TEST_HOST, port=DMQ_TEST_PORT, auth=auth)
     yield backend
     backend.close()
 
@@ -272,7 +274,7 @@ def read_backend(request):
         from pacsys.auth import KerberosAuth
         from pacsys.backends.dmq import DMQBackend
 
-        backend = DMQBackend(host="localhost", port=5672, auth=KerberosAuth())
+        backend = DMQBackend(host=DMQ_TEST_HOST, port=DMQ_TEST_PORT, auth=KerberosAuth())
     elif backend_type == "dpm_http":
         if not dpm_server_available():
             pytest.skip("DPM server not available")
@@ -309,7 +311,7 @@ def read_backend_cls(request):
         from pacsys.auth import KerberosAuth
         from pacsys.backends.dmq import DMQBackend
 
-        backend = DMQBackend(host="localhost", port=5672, auth=KerberosAuth())
+        backend = DMQBackend(host=DMQ_TEST_HOST, port=DMQ_TEST_PORT, auth=KerberosAuth())
     elif backend_type == "dpm_http":
         if not dpm_server_available():
             pytest.skip("DPM server not available")
@@ -360,7 +362,7 @@ def write_backend(request):
         from pacsys.auth import KerberosAuth
         from pacsys.backends.dmq import DMQBackend
 
-        backend = DMQBackend(host="localhost", auth=KerberosAuth())
+        backend = DMQBackend(host=DMQ_TEST_HOST, port=DMQ_TEST_PORT, auth=KerberosAuth())
     else:
         raise ValueError(f"Unknown backend type: {backend_type}")
 
@@ -389,7 +391,7 @@ def write_backend_cls(request):
         from pacsys.auth import KerberosAuth
         from pacsys.backends.dmq import DMQBackend
 
-        backend = DMQBackend(host="localhost", auth=KerberosAuth())
+        backend = DMQBackend(host=DMQ_TEST_HOST, port=DMQ_TEST_PORT, auth=KerberosAuth())
     else:
         raise ValueError(f"Unknown backend type: {backend_type}")
 
