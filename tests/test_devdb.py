@@ -520,6 +520,37 @@ class TestDevDBClientConstruction:
         assert client._port == 22222
         client.close()
 
+    def test_default_target_is_tls_ingress(self, monkeypatch):
+        monkeypatch.delenv("PACSYS_DEVDB_HOST", raising=False)
+        monkeypatch.delenv("PACSYS_DEVDB_PORT", raising=False)
+        monkeypatch.delenv("PACSYS_DEVDB_TLS", raising=False)
+        with (
+            mock.patch("pacsys.devdb.grpc.secure_channel") as secure,
+            mock.patch("pacsys.devdb.grpc.insecure_channel") as insecure,
+        ):
+            DevDBClient().close()
+        secure.assert_called_once()
+        assert secure.call_args.args[0] == "ad-services.fnal.gov:443"
+        insecure.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("env", "explicit", "expect_tls"), [("0", None, False), ("1", None, True), ("1", False, False)]
+    )
+    def test_tls_env_and_override(self, monkeypatch, env, explicit, expect_tls):
+        monkeypatch.setenv("PACSYS_DEVDB_TLS", env)
+        with (
+            mock.patch("pacsys.devdb.grpc.secure_channel") as secure,
+            mock.patch("pacsys.devdb.grpc.insecure_channel") as insecure,
+        ):
+            DevDBClient(host="localhost", port=99999, tls=explicit).close()
+        assert secure.called is expect_tls
+        assert insecure.called is not expect_tls
+
+    def test_tls_env_rejects_garbage(self, monkeypatch):
+        monkeypatch.setenv("PACSYS_DEVDB_TLS", "yes")
+        with pytest.raises(ValueError, match="PACSYS_DEVDB_TLS"):
+            DevDBClient(host="localhost", port=99999)
+
 
 # ─── DevDBClient get_device_info with Mock ───────────────────────────────────
 

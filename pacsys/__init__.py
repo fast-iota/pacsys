@@ -184,8 +184,8 @@ def configure(
         dpm_port: DPM proxy port (default: from PACSYS_DPM_PORT or 6802)
         pool_size: Connection pool size (default: from PACSYS_POOL_SIZE or 4)
         default_timeout: Default operation timeout in seconds (default: from PACSYS_TIMEOUT or 5.0)
-        devdb_host: DevDB gRPC hostname (default: from PACSYS_DEVDB_HOST or ad-services.fnal.gov/services.devdb)
-        devdb_port: DevDB gRPC port (default: from PACSYS_DEVDB_PORT or 6802)
+        devdb_host: DevDB gRPC hostname (default: from PACSYS_DEVDB_HOST or ad-services.fnal.gov)
+        devdb_port: DevDB gRPC port (default: from PACSYS_DEVDB_PORT or 443; TLS unless PACSYS_DEVDB_TLS=0)
         backend: Backend type - one of "dpm", "grpc", "dmq", "acl" (default: "dpm")
         auth: Authentication object (KerberosAuth or JWTAuth) for writes,
               or "krb" as shortcut for KerberosAuth()
@@ -395,14 +395,14 @@ def _get_global_devdb() -> Optional["DevDBClient"]:
         if _devdb_initialized:
             return _global_devdb
 
-        from pacsys.devdb import DEVDB_AVAILABLE, DevDBClient
+        from pacsys.devdb import DEFAULT_HOST, DEFAULT_PORT, DEVDB_AVAILABLE, DevDBClient
 
         if not DEVDB_AVAILABLE:
             _devdb_initialized = True
             return None
 
-        host = _config_devdb_host or _env_devdb_host or "ad-services.fnal.gov/services.devdb"
-        port = _config_devdb_port or _env_devdb_port or 6802
+        host = _config_devdb_host or _env_devdb_host or DEFAULT_HOST
+        port = _config_devdb_port or _env_devdb_port or DEFAULT_PORT
         _global_devdb = DevDBClient(host=host, port=port)
         _devdb_initialized = True
         return _global_devdb
