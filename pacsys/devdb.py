@@ -55,6 +55,19 @@ except (ImportError, TypeError) as e:
     DevDB_pb2_grpc = cast("Any", None)
     _import_error = str(e)
 
+# Kubernetes ingress; routes on the gRPC method path (/services.devdb.DevDB/...) and only serves TLS
+DEFAULT_HOST = "ad-services.fnal.gov"
+DEFAULT_PORT = 443
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    if raw in ("0", "1"):
+        return raw == "1"
+    raise ValueError(f"{name} must be 0 or 1, got {raw!r}")
+
 
 # ─── Result Dataclasses ──────────────────────────────────────────────────────
 
@@ -372,8 +385,10 @@ class DevDBClient:
     """Synchronous gRPC client for DevDB device metadata queries.
 
     Args:
-        host: DevDB gRPC server hostname (default: from PACSYS_DEVDB_HOST or ad-services.fnal.gov/services.devdb)
-        port: DevDB gRPC server port (default: from PACSYS_DEVDB_PORT or 6802)
+        host: DevDB gRPC server hostname (default: from PACSYS_DEVDB_HOST or ad-services.fnal.gov)
+        port: DevDB gRPC server port (default: from PACSYS_DEVDB_PORT or 443)
+        tls: Use TLS (default: from PACSYS_DEVDB_TLS or on). The production ingress only serves
+            TLS; turn off for a plaintext SSH tunnel.
         timeout: RPC timeout in seconds (default: 5.0)
         cache_ttl: TTL for cached results in seconds (default: 3600.0)
 
@@ -385,22 +400,25 @@ class DevDBClient:
         self,
         host: str | None = None,
         port: int | None = None,
+        tls: bool | None = None,
         timeout: float | None = None,
         cache_ttl: float = 3600.0,
     ):
         if not DEVDB_AVAILABLE:
             raise ImportError(f"gRPC not available for DevDB: {_import_error}")
 
-        self._host = (
-            host if host is not None else os.environ.get("PACSYS_DEVDB_HOST", "ad-services.fnal.gov/services.devdb")
-        )
-        self._port = port if port is not None else int(os.environ.get("PACSYS_DEVDB_PORT", "6802"))
+        self._host = host if host is not None else os.environ.get("PACSYS_DEVDB_HOST", DEFAULT_HOST)
+        self._port = port if port is not None else int(os.environ.get("PACSYS_DEVDB_PORT", str(DEFAULT_PORT)))
+        self._tls = tls if tls is not None else _env_flag("PACSYS_DEVDB_TLS", True)
         self._timeout = timeout if timeout is not None else 5.0
         self._cache = _TTLCache[DeviceInfoResult](cache_ttl)
         self._closed = False
 
-        target = self._host if "/" in self._host else f"{self._host}:{self._port}"
-        self._channel = grpc.insecure_channel(target)
+        target = f"{self._host}:{self._port}"
+        if self._tls:
+            self._channel = grpc.secure_channel(target, grpc.ssl_channel_credentials())
+        else:
+            self._channel = grpc.insecure_channel(target)
         self._stub = DevDB_pb2_grpc.DevDBStub(self._channel)
         _live_clients.add(self)
         logger.debug("DevDB client connected to %s", target)

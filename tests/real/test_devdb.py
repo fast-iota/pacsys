@@ -15,6 +15,7 @@ from pacsys.errors import DeviceError
 
 DEVDB_HOST = os.environ.get("PACSYS_DEVDB_HOST", "127.0.0.1")
 DEVDB_PORT = int(os.environ.get("PACSYS_DEVDB_PORT", "45678"))
+DEVDB_TLS = os.environ.get("PACSYS_DEVDB_TLS", "0") == "1"  # ssh tunnel is plaintext
 
 
 def devdb_server_available() -> bool:
@@ -36,7 +37,7 @@ requires_devdb = pytest.mark.skipif(
 
 @pytest.fixture(scope="module")
 def devdb():
-    client = DevDBClient(host=DEVDB_HOST, port=DEVDB_PORT)
+    client = DevDBClient(host=DEVDB_HOST, port=DEVDB_PORT, tls=DEVDB_TLS)
     yield client
     client.close()
 
