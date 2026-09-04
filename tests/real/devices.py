@@ -33,6 +33,10 @@ _T = TypeVar("_T")
 DPM_TEST_HOST = "127.0.0.1"  # not "localhost": the ssh tunnel also listens on ::1, which drops connections
 DPM_TEST_PORT = 33232
 
+# DMQ (RabbitMQ) tunnel - same loopback caveat as DPM (pika tries ::1 first for "localhost")
+DMQ_TEST_HOST = "127.0.0.1"
+DMQ_TEST_PORT = 5672
+
 # =============================================================================
 # ACNET TCP Test Server (raw acnetd protocol, tunneled)
 # =============================================================================
@@ -92,9 +96,9 @@ def acl_server_available() -> bool:
 
 
 def dmq_server_available() -> bool:
-    """Check if RabbitMQ broker is reachable at localhost:5672."""
+    """Check if RabbitMQ broker is reachable via the tunnel."""
     try:
-        sock = socket.create_connection(("127.0.0.1", 5672), timeout=2.0)
+        sock = socket.create_connection((DMQ_TEST_HOST, DMQ_TEST_PORT), timeout=2.0)
         sock.close()
         return True
     except (TimeoutError, ConnectionRefusedError, OSError, socket.gaierror):
@@ -153,7 +157,7 @@ requires_acl = pytest.mark.skipif(
 
 requires_dmq = pytest.mark.skipif(
     not dmq_server_available(),
-    reason="DMQ/RabbitMQ broker not available at localhost:5672",
+    reason=f"DMQ/RabbitMQ broker not available at {DMQ_TEST_HOST}:{DMQ_TEST_PORT}",
 )
 
 requires_acnet_tcp = pytest.mark.skipif(
