@@ -940,8 +940,12 @@ class DPMHTTPBackend(Backend):
 
         # Repeating events (@p/@e/...) keep producing replies after the first —
         # a connection that carried one must be closed, not re-pooled, or stale
-        # replies get attributed to the next borrower's refs.
-        reuse_safe = all(is_historical_drf(d) or is_immediate_only(d) for d in prepared_drfs)
+        # replies get attributed to the next borrower's refs. LOGGER/LOGGERDURATION
+        # jobs are not restartable server-side: the list silently ignores a later
+        # request with the same window/duration, so those connections are closed too.
+        reuse_safe = (
+            all(is_historical_drf(d) or is_immediate_only(d) for d in prepared_drfs) and not chunked_logger_refs
+        )
 
         pool = self._get_pool()
         conn_broken = False

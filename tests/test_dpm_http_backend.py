@@ -367,6 +367,8 @@ class TestHistoricalReads:
         with mock.patch("socket.socket", return_value=mock_socket):
             with DPMHTTPBackend() as backend:
                 reading = backend.get(drf, timeout=1.0)
+                # Non-restartable server job: the list would ignore a repeat, so never re-pool
+                assert backend._get_pool().available_count == 0
 
         assert reading.ok
         assert reading.value_type == ValueType.SCALAR_ARRAY

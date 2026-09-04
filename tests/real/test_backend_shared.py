@@ -642,6 +642,12 @@ class TestBackendLogger:
         reading = read_backend.get(LOGGER_DEVICE_EXPLICIT_NODE, timeout=30.0)
         self._assert_logger_reading(reading, LOGGER_DEVICE_EXPLICIT_NODE)
 
+    def test_get_logger_repeat_same_window(self, read_backend: Backend):
+        """Same LOGGER window twice on one backend: server ignores a repeat on a reused list."""
+        _skip_if_not_dpm(read_backend)
+        for _ in range(2):
+            self._assert_logger_reading(read_backend.get(LOGGER_DEVICE, timeout=5.0), LOGGER_DEVICE)
+
     def test_get_logger_single(self, read_backend: Backend):
         """LOGGERSINGLE returns one scalar without a chunk terminator."""
         _skip_if_not_dpm(read_backend)
