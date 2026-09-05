@@ -165,6 +165,19 @@ def parse_value(s: str) -> float | str | list | BasicControl:
     return value
 
 
+def _join_elements(seq: Any, number_format: str | None) -> str:
+    """Space-join array elements: floats/ints get the spec (floats default to 'g'), text stays verbatim."""
+
+    def one(v: Any) -> str:
+        if isinstance(v, str):
+            return v
+        if number_format:
+            return format(v, number_format)
+        return format(v, "g") if isinstance(v, float) else str(v)
+
+    return " ".join(one(v) for v in seq)
+
+
 def format_value(value: Any, number_format: str | None) -> str:
     """Format a value for display.
 
@@ -173,24 +186,14 @@ def format_value(value: Any, number_format: str | None) -> str:
     Bytes: hex string. Scalars: format() if spec. Strings: str().
     """
     np = sys.modules.get("numpy")
-    if np is not None and isinstance(value, np.ndarray):
-        fmt = number_format or "g"
-        return " ".join(format(v, fmt) for v in value)
-    if isinstance(value, list):
-        if number_format:
-            return " ".join(format(v, number_format) for v in value)
-        return " ".join(format(v, "g") if isinstance(v, float) else str(v) for v in value)
+    if isinstance(value, list) or (np is not None and isinstance(value, np.ndarray)):
+        return _join_elements(value, number_format)
     if isinstance(value, dict):
         # Timed scalar array — show just the data portion
         if "data" in value:
             data = value["data"]
-            if np is not None and isinstance(data, np.ndarray):
-                fmt = number_format or "g"
-                return " ".join(format(v, fmt) for v in data)
-            if isinstance(data, list):
-                if number_format:
-                    return " ".join(format(v, number_format) for v in data)
-                return " ".join(format(v, "g") if isinstance(v, float) else str(v) for v in data)
+            if isinstance(data, list) or (np is not None and isinstance(data, np.ndarray)):
+                return _join_elements(data, number_format)
             return str(data)
         # Basic status — compact key=T/F
         if value and all(isinstance(v, bool) for v in value.values()):

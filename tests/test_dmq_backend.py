@@ -591,6 +591,30 @@ class TestDMQSetupRaces:
 
         assert job.done_event.is_set() and job.error is None
 
+    def test_read_job_heartbeats_until_complete(self):
+        """Reads on rare events outlive the server's 30 s idle limit only if the job heartbeats."""
+        backend, conn = self._bare_backend()
+        backend._create_gss_context = mock.MagicMock(return_value=mock.MagicMock(step=mock.MagicMock(return_value=b"")))
+        backend._send_init = mock.MagicMock(return_value="init-id")
+        backend._send_drop = mock.MagicMock()
+        channel = MockSelectChannel(conn, [], [])
+        backend._setup_channel_async = lambda on_ready, on_channel_open=None, **_: (
+            on_channel_open(channel),
+            on_ready(channel, "read-exchange", "q"),
+        )
+        job = _ReadJob(drfs=[TEMP_DEVICE], prepared_drfs=[TEMP_DEVICE], drf_to_idx={TEMP_DEVICE: 0})
+
+        backend._start_read_async(job)
+
+        assert job.heartbeat_handle is not None
+        conn.ioloop._timers.pop(job.heartbeat_handle)()  # fire the timer early
+        assert channel._published_messages[-1]["routing_key"] == "H"
+        assert job.heartbeat_handle in conn.ioloop._timers  # re-armed
+
+        backend._complete_read(job)
+
+        assert job.heartbeat_handle is None and not conn.ioloop._timers
+
     def test_connection_loss_fails_in_flight_read_promptly(self):
         with _mock_dmq_backend(replies=[]) as backend:  # no replies: would otherwise wait the full budget
             errors = []
@@ -691,6 +715,7 @@ class TestDMQCleanup:
     def test_cancel_failure_still_closes_read_channel(self):
         backend = DMQBackend.__new__(DMQBackend)
         backend._read_jobs = set()
+        backend._select_connection = None
         backend._send_drop = mock.MagicMock()
         channel = mock.MagicMock()
         channel.is_open = True
@@ -710,6 +735,7 @@ class TestDMQCleanup:
     def test_unexpected_close_error_propagates_after_signalling_done(self):
         backend = DMQBackend.__new__(DMQBackend)
         backend._read_jobs = set()
+        backend._select_connection = None
         backend._send_drop = mock.MagicMock()
         channel = mock.MagicMock()
         channel.is_open = True
