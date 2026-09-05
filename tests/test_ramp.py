@@ -10,6 +10,7 @@ from pacsys.ramp import (
     BoosterHVRamp,
     BoosterHVRampGroup,
     BoosterQRamp,
+    BoosterSQRamp,
     Ramp,
     RampGroup,
     RecyclerHVSQRamp,
@@ -144,10 +145,21 @@ class TestToBytes:
         v, _ = struct.unpack_from("<hh", raw, 0)
         assert v == 819
 
+    def test_booster_skew_quad_scaling(self):
+        """DevDB: B:SQ*T is c_index 6 with C1=0.5, so 2.5 A -> raw 16384 (full scale +/-5 A)."""
+        ramp = BoosterSQRamp(values=np.zeros(64), times=np.zeros(64))
+        ramp.values[0] = 2.5
+        v, _ = struct.unpack_from("<hh", ramp.to_bytes(), 0)
+        assert v == 16384
+        with pytest.raises(ValueError, match="overflow"):
+            ramp.values[0] = 5.5
+            ramp.to_bytes()
+
 
 _ALL_RAMP_CLASSES = [
     pytest.param(BoosterHVRamp, id="BoosterHV"),
     pytest.param(BoosterQRamp, id="BoosterQ"),
+    pytest.param(BoosterSQRamp, id="BoosterSQ"),
     pytest.param(RecyclerQRamp, id="RecyclerQ"),
     pytest.param(RecyclerSRamp, id="RecyclerS"),
     pytest.param(RecyclerSCRamp, id="RecyclerSC"),
@@ -1229,7 +1241,15 @@ class TestRampToDict:
         np.testing.assert_array_equal(restored.values, ramp.values)
 
     def test_all_builtin_subclasses(self):
-        for cls in [RecyclerQRamp, RecyclerSRamp, RecyclerSCRamp, RecyclerHVSQRamp, BoosterHVRamp, BoosterQRamp]:
+        for cls in [
+            RecyclerQRamp,
+            RecyclerSRamp,
+            RecyclerSCRamp,
+            RecyclerHVSQRamp,
+            BoosterHVRamp,
+            BoosterQRamp,
+            BoosterSQRamp,
+        ]:
             ramp = cls(values=np.zeros(64), times=np.zeros(64))
             d = ramp.to_dict()
             assert d["type"] == cls.__name__

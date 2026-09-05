@@ -35,12 +35,15 @@ Pre-defined subclasses for common elements:
 
 | Class | Card | Examples | Primary (p_index) | Common (c_index) |
 |-------|------|---------|-------------------|-----------------|
-| `BoosterHVRamp` | C473 | B:HS23T, B:SSS23T, B:SXS23T | raw / 3276.8 (2) | primary × 4.0 (6, C1=4.0, C2=1.0) |
-| `BoosterQRamp` | C473 | B:QS23T | raw / 3276.8 (2) | primary × 6.5 (6, C1=6.5, C2=1.0) |
-| `RecyclerQRamp` | C453 | R:QT606T | raw / 3276.8 (2) | primary × 2.0 (6, C1=2.0, C2=1.0) |
+| `BoosterHVRamp` | C473 | B:HS23T, B:VL23T, B:SSS23T, B:SXS23T (H/V, sextupoles, skew sextupoles) | raw / 3276.8 (2) | primary × 4.0 (6, C1=4.0, C2=1.0) |
+| `BoosterQRamp` | C473 | B:QS23T, B:QL23T | raw / 3276.8 (2) | primary × 6.5 (6, C1=6.5, C2=1.0) |
+| `BoosterSQRamp` | C473 | B:SQS23T, B:SQL23T (skew quads) | raw / 3276.8 (2) | primary × 0.5 (6, C1=0.5, C2=1.0) |
+| `RecyclerQRamp` | C453 | R:QT309T, R:QT601T–R:QT609T | raw / 3276.8 (2) | primary × 2.0 (6, C1=2.0, C2=1.0) |
 | `RecyclerSRamp` | C453 | R:S202T | raw / 3276.8 (2) | primary × 1.2 (6, C1=12.0, C2=10.0) |
 | `RecyclerSCRamp` | C475 | R:SC319T | raw / 3276.8 (2) | primary × 1.2000000477 (6, C1=1.2000000477, C2=1.0) |
 | `RecyclerHVSQRamp` | C453 | R:H626T, R:SQ410T | raw / 3276.8 (2) | primary × 1.2 (6, C1=12.0, C2=10.0) |
+
+**Scaling is per device, not per family.** The classes above pin the transform constants from DevDB for the devices listed; the library does not check them at runtime. Known exception: the quad trims **R:QT301T–R:QT308T** are scaled like correctors (C1=12.0, C2=10.0, ±12 A), not like the other `R:QT*T` tables (C1=2.0, ±20 A). Using `RecyclerQRamp` on them reads values 1.67× too large and writes 1.67× too small; use `RecyclerHVSQRamp` (same constants and card rate) or a custom subclass instead. When adding a new device, confirm its SETTING scaling with `Device("R:QT301T").info().setting` before picking a class.
 
 ### Time Scaling
 
@@ -66,6 +69,7 @@ Pre-defined subclasses time scaling:
 | `Ramp` (default) | 10,000 Hz | 100 µs | (none) |
 | `BoosterHVRamp` | 100,000 Hz | 10 µs | 66,660 µs (~one 15 Hz cycle) |
 | `BoosterQRamp` | 100,000 Hz | 10 µs | 66,660 µs (~one 15 Hz cycle) |
+| `BoosterSQRamp` | 100,000 Hz | 10 µs | 66,660 µs (~one 15 Hz cycle) |
 | `RecyclerQRamp` | 720 Hz | 1,389 µs | (none) |
 | `RecyclerSRamp` | 720 Hz | 1,389 µs | (none) |
 | `RecyclerSCRamp` | 100,000 Hz | 10 µs | (none) |

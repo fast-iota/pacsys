@@ -152,6 +152,8 @@ __all__ = [
     "BoosterHVRampGroup",
     "BoosterQRamp",
     "BoosterQRampGroup",
+    "BoosterSQRamp",
+    "BoosterSQRampGroup",
     "RampGroup",
     "read_ramps",
     "write_ramps",
@@ -599,8 +601,10 @@ class Ramp:
 
 
 class RecyclerQRamp(Ramp):
-    """Recycler quad ramp table (453 CAMAC card).
+    """Recycler quad ramp table (453 CAMAC card): R:QT309T, R:QT601T-R:QT609T.
 
+    NOT for R:QT301T-R:QT308T: DevDB scales those like correctors (C1=12.0, C2=10.0,
+    +/-12 A), so use RecyclerHVSQRamp for them.
     Scaling: p_index=2 (raw / 3276.8), c_index=6 with C1=2.0, C2=1.0
     Combined: engineering = 2.0 * raw / 3276.8
     Update rate: 720 Hz fixed (1389 us/tick).
@@ -649,6 +653,8 @@ class RecyclerHVSQRamp(Ramp):
 class BoosterHVRamp(Ramp):
     """Booster corrector ramp table (473 CAMAC card).
 
+    Covers H/V dipoles, sextupoles and skew sextupoles (B:HS/VS/HL/VL/SXS/SXL/SSS/SSL*T).
+    Skew quads (B:SQ*T) use BoosterSQRamp, quads (B:Q*T) use BoosterQRamp.
     Scaling: p_index=2 (raw / 3276.8), c_index=6 with C1=4.0, C2=1.0
     Combined: engineering = 4.0 * raw / 3276.8
     Update rate: 100 KHz fixed (10 us/tick). One Booster cycle = 66.67 ms (15 Hz).
@@ -672,6 +678,19 @@ class BoosterQRamp(Ramp):
     update_rate_hz: ClassVar[int] = 100_000  # C473 CAMAC card: 100 KHz fixed
     max_time: ClassVar[float | None] = 66_660.0  # 6666 ticks * 10 us ≈ one Booster cycle
     scaler: ClassVar[Scaler | None] = Scaler(p_index=2, c_index=6, constants=(6.5, 1.0), input_len=2)
+
+
+class BoosterSQRamp(Ramp):
+    """Booster skew quad ramp table (C473 CAMAC card), B:SQS*T / B:SQL*T.
+
+    Scaling: p_index=2 (raw / 3276.8), c_index=6 with C1=0.5, C2=1.0
+    Combined: engineering = 0.5 * raw / 3276.8 (full int16 range is +/-5 A)
+    Update rate: 100 KHz fixed (10 us/tick).
+    """
+
+    update_rate_hz: ClassVar[int] = 100_000  # C473 CAMAC card: 100 KHz fixed
+    max_time: ClassVar[float | None] = 66_660.0  # 6666 ticks * 10 us ≈ one Booster cycle
+    scaler: ClassVar[Scaler | None] = Scaler(p_index=2, c_index=6, constants=(0.5, 1.0), input_len=2)
 
 
 class _RampModifyContext:
@@ -1120,6 +1139,12 @@ class BoosterQRampGroup(RampGroup):
     base = BoosterQRamp
 
 
+class BoosterSQRampGroup(RampGroup):
+    """RampGroup for Booster skew quads using BoosterSQRamp transforms."""
+
+    base = BoosterSQRamp
+
+
 # Registries for from_dict() dispatch (built-in subclasses only).
 _RAMP_REGISTRY: dict[str, type[Ramp]] = {
     c.__name__: c
@@ -1130,6 +1155,7 @@ _RAMP_REGISTRY: dict[str, type[Ramp]] = {
         RecyclerHVSQRamp,
         BoosterHVRamp,
         BoosterQRamp,
+        BoosterSQRamp,
     ]
 }
 
@@ -1142,5 +1168,6 @@ _RAMP_GROUP_REGISTRY: dict[str, type[RampGroup]] = {
         RecyclerHVSQRampGroup,
         BoosterHVRampGroup,
         BoosterQRampGroup,
+        BoosterSQRampGroup,
     ]
 }
