@@ -1378,6 +1378,15 @@ class TestSnapshotHandle:
         finally:
             handle.cancel()
 
+    def test_retrieve_rejects_out_of_range_device_index(self):
+        handle = self._make_handle()
+        try:
+            for idx in (-1, 1):
+                with pytest.raises(ValueError, match="device_index"):
+                    handle.retrieve(device_index=idx)
+        finally:
+            handle.cancel()
+
     def test_retrieval_max_dae_class(self):
         """DAE classes have retrieval_max=4096."""
         handle = self._make_handle(snap_class_code=22)  # DAE 1 Hz, max=4096

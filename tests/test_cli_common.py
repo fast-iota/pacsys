@@ -185,6 +185,12 @@ class TestFormatValue:
         result = format_value([1.0, 2.0, 3.0], None)
         assert result == "1 2 3"
 
+    def test_text_elements_ignore_number_format(self):
+        from pacsys.cli._common import format_value
+
+        assert format_value(["ON", "OFF"], ".2f") == "ON OFF"
+        assert format_value({"data": [1.5, "x"]}, ".1f") == "1.5 x"
+
     def test_integer_value(self):
         from pacsys.cli._common import format_value
 

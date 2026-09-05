@@ -1171,6 +1171,8 @@ class SnapshotHandle:
                 device, but not on later pages or random-access retrievals.
             timeout: Timeout in seconds.
         """
+        if not 0 <= device_index < len(self._devices):
+            raise ValueError(f"device_index {device_index} out of range for {len(self._devices)} device(s)")
         # Validate and resolve params under lock (brief)
         with self._lock:
             if self._cancelled:

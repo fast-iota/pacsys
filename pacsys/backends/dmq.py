@@ -13,6 +13,7 @@ import threading
 import time
 import uuid
 from collections import defaultdict
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, cast
@@ -98,8 +99,9 @@ DMQ_PENDING_ERROR = 1
 # GSS-API service principal for DMQ authenticated operations
 DMQ_SERVICE_PRINCIPAL = "daeset/bd/dmq.fnal.gov@FNAL.GOV"
 
-# Write connection heartbeat interval (seconds)
-WRITE_HEARTBEAT_INTERVAL = 5.0
+# Server-job heartbeat interval (seconds); the server disposes jobs idle for
+# MAX_IDLE_TIME (30 s) and data traffic does not count as activity
+HEARTBEAT_INTERVAL = 5.0
 
 # Default write session idle TTL (seconds) - close session if unused for this long
 DEFAULT_WRITE_SESSION_TTL = 600.0
@@ -179,6 +181,7 @@ class _ReadJob:
     exchange_name: str = ""
     queue_name: str = ""
     consumer_tag: str | None = None
+    heartbeat_handle: object | None = None
     init_message_id: str = ""  # AMQP message_id of the INIT (job-error correlation)
 
 
@@ -859,6 +862,7 @@ class DMQBackend(Backend):
                     ),
                     auto_ack=False,
                 )
+                self._schedule_heartbeat(job, lambda: job in self._read_jobs, f"read {drf_summary}")
             except Exception as exc:  # noqa: BLE001
                 logger.error("Read setup failed after INIT: %s (devices: %s)", exc, drf_summary)
                 job.error = exc
@@ -882,6 +886,7 @@ class DMQBackend(Backend):
         if job not in self._read_jobs:
             return
         self._read_jobs.discard(job)
+        self._cancel_heartbeat(job)
         logger.warning("DMQ read channel closed: %s (devices: %s)", reason, summarize_drfs(job.drfs))
         job.error = reason
         job.done_event.set()
@@ -934,6 +939,7 @@ class DMQBackend(Backend):
         self._read_jobs.discard(job)  # before the close below fires _on_read_channel_closed
         if job.done_event.is_set():
             return
+        self._cancel_heartbeat(job)
         try:
             if job.channel and job.exchange_name:
                 try:
@@ -1090,26 +1096,49 @@ class DMQBackend(Backend):
     # Write Session Heartbeats (runs on IO thread)
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _schedule_write_session_heartbeat(self, session: _WriteSession) -> None:
-        """Schedule heartbeat for write session (IO thread)."""
-        if self._select_connection is None or not self._select_connection.is_open:
-            return
-        if self._write_sessions.get(session.init_drf) is not session:
+    def _schedule_heartbeat(
+        self, owner: "_ReadJob | _WriteSession | _SelectSubscription", alive: Callable[[], bool], label: str
+    ) -> None:
+        """Schedule a periodic server-job heartbeat on ``owner.channel`` (IO thread).
+
+        Re-arms itself until ``alive()`` is False; ``_cancel_heartbeat`` stops it early.
+        """
+        conn = self._select_connection
+        if conn is None or not conn.is_open or not alive():
             return
 
         def send_heartbeat():
-            if self._write_sessions.get(session.init_drf) is not session:
-                return
-            if session.channel is None or not session.channel.is_open:
+            if not alive() or owner.channel is None or not owner.channel.is_open:
                 return
             try:
-                session.channel.basic_publish(exchange=session.exchange_name, routing_key="H", body=b"")
-                logger.debug("Sent write session heartbeat for %s", session.device)
+                owner.channel.basic_publish(exchange=owner.exchange_name, routing_key="H", body=b"")
+                logger.debug("Sent heartbeat for %s", label)
             except AMQPError as e:
-                logger.warning("Write session heartbeat failed for %s: %s", session.device, e)
-            self._schedule_write_session_heartbeat(session)
+                logger.warning("Heartbeat failed for %s: %s", label, e)
+            self._schedule_heartbeat(owner, alive, label)
 
-        session.heartbeat_handle = self._select_connection.ioloop.call_later(5.0, send_heartbeat)
+        owner.heartbeat_handle = conn.ioloop.call_later(HEARTBEAT_INTERVAL, send_heartbeat)
+
+    def _cancel_heartbeat(
+        self, owner: "_ReadJob | _WriteSession | _SelectSubscription", label: str = "", conn: Any = None
+    ) -> None:
+        """Cancel a pending heartbeat timer (IO thread); logs instead of raising."""
+        conn = conn or self._select_connection
+        if owner.heartbeat_handle is None or conn is None:
+            return
+        try:
+            conn.ioloop.remove_timeout(owner.heartbeat_handle)
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to cancel heartbeat timer for %s", label)
+        owner.heartbeat_handle = None
+
+    def _schedule_write_session_heartbeat(self, session: _WriteSession) -> None:
+        """Schedule heartbeat for write session (IO thread)."""
+        self._schedule_heartbeat(
+            session,
+            lambda: self._write_sessions.get(session.init_drf) is session,
+            f"write session {session.device}",
+        )
 
     # ─────────────────────────────────────────────────────────────────────────
     # Write Session Lifecycle (runs on IO thread)
@@ -2295,7 +2324,7 @@ class DMQBackend(Backend):
                 auto_ack=False,
             )
 
-            self._schedule_heartbeat(sub)
+            self._schedule_heartbeat(sub, lambda: not sub.handle._stopped, f"sub {sub.sub_id[:8]}")
             sub.setup_complete.set()
             logger.info("Subscription %s setup complete", sub.sub_id[:8])
 
@@ -2304,26 +2333,6 @@ class DMQBackend(Backend):
             exchange_name=sub.exchange_name,
             on_channel_open=on_ch_open,
         )
-
-    def _schedule_heartbeat(self, sub: _SelectSubscription) -> None:
-        """Schedule next heartbeat for subscription (runs in IO thread)."""
-        if self._select_connection is None or not self._select_connection.is_open:
-            return
-        if sub.handle._stopped:
-            return
-
-        def send_heartbeat():
-            if sub.handle._stopped or sub.channel is None or not sub.channel.is_open:
-                return
-            try:
-                sub.channel.basic_publish(exchange=sub.exchange_name, routing_key="H", body=b"")
-                logger.debug("Sent heartbeat for sub %s", sub.sub_id[:8])
-            except AMQPError as e:
-                logger.warning("Failed to send heartbeat: %s", e)
-            # Schedule next heartbeat
-            self._schedule_heartbeat(sub)
-
-        sub.heartbeat_handle = self._select_connection.ioloop.call_later(5.0, send_heartbeat)
 
     def _on_channel_closed(self, channel: Channel, reason: Exception, sub: _SelectSubscription) -> None:
         """Channel closed callback (runs in IO thread)."""
@@ -2351,13 +2360,7 @@ class DMQBackend(Backend):
         # Unblock a thread still waiting in subscribe()
         sub.setup_error = error
         sub.setup_complete.set()
-        conn = self._select_connection
-        if sub.heartbeat_handle is not None and conn is not None:
-            try:
-                conn.ioloop.remove_timeout(sub.heartbeat_handle)
-            except Exception:  # noqa: BLE001
-                logger.exception("Failed to cancel heartbeat timer for failed subscription %s", sub.sub_id)
-            sub.heartbeat_handle = None
+        self._cancel_heartbeat(sub, f"failed subscription {sub.sub_id}")
         sub.handle._signal_error(error)
         if sub.handle._on_error is not None:
             self._dispatcher.dispatch_error(sub.handle._on_error, error, sub.handle)
@@ -2430,13 +2433,7 @@ class DMQBackend(Backend):
             return
 
         def do_cancel():
-            # Cancel heartbeat timer
-            if sub.heartbeat_handle is not None:
-                try:
-                    connection.ioloop.remove_timeout(sub.heartbeat_handle)
-                except Exception:  # noqa: BLE001
-                    logger.exception("Failed to cancel heartbeat timer for subscription %s", sub.sub_id)
-                sub.heartbeat_handle = None
+            self._cancel_heartbeat(sub, f"subscription {sub.sub_id}", conn=connection)
 
             # Send DROP
             if sub.channel is not None and sub.channel.is_open:
