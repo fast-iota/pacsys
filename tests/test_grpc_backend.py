@@ -420,6 +420,67 @@ class TestSingleDeviceRead:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+class TestWarningData:
+    @staticmethod
+    def _reply(*samples):
+        reply = DAQ_pb2.ReadingReply(index=0)
+        for i, (value, status) in enumerate(samples):
+            reading = reply.readings.reading.add()
+            reading.timestamp.seconds = 1234567890 + i
+            if value is not None:
+                reading.data.scalar = value
+            reading.status.facility_code = 66
+            reading.status.status_code = status
+            reading.status.message = f"status {status}"
+        return reply
+
+    @pytest.mark.parametrize("streaming", [False, True])
+    def test_supervised_warning_keeps_value(self, backend_with_mock_stub, streaming):
+        from pacsys.supervised._conversions import reading_to_proto_reply
+
+        backend, stub = backend_with_mock_stub
+        original = Reading(
+            drf="M:OUTTMP", value=12.5, value_type=ValueType.SCALAR, facility_code=66, error_code=1, message="warning"
+        )
+        stub.Read.return_value = AsyncMockIterator([reading_to_proto_reply(original, 0)])
+        if streaming:
+            with backend.subscribe([original.drf]) as handle:
+                readings = [r for r, _h in handle.readings(timeout=0.2)]
+        else:
+            readings = [backend.get(original.drf)]
+        assert len(readings) == 1
+        reading = readings[0]
+        assert reading.ok and reading.value == original.value and reading.value_type == original.value_type
+        assert (reading.facility_code, reading.error_code, reading.message) == (66, 1, "warning")
+
+    @pytest.mark.parametrize("logger", [False, True])
+    def test_aggregate_keeps_all_values_and_first_warning(self, backend_with_mock_stub, logger):
+        backend, stub = backend_with_mock_stub
+        if logger:
+            replies = [self._reply((1.0, 0), (2.0, 1)), self._reply((3.0, 2)), self._reply()]
+        else:
+            replies = [self._reply((1.0, 0), (2.0, 1), (3.0, 2))]
+        stub.Read.return_value = AsyncMockIterator(replies)
+        reading = backend.get("M:OUTTMP<-LOGGERDURATION:60000" if logger else "M:OUTTMP")
+        assert reading.ok
+        assert reading.value_type == ValueType.TIMED_SCALAR_ARRAY
+        assert reading.value["data"].tolist() == [1.0, 2.0, 3.0]
+        assert (reading.facility_code, reading.error_code, reading.message) == (66, 1, "status 1")
+
+    @pytest.mark.parametrize("layout", ["batch", "logger"])
+    @pytest.mark.parametrize(("value", "status"), [(9.0, -42), (None, 2)])
+    def test_unusable_sample_keeps_status(self, backend_with_mock_stub, layout, value, status):
+        backend, stub = backend_with_mock_stub
+        if layout == "batch":
+            replies = [self._reply((1.0, 1), (value, status))]
+        else:
+            replies = [self._reply((1.0, 1)), self._reply((value, status)), self._reply()]
+        stub.Read.return_value = AsyncMockIterator(replies)
+        reading = backend.get("M:OUTTMP<-LOGGERDURATION:60000" if layout == "logger" else "M:OUTTMP")
+        assert not reading.ok and reading.value is None
+        assert (reading.facility_code, reading.error_code, reading.message) == (66, status, f"status {status}")
+
+
 class TestMultipleDeviceRead:
     """Tests for multiple device get_many operations."""
 
