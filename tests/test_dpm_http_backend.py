@@ -21,10 +21,10 @@ import pytest
 from pacsys.acnet.errors import DAE_LJ_NO_DATA, ERR_TIMEOUT, make_error
 from pacsys.backends.dpm_http import DPMHTTPBackend, _value_to_setting
 from pacsys.dpm_connection import DPMConnectionError
-from pacsys.dpm_protocol import ListStatus_reply, Raw_reply, StartList_reply
+from pacsys.dpm_protocol import ApplySettings_request, ListStatus_reply, Raw_reply, StartList_reply
 from pacsys.errors import AuthenticationError, DeviceError, ReadError
 from pacsys.pool import PoolExhaustedError
-from pacsys.types import Reading, ValueType
+from pacsys.types import BasicControl, Reading, ValueType
 
 # Shared test helpers
 from tests.devices import (
@@ -792,31 +792,92 @@ class TestWriteConnectionAuthContext:
         wc.conn.send_messages_batch.assert_not_called()
         wc.close.assert_called_once()
 
-    def test_retry_reuses_original_deadline(self):
-        backend = DPMHTTPBackend(auth=create_mock_kerberos_auth())
-        first = MagicMock()
-        first.conn.list_id = 1
-        second = MagicMock()
-        second.conn.list_id = 2
-        apply_reply = make_apply_settings_reply([(1, 0)])
-        backend._write_in_flight = 2
+    @pytest.mark.parametrize(
+        ("phase", "error"),
+        [
+            ("setup", DPMConnectionError("stale connection")),
+            ("send", DPMConnectionError("partial send")),
+            ("reply", ConnectionResetError("reply lost")),
+            ("send", TimeoutError("send timed out")),
+            ("reply", TimeoutError("reply timed out")),
+            ("cleanup", DPMConnectionError("cleanup failed")),
+        ],
+    )
+    def test_write_retry_stops_at_apply_settings(self, phase, error):
+        first, second = MagicMock(), MagicMock()
+        first.conn.list_id, second.conn.list_id = 1, 2
+        setup_replies = iter([make_device_info(), make_start_list(), ListStatus_reply()])
 
-        try:
+        def receive(timeout):
+            try:
+                return next(setup_replies)
+            except StopIteration:
+                if phase == "cleanup":
+                    return make_apply_settings_reply()
+                if isinstance(error, TimeoutError):
+                    time.sleep(timeout)
+                raise error
+
+        first.conn.recv_message.side_effect = receive
+        if phase == "setup":
+            first.conn.send_messages_batch.side_effect = error
+        elif phase == "send":
+            send_error = error
+            if isinstance(error, TimeoutError):
+                send_error = DPMConnectionError("Send failed: timed out")
+                send_error.__cause__ = error
+            first.conn.send_message.side_effect = send_error
+        elif phase == "cleanup":
+            first.conn.send_message.side_effect = [None, error]
+        second.conn.recv_message.side_effect = [make_device_info(), make_start_list(), make_apply_settings_reply()]
+
+        with DPMHTTPBackend(auth=create_mock_kerberos_auth()) as backend:
             with (
-                mock.patch.object(backend, "_get_write_connection", side_effect=[first, second]) as get_connection,
-                mock.patch.object(
-                    backend,
-                    "_execute_write",
-                    side_effect=[DPMConnectionError("stale"), (apply_reply, {})],
-                ) as execute,
+                mock.patch.object(backend, "_get_write_connection", side_effect=[first, second]) as checkout,
+                mock.patch.object(backend, "_discard_write_connection") as discard,
+                mock.patch.object(backend, "_release_write_connection") as release,
             ):
-                results = backend.write_many([(TEMP_DEVICE, 1.0)], timeout=1.0)
-        finally:
-            backend.close()
+                result = backend.write("Z:ACLTST.CONTROL", BasicControl.RESET, timeout=0.05)
 
-        assert results[0].success
-        assert get_connection.call_args_list[0].args[0] == get_connection.call_args_list[1].args[0]
-        assert execute.call_args_list[0].args[-1] == execute.call_args_list[1].args[-1]
+        sends = sum(
+            isinstance(call.args[0], ApplySettings_request)
+            for wc in (first, second)
+            for call in wc.conn.send_message.call_args_list
+        )
+        assert sends == 1
+        discard.assert_called_once_with(first)
+        if phase == "setup":
+            assert result.ok and checkout.call_count == 2
+            assert checkout.call_args_list[0].args[0] == checkout.call_args_list[1].args[0]
+            release.assert_called_once_with(second)
+        else:
+            assert checkout.call_count == 1
+            if phase == "cleanup":
+                assert result.ok
+            else:
+                assert not result.ok and "outcome unknown" in result.message
+                if isinstance(error, TimeoutError):
+                    assert result.error_code == ERR_TIMEOUT
+            release.assert_not_called()
+
+    def test_unknown_write_preserves_rejected_device_status(self):
+        wc = MagicMock()
+        wc.conn.list_id = 1
+        wc.conn.recv_message.side_effect = [
+            make_add_to_list_reply(ref_id=1, status=make_error(66, -42)),
+            make_device_info(ref_id=2),
+            make_start_list(),
+            ConnectionResetError("reply lost"),
+        ]
+        with DPMHTTPBackend(auth=create_mock_kerberos_auth()) as backend:
+            with (
+                mock.patch.object(backend, "_get_write_connection", return_value=wc) as checkout,
+                mock.patch.object(backend, "_discard_write_connection"),
+            ):
+                results = backend.write_many([("M:BADDEV", 1.0), (TEMP_DEVICE, 2.0)], timeout=0.2)
+        checkout.assert_called_once()
+        assert (results[0].facility_code, results[0].error_code) == (66, -42)
+        assert not results[1].ok and "outcome unknown" in results[1].message
 
 
 # =============================================================================

@@ -214,6 +214,10 @@ Changing `value1` or `value2` inside `modify()` performs a raw alarm-block
 write. Do not change the corresponding engineering-unit property in the same
 operation.
 
+Changing `minimum` or `maximum` together with `limit_type`, `data_type`, or
+`data_length` raises `ValueError` before any write. Those fields change how raw
+limits are interpreted, so they cannot be combined with server-scaled limit edits.
+
 ### Analog-Specific Properties
 
 | Property | Type | Description |

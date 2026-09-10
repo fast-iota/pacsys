@@ -32,6 +32,10 @@ sequenceDiagram
 - **Heartbeats**: Server sends `ListStatus_reply` every ~2 seconds
 - **Write deadline**: `timeout=` covers the complete write, including connection,
   authentication, list setup, retry, and reply handling
+- **Write retries**: Connection failures during list setup can be retried once.
+  Once sending `ApplySettings` begins, failures are never retried automatically.
+  A missing acknowledgement returns a failed `WriteResult` with an "outcome unknown"
+  message: the setting may already have been applied.
 
 ## Usage
 

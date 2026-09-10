@@ -110,6 +110,14 @@ _MAX_WRITE_CONNECTIONS = 4  # max concurrent write connections (pooled + in-flig
 _SettingPayload = tuple[RawSetting_struct | None, ScaledSetting_struct | None, TextSetting_struct | None]
 
 
+class _WriteOutcomeUnknown(Exception):
+    def __init__(self, error: Exception, add_errors: dict[int, int]):
+        super().__init__(f"Write outcome unknown after ApplySettings; not retried: {error}")
+        self.add_errors = add_errors
+        timed_out = isinstance(error, TimeoutError) or isinstance(error.__cause__, TimeoutError)
+        self.error_code = ERR_TIMEOUT if timed_out else ERR_RETRY
+
+
 def _validate_backend_args(
     host: str,
     port: int,
@@ -1555,8 +1563,8 @@ class DPMHTTPBackend(Backend):
     ) -> tuple[ApplySettings_reply | None, dict[int, int]]:
         """Execute the write protocol on an authenticated connection.
 
-        Returns (ApplySettings_reply, add_errors) or (None, add_errors) on timeout.
-        Raises connection errors for retry handling by caller.
+        Returns (ApplySettings_reply, add_errors) or (None, add_errors) on setup failure.
+        Connection errors permit retry only before sending ApplySettings.
         """
         add_errors: dict[int, int] = {}
         # Batch all setup messages into a single TCP write
@@ -1683,30 +1691,32 @@ class DPMHTTPBackend(Backend):
         if text_settings:
             setattr(apply_req, "text_array", text_settings)
 
-        conn.send_message(
-            apply_req,
-            timeout=_remaining_timeout(deadline, "ApplySettings request"),
-        )
+        remaining = _remaining_timeout(deadline, "ApplySettings request")
+        try:
+            # A failed send may have delivered settings; never replay from this point.
+            conn.send_message(apply_req, timeout=remaining)
 
-        # Wait for ApplySettings reply
-        while time.monotonic() < deadline:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-
-            try:
-                reply = conn.recv_message(timeout=remaining)
-            except TimeoutError:
-                if time.monotonic() >= deadline:
+            # Wait for ApplySettings reply
+            while time.monotonic() < deadline:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
                     break
-                continue
 
-            if isinstance(reply, ApplySettings_reply):
-                return reply, add_errors
-            if isinstance(reply, ListStatus_reply):
-                pass
+                try:
+                    reply = conn.recv_message(timeout=remaining)
+                except TimeoutError:
+                    if time.monotonic() >= deadline:
+                        break
+                    continue
 
-        return None, add_errors
+                if isinstance(reply, ApplySettings_reply):
+                    return reply, add_errors
+                if isinstance(reply, ListStatus_reply):
+                    pass
+
+            raise TimeoutError("ApplySettings reply timed out")
+        except (OSError, DPMConnectionError) as e:
+            raise _WriteOutcomeUnknown(e, add_errors) from e
 
     def write_many(
         self,
@@ -1737,6 +1747,8 @@ class DPMHTTPBackend(Backend):
         # Try up to twice: first attempt may hit a stale pooled connection
         add_errors: dict[int, int] = {}
         last_error = None
+        missing_code = ERR_TIMEOUT
+        missing_message = "Request timeout"
         for attempt in range(2):
             try:
                 wc = self._get_write_connection(deadline)
@@ -1794,6 +1806,14 @@ class DPMHTTPBackend(Backend):
                 last_error = None
                 break  # Success
 
+            except _WriteOutcomeUnknown as e:
+                logger.warning("%s (devices: %s)", e, summarize_drfs([drf for drf, _ in settings]))
+                self._discard_write_connection(wc)
+                add_errors = e.add_errors
+                missing_code = e.error_code
+                missing_message = str(e)
+                last_error = None
+                break
             except TimeoutError:
                 logger.warning("Write deadline expired during attempt %s", attempt + 1)
                 self._discard_write_connection(wc)
@@ -1852,7 +1872,10 @@ class DPMHTTPBackend(Backend):
                 else:
                     results.append(
                         WriteResult(
-                            drf=drf, facility_code=FACILITY_ACNET, error_code=ERR_TIMEOUT, message="Request timeout"
+                            drf=drf,
+                            facility_code=FACILITY_ACNET,
+                            error_code=missing_code,
+                            message=missing_message,
                         )
                     )
             return results

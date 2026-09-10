@@ -821,13 +821,13 @@ class _AlarmModifyContext:
                 raise ValueError("Cannot change both raw value2 and engineering maximum")
 
         data_length_changed = self._block.data_length != init_block.data_length
-        data_type_changed = (
+        interpretation_changed = (
             isinstance(self._block, AnalogAlarm)
             and isinstance(init_block, AnalogAlarm)
-            and self._block.data_type != init_block.data_type
+            and (self._block.data_type != init_block.data_type or self._block.limit_type != init_block.limit_type)
         )
-        if eng_changed and (data_length_changed or data_type_changed):
-            raise ValueError("Cannot change engineering limits with data_length or data_type")
+        if eng_changed and (data_length_changed or interpretation_changed):
+            raise ValueError("Cannot change engineering limits with data_length, data_type, or limit_type")
 
         ftd_changed = self._block.ftd.to_word() != init_block.ftd.to_word()
         fe_data_changed = self._block.fe_data != init_block.fe_data
