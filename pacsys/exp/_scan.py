@@ -113,6 +113,7 @@ def scan(
     aborted = False
     restored = False
     restore_error: str | None = None
+    restore_cause: Exception | None = None
 
     try:
         for sv in scan_values:
@@ -151,12 +152,16 @@ def scan(
     else:
         # Normal completion — restore and raise on failure
         if restore and original is not None:
-            restore_result = write_dev.write(original, timeout=timeout)
-            restored = restore_result.ok
+            try:
+                restore_result = write_dev.write(original, timeout=timeout)
+                restored = restore_result.ok
+                detail = restore_result.message
+            except Exception as exc:  # noqa: BLE001 -- preserve completed data for any restore failure
+                restore_cause = exc
+                detail = str(exc)
             if not restored:
-                restore_error = (
-                    f"Scan completed but failed to restore {write_drf} to {original}: {restore_result.message}"
-                )
+                restore_error = f"Scan completed but failed to restore {write_drf} to {original}: {detail}"
+                logger.error("%s", restore_error, exc_info=restore_cause)
 
     result = ScanResult(
         write_device=write_drf,
@@ -168,7 +173,7 @@ def scan(
         restored=restored,
     )
     if restore_error is not None:
-        raise ScanRestoreError(restore_error, result)
+        raise ScanRestoreError(restore_error, result) from restore_cause
     return result
 
 

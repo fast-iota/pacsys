@@ -284,6 +284,11 @@ Returns the `Reading` that satisfied the condition. Raises `TimeoutError` if the
 
 Ramp a device through a series of values while reading other devices at each step. Automatically restores the original setting value on completion or error.
 
+If restoration fails after the scan completes, `ScanRestoreError.result` retains the
+collected data with `restored=False`. A raised restoration exception is preserved as
+the cause. If the scan itself raises, restoration failure is logged and the original
+scan exception propagates.
+
 ```python
 from pacsys.exp import scan
 
