@@ -125,9 +125,8 @@ class SSHHop:
         auth_method: "gssapi", "key", or "password"
         key_filename: Path to private key (required when auth_method="key")
         password: Password (required when auth_method="password", excluded from repr)
-        delegate_credentials: Forward the Kerberos TGT to this hop (GSSAPI only). Off by
-            default: multi-hop chains do not need it, and a compromised hop could
-            impersonate you until the ticket expires.
+        delegate_credentials: Forward the Kerberos TGT to this hop (GSSAPI only).
+            Defaults to True so remote Kerberized commands can use your credentials.
     """
 
     hostname: str
@@ -136,7 +135,7 @@ class SSHHop:
     auth_method: str = "gssapi"
     key_filename: str | None = None
     password: str | None = field(default=None, repr=False)
-    delegate_credentials: bool = False
+    delegate_credentials: bool = True
 
     def __post_init__(self):
         if not self.hostname or not self.hostname.strip():
