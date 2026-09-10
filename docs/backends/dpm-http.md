@@ -30,6 +30,9 @@ sequenceDiagram
 - **Independent subscriptions**: Each `subscribe()` creates its own TCP connection
 - **Kerberos auth**: Required for writes, optional for reads
 - **Heartbeats**: Server sends `ListStatus_reply` every ~2 seconds
+- **Read deadline**: `timeout=` includes list setup and cleanup for sync and async
+  reads. Cleanup cannot extend the deadline; already received readings are preserved
+  and the connection is discarded if cleanup cannot finish in time.
 - **Write deadline**: `timeout=` covers the complete write, including connection,
   authentication, list setup, retry, and reply handling
 - **Write retries**: Connection failures during list setup can be retried once.

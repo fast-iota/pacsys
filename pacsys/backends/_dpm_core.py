@@ -109,10 +109,10 @@ class _AsyncDpmCore:
             raise
         self._conn = conn
 
-    async def close(self) -> None:
+    async def close(self, *, deadline: float | None = None) -> None:
         if self._conn is not None:
-            await self._conn.close()
-            self._conn = None
+            conn, self._conn = self._conn, None
+            await conn.close(deadline=deadline)
 
     @property
     def connected(self) -> bool:
@@ -296,6 +296,7 @@ class _AsyncDpmCore:
         job_error: int | None = None  # ref-0 Status_reply = job start failure
         conn_broken = False
         transport_error: BaseException | None = None
+        failure_code = ERR_RETRY
 
         # Repeating events (@p/@e/...) keep producing replies after the first —
         # a core that carried one must be closed, not re-pooled, or stale replies
@@ -320,7 +321,7 @@ class _AsyncDpmCore:
         setup_msgs.append(start_req)
 
         try:
-            await conn.send_messages_batch(setup_msgs)
+            await _await_with_deadline(lambda: conn.send_messages_batch(setup_msgs), deadline, "read list setup")
             while received_count < expected_count:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -388,28 +389,36 @@ class _AsyncDpmCore:
         except (BrokenPipeError, ConnectionResetError, OSError, asyncio.IncompleteReadError, DPMConnectionError) as e:
             conn_broken = True
             transport_error = e
+            if isinstance(e, TimeoutError) or isinstance(e.__cause__, TimeoutError):
+                failure_code = ERR_TIMEOUT
+            logger.warning("Read failed (devices: %s): %s", summarize_drfs(drfs), e)
         finally:
             if not conn_broken:
                 if job_error is not None or received_count < expected_count:
-                    await self.close()
+                    await self.close(deadline=deadline)
                 else:
                     try:
                         stop_req = StopList_request()
                         stop_req.list_id = list_id
                         clear_req = ClearList_request()
                         clear_req.list_id = list_id
-                        await conn.send_messages_batch([stop_req, clear_req])
+                        await _await_with_deadline(
+                            lambda: conn.send_messages_batch([stop_req, clear_req]), deadline, "read list cleanup"
+                        )
+                    except asyncio.CancelledError:
+                        await self.close(deadline=time.monotonic())
+                        raise
                     except Exception as e:  # noqa: BLE001
                         # Failed StopList send means unknown connection state — close
                         # so the core is not re-pooled dirty. Data is already complete;
                         # don't destroy the readings over cleanup.
                         logger.warning("StopList cleanup failed: %s", e, exc_info=True)
-                        await self.close()
+                        await self.close(deadline=deadline)
                     else:
                         if not reuse_safe:
-                            await self.close()
+                            await self.close(deadline=deadline)
             else:
-                await self.close()
+                await self.close(deadline=deadline)
 
         # Assemble readings
         readings: list[Reading] = []
@@ -457,7 +466,7 @@ class _AsyncDpmCore:
                         msg = status_message(fc, ec) or f"DPM job start failed (status={job_error})"
                     else:
                         fc = FACILITY_ACNET
-                        ec = ERR_RETRY if transport_error is not None else ERR_TIMEOUT
+                        ec = failure_code if transport_error is not None else ERR_TIMEOUT
                         msg = (
                             f"Connection error: {transport_error}"
                             if transport_error is not None
@@ -482,7 +491,7 @@ class _AsyncDpmCore:
                     msg = status_message(fc, ec) or f"DPM job start failed (status={job_error})"
                 else:
                     fc = FACILITY_ACNET
-                    ec = ERR_RETRY if transport_error is not None else ERR_TIMEOUT
+                    ec = failure_code if transport_error is not None else ERR_TIMEOUT
                     msg = f"Connection error: {transport_error}" if transport_error is not None else "Request timeout"
                 readings.append(
                     Reading(
