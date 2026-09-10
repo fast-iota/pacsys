@@ -45,6 +45,11 @@ with pacsys.grpc(auth=auth) as backend:
     result = backend.write("M:OUTTMP", 72.5)
 ```
 
+Readings with a positive ACNET warning remain usable when they include data:
+both `reading.ok` and `reading.is_warning` are true. Batched and logger results
+retain all usable samples and the first warning's status and message. Samples
+with errors or warnings without data remain unusable.
+
 ## Configuration
 
 | Parameter | Default | Environment Variable |

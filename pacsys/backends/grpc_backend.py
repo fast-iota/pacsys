@@ -318,7 +318,7 @@ def _reply_to_readings(reply, drfs: list[str]) -> list[Reading]:
         for rd in reading_list:
             ts = _proto_timestamp_to_datetime(rd.timestamp)
             facility, error, message = _proto_status_to_codes(rd.status)
-            if error != 0:
+            if error < 0 or (error > 0 and rd.data.WhichOneof("value") is None):
                 results.append(
                     Reading(
                         drf=drf,
@@ -367,14 +367,14 @@ def _aggregate_proto_readings(reading_list, drf: str, now: datetime) -> Reading:
     straight from the proto messages to avoid N datetime round-trips
     and N throwaway allocations.
 
-    If any reading carries a nonzero error status, the first error is
-    propagated immediately instead of silently mixing errors into data.
+    Unusable samples abort aggregation; usable warnings retain their data.
+    The first warning's status describes the combined result.
     """
-    # Check for error status in samples before aggregating
+    warning: tuple[int, int, str | None] = (0, 0, None)
     for rd in reading_list:
         if rd.status is not None:
             facility, error, message = _proto_status_to_codes(rd.status)
-            if error != 0:
+            if error < 0 or (error > 0 and rd.data.WhichOneof("value") is None):
                 ts = _proto_timestamp_to_datetime(rd.timestamp) or now
                 return Reading(
                     drf=drf,
@@ -383,6 +383,8 @@ def _aggregate_proto_readings(reading_list, drf: str, now: datetime) -> Reading:
                     message=message,
                     timestamp=ts,
                 )
+            if error > 0 and warning[1] == 0:
+                warning = (facility, error, message)
 
     try:
         data = np.array([_proto_value_to_python(rd.data)[0] for rd in reading_list], dtype=float)
@@ -403,15 +405,20 @@ def _aggregate_proto_readings(reading_list, drf: str, now: datetime) -> Reading:
         value_type=ValueType.TIMED_SCALAR_ARRAY,
         value={"data": data, "micros": micros},
         timestamp=ts,
+        facility_code=warning[0],
+        error_code=warning[1],
+        message=warning[2],
     )
 
 
 def _merge_logger_readings(chunks: list[Reading], drf: str) -> Reading:
     """Merge multiple logger chunk Readings into a single TIMED_SCALAR_ARRAY."""
-    # Propagate error readings immediately instead of silently dropping them
+    warning: tuple[int, int, str | None] = (0, 0, None)
     for r in chunks:
-        if r.error_code and r.error_code != 0:
+        if not r.ok:
             return r
+        if r.is_warning and warning[1] == 0:
+            warning = (r.facility_code, r.error_code, r.message)
 
     all_data: list[np.ndarray] = []
     all_micros: list[np.ndarray] = []
@@ -425,12 +432,15 @@ def _merge_logger_readings(chunks: list[Reading], drf: str) -> Reading:
             all_data.append(r.value)
 
     data = np.concatenate(all_data) if all_data else np.array([], dtype=float)
-    if all_micros:
-        micros = np.concatenate(all_micros)
-        return Reading(
-            drf=drf, value_type=ValueType.TIMED_SCALAR_ARRAY, value={"data": data, "micros": micros}, timestamp=first_ts
-        )
-    return Reading(drf=drf, value_type=ValueType.SCALAR_ARRAY, value=data, timestamp=first_ts)
+    return Reading(
+        drf=drf,
+        value_type=ValueType.TIMED_SCALAR_ARRAY if all_micros else ValueType.SCALAR_ARRAY,
+        value={"data": data, "micros": np.concatenate(all_micros)} if all_micros else data,
+        timestamp=first_ts,
+        facility_code=warning[0],
+        error_code=warning[1],
+        message=warning[2],
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
