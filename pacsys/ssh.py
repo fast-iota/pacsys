@@ -702,6 +702,9 @@ class SSHClient:
         deadline = time.monotonic() + timeout if timeout is not None else None
         try:
             chan = transport.open_session(timeout=timeout)
+        except TimeoutError as e:
+            logger.warning("SSH session setup timed out for command %r", command)
+            raise SSHTimeoutError(f"Timed out opening SSH session for command {command!r}") from e
         except paramiko.SSHException as e:
             if deadline is not None and "timeout" in str(e).lower():
                 raise SSHTimeoutError(f"Command timed out after {timeout}s: {command!r}") from e

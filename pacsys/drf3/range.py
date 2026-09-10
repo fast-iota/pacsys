@@ -6,7 +6,7 @@ RANGE_RE = re.compile("(\\[(\\d*)(?::(\\d*))?\\])|(\\{(\\d*)(?::(\\d*))?\\})")
 # Sentinel for an unbounded byte-range length
 MAXIMUM = -2147483648
 MAX_UPPER_BOUND = 2147483648
-MAX_INDEX = 2147483647  # Java Integer.MAX_VALUE (ArrayRange bound)
+MAX_INDEX = 2147483647  # Java Integer.MAX_VALUE
 
 
 def parse_range(raw_string: str | None):
@@ -96,6 +96,10 @@ class BYTE_RANGE:  # noqa: N801 -- established DRF API
             raise ValueError("offset must be non-negative")
         if length is not None and (length != MAXIMUM and length < 0):
             raise ValueError("length must be non-negative")
+        if offset is not None and offset > MAX_INDEX:
+            raise ValueError("offset exceeds Integer.MAX_VALUE")
+        if length is not None and length > MAX_INDEX:
+            raise ValueError("length exceeds Integer.MAX_VALUE")
         if offset is not None and length is not None:
             if length != MAXIMUM and offset + length > MAX_UPPER_BOUND:
                 raise ValueError("offset + length must be less than Integer.MAX_VALUE")

@@ -196,10 +196,10 @@ def _parse_response_line(drf: str, line: str) -> tuple[Value, ValueType]:
     """Parse a single ACL response line, choosing raw or text parsing."""
     if _is_raw_field(drf):
         return _parse_raw_hex(line), ValueType.RAW
-    return _parse_acl_line(line)
+    return _parse_acl_line(line, text_only=parse_request(drf).property == DRF_PROPERTY.DESCRIPTION)
 
 
-def _parse_acl_line(text: str) -> tuple[Value, ValueType]:
+def _parse_acl_line(text: str, *, text_only: bool = False) -> tuple[Value, ValueType]:
     """Parse a single line of ACL output into a value and type.
 
     ACL output format is typically: ``DEVICE = VALUE [UNITS]``
@@ -215,6 +215,8 @@ def _parse_acl_line(text: str) -> tuple[Value, ValueType]:
     else:
         raw = text
 
+    if text_only:
+        return raw, ValueType.TEXT
     if not raw:
         return text, ValueType.TEXT
 
