@@ -340,12 +340,12 @@ The login name defaults to the principal of `auth` (or of the default credential
 only present the default credential-cache principal, so `SSHClient(..., auth=KerberosAuth(name=...))`
 raises at init unless that principal is the cache default (`kswitch` first).
 
-Ticket delegation (forwarding your TGT to the remote host) is off by default and is not needed for
-multi-hop chains. Without it the remote session has no Kerberos ticket, so enable it per hop when a
-remote tool needs one — e.g. `ssh.acl("set ...")` or other Kerberized commands on that host:
+Ticket delegation (forwarding your TGT to the remote host) is enabled by default so remote
+Kerberized commands, such as ACL settings, can use your credentials. Disable it per hop when
+remote commands do not need a ticket; multi-hop connections themselves do not require delegation:
 
 ```python
-SSHHop("host.fnal.gov", delegate_credentials=True)
+SSHHop("host.fnal.gov", delegate_credentials=False)
 ```
 
 ### Key-Based

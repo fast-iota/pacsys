@@ -826,18 +826,18 @@ class TestAuthDispatch:
 
         ssh = SSHClient(SSHHop("host", username="user"))
         ssh._ensure_connected()
-        mock_transport.auth_gssapi_with_mic.assert_called_once_with("user", "host", gss_deleg_creds=False)
+        mock_transport.auth_gssapi_with_mic.assert_called_once_with("user", "host", gss_deleg_creds=True)
 
     @patch("paramiko.Transport")
     @patch("socket.create_connection")
-    def test_gssapi_delegation_is_opt_in(self, mock_connect, mock_transport_cls):
+    def test_gssapi_delegation_can_be_disabled(self, mock_connect, mock_transport_cls):
         mock_connect.return_value = MagicMock()
         mock_transport = _make_mock_transport()
         mock_transport_cls.return_value = mock_transport
 
-        ssh = SSHClient(SSHHop("host", username="user", delegate_credentials=True))
+        ssh = SSHClient(SSHHop("host", username="user", delegate_credentials=False))
         ssh._ensure_connected()
-        mock_transport.auth_gssapi_with_mic.assert_called_once_with("user", "host", gss_deleg_creds=True)
+        mock_transport.auth_gssapi_with_mic.assert_called_once_with("user", "host", gss_deleg_creds=False)
 
     @patch("paramiko.Transport")
     @patch("socket.create_connection")
@@ -855,7 +855,7 @@ class TestAuthDispatch:
         with patch("pacsys.ssh._gssapi_username", side_effect=AssertionError("default cache consulted")):
             ssh = SSHClient(SSHHop("host"), auth=auth)
             ssh._ensure_connected()
-        mock_transport.auth_gssapi_with_mic.assert_called_once_with("operator", "host", gss_deleg_creds=False)
+        mock_transport.auth_gssapi_with_mic.assert_called_once_with("operator", "host", gss_deleg_creds=True)
 
     @patch("pacsys.ssh._default_principal", return_value="nikita@FNAL.GOV")
     def test_named_auth_must_be_default_principal(self, _mock_default):
@@ -883,7 +883,7 @@ class TestAuthDispatch:
 
         ssh = SSHClient(SSHHop("host"))  # no explicit username
         ssh._ensure_connected()
-        mock_transport.auth_gssapi_with_mic.assert_called_once_with("kerbuser", "host", gss_deleg_creds=False)
+        mock_transport.auth_gssapi_with_mic.assert_called_once_with("kerbuser", "host", gss_deleg_creds=True)
 
     @patch("paramiko.RSAKey.from_private_key_file")
     @patch("paramiko.Transport")
