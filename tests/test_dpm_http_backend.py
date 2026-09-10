@@ -20,7 +20,7 @@ import pytest
 
 from pacsys.acnet.errors import DAE_LJ_NO_DATA, ERR_TIMEOUT, make_error
 from pacsys.backends.dpm_http import DPMHTTPBackend, _value_to_setting
-from pacsys.dpm_connection import DPMConnectionError
+from pacsys.dpm_connection import DPMConnection, DPMConnectionError
 from pacsys.dpm_protocol import ApplySettings_request, ListStatus_reply, Raw_reply, StartList_reply
 from pacsys.errors import AuthenticationError, DeviceError, ReadError
 from pacsys.pool import PoolExhaustedError
@@ -1218,6 +1218,39 @@ class TestPoolTimeoutDiscard:
 class TestGetManyTimeoutConnectionCleanup:
     """Connection must be discarded (not reused) when get_many times out."""
 
+    @pytest.mark.parametrize("phase", ["setup", "cleanup"])
+    def test_read_deadline_bounds_socket_sends(self, phase):
+        conn = DPMConnection()
+        conn._connected, conn._list_id = True, 1
+        sock = conn._socket = MagicMock()
+        sock.gettimeout.return_value = 0.2
+        sock.settimeout.side_effect = lambda timeout: setattr(sock.gettimeout, "return_value", timeout)
+        sends = 0
+
+        def sendall(data):
+            nonlocal sends
+            sends += 1
+            if sends == (1 if phase == "setup" else 2):
+                time.sleep(sock.gettimeout())
+                raise TimeoutError("blocked send")
+
+        sock.sendall.side_effect = sendall
+        conn.recv_message = mock.Mock(side_effect=[make_device_info(), make_scalar_reply()])
+        pool = MagicMock()
+        pool.connection.return_value.__enter__.return_value = conn
+        with DPMHTTPBackend() as backend, mock.patch.object(backend, "_get_pool", return_value=pool):
+            started = time.monotonic()
+            if phase == "setup":
+                with pytest.raises(ReadError) as exc:
+                    backend.get_many([TEMP_DEVICE], timeout=0.03)
+                assert exc.value.readings[0].error_code == ERR_TIMEOUT
+            else:
+                readings = backend.get_many([TEMP_DEVICE], timeout=0.03)
+                assert readings[0].ok and readings[0].value == TEMP_VALUE
+            assert time.monotonic() - started < 0.15
+            assert not conn.connected
+            sock.close.assert_called_once()
+
     def test_timeout_closes_connection(self):
         """When recv loop gets fewer replies than expected, connection must be closed."""
         import threading
@@ -1345,7 +1378,7 @@ class TestGetManyTimeoutConnectionCleanup:
 
         send_calls = [0]
 
-        def mock_send_batch(msgs):
+        def mock_send_batch(msgs, timeout=None):
             send_calls[0] += 1
             if send_calls[0] == 2:  # first batch = setup, second = stop/clear
                 raise RuntimeError("unexpected")

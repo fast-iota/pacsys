@@ -411,6 +411,7 @@ class _AsyncDPMConnection:
         effective_timeout = timeout if timeout is not None else self._timeout
         if effective_timeout <= 0:
             raise ValueError(f"timeout must be positive, got {effective_timeout}")
+        deadline = time.monotonic() + effective_timeout
 
         async def connect_and_handshake() -> None:
             self._reader, self._writer = await asyncio.open_connection(
@@ -454,15 +455,15 @@ class _AsyncDPMConnection:
         try:
             await asyncio.wait_for(connect_and_handshake(), timeout=effective_timeout)
         except (TimeoutError, asyncio.TimeoutError) as e:  # distinct classes on 3.10
-            await self.close()
+            await self.close(deadline=deadline)
             raise DPMConnectionError(f"Connection to {self._host}:{self._port} timed out") from e
         except asyncio.IncompleteReadError as e:
-            await self.close()
+            await self.close(deadline=deadline)
             raise DPMConnectionError(
                 f"Connection closed by server during handshake (got {len(e.partial)}/{e.expected} bytes)"
             ) from e
         except BaseException:
-            await self.close()
+            await self.close(deadline=time.monotonic())
             raise
 
     async def send_message(self, msg) -> None:
@@ -509,18 +510,18 @@ class _AsyncDPMConnection:
                 self._reader.readexactly(4),
                 timeout=prefix_timeout,
             )
-        except asyncio.TimeoutError as e:
+        except (TimeoutError, asyncio.TimeoutError) as e:
             if timeout is not None:
                 raise asyncio.TimeoutError("Receive timeout") from e
             raise DPMConnectionError(
                 f"No data received for {self._RECV_TIMEOUT}s (missed heartbeats), connection presumed dead"
             ) from e
         except asyncio.IncompleteReadError as e:
-            await self.close()
+            await self.close(deadline=deadline)
             raise DPMConnectionError(f"Connection closed by server (got {len(e.partial)}/{e.expected} bytes)") from e
         length = struct.unpack(">I", len_bytes)[0]
         if length == 0 or length > MAX_MESSAGE_SIZE:
-            await self.close()
+            await self.close(deadline=deadline)
             raise DPMConnectionError(f"Invalid message length: {length}")
         try:
             body_timeout = _remaining_timeout(deadline, "DPM message body")
@@ -528,20 +529,22 @@ class _AsyncDPMConnection:
                 self._reader.readexactly(length),
                 timeout=body_timeout,
             )
-        except asyncio.TimeoutError as e:
-            await self.close()
+        except (TimeoutError, asyncio.TimeoutError) as e:
+            await self.close(deadline=deadline)
             if timeout is not None:
                 raise asyncio.TimeoutError("Receive timeout") from e
             raise DPMConnectionError(f"Timed out reading {length}-byte message body") from e
         except asyncio.IncompleteReadError as e:
-            await self.close()
+            await self.close(deadline=deadline)
             raise DPMConnectionError(f"Connection closed by server (got {len(e.partial)}/{e.expected} bytes)") from e
         try:
             return unmarshal_reply(_Cursor(data))
         except (ProtocolError, StopIteration) as e:
             raise DPMConnectionError(f"Protocol error: {e}") from e
 
-    async def close(self) -> None:
+    async def close(self, *, deadline: float | None = None) -> None:
+        import asyncio
+
         writer = self._writer
         self._writer = None
         self._reader = None
@@ -549,7 +552,17 @@ class _AsyncDPMConnection:
         if writer is not None:
             try:
                 writer.close()
-                await writer.wait_closed()
+                if deadline is None:
+                    await writer.wait_closed()
+                else:
+                    remaining = _remaining_timeout(deadline, "DPM connection cleanup")
+                    await asyncio.wait_for(writer.wait_closed(), timeout=remaining)
+            except (TimeoutError, asyncio.TimeoutError):
+                logger.warning("DPM connection cleanup deadline expired; aborting transport")
+                writer.transport.abort()
+            except asyncio.CancelledError:
+                writer.transport.abort()
+                raise
             except Exception:  # noqa: BLE001
                 logger.debug("Failed to close async DPM connection", exc_info=True)
 
@@ -926,7 +939,6 @@ class DPMHTTPBackend(Backend):
         self._check_not_reactor_thread()
 
         deadline = _make_deadline(timeout, self._timeout)
-        effective_timeout = deadline - time.monotonic()
 
         prepared_drfs = [ensure_immediate_event(drf) for drf in drfs]
 
@@ -958,9 +970,10 @@ class DPMHTTPBackend(Backend):
         pool = self._get_pool()
         conn_broken = False
         transport_error: BaseException | None = None
+        failure_code = ERR_RETRY
 
         try:
-            with pool.connection(wait_timeout=effective_timeout) as conn:
+            with pool.connection(wait_timeout=_remaining_timeout(deadline, "read connection")) as conn:
                 list_id = conn.list_id
 
                 # Pipeline: batch all AddToList + StartList into a single TCP send
@@ -975,9 +988,8 @@ class DPMHTTPBackend(Backend):
                 start_req = StartList_request()
                 start_req.list_id = list_id
                 setup_msgs.append(start_req)
-                conn.send_messages_batch(setup_msgs)
-
                 try:
+                    conn.send_messages_batch(setup_msgs, timeout=_remaining_timeout(deadline, "read list setup"))
                     while received_count < expected_count:
                         remaining = deadline - time.monotonic()
                         if remaining <= 0:
@@ -1049,6 +1061,9 @@ class DPMHTTPBackend(Backend):
                 except (BrokenPipeError, ConnectionResetError, OSError, DPMConnectionError) as e:
                     conn_broken = True
                     transport_error = e
+                    if isinstance(e, TimeoutError) or isinstance(e.__cause__, TimeoutError):
+                        failure_code = ERR_TIMEOUT
+                    logger.warning("Read failed (devices: %s): %s", summarize_drfs(drfs), e)
                 finally:
                     if not conn_broken:
                         if job_error is not None or received_count < expected_count:
@@ -1059,7 +1074,9 @@ class DPMHTTPBackend(Backend):
                                 stop_req.list_id = list_id
                                 clear_req = ClearList_request()
                                 clear_req.list_id = list_id
-                                conn.send_messages_batch([stop_req, clear_req])
+                                conn.send_messages_batch(
+                                    [stop_req, clear_req], timeout=_remaining_timeout(deadline, "read list cleanup")
+                                )
                             except Exception as e:  # noqa: BLE001
                                 # Failed StopList send means unknown connection state —
                                 # close so it is not re-pooled dirty. Data is already
@@ -1072,6 +1089,9 @@ class DPMHTTPBackend(Backend):
                     else:
                         # The decode boundary is intact, but the list is still active.
                         conn.close()
+        except TimeoutError as e:
+            transport_error = e
+            failure_code = ERR_TIMEOUT
         except (PoolClosedError, PoolExhaustedError, DPMConnectionError, OSError) as e:
             transport_error = e
 
@@ -1128,7 +1148,7 @@ class DPMHTTPBackend(Backend):
                         msg = status_message(fc, ec) or f"DPM job start failed (status={job_error})"
                     else:
                         fc = FACILITY_ACNET
-                        ec = ERR_RETRY if transport_error is not None else ERR_TIMEOUT
+                        ec = failure_code if transport_error is not None else ERR_TIMEOUT
                         msg = (
                             f"Connection error: {transport_error}"
                             if transport_error is not None
@@ -1154,7 +1174,7 @@ class DPMHTTPBackend(Backend):
                     msg = status_message(fc, ec) or f"DPM job start failed (status={job_error})"
                 else:
                     fc = FACILITY_ACNET
-                    ec = ERR_RETRY if transport_error is not None else ERR_TIMEOUT
+                    ec = failure_code if transport_error is not None else ERR_TIMEOUT
                     msg = f"Connection error: {transport_error}" if transport_error is not None else "Request timeout"
                 readings.append(
                     Reading(

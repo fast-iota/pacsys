@@ -8,7 +8,7 @@ from unittest import mock
 import numpy as np
 import pytest
 
-from pacsys.acnet.errors import DAE_LJ_NO_DATA
+from pacsys.acnet.errors import DAE_LJ_NO_DATA, ERR_TIMEOUT
 from pacsys.backends._dpm_core import _AsyncDpmCore
 from pacsys.backends.dpm_http import _AsyncDPMConnection
 from pacsys.dpm_connection import DPMConnectionError
@@ -129,7 +129,7 @@ class FakeAsyncConn:
         self._idx += 1
         return reply
 
-    async def close(self):
+    async def close(self, *, deadline=None):
         self._closed = True
 
 
@@ -154,6 +154,12 @@ async def test_async_connection_body_uses_remaining_timeout():
     conn = _AsyncDPMConnection("localhost", 6802)
     conn._reader = mock.AsyncMock()
     conn._reader.readexactly.side_effect = readexactly
+    writer = conn._writer = mock.MagicMock()
+
+    async def blocked_close():
+        await asyncio.sleep(0.3)
+
+    writer.wait_closed = mock.AsyncMock(side_effect=blocked_close)
 
     started = time.monotonic()
     with pytest.raises(asyncio.TimeoutError, match="Receive timeout"):
@@ -161,6 +167,7 @@ async def test_async_connection_body_uses_remaining_timeout():
 
     assert time.monotonic() - started < 0.1
     assert conn._reader is None
+    writer.transport.abort.assert_called_once()
 
     conn._list_id = 42
     assert conn.list_id == 42
@@ -231,6 +238,42 @@ def make_core():
 
 
 class TestReadMany:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("phase", ["setup", "cleanup", "close"])
+    async def test_read_deadline_bounds_sends_and_socket_close(self, make_core, phase):
+        core, replay = make_core([_device_info(1), _scalar_reply(1, 5.0)])
+        conn = core._conn = _AsyncDPMConnection("localhost", 6802)
+        conn._list_id = 42
+        conn.recv_message = replay.recv_message
+        writer = conn._writer = mock.MagicMock()
+        sends = 0
+
+        async def blocked():
+            await asyncio.sleep(0.3)
+
+        async def drain():
+            nonlocal sends
+            sends += 1
+            if (phase == "setup" and sends == 1) or (phase == "cleanup" and sends == 2):
+                await blocked()
+
+        writer.drain = mock.AsyncMock(side_effect=drain)
+        writer.wait_closed = mock.AsyncMock(side_effect=blocked)
+        started = time.monotonic()
+        try:
+            if phase == "setup":
+                with pytest.raises(ReadError) as exc:
+                    await core.read_many(["M:OUTTMP@p,1000"], timeout=0.03)
+                assert exc.value.readings[0].error_code == ERR_TIMEOUT
+            else:
+                readings = await core.read_many(["M:OUTTMP@p,1000"], timeout=0.03)
+                assert readings[0].ok and readings[0].value == 5.0
+            assert time.monotonic() - started < 0.15
+            assert not core.connected
+            writer.transport.abort.assert_called_once()
+        finally:
+            await core.close()
+
     @pytest.mark.asyncio
     async def test_read_single(self, make_core):
         replies = [_add_ok(1), _device_info(1), _start_ok(), _scalar_reply(1, 72.5)]
