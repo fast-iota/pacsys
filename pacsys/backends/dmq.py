@@ -1318,7 +1318,7 @@ class DMQBackend(Backend):
             return
 
         # Enforce session limit before creating new one
-        if len(self._write_sessions) >= MAX_WRITE_SESSIONS:
+        if len(self._write_sessions) + len(self._pending_session_setups) >= MAX_WRITE_SESSIONS:
             if not self._evict_lru_write_session():
                 for i, drf, _ in drf_settings:
                     results[i] = WriteResult(

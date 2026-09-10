@@ -253,6 +253,8 @@ class Ramp:
                 raise ValueError(f"{name} must be 1-D, got {value.ndim}-D array")
             if len(value) != self.POINTS_PER_SLOT:
                 raise ValueError(f"Expected {self.POINTS_PER_SLOT} {name}, got {len(value)}")
+        elif name == "slot" and isinstance(value, np.integer):
+            value = int(value)
         super().__setattr__(name, value)
 
     @property
@@ -885,6 +887,8 @@ class RampGroup:
             devices = self.__dict__.get("devices")
             if devices is not None and value.shape[1] != len(devices):
                 raise ValueError(f"{name} has {value.shape[1]} columns but group has {len(devices)} devices")
+        elif name == "slot" and isinstance(value, np.integer):
+            value = int(value)
         super().__setattr__(name, value)
 
     @property
