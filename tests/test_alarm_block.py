@@ -484,9 +484,13 @@ class TestModifyContext:
 
         assert fake_backend.writes == []
 
-    @pytest.mark.parametrize("field", ["data_length", "data_type"])
-    def test_modify_rejects_engineering_limits_with_format_change(self, fake_backend, field):
+    @pytest.mark.parametrize(
+        ("field", "changed"),
+        [("data_length", DataLength.BYTES_4), ("data_type", DataType.FLOAT), ("limit_type", LimitType.NOM_TOL)],
+    )
+    def test_modify_rejects_engineering_limits_with_interpretation_change(self, fake_backend, field, changed):
         alarm_data = AnalogAlarm()
+        alarm_data.limit_type = LimitType.MIN_MAX
         alarm_data.data_type = DataType.SIGNED_INT
         alarm_data.data_length = DataLength.BYTES_2
         fake_backend.set_reading("Z:TEST.ANALOG{0:20}.RAW@I", alarm_data.to_bytes(), value_type=ValueType.RAW)
@@ -495,11 +499,7 @@ class TestModifyContext:
         with pytest.raises(ValueError, match="engineering limits"):
             with AnalogAlarm.modify("Z:TEST", backend=fake_backend) as alarm:
                 alarm.maximum = 200.0
-                setattr(
-                    alarm,
-                    field,
-                    DataLength.BYTES_4 if field == "data_length" else DataType.FLOAT,
-                )
+                setattr(alarm, field, changed)
 
         assert fake_backend.writes == []
 
