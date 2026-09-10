@@ -156,17 +156,24 @@ class TestScan:
 
         assert "Failed to restore Z:ACLTST to 42.0 during error cleanup: restore failed" in caplog.text
 
-    def test_failed_normal_restore_preserves_scan_result(self, fake):
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            WriteResult(drf="Z:ACLTST.SETTING@N", error_code=-1, message="restore failed"),
+            OSError("restore transport failed"),
+        ],
+    )
+    def test_failed_normal_restore_preserves_scan_result(self, fake, failure):
         write_device = mock.Mock()
         write_device.setting.return_value = 42.0
         write_device.write.side_effect = [
             WriteResult(drf="Z:ACLTST.SETTING@N"),
-            WriteResult(drf="Z:ACLTST.SETTING@N", error_code=-1, message="restore failed"),
+            failure,
         ]
 
         with (
             mock.patch("pacsys.device.Device", return_value=write_device),
-            pytest.raises(RuntimeError, match="failed to restore") as exc_info,
+            pytest.raises(ScanRestoreError, match="failed to restore") as exc_info,
         ):
             scan(
                 write_device="Z:ACLTST",
@@ -176,9 +183,10 @@ class TestScan:
                 backend=fake,
             )
 
-        assert exc_info.value.result.readings
+        assert exc_info.value.result.set_values == [1.0]
+        assert exc_info.value.result.readings[0]["M:OUTTMP"].value == 72.0
         assert exc_info.value.result.restored is False
-        assert isinstance(exc_info.value, ScanRestoreError)
+        assert exc_info.value.__cause__ is (failure if isinstance(failure, Exception) else None)
 
     def test_no_restore(self, fake):
         fake.set_reading("Z:ACLTST.SETTING", 42.0)
