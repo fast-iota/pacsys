@@ -14,6 +14,7 @@ import logging
 import queue
 import struct
 import threading
+import time
 from dataclasses import dataclass
 from enum import IntEnum
 
@@ -915,20 +916,36 @@ class _SnapshotReplyQueue:
         self._queue: queue.Queue[tuple[int, int, bytes, bool] | None] = queue.Queue()
         self._cycle = 0
         self._lock = threading.Lock()
+        self._pending: list[tuple[int, tuple[int, bytes, bool]]] | None = None
 
-    def put(self, item: tuple[int, bytes, bool] | None) -> None:
+    def put(self, item: tuple[int, bytes, bool] | None, *, received_at: int | None = None) -> None:
         if item is None:
             self._queue.put(None)
             return
         with self._lock:
-            self._queue.put((self._cycle, *item))
+            if self._pending is not None and not item[2]:
+                self._pending.append((time.monotonic_ns() if received_at is None else received_at, item))
+            else:
+                self._queue.put((self._cycle, *item))
 
     def get(self, timeout: float) -> tuple[int, int, bytes, bool] | None:
         return self._queue.get(timeout=timeout)
 
-    def advance_cycle(self) -> int:
+    def begin_restart(self) -> None:
         with self._lock:
-            self._cycle += 1
+            if self._pending is not None:
+                raise RuntimeError("Snapshot restart already in progress")
+            self._pending = []
+
+    def finish_restart(self, received_at: int | None = None) -> int:
+        with self._lock:
+            if self._pending is not None:
+                if received_at is not None:
+                    self._cycle += 1
+                for timestamp, item in self._pending:
+                    stale = received_at is not None and timestamp <= received_at
+                    self._queue.put((self._cycle - int(stale), *item))
+                self._pending = None
             return self._cycle
 
 
@@ -1244,55 +1261,63 @@ class SnapshotHandle:
         stream ends (or the snapshot is cancelled) during the round trip,
         raises RuntimeError and leaves the monitor's terminal state intact.
         """
-        with self._lock:
-            if self._cancelled:
-                raise RuntimeError("Snapshot has been cancelled")
-            if self._stream_ended:
-                raise RuntimeError("Snapshot stream has ended (connection lost or stream closed)")
-
         payload = build_snapshot_control(subtype=SNAPSHOT_CONTROL_RESTART, task_name=self._task_name)
         result_q: queue.Queue = queue.Queue()
 
         def handler(reply):
-            result_q.put((reply.status, reply.data))
-
-        self._connection.request_single(
-            node=self._node,
-            task=FTPMAN_TASK,
-            data=payload,
-            reply_handler=handler,
-            timeout=int(timeout * 1000),
-        )
-
-        try:
-            status, data = result_q.get(timeout=timeout)
-        except queue.Empty:
-            # No ack: the FE may or may not have restarted. State is
-            # indeterminate -- fail loudly rather than report stale readiness.
-            with self._lock:
-                for i in range(len(self._devices)):
-                    self._device_states[i] = SnapshotState.ERROR
-                    self._device_errors[i] = ACNET_UTIME
-                self._ready_event.set()
-            raise AcnetTimeoutError(int(timeout * 1000)) from None
-
-        # Rejected (header or payload): nothing was reset, cycle-1 state remains valid
-        _check_control_reply(status, data, "restart")
+            result_q.put((reply.status, reply.data, reply._received_at))
 
         with self._lock:
-            # The monitor may have terminated (or the user cancelled) during
-            # the FE round trip -- do not undo its terminal cleanup.
             if self._cancelled:
                 raise RuntimeError("Snapshot has been cancelled")
             if self._stream_ended:
                 raise RuntimeError("Snapshot stream has ended (connection lost or stream closed)")
-            self._cycle = self._reply_queue.advance_cycle()
-            self._first_status_pending = True
-            self._ready_event.clear()
-            for i in range(len(self._devices)):
-                self._device_states[i] = SnapshotState.PENDING
-                self._device_errors.pop(i, None)
-            self._metadata_consumed.clear()
+            self._reply_queue.begin_restart()
+        committed = False
+        try:
+            self._connection.request_single(
+                node=self._node,
+                task=FTPMAN_TASK,
+                data=payload,
+                reply_handler=handler,
+                timeout=int(timeout * 1000),
+            )
+
+            try:
+                status, data, received_at = result_q.get(timeout=timeout)
+            except queue.Empty:
+                # No ack: the FE may or may not have restarted.
+                with self._lock:
+                    if self._cancelled:
+                        raise RuntimeError("Snapshot has been cancelled") from None
+                    if self._stream_ended:
+                        raise RuntimeError("Snapshot stream has ended (connection lost or stream closed)") from None
+                    for i in range(len(self._devices)):
+                        self._device_states[i] = SnapshotState.ERROR
+                        self._device_errors[i] = ACNET_UTIME
+                    self._ready_event.set()
+                raise AcnetTimeoutError(int(timeout * 1000)) from None
+
+            _check_control_reply(status, data, "restart")
+
+            with self._lock:
+                if self._cancelled:
+                    raise RuntimeError("Snapshot has been cancelled")
+                if self._stream_ended:
+                    raise RuntimeError("Snapshot stream has ended (connection lost or stream closed)")
+                # Use receipt order: the control callback itself can be buffered
+                # while the reactor delivers subsequent stream statuses.
+                self._cycle = self._reply_queue.finish_restart(received_at)
+                committed = True
+                self._first_status_pending = True
+                self._ready_event.clear()
+                for i in range(len(self._devices)):
+                    self._device_states[i] = SnapshotState.PENDING
+                    self._device_errors.pop(i, None)
+                self._metadata_consumed.clear()
+        finally:
+            if not committed:
+                self._reply_queue.finish_restart()
 
     def reset_pointers(self, timeout: float = 5.0):
         """Reset retrieval pointers."""
@@ -1631,7 +1656,7 @@ class FTPClient:
                 setup_result.append((reply.status, reply.data, reply.last))
                 setup_event.set()
             else:
-                reply_queue.put((reply.status, reply.data, reply.last))
+                reply_queue.put((reply.status, reply.data, reply.last), received_at=reply._received_at)
 
         # Protocol timeout 0: pre-arm silence is normal for event-armed
         # snapshots, and acnetd's mult-request expiry would otherwise emit

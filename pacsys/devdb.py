@@ -387,10 +387,10 @@ class DevDBClient:
     Args:
         host: DevDB gRPC server hostname (default: from PACSYS_DEVDB_HOST or ad-services.fnal.gov)
         port: DevDB gRPC server port (default: from PACSYS_DEVDB_PORT or 443)
-        tls: Use TLS (default: from PACSYS_DEVDB_TLS or on). The production ingress only serves
-            TLS; turn off for a plaintext SSH tunnel.
         timeout: RPC timeout in seconds (default: 5.0)
         cache_ttl: TTL for cached results in seconds (default: 3600.0)
+        tls: Keyword-only. Use TLS (default: from PACSYS_DEVDB_TLS or on). The production
+            ingress only serves TLS; turn off for a plaintext SSH tunnel.
 
     Raises:
         ImportError: If grpc package is not available
@@ -400,9 +400,10 @@ class DevDBClient:
         self,
         host: str | None = None,
         port: int | None = None,
-        tls: bool | None = None,
         timeout: float | None = None,
         cache_ttl: float = 3600.0,
+        *,
+        tls: bool | None = None,
     ):
         if not DEVDB_AVAILABLE:
             raise ImportError(f"gRPC not available for DevDB: {_import_error}")

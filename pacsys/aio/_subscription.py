@@ -152,11 +152,9 @@ class AsyncSubscriptionHandle:
     async def stop(self) -> None:
         cur = asyncio.current_task()
         if self._stopping:
-            # Reentrant call from the stopping task itself (stop -> _remover ->
-            # backend.remove -> handle.stop) must not wait on its own
-            # completion; genuinely concurrent callers wait until tasks are
-            # fully unwound (close() drains the pool right after).
-            if self._stop_task is cur:
+            # Owned tasks may reenter from on_error or cleanup while stop()
+            # awaits them. Only independent callers wait for completion.
+            if cur in (self._stop_task, self._task, self._callback_task) or cur in self._aux_tasks:
                 return
             await self._stop_complete.wait()
             return
