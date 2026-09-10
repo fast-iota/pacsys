@@ -9,6 +9,8 @@ on:
       - 'docs/**'
       - 'mkdocs.yml'
       - 'pacsys/**'
+      - 'pyproject.toml'
+      - '.github/workflows/docs.yml'
   workflow_dispatch:
 
 permissions:
@@ -32,8 +34,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: |
-          pip install mkdocs mkdocs-material mkdocstrings[python]
+        run: pip install -e ".[doc]"
 
       - name: Build documentation
         run: mkdocs build --strict
