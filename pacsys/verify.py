@@ -148,6 +148,8 @@ def values_match(a: Value, b: Value, tolerance: float = 0.0) -> bool:
     b_bool = isinstance(b_scalar, bool)
     if a_bool or b_bool:
         return a_bool and b_bool and a_scalar == b_scalar
+    if isinstance(a_scalar, int) and isinstance(b_scalar, int):
+        return abs(a_scalar - b_scalar) <= tolerance
     if isinstance(a_scalar, Real) and isinstance(b_scalar, Real):
         return bool(np.isclose(a_scalar, b_scalar, atol=tolerance, rtol=0.0, equal_nan=False))
     try:

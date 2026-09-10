@@ -1349,7 +1349,7 @@ class TestSnapshotHandle:
                 status, payload = next(replies)
             else:
                 status, payload = 0, struct.pack("<h", 0)  # control reply: payload error word
-            reply_handler(MagicMock(status=status, data=payload, last=True))
+            reply_handler(MagicMock(status=status, data=payload, last=True, _received_at=time.monotonic_ns()))
 
         handle._connection.request_single.side_effect = request_single
 
@@ -1865,30 +1865,38 @@ class TestSnapshotStateTracking:
         finally:
             handle.cancel()
 
-    def test_restart_during_stream_end_preserves_terminal_state(self):
+    @pytest.mark.parametrize("ack", [False, True])
+    @pytest.mark.parametrize("cancel", [False, True])
+    def test_restart_during_stream_end_preserves_terminal_state(self, ack, cancel):
         """Monitor dying during the FE round trip must not be undone by restart()."""
         from pacsys.acnet.errors import ACNET_DISCONNECTED
 
         handle, rq = self._make_handle(per_device_errors=[FTP_PEND])
 
         def fake_request_single(node, task, data, reply_handler, timeout):
-            rq.put(None)  # stream ends mid-round-trip
-            handle._monitor_thread.join(timeout=2.0)
-            reply = MagicMock()
-            reply.status = 0
-            reply.data = struct.pack("<h", 0)
-            reply_handler(reply)  # FE acks success after the monitor died
+            if cancel:
+                handle.cancel()
+            else:
+                rq.put(None)  # stream ends mid-round-trip
+                handle._monitor_thread.join(timeout=0.2)
+                assert not handle._monitor_thread.is_alive()
+            if ack:
+                reply_handler(MagicMock(status=0, data=struct.pack("<h", 0), _received_at=time.monotonic_ns()))
 
         handle._connection.request_single = fake_request_single
 
-        with pytest.raises(RuntimeError, match="stream has ended"):
-            handle.restart()
+        with pytest.raises(RuntimeError, match="cancelled" if cancel else "stream has ended"):
+            handle.restart(timeout=0.05)
         # Monitor's terminal cleanup must stand: wait() raises instead of hanging
         assert handle._ready_event.is_set()
-        assert handle.device_states[0] == SnapshotState.ERROR
-        assert handle._device_errors[0] == ACNET_DISCONNECTED
-        with pytest.raises(AcnetError):
-            handle.wait(timeout=1.0)
+        if cancel:
+            with pytest.raises(RuntimeError, match="cancelled"):
+                handle.wait(timeout=0.2)
+        else:
+            assert handle.device_states[0] == SnapshotState.ERROR
+            assert handle._device_errors[0] == ACNET_DISCONNECTED
+            with pytest.raises(AcnetError):
+                handle.wait(timeout=0.2)
 
     def test_cancel_stops_monitor_thread(self):
         """cancel() terminates the monitor thread."""
@@ -1931,14 +1939,7 @@ class TestSnapshotStateTracking:
         assert handle.wait(timeout=2.0)
         assert handle.is_ready
 
-        # Mock the restart network call
-        def fake_request_single(node, task, data, reply_handler, timeout):
-            reply = MagicMock()
-            reply.status = 0
-            reply.data = struct.pack("<h", 0)
-            reply_handler(reply)
-
-        handle._connection.request_single = fake_request_single
+        self._ok_restart(handle)
         handle.restart()
 
         assert handle.state == SnapshotState.PENDING
@@ -1956,14 +1957,95 @@ class TestSnapshotStateTracking:
         assert handle.is_ready
         handle.cancel()
 
-    def _ok_restart(self, handle):
-        def fake_request_single(node, task, data, reply_handler, timeout):
-            reply = MagicMock()
-            reply.status = 0
-            reply.data = struct.pack("<h", 0)
-            reply_handler(reply)
+    @pytest.mark.parametrize("buffered_ack", [False, True])
+    @pytest.mark.parametrize("ready_before_return", [False, True])
+    def test_restart_preserves_statuses_received_after_ack(self, buffered_ack, ready_before_return):
+        """New-cycle statuses survive both delayed ACK callbacks and a delayed caller."""
+        handle, rq = self._make_handle(per_device_errors=[FTP_PEND])
+        ready = self._build_status_reply(0, [0])
 
-        handle._connection.request_single = fake_request_single
+        def request_single(*, reply_handler, **kwargs):
+            # Old-cycle statuses arriving during the request must still be discarded.
+            rq.put((0, self._build_status_reply(0, [FTP_COLLECTING]), False))
+            rq.put((0, ready, False))
+            reply = MagicMock(status=0, data=struct.pack("<h", 0), _received_at=time.monotonic_ns())
+            if not buffered_ack:
+                reply_handler(reply)
+            rq.put((0, self._build_status_reply(0, [FTP_WAIT_EVENT]), False))
+            if ready_before_return:
+                rq.put((0, ready, False))
+            if buffered_ack:
+                reply_handler(reply)
+
+        handle._connection.request_single = request_single
+        try:
+            handle.restart(timeout=0.2)
+            if not ready_before_return:
+                self._wait_for_device_state(handle, 0, SnapshotState.WAIT_EVENT)
+                assert not handle.is_ready
+                rq.put((0, ready, False))
+            assert handle.wait(timeout=0.2)
+        finally:
+            handle.cancel()
+
+    def test_restart_ack_and_status_in_same_tcp_batch(self):
+        import asyncio
+
+        from pacsys.acnet.async_connection import ACNETD_ACK, ACNETD_DATA, AsyncAcnetConnectionTCP, AsyncRequestContext
+        from pacsys.acnet.connection_sync import AcnetConnectionTCP
+        from pacsys.acnet.constants import ACNET_FLG_MLT, ACNET_FLG_RPY
+        from pacsys.acnet.packet import RequestId
+
+        def frame(kind, data):
+            return struct.pack(">IH", len(data) + 2, kind) + data
+
+        def reply_frame(request_id, data, *, multiple=False):
+            flags = ACNET_FLG_RPY | (ACNET_FLG_MLT if multiple else 0)
+            packet = struct.pack("<HhHHIHHH", flags, 0, 0, 0, 0, 0, request_id, 18 + len(data)) + data
+            return frame(ACNETD_DATA, packet)
+
+        handle, rq = self._make_handle(per_device_errors=[FTP_PEND])
+        connection = AcnetConnectionTCP()
+        core = AsyncAcnetConnectionTCP()
+        connection._async = core
+        handle._connection = connection
+
+        async def setup():
+            reader = asyncio.StreamReader()
+            core._reader = reader
+            core._reply_handlers[RequestId(1)] = AsyncRequestContext(
+                core,
+                "FTPMAN",
+                3018,
+                RequestId(1),
+                True,
+                0,
+                lambda reply: rq.put((reply.status, reply.data, reply.last), received_at=reply._received_at),
+            )
+            core._start_read_loop()
+            return reader
+
+        async def send_restart(_content):
+            batch = frame(ACNETD_ACK, struct.pack(">HhH", 0, 0, 2))
+            batch += reply_frame(2, struct.pack("<h", 0))
+            batch += reply_frame(1, self._build_status_reply(0, [FTP_COLLECTING]), multiple=True)
+            reader.feed_data(batch)
+
+        core._send_frame = send_restart
+        try:
+            connection._start_reactor()
+            reader = connection._run_sync(setup())
+            handle.restart(timeout=0.2)
+            connection._loop.call_soon_threadsafe(
+                reader.feed_data, reply_frame(1, self._build_status_reply(0, [0]), multiple=True)
+            )
+            assert handle.wait(timeout=0.2)
+        finally:
+            handle.cancel()
+            connection.close()
+
+    def _ok_restart(self, handle):
+        self._control_reply(handle, 0, struct.pack("<h", 0))
 
     def test_restart_discards_dequeued_stale_ready(self):
         """A cycle-1 READY dequeued before restart must not affect cycle 2."""
@@ -2009,7 +2091,7 @@ class TestSnapshotStateTracking:
     @staticmethod
     def _control_reply(handle, status, payload):
         def request_single(node, task, data, reply_handler, timeout):
-            reply_handler(MagicMock(status=status, data=payload, last=True))
+            reply_handler(MagicMock(status=status, data=payload, last=True, _received_at=time.monotonic_ns()))
 
         handle._connection.request_single = request_single
 
@@ -2052,16 +2134,35 @@ class TestSnapshotStateTracking:
         finally:
             handle.cancel()
 
-    def test_control_reply_short_payload_is_malformed(self):
+    @pytest.mark.parametrize("method", ["restart", "reset_pointers"])
+    def test_control_reply_short_payload_is_malformed(self, method):
         """Header status 0 must carry the 2-byte error word (Java reads it unconditionally)."""
         handle, rq = self._make_handle(per_device_errors=[FTP_PEND])
         try:
             self._control_reply(handle, 0, b"")
             with pytest.raises(ValueError, match="too short"):
-                handle.reset_pointers()
+                getattr(handle, method)()
             # Informational (positive) payload status is not an error
             self._control_reply(handle, 0, struct.pack("<h", FTP_PEND))
-            handle.reset_pointers()
+            getattr(handle, method)()
+        finally:
+            handle.cancel()
+
+    def test_restart_send_failure_releases_held_statuses(self):
+        handle, rq = self._make_handle(per_device_errors=[FTP_PEND])
+
+        def request_single(**kwargs):
+            rq.put((0, self._build_status_reply(0, [0]), False))
+            raise AcnetError(-1, "send failed")
+
+        handle._connection.request_single = request_single
+        try:
+            with pytest.raises(AcnetError, match="send failed"):
+                handle.restart(timeout=0.2)
+            assert handle.wait(timeout=0.2)
+            self._ok_restart(handle)
+            handle.restart(timeout=0.2)
+            assert not handle.is_ready
         finally:
             handle.cancel()
 

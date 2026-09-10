@@ -216,7 +216,8 @@ class TestAsyncSubscriptionHandle:
         assert len(errors) == 1 and str(errors[0]) == "boom"
 
     @pytest.mark.asyncio
-    async def test_pending_stream_error_delivered_when_external_stop_cancels_feeder(self, make_reading):
+    @pytest.mark.parametrize("reentrant", [False, True])
+    async def test_pending_stream_error_delivered_when_external_stop_cancels_feeder(self, make_reading, reentrant):
         from pacsys.aio._subscription import AsyncSubscriptionHandle, _callback_feeder
 
         handle = AsyncSubscriptionHandle()
@@ -227,17 +228,45 @@ class TestAsyncSubscriptionHandle:
             callback_started.set()
             await asyncio.Event().wait()
 
+        async def on_error(exc, h):
+            errors.append(exc)
+            await h.stop()
+
         for i in range(3):
             handle._dispatch(make_reading(float(i)))
         handle._callback_task = asyncio.create_task(
-            _callback_feeder(handle, callback, lambda exc, h: errors.append(exc))
+            _callback_feeder(handle, callback, on_error if reentrant else lambda exc, h: errors.append(exc))
         )
         await asyncio.wait_for(callback_started.wait(), timeout=1.0)
         error = RuntimeError("boom")
         handle._signal_error(error)
 
-        await handle.stop()
+        try:
+            await asyncio.wait_for(handle.stop(), timeout=0.2)
+        finally:
+            await asyncio.wait_for(handle._callback_task, timeout=0.2)
 
+        assert errors == [error]
+
+    @pytest.mark.asyncio
+    async def test_error_notification_can_stop_during_external_stop(self):
+        from pacsys.aio._subscription import AsyncSubscriptionHandle, _call_on_error
+
+        handle = AsyncSubscriptionHandle()
+        errors = []
+
+        async def on_error(exc, h):
+            await h.stop()
+            errors.append(exc)
+
+        error = RuntimeError("boom")
+        stopper = asyncio.create_task(handle.stop())
+        handle._spawn(_call_on_error(on_error, error, handle))
+        notifications = list(handle._aux_tasks)
+        try:
+            await asyncio.wait_for(stopper, timeout=0.2)
+        finally:
+            await asyncio.wait_for(asyncio.gather(*notifications), timeout=0.2)
         assert errors == [error]
 
     @pytest.mark.asyncio

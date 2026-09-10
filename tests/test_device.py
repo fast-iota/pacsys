@@ -875,10 +875,11 @@ class TestDeviceVerify:
 
     def test_write_check_first_proceeds_on_mismatch(self, mock_backend):
         """check_first proceeds to write when value differs."""
+        current, target = 2**53, 2**53 + 1  # distinct integers that round to the same float
         # First read returns current (different), then readback returns written value
-        mock_backend.read.side_effect = [50.0, 72.5]
+        mock_backend.read.side_effect = [current, target]
         dev = Device("M:OUTTMP", backend=mock_backend)
-        result = dev.write(72.5, verify=Verify(check_first=True, initial_delay=0, retry_delay=0))
+        result = dev.write(target, verify=Verify(check_first=True, initial_delay=0, retry_delay=0))
         mock_backend.write.assert_called_once()
         assert result.verified is True
         assert not result.skipped
