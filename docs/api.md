@@ -88,7 +88,7 @@ Create explicit backend instances for more control.
       show_root_heading: true
       heading_level: 3
 
-::: pacsys.SupervisedServer
+::: pacsys.supervised.SupervisedServer
     options:
       show_root_heading: true
       heading_level: 3
