@@ -76,4 +76,4 @@ jobs:
         run: pip install -e ".[dev,mcp,kerberos]"
 
       - name: Test
-        run: pytest tests/ --ignore=tests/real -v -x
+        run: pytest tests/ --ignore=tests/real -v

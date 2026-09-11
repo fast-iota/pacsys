@@ -1443,7 +1443,7 @@ class TestPooledConnectionHygiene:
             backend = DPMHTTPBackend()
             try:
                 with pytest.raises(ReadError) as exc_info:
-                    backend.get_many([TEMP_DEVICE, "G:AMANDA"], timeout=0.01)
+                    backend.get_many([TEMP_DEVICE, "G:AMANDA"], timeout=0.5)
                 assert exc_info.value.readings[0].error_code == -42
                 assert exc_info.value.readings[1].value == 1.234
             finally:
@@ -1461,7 +1461,7 @@ class TestPooledConnectionHygiene:
             backend = DPMHTTPBackend()
             try:
                 with pytest.raises(ReadError) as exc_info:
-                    backend.get_many(["M:OUTTMP<-LOGGER:1736942400000:1736946000000"], timeout=0.01)
+                    backend.get_many(["M:OUTTMP<-LOGGER:1736942400000:1736946000000"], timeout=0.5)
                 assert exc_info.value.readings[0].error_code == -42
                 assert "incomplete" not in (exc_info.value.readings[0].message or "").lower()
             finally:

@@ -231,7 +231,7 @@ class TestPoolExhaustion:
 
         with mock.patch.object(pool, "_create_connection", side_effect=fake_create):
             pool.borrow(wait_timeout=wait_timeout)
-        assert len(seen) == 1 and 0 < seen[0] <= expect
+        assert len(seen) == 1 and 0 < seen[0] <= expect + 1e-9  # deadline subtraction can round upward
 
     def test_borrow_budget_exhausted_before_connect(self):
         pool = ConnectionPool(pool_size=1)

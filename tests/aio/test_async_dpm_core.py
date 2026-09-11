@@ -144,30 +144,33 @@ async def test_async_connection_list_id_tracks_lifecycle():
 async def test_async_connection_body_uses_remaining_timeout():
     body = bytes(_status_ok().marshal())
     calls = 0
+    now = [100.0]
 
     async def readexactly(_size):
         nonlocal calls
         calls += 1
-        await asyncio.sleep(0.02)
-        return struct.pack(">I", len(body)) if calls == 1 else body
+        now[0] += 0.02
+        if calls == 1:
+            return struct.pack(">I", len(body))
+        raise asyncio.TimeoutError
 
     conn = _AsyncDPMConnection("localhost", 6802)
     conn._reader = mock.AsyncMock()
     conn._reader.readexactly.side_effect = readexactly
     writer = conn._writer = mock.MagicMock()
+    writer.wait_closed = mock.AsyncMock()
 
-    async def blocked_close():
-        await asyncio.sleep(0.3)
+    with (
+        mock.patch("pacsys.backends.dpm_http.time.monotonic", side_effect=lambda: now[0]),
+        mock.patch("asyncio.wait_for", wraps=asyncio.wait_for) as wait_for,
+    ):
+        with pytest.raises(asyncio.TimeoutError, match="Receive timeout"):
+            await conn.recv_message(timeout=0.03)
 
-    writer.wait_closed = mock.AsyncMock(side_effect=blocked_close)
-
-    started = time.monotonic()
-    with pytest.raises(asyncio.TimeoutError, match="Receive timeout"):
-        await conn.recv_message(timeout=0.03)
-
-    assert time.monotonic() - started < 0.1
+    assert [call.kwargs["timeout"] for call in wait_for.call_args_list] == pytest.approx([0.03, 0.01])
     assert conn._reader is None
     writer.transport.abort.assert_called_once()
+    writer.wait_closed.assert_not_awaited()
 
     conn._list_id = 42
     assert conn.list_id == 42
