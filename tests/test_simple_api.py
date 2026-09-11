@@ -382,11 +382,11 @@ class TestConfigure:
 
     def test_configure_rejects_auth_for_acl(self):
         with pytest.raises(ValueError, match="ACL backend does not use auth"):
-            pacsys.configure(backend="acl", auth=KerberosAuth())
+            pacsys.configure(backend="acl", auth=mock.MagicMock(spec=KerberosAuth))
 
     @pytest.mark.parametrize("backend", ["grpc", "dmq", "acl"])
     def test_configure_rejects_role_for_non_dpm(self, backend):
-        auth = KerberosAuth() if backend == "dmq" else pacsys._UNSET
+        auth = mock.MagicMock(spec=KerberosAuth) if backend == "dmq" else pacsys._UNSET
         kwargs = {"auth": auth} if backend == "dmq" else {}
         with pytest.raises(ValueError, match="role is only used by the DPM backend"):
             pacsys.configure(backend=backend, role="testing", **kwargs)

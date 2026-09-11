@@ -185,7 +185,8 @@ class AcnetReply(AcnetPacket):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # Callback delivery can lag receipt while a request is being registered.
-        self._received_at = time.monotonic_ns()
+        # Older Python versions use a coarse monotonic clock on Windows.
+        self._received_at = time.perf_counter_ns()
         self._request_id = RequestId(self.id)
         # MLT flag=0 means this is the last (or only) reply
         self._last = (self.flags & ACNET_FLG_MLT) == 0

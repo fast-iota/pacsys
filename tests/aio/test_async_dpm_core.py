@@ -247,28 +247,37 @@ class TestReadMany:
         conn.recv_message = replay.recv_message
         writer = conn._writer = mock.MagicMock()
         sends = 0
+        cancelled = []
 
-        async def blocked():
-            await asyncio.sleep(0.3)
+        async def blocked(operation):
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                cancelled.append(operation)
+                raise
 
         async def drain():
             nonlocal sends
             sends += 1
             if (phase == "setup" and sends == 1) or (phase == "cleanup" and sends == 2):
-                await blocked()
+                await blocked("send")
 
         writer.drain = mock.AsyncMock(side_effect=drain)
-        writer.wait_closed = mock.AsyncMock(side_effect=blocked)
-        started = time.monotonic()
+
+        async def wait_closed():
+            await blocked("close")
+
+        writer.wait_closed = mock.AsyncMock(side_effect=wait_closed)
         try:
+            request = core.read_many(["M:OUTTMP@p,1000"], timeout=0.2)
             if phase == "setup":
                 with pytest.raises(ReadError) as exc:
-                    await core.read_many(["M:OUTTMP@p,1000"], timeout=0.03)
+                    await asyncio.wait_for(request, timeout=1.0)
                 assert exc.value.readings[0].error_code == ERR_TIMEOUT
             else:
-                readings = await core.read_many(["M:OUTTMP@p,1000"], timeout=0.03)
+                readings = await asyncio.wait_for(request, timeout=1.0)
                 assert readings[0].ok and readings[0].value == 5.0
-            assert time.monotonic() - started < 0.15
+            assert cancelled == ["close" if phase == "close" else "send"]
             assert not core.connected
             writer.transport.abort.assert_called_once()
         finally:
@@ -1031,7 +1040,7 @@ class TestAuthenticate:
             auth = mock_kerberos_auth(mock_gssapi)
             core, conn = make_core([], auth=auth)
             core._timeout = 0.1
-            with pytest.raises(asyncio.TimeoutError):
+            with pytest.raises(TimeoutError, match="Kerberos service-name reply"):
                 await core.authenticate()
 
 
