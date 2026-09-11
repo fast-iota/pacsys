@@ -32,6 +32,7 @@ nav:
     - GETS32 / RETDAT: frontend-read-protocols.md
     - FTPMAN Protocol: ftpman-protocol.md
   - API Reference: api.md
+  - Release Notes: release-notes.md
 
 theme:
   name: material
