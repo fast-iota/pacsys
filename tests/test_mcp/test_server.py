@@ -1,6 +1,6 @@
 import asyncio
 import importlib
-import time
+import threading
 from types import SimpleNamespace
 from unittest import mock
 
@@ -72,19 +72,19 @@ async def test_tool_calls_overlap():
 
     server.context = ServerContext(backend=object(), devdb=None, policies=[])
 
+    entered = threading.Barrier(2, timeout=1.0)
+
     def slow_read(*_args):
-        time.sleep(0.3)
+        entered.wait()
         return {"read": True}
 
     with mock.patch("pacsys.mcp._server.tool_read_device", side_effect=slow_read):
-        start = time.monotonic()
         results = await asyncio.gather(
             server.tools["read_device"]("M:OUTTMP"),
             server.tools["read_device"]("G:AMANDA"),
         )
 
     assert results == [{"read": True}, {"read": True}]
-    assert time.monotonic() - start < 0.5
 
 
 def test_create_server_wires_sse_port():

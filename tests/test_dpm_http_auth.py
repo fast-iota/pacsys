@@ -10,7 +10,6 @@ Tests cover:
 - Kerberos authentication flow (mocked)
 """
 
-import time
 from unittest import mock
 
 import pytest
@@ -201,25 +200,27 @@ class TestWriteSuccess:
 
         assert result.success
 
-    def test_enable_settings_heartbeats_respect_deadline(self):
+    def test_enable_settings_heartbeats_respect_deadline(self, monkeypatch):
+        now = [100.0]
+        monkeypatch.setattr("pacsys.backends.dpm_http.time.monotonic", lambda: now[0])
         backend = DPMHTTPBackend(auth=create_mock_kerberos_auth())
         conn = mock.MagicMock()
         conn.list_id = 1
         heartbeat = make_list_status_reply()
 
         def delayed_heartbeat(timeout):
-            time.sleep(min(timeout, 0.005))
+            now[0] += min(timeout, 0.125)
             return heartbeat
 
         conn.recv_message.side_effect = delayed_heartbeat
-        deadline = time.monotonic() + 0.015
+        deadline = now[0] + 0.375
         try:
             with pytest.raises(TimeoutError, match="EnableSettings"):
                 backend._enable_settings(conn, b"mic", b"message", deadline)
         finally:
             backend.close()
 
-        assert time.monotonic() - deadline < 0.1
+        assert conn.recv_message.call_count == 3
 
 
 class TestWriteFailure:

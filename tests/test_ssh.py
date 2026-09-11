@@ -1,7 +1,6 @@
 """Tests for pacsys.ssh - SSH client with multi-hop support."""
 
 import threading
-import time
 from unittest.mock import MagicMock, patch
 
 import paramiko
@@ -429,17 +428,11 @@ class TestSSHClientExec:
         mock_transport = _make_mock_transport()
         mock_transport_cls.return_value = mock_transport
 
-        def blocked_open_session(*, timeout=None):
-            time.sleep(0.2 if timeout is None else timeout)
-            raise paramiko.SSHException("Timeout opening channel.")
-
-        mock_transport.open_session.side_effect = blocked_open_session
-        ssh = SSHClient(SSHHop("host", auth_method="password", password="pw"))
-
-        start = time.monotonic()
-        with pytest.raises(SSHTimeoutError, match="timed out"):
-            ssh.exec("true", timeout=0.05)
-        assert time.monotonic() - start < 0.15
+        mock_transport.open_session.side_effect = paramiko.SSHException("Timeout opening channel.")
+        with SSHClient(SSHHop("host", auth_method="password", password="pw")) as ssh:
+            with pytest.raises(SSHTimeoutError, match="timed out"):
+                ssh.exec("true", timeout=0.05)
+        mock_transport.open_session.assert_called_once_with(timeout=0.05)
 
     @patch("paramiko.Transport")
     @patch("socket.create_connection")
