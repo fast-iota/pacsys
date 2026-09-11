@@ -12,6 +12,7 @@ import queue
 import threading
 import time
 from dataclasses import dataclass
+from typing import Any, cast
 
 from pacsys.dpm_protocol import (
     AddToList_reply,
@@ -206,7 +207,7 @@ class DPMAcnet:
         data = bytes(msg.marshal())
 
         result_event = threading.Event()
-        result = {"list_id": None, "error": None}
+        result: dict[str, Any] = {"list_id": None, "error": None}
 
         def handle_reply(reply):
             if reply.last:
@@ -243,8 +244,8 @@ class DPMAcnet:
         if not result_event.wait(timeout=5.0):
             raise DPMError(-1, "Timeout waiting for OpenList reply")
 
-        if result["error"]:
-            raise DPMError(-1, f"OpenList failed: {result['error']}")
+        if error := cast(str | None, result["error"]):
+            raise DPMError(-1, f"OpenList failed: {error}")
 
         self._list_id = result["list_id"]
 
@@ -253,7 +254,7 @@ class DPMAcnet:
         data = bytes(msg.marshal())
 
         result_event = threading.Event()
-        result = {"reply": None, "error": None}
+        result: dict[str, Any] = {"reply": None, "error": None}
         status = 0
 
         def handle_reply(reply):
@@ -283,8 +284,8 @@ class DPMAcnet:
         if status < 0:
             raise DPMError(status, f"DPM request failed with status {status}")
 
-        if result["error"]:
-            raise DPMError(-1, result["error"])
+        if error := cast(str | None, result["error"]):
+            raise DPMError(-1, error)
 
         return result["reply"]
 

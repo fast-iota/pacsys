@@ -878,7 +878,8 @@ class TestDMQCleanup:
         old.channel.basic_publish.assert_not_called()
         replacement.channel.close.assert_not_called()
 
-    def test_connection_close_timer_failure_logs_and_completes_tracker(self, caplog):
+    @pytest.mark.parametrize("reason", [RuntimeError("connection closed"), BaseException("connection closed")])
+    def test_connection_close_timer_failure_logs_and_completes_tracker(self, caplog, reason):
         backend = DMQBackend.__new__(DMQBackend)
         backend._connection_ready = threading.Event()
         backend._connection_ready.set()
@@ -897,13 +898,15 @@ class TestDMQCleanup:
         connection = mock.MagicMock()
         connection.ioloop.remove_timeout.side_effect = RuntimeError("invalid timer")
 
-        backend._on_connection_closed(connection, RuntimeError("connection closed"))
+        backend._on_connection_closed(connection, reason)
 
         assert results[0] is not None
         tracker.device_complete.assert_called_once_with()
         assert not backend._write_sessions
         # In-flight one-shot reads fail at once instead of waiting out their budget
         assert job.done_event.is_set() and "connection closed" in str(job.error)
+        assert isinstance(job.error, Exception)
+        assert job.error is reason or job.error.__cause__ is reason
         assert not backend._read_jobs
         connection.ioloop.stop.assert_called_once_with()
         assert "Failed to cancel INIT timer after connection loss" in caplog.text

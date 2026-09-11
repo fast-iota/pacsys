@@ -51,7 +51,7 @@ pacsys-info = "pacsys.cli.info:main"
 [project.optional-dependencies]
 kerberos = [
   "gssapi >= 1.8.0",
-  "paramiko[gssapi] >= 3.0",
+  "paramiko[gssapi] >= 3.0, < 5",  # 5.x removed GSSAPI support
 ]
 parquet = [
   "pyarrow >= 14.0",
@@ -69,10 +69,12 @@ dev = [
   "types-grpcio",
   "types-pika-ts",
   "types-protobuf",
+  "tomli >= 2.0",
+  "pandas",
   "pyarrow >= 14.0",
 ]
 mcp = [
-  "fastmcp",
+  "mcp >= 1.26, < 2",
   "tomli >= 2.0; python_version < '3.11'",
 ]
 all = [
