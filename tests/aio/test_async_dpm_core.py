@@ -2,7 +2,6 @@
 
 import asyncio
 import struct
-import time
 from unittest import mock
 
 import numpy as np
@@ -280,7 +279,11 @@ class TestReadMany:
             else:
                 readings = await asyncio.wait_for(request, timeout=1.0)
                 assert readings[0].ok and readings[0].value == 5.0
-            assert cancelled == ["close" if phase == "close" else "send"]
+            if phase == "close":
+                assert cancelled == ["close"]
+            else:
+                # An early timer wakeup can leave a small remaining cleanup budget.
+                assert cancelled in (["send"], ["send", "close"])
             assert not core.connected
             writer.transport.abort.assert_called_once()
         finally:
@@ -662,21 +665,25 @@ class TestEnableSettings:
             await core.enable_settings()
 
     @pytest.mark.asyncio
-    async def test_heartbeats_respect_deadline(self, make_core):
+    async def test_heartbeats_respect_deadline(self, make_core, monkeypatch):
+        now = [100.0]
+        budgets = []
+        monkeypatch.setattr("pacsys.backends._dpm_core.time.monotonic", lambda: now[0])
         core, conn = make_core([])
         core._mic = b"fake_mic"
         core._mic_message = b"1234"
 
         async def heartbeat(timeout=None):
-            await asyncio.sleep(min(timeout, 0.005))
+            budgets.append(timeout)
+            now[0] += min(timeout, 0.125)
             return _list_status()
 
         conn.recv_message = heartbeat
-        deadline = time.monotonic() + 0.015
+        deadline = now[0] + 0.375
         with pytest.raises(TimeoutError, match="EnableSettings"):
             await core.enable_settings(deadline)
 
-        assert time.monotonic() - deadline < 0.1
+        assert budgets == [0.375, 0.25, 0.125]
 
 
 def _timed_scalar_array(ref_id, data, micros, timestamp=1000):

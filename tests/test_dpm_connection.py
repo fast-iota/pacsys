@@ -6,7 +6,6 @@ These tests use mocking for socket operations - no real network calls.
 
 import socket
 import struct
-import time
 from unittest import mock
 
 import pytest
@@ -412,7 +411,10 @@ class TestTimeoutHandling:
             # Connection must be dead — stream is corrupted
             assert not conn.connected
 
-    def test_recv_timeout_is_shared_by_prefix_and_body(self):
+    def test_recv_timeout_is_shared_by_prefix_and_body(self, monkeypatch):
+        now = [100.0]
+        observed = []
+        monkeypatch.setattr("pacsys.dpm_connection.time.monotonic", lambda: now[0])
         body = bytes(Scalar_reply().marshal())
 
         class DelayedSocket:
@@ -427,22 +429,25 @@ class TestTimeoutHandling:
                 self.timeout = timeout
 
             def recv(self, _size):
+                observed.append(self.timeout)
                 delay = 0.02
                 if self.timeout is not None and self.timeout < delay:
-                    time.sleep(self.timeout)
+                    now[0] += self.timeout
                     raise TimeoutError("recv timeout")
-                time.sleep(delay)
+                now[0] += delay
                 return self.chunks.pop(0)
+
+            def close(self):
+                pass
 
         conn = DPMConnection()
         conn._socket = DelayedSocket()
         conn._connected = True
 
-        started = time.monotonic()
         with pytest.raises(TimeoutError, match="Receive timeout"):
             conn.recv_message(timeout=0.03)
 
-        assert time.monotonic() - started < 0.1
+        assert observed == pytest.approx([0.03, 0.01])
         assert not conn.connected
 
 
