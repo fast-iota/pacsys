@@ -10,6 +10,15 @@ from pacsys.mcp._config import MCPConfig
 from pacsys.mcp._server import ServerContext, _lifespan, create_server
 
 
+@pytest.mark.asyncio
+async def test_create_server_with_installed_mcp():
+    server = create_server(MCPConfig())
+    tools = {tool.name: tool for tool in await server.list_tools()}
+    assert set(tools) == {"read_device", "write_device", "device_info"}
+    assert tools["read_device"].inputSchema["required"] == ["drf"]
+    assert tools["write_device"].inputSchema["required"] == ["drf", "value"]
+
+
 class _FakeFastMCP:
     def __init__(self, name, *, instructions, lifespan, port):
         self.name = name

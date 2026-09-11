@@ -16,7 +16,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import pika
@@ -78,6 +78,9 @@ from pacsys.types import (
     _normalize_numpy_scalar,
     _validate_callback,
 )
+
+if TYPE_CHECKING:
+    from pika.adapters.select_connection import _Timeout
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +184,7 @@ class _ReadJob:
     exchange_name: str = ""
     queue_name: str = ""
     consumer_tag: str | None = None
-    heartbeat_handle: object | None = None
+    heartbeat_handle: "_Timeout | None" = None
     init_message_id: str = ""  # AMQP message_id of the INIT (job-error correlation)
 
 
@@ -201,8 +204,8 @@ class _WriteSession:
     gss_context: Any  # gssapi.SecurityContext
     last_used: float  # time.monotonic()
     consumer_tag: str | None = None
-    heartbeat_handle: object | None = None
-    cleanup_handle: object | None = None  # idle TTL timer
+    heartbeat_handle: "_Timeout | None" = None
+    cleanup_handle: "_Timeout | None" = None  # idle TTL timer
     # Pending writes: correlation_id -> (index, drf, results_list, completion_tracker)
     pending: dict[str, tuple[int, str, list, "_WriteCompletionTracker | None"]] = field(default_factory=dict)
     # Writes queued until server confirms INIT via PENDING response (S.# binding ready)
@@ -210,7 +213,7 @@ class _WriteSession:
     queued_sends: list[tuple[list[tuple[int, str, bytes]], list, "_WriteCompletionTracker"]] = field(
         default_factory=list
     )
-    init_timer: object | None = None  # safety timer if PENDING never arrives
+    init_timer: "_Timeout | None" = None  # safety timer if PENDING never arrives
     init_message_id: str = ""  # AMQP message_id of the INIT (job-error correlation)
 
 
@@ -494,7 +497,7 @@ class _SelectSubscription:
     queue_name: str = ""
     channel: Channel | None = None
     consumer_tag: str | None = None
-    heartbeat_handle: object | None = None  # ioloop timer handle
+    heartbeat_handle: "_Timeout | None" = None  # ioloop timer handle
     setup_complete: threading.Event = field(default_factory=threading.Event)
     setup_error: Exception | None = None
     init_message_id: str = ""  # AMQP message_id of the INIT (job-error correlation)
@@ -570,7 +573,7 @@ class DMQBackend(Backend):
         self._select_connection: SelectConnection | None = None
         self._io_thread: threading.Thread | None = None
         self._connection_ready = threading.Event()
-        self._connection_error: Exception | None = None
+        self._connection_error: BaseException | None = None
         self._teardown_connection: SelectConnection | None = None
 
         # Write state (unified with SelectConnection)
@@ -903,7 +906,7 @@ class DMQBackend(Backend):
         result = _resolve_reply(
             method.routing_key, body, job.prepared_drfs, job.drf_to_idx, properties, job.init_message_id
         )
-        channel.basic_ack(method.delivery_tag)
+        channel.basic_ack(cast(int, method.delivery_tag))
         if result is None:
             return
         reply, idx, _ref_id = result
@@ -1648,10 +1651,10 @@ class DMQBackend(Backend):
         body: bytes,
     ) -> None:
         """Handle write response (IO thread)."""
-        channel.basic_ack(method.delivery_tag)
+        channel.basic_ack(cast(int, method.delivery_tag))
 
         # Skip heartbeats (server sends Q routing key periodically)
-        rk: str = method.routing_key
+        rk = cast(str, method.routing_key)
         if rk == "Q":
             return
 
@@ -2159,7 +2162,7 @@ class DMQBackend(Backend):
         logger.info("SelectConnection opened to %s:%s", self._host, self._port)
         self._connection_ready.set()
 
-    def _on_connection_open_error(self, connection: SelectConnection, error: Exception) -> None:
+    def _on_connection_open_error(self, connection: SelectConnection, error: BaseException) -> None:
         """Called when SelectConnection fails to open."""
         logger.error("SelectConnection open error: %s", error)
         self._connection_error = error
@@ -2170,11 +2173,15 @@ class DMQBackend(Backend):
         except OSError:
             pass
 
-    def _on_connection_closed(self, connection: SelectConnection, reason: Exception) -> None:
+    def _on_connection_closed(self, connection: SelectConnection, reason: BaseException) -> None:
         """Called when SelectConnection is closed."""
         if self._teardown_connection is connection:
             return
         self._teardown_connection = connection
+        if not isinstance(reason, Exception):
+            error = ConnectionError(f"SelectConnection closed: {reason}")
+            error.__cause__ = reason
+            reason = error
         logger.info("SelectConnection closed: %s", reason)
         self._connection_ready.clear()
 
@@ -2399,8 +2406,10 @@ class DMQBackend(Backend):
         body: bytes,
     ) -> None:
         """Handle incoming message for subscription (runs in IO thread)."""
-        result = _resolve_reply(method.routing_key, body, sub.drfs, sub.drf_to_idx, properties, sub.init_message_id)
-        channel.basic_ack(method.delivery_tag)
+        result = _resolve_reply(
+            cast(str, method.routing_key), body, sub.drfs, sub.drf_to_idx, properties, sub.init_message_id
+        )
+        channel.basic_ack(cast(int, method.delivery_tag))
         if result is None:
             return
         reply, idx, _ref_id = result
