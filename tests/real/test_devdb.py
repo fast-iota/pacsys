@@ -86,8 +86,10 @@ class TestGetDeviceInfo:
         assert result["Z:ACLTST"].device_index != result["M:OUTTMP"].device_index
 
     def test_nonexistent_device(self, devdb):
-        with pytest.raises(DeviceError, match="not found"):
+        with pytest.raises(DeviceError) as exc:
             devdb.get_device_info(["X:NOTREAL"])
+        assert exc.value.drf == "X:NOTREAL"
+        assert exc.value.error_code < 0
 
     def test_caching(self, devdb):
         """Second query for same device should use cache."""
