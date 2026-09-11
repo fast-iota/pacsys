@@ -241,7 +241,7 @@ The byte-swap rule means:
 | Task Name | Purpose |
 |-----------|---------|
 | DPMD | Data Pool Manager daemon |
-| RETDAT | Return data (frontend) |
+| GETS32 / RETDAT | Raw frontend reads - see [GETS32 and RETDAT](frontend-read-protocols.md) |
 | SETDAT | Set data (frontend) |
 | FTPMAN | Fast Time Plot manager (frontend) - see [FTPMAN Protocol](ftpman-protocol.md) |
 

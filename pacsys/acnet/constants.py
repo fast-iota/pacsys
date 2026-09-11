@@ -14,7 +14,7 @@ ACNET_TCP_PORT = ACNET_CLIENT_PORT  # Backward-compatible TCP-specific name
 
 # Packet structure
 ACNET_HEADER_SIZE = 18  # Fixed header size in bytes
-MAX_ACNET_MESSAGE_SIZE = (8 * 1024) + 128  # Maximum message size
+MAX_ACNET_MESSAGE_SIZE = (8 * 1024) + 128  # Conservative frontend limit (DPM default)
 
 # Message type flags (bits 0-3 of flags field)
 ACNET_FLG_TYPE = 0x000E  # Mask for message type

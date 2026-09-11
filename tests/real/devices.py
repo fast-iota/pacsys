@@ -190,6 +190,11 @@ EXPECTED_ERROR_RESPONSE = 4.0  # Error responses (DPM_PEND) may take longer
 # =============================================================================
 
 SCALAR_DEVICE = "M:OUTTMP"
+MOUTTMP_DI = 27235
+MOUTTMP_PI = 12
+MOUTTMP_SSDN = b"\x00\x00B\x00?!\x00\x00"
+MUONFE_NODE = "MUONFE"
+MUONFE_EXPECTED_ADDRESS = (11 << 8) | 202
 SCALAR_DEVICE_2 = "G:AMANDA"
 SCALAR_DEVICE_3 = "Z:ACLTST"
 SCALAR_ELEMENT = "B:IRMS06[0]"

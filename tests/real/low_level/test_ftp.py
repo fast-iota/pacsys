@@ -23,14 +23,14 @@ from pacsys.acnet.ftp import (
     get_ftp_class_info,
     get_snap_class_info,
 )
-from tests.real.devices import requires_acnet_tcp
-
-# M:OUTTMP on MUONFE -- known FTP class 16 (C290), snap class 13 (C290)
-MOUTTMP_DI = 27235
-MOUTTMP_PI = 12
-MOUTTMP_SSDN = b"\x00\x00B\x00?!\x00\x00"
-MUONFE_NODE = "MUONFE"
-MUONFE_EXPECTED_ADDRESS = (11 << 8) | 202  # 3018
+from tests.real.devices import (
+    MOUTTMP_DI,
+    MOUTTMP_PI,
+    MOUTTMP_SSDN,
+    MUONFE_EXPECTED_ADDRESS,
+    MUONFE_NODE,
+    requires_acnet_tcp,
+)
 
 
 def make_ftp_device(di=MOUTTMP_DI, pi=MOUTTMP_PI, ssdn=MOUTTMP_SSDN, **kwargs):
