@@ -57,6 +57,7 @@ import importlib as _importlib
 import typing as _typing
 
 if _typing.TYPE_CHECKING:
+    from ._read import ReadDevice, ReadStream, ReadValue
     from .async_connection import (
         AsyncAcnetConnectionBase,
         AsyncAcnetConnectionTCP,
@@ -115,6 +116,7 @@ if _typing.TYPE_CHECKING:
         StateTrigger,
         parse_ftp_event,
     )
+    from .gets32 import Gets32Client, Gets32Event, Gets32Header, Gets32Reply
     from .packet import (
         AcnetCancel,
         AcnetMessage,
@@ -127,9 +129,19 @@ if _typing.TYPE_CHECKING:
         node_value,
     )
     from .rad50 import decode, decode_stripped, encode
+    from .retdat import RetdatClient, RetdatReply
 
 
 _LAZY_IMPORTS = {
+    "Gets32Client": ".gets32",
+    "Gets32Event": ".gets32",
+    "Gets32Header": ".gets32",
+    "Gets32Reply": ".gets32",
+    "RetdatClient": ".retdat",
+    "RetdatReply": ".retdat",
+    "ReadDevice": "._read",
+    "ReadValue": "._read",
+    "ReadStream": "._read",
     # Connections
     "AcnetConnectionTCP": ".connection_sync",
     "AcnetConnectionUDP": ".connection_sync",
@@ -214,6 +226,8 @@ _LAZY_SUBMODULES = frozenset(
         "dpm_acnet",
         "errors",
         "ftp",
+        "gets32",
+        "retdat",
         "ftp_spec",
         "packet",
         "rad50",
@@ -221,6 +235,15 @@ _LAZY_SUBMODULES = frozenset(
 )
 
 __all__ = [
+    "Gets32Client",
+    "Gets32Event",
+    "Gets32Header",
+    "Gets32Reply",
+    "RetdatClient",
+    "RetdatReply",
+    "ReadDevice",
+    "ReadValue",
+    "ReadStream",
     # Connections
     "AcnetConnectionTCP",
     "AcnetConnectionUDP",

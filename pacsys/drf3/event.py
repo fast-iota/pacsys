@@ -140,3 +140,7 @@ class StateEvent(DRF_EVENT):
         match = re.match("(?i)S,(\\S+),(\\d+),(\\w+),(=|!=|\\*|>|<|<=|>=)" + "$", raw_string)
         if match is None:
             raise ValueError(f"Bad state event {raw_string}")
+        self.device = match.group(1)
+        self.value = int(match.group(2))
+        self.delay = _parse_time_freq(match.group(3))
+        self.expression = match.group(4)

@@ -1610,15 +1610,15 @@ class TestEventPerturbation:
         """@s,... events produce offsets >= 2.0, avoiding periodic range."""
         fake = FakeBackend()
         fake.set_reading("M:OUTTMP", 100.0)
-        val = fake.read("M:OUTTMP@s,M:OTHER,1,value,=")
+        val = fake.read("M:OUTTMP@s,M:OTHER,1,0,=")
         assert val >= 102.0  # base offset is 2.0+
 
     def test_different_state_events_different_offsets(self):
         """Distinct state events produce different offsets."""
         fake = FakeBackend()
         fake.set_reading("M:OUTTMP", 100.0)
-        val1 = fake.read("M:OUTTMP@s,M:OTHER,1,value,=")
-        val2 = fake.read("M:OUTTMP@s,M:OTHER,2,value,!=")
+        val1 = fake.read("M:OUTTMP@s,M:OTHER,1,0,=")
+        val2 = fake.read("M:OUTTMP@s,M:OTHER,2,0,!=")
         assert val1 != val2
 
     def test_periodic_perturbs_float_ndarray(self):

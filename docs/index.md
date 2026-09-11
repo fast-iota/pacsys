@@ -15,7 +15,7 @@ High-level features:
 Low-level features:
 
 - **Raw ACNET UDP/TCP** - talk like a civilized member of ACNET society
-- **FTPMAN for snapshots** - yes, really
+- **GETS32/RETDAT for raw reads and FTPMAN for snapshots** - see [front-end reads](frontend-read-protocols.md) and [FTPMAN](ftpman-protocol.md)
 - **SSH utilities and ACL-over-SSH** - authenticated command runners, useful for ACL/DABBEL
 - **DevDB integration** - formatted interpretation of device properties (auto-used if available)
 

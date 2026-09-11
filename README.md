@@ -19,6 +19,7 @@ ACNET (Accelerator Control NETwork) is the control system used at Fermilab's par
 - **Multiple backends** to connect to DPM, DMQ, and ACL
 - **Full DRF3 parser** for data requests with automatic conversion
 - **Utilities** for device database, SSH tunneling, and more
+- **Low-level ACNET** protocol handlers for GETS32/RETDAT/FTPMAN
 - **Command-line tools** like in EPICS - `acget`, `acput`, `acmonitor`, `acinfo`
 - **MCP server** for AI agent integration (Claude Code, etc.) with supervised writes
 
