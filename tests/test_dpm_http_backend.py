@@ -804,6 +804,7 @@ class TestWriteConnectionAuthContext:
         ],
     )
     def test_write_retry_stops_at_apply_settings(self, phase, error):
+        now = [100.0]
         first, second = MagicMock(), MagicMock()
         first.conn.list_id, second.conn.list_id = 1, 2
         setup_replies = iter([make_device_info(), make_start_list(), ListStatus_reply()])
@@ -815,7 +816,7 @@ class TestWriteConnectionAuthContext:
                 if phase == "cleanup":
                     return make_apply_settings_reply()
                 if isinstance(error, TimeoutError):
-                    time.sleep(timeout)
+                    now[0] += timeout
                 raise error
 
         first.conn.recv_message.side_effect = receive
@@ -836,6 +837,7 @@ class TestWriteConnectionAuthContext:
                 mock.patch.object(backend, "_get_write_connection", side_effect=[first, second]) as checkout,
                 mock.patch.object(backend, "_discard_write_connection") as discard,
                 mock.patch.object(backend, "_release_write_connection") as release,
+                mock.patch("pacsys.backends.dpm_http.time.monotonic", side_effect=lambda: now[0]),
             ):
                 result = backend.write("Z:ACLTST.CONTROL", BasicControl.RESET, timeout=0.05)
 
