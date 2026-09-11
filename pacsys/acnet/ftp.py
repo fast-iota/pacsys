@@ -924,7 +924,7 @@ class _SnapshotReplyQueue:
             return
         with self._lock:
             if self._pending is not None and not item[2]:
-                self._pending.append((time.monotonic_ns() if received_at is None else received_at, item))
+                self._pending.append((time.perf_counter_ns() if received_at is None else received_at, item))
             else:
                 self._queue.put((self._cycle, *item))
 

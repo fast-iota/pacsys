@@ -1223,15 +1223,16 @@ class TestGetManyTimeoutConnectionCleanup:
         conn = DPMConnection()
         conn._connected, conn._list_id = True, 1
         sock = conn._socket = MagicMock()
-        sock.gettimeout.return_value = 0.2
+        sock.gettimeout.return_value = 2.0
         sock.settimeout.side_effect = lambda timeout: setattr(sock.gettimeout, "return_value", timeout)
         sends = 0
+        blocked_timeouts = []
 
         def sendall(data):
             nonlocal sends
             sends += 1
             if sends == (1 if phase == "setup" else 2):
-                time.sleep(sock.gettimeout())
+                blocked_timeouts.append(sock.gettimeout())
                 raise TimeoutError("blocked send")
 
         sock.sendall.side_effect = sendall
@@ -1239,15 +1240,15 @@ class TestGetManyTimeoutConnectionCleanup:
         pool = MagicMock()
         pool.connection.return_value.__enter__.return_value = conn
         with DPMHTTPBackend() as backend, mock.patch.object(backend, "_get_pool", return_value=pool):
-            started = time.monotonic()
             if phase == "setup":
                 with pytest.raises(ReadError) as exc:
-                    backend.get_many([TEMP_DEVICE], timeout=0.03)
+                    backend.get_many([TEMP_DEVICE], timeout=0.5)
                 assert exc.value.readings[0].error_code == ERR_TIMEOUT
             else:
-                readings = backend.get_many([TEMP_DEVICE], timeout=0.03)
+                readings = backend.get_many([TEMP_DEVICE], timeout=0.5)
                 assert readings[0].ok and readings[0].value == TEMP_VALUE
-            assert time.monotonic() - started < 0.15
+            assert len(blocked_timeouts) == 1
+            assert 0 < blocked_timeouts[0] <= 0.5
             assert not conn.connected
             sock.close.assert_called_once()
 

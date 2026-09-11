@@ -529,7 +529,9 @@ class TestMonitorWatchdog:
         assert not repeated.wait(0.3)
         mon.stop()
 
-    def test_on_recover_fires_on_recovery(self, fake):
+    def test_on_recover_fires_on_recovery(self, fake, monkeypatch):
+        now = [100.0]
+        monkeypatch.setattr("pacsys.exp._monitor.time.monotonic", lambda: now[0])
         stale = threading.Event()
         recovered = threading.Event()
         mon = Monitor(
@@ -539,11 +541,11 @@ class TestMonitorWatchdog:
             on_recover=lambda drf, h: recovered.set(),
             backend=fake,
         )
-        mon.start()
-        assert stale.wait(1.0)
-        fake.emit_reading("M:OUTTMP@p,1000", 72.0)
-        assert recovered.wait(1.0)
-        mon.stop()
+        with mon:
+            now[0] += 1.0
+            assert stale.wait(1.0)
+            fake.emit_reading("M:OUTTMP@p,1000", 72.0)
+            assert recovered.wait(1.0)
 
     def test_no_on_recover_no_crash(self, fake):
         """Recovery with on_recover=None should not crash."""

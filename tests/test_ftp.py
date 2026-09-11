@@ -1349,7 +1349,7 @@ class TestSnapshotHandle:
                 status, payload = next(replies)
             else:
                 status, payload = 0, struct.pack("<h", 0)  # control reply: payload error word
-            reply_handler(MagicMock(status=status, data=payload, last=True, _received_at=time.monotonic_ns()))
+            reply_handler(MagicMock(status=status, data=payload, last=True, _received_at=time.perf_counter_ns()))
 
         handle._connection.request_single.side_effect = request_single
 
@@ -1881,7 +1881,7 @@ class TestSnapshotStateTracking:
                 handle._monitor_thread.join(timeout=0.2)
                 assert not handle._monitor_thread.is_alive()
             if ack:
-                reply_handler(MagicMock(status=0, data=struct.pack("<h", 0), _received_at=time.monotonic_ns()))
+                reply_handler(MagicMock(status=0, data=struct.pack("<h", 0), _received_at=time.perf_counter_ns()))
 
         handle._connection.request_single = fake_request_single
 
@@ -1959,8 +1959,9 @@ class TestSnapshotStateTracking:
 
     @pytest.mark.parametrize("buffered_ack", [False, True])
     @pytest.mark.parametrize("ready_before_return", [False, True])
-    def test_restart_preserves_statuses_received_after_ack(self, buffered_ack, ready_before_return):
+    def test_restart_preserves_statuses_received_after_ack(self, buffered_ack, ready_before_return, monkeypatch):
         """New-cycle statuses survive both delayed ACK callbacks and a delayed caller."""
+        monkeypatch.setattr(time, "monotonic_ns", lambda: 0)  # coarse Windows clock before Python 3.13
         handle, rq = self._make_handle(per_device_errors=[FTP_PEND])
         ready = self._build_status_reply(0, [0])
 
@@ -1968,7 +1969,7 @@ class TestSnapshotStateTracking:
             # Old-cycle statuses arriving during the request must still be discarded.
             rq.put((0, self._build_status_reply(0, [FTP_COLLECTING]), False))
             rq.put((0, ready, False))
-            reply = MagicMock(status=0, data=struct.pack("<h", 0), _received_at=time.monotonic_ns())
+            reply = MagicMock(status=0, data=struct.pack("<h", 0), _received_at=time.perf_counter_ns())
             if not buffered_ack:
                 reply_handler(reply)
             rq.put((0, self._build_status_reply(0, [FTP_WAIT_EVENT]), False))
@@ -1988,7 +1989,8 @@ class TestSnapshotStateTracking:
         finally:
             handle.cancel()
 
-    def test_restart_ack_and_status_in_same_tcp_batch(self):
+    def test_restart_ack_and_status_in_same_tcp_batch(self, monkeypatch):
+        monkeypatch.setattr(time, "monotonic_ns", lambda: 0)
         import asyncio
 
         from pacsys.acnet.async_connection import ACNETD_ACK, ACNETD_DATA, AsyncAcnetConnectionTCP, AsyncRequestContext
@@ -2091,7 +2093,7 @@ class TestSnapshotStateTracking:
     @staticmethod
     def _control_reply(handle, status, payload):
         def request_single(node, task, data, reply_handler, timeout):
-            reply_handler(MagicMock(status=status, data=payload, last=True, _received_at=time.monotonic_ns()))
+            reply_handler(MagicMock(status=status, data=payload, last=True, _received_at=time.perf_counter_ns()))
 
         handle._connection.request_single = request_single
 
