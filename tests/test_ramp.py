@@ -1,6 +1,7 @@
 """Tests for ramp table manipulation."""
 
 import struct
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -529,6 +530,126 @@ class TestReadWrite:
 
         drf2 = _TestRamp._make_drf("B:HS23T", slot=2)
         assert "{512:256}" in drf2
+
+
+class TestActiveWrites:
+    @pytest.mark.parametrize("first,last,slot", [(0, 0, 0), (63, 63, 15), (7, 12, 2), (0, 63, 1)])
+    def test_span_payload_and_offset(self, fake_backend, first, last, slot):
+        ramp = _TestRamp(np.zeros(64), np.zeros(64), device="B_HS23T", slot=slot)
+        ramp.values[first] = -11
+        ramp.times[last] = 20
+        fake_backend.get = Mock(side_effect=AssertionError("active writes must not read"))
+        fake_backend.get_many = Mock(side_effect=AssertionError("active writes must not read"))
+
+        result = ramp.write(backend=fake_backend, write_mode="active")
+
+        assert result.success
+        drf, payload = fake_backend.writes[0]
+        assert drf == f"B:HS23T.SETTING{{{slot * 256 + first * 4}:{(last - first + 1) * 4}}}.RAW@I"
+        assert payload == ramp.to_bytes()[first * 4 : (last + 1) * 4]
+
+    @pytest.mark.parametrize("cls", [BoosterHVRamp, BoosterQRamp, BoosterSQRamp, RecyclerQRamp])
+    def test_scaled_payload_and_sub_tick_activity(self, fake_backend, cls):
+        ramp = cls(np.zeros(64), np.zeros(64), device="B:HS23T", slot=0)
+        ramp.times[3] = 0.001  # Active even though this rounds to zero ticks.
+        ramp.values[8] = 0.5
+        ramp.write(backend=fake_backend, write_mode="active")
+        drf, payload = fake_backend.writes[0]
+        assert "{12:24}" in drf
+        assert payload == ramp.to_bytes()[12:36]
+
+    def test_shrink_preserves_outside_points_until_full_write(self, fake_backend):
+        ramp = _TestRamp(np.zeros(64), np.zeros(64), device="B:HS23T", slot=1)
+        ramp.values[5:10] = 7
+        ramp.times[10] = 3
+        neighbor = b"\x01" * 256
+        fake_backend.set_reading("B:HS23T.SETTING.RAW", neighbor + ramp.to_bytes() + neighbor, value_type=ValueType.RAW)
+
+        ramp.values[5] = 0
+        ramp.values[9] = 0
+        ramp.times[10] = 0
+        ramp.values[7] = 0  # Interior zeros must be written.
+        ramp.write(backend=fake_backend, write_mode="active")
+        readback = _TestRamp.read("B:HS23T", slot=1, backend=fake_backend)
+        assert readback.values[5] == readback.values[9] == 7
+        assert readback.times[10] == 3
+        assert readback.values[7] == 0
+
+        ramp.write(backend=fake_backend)
+        readback = _TestRamp.read("B:HS23T", slot=1, backend=fake_backend)
+        assert readback.to_bytes() == ramp.to_bytes()
+        ramp.values[:] = 0
+        ramp.write(backend=fake_backend)
+        assert fake_backend.read("B:HS23T.SETTING.RAW@I") == neighbor + bytes(256) + neighbor
+
+    @pytest.mark.parametrize("kind", ["single", "group", "mixed"])
+    def test_empty_active_rejects_before_any_write(self, fake_backend, kind):
+        empty = _TestRamp(np.zeros(64), np.zeros(64), device="B:HS23T", slot=0)
+        group = _TestRampGroup(["B:HS24T", "B:HS23T"], np.zeros((64, 2)), np.zeros((64, 2)))
+        group.values[4, 0] = 1
+        with pytest.raises(ValueError, match="Empty active ramp.*write_mode='full'"):
+            if kind == "single":
+                empty.write(backend=fake_backend, write_mode="active")
+            elif kind == "group":
+                group.write(backend=fake_backend, write_mode="active")
+            else:
+                write_ramps([("Z:ACLTST", 2.0), group], backend=fake_backend, write_mode="active")
+        assert fake_backend.writes == []
+
+    @pytest.mark.parametrize("mode", ["full", "active"])
+    def test_mixed_batch_order_spans_and_failures(self, fake_backend, mode):
+        ramp = _TestRamp(np.zeros(64), np.zeros(64), device="B:HS23T", slot=0)
+        ramp.times[63] = 1
+        group = _TestRampGroup(["B:HS24T", "B:HS25T"], np.zeros((64, 2)), np.zeros((64, 2)))
+        group.values[2:5, 0] = 2
+        group.times[10:12, 1] = 3
+        fake_backend.write_many = Mock(wraps=fake_backend.write_many)
+        fake_backend.set_write_result("B:HS24T.SETTING.RAW", success=False, message="denied")
+
+        results = write_ramps([ramp, ("Z:ACLTST", 2.0), group], slot=2, backend=fake_backend, write_mode=mode)
+
+        fake_backend.write_many.assert_called_once()
+        assert [r.success for r in results] == [True, True, False, True]
+        writes = fake_backend.writes
+        assert results[2].message == "denied"
+        assert [results[i].drf for i in (0, 1, 3)] == [writes[i][0] for i in (0, 1, 3)]
+        assert writes[1] == ("Z:ACLTST.SETTING@N", 2.0)
+        spans = [(63, 64), (2, 5), (10, 12)] if mode == "active" else [(0, 64)] * 3
+        for index, source, (first, stop) in zip(
+            [0, 2, 3], [ramp, group["B:HS24T"], group["B:HS25T"]], spans, strict=True
+        ):
+            drf, payload = writes[index]
+            assert drf == f"{source.device}.SETTING{{{512 + first * 4}:{(stop - first) * 4}}}.RAW@I"
+            assert payload == source.to_bytes()[first * 4 : stop * 4]
+
+    def test_group_target_override_and_view(self, fake_backend):
+        group = _TestRampGroup(["B:HS23T", "B:HS24T"], np.zeros((64, 2)), np.zeros((64, 2)))
+        group["B:HS23T"].values[3] = 1
+        group.times[8, 1] = 2
+        group.write(devices=["B_HS25T", "B_HS26T"], slot=3, backend=fake_backend, write_mode="active")
+        assert fake_backend.writes == [
+            ("B:HS25T.SETTING{780:4}.RAW@I", struct.pack("<hh", 1, 0)),
+            ("B:HS26T.SETTING{800:4}.RAW@I", struct.pack("<hh", 0, 2)),
+        ]
+
+    @pytest.mark.parametrize("bad", [np.nan, np.inf, 40000.0])
+    def test_validation_before_mixed_batch_writes(self, fake_backend, bad):
+        ramp = _TestRamp(np.zeros(64), np.zeros(64), device="B:HS23T", slot=0)
+        ramp.values[3] = bad
+        with pytest.raises(ValueError):
+            write_ramps([("Z:ACLTST", 2.0), ramp], backend=fake_backend, write_mode="active")
+        assert fake_backend.writes == []
+
+    def test_active_write_failure_raises(self, fake_backend):
+        ramp = _TestRamp(np.ones(64), np.zeros(64), device="B:HS23T", slot=0)
+        fake_backend.set_write_result("B:HS23T.SETTING.RAW", success=False, message="denied")
+        with pytest.raises(RuntimeError, match="denied"):
+            ramp.write(backend=fake_backend, write_mode="active")
+
+    def test_invalid_mode_rejects_even_scalar_only_batch(self, fake_backend):
+        with pytest.raises(ValueError, match="Unknown write_mode"):
+            write_ramps([("Z:ACLTST", 2.0)], backend=fake_backend, write_mode="typo")
+        assert fake_backend.writes == []
 
 
 class TestModifyContext:
