@@ -1,6 +1,6 @@
 # Release notes
 
-## 0.3.0 (unreleased)
+## 0.3.0 (2026-09-11)
 
 Changes since 0.2.2. Python 3.10 or newer is required.
 
@@ -108,6 +108,7 @@ Raw byte values in `acget --format json` output are now base64 strings.
   one-shot and streaming raw reads. See [GETS32 and RETDAT](frontend-read-protocols.md).
 - **ACNET and ramps:** FTPMAN snapshots over local UDP, and
   `BoosterSQRamp`/`BoosterSQRampGroup` (thanks M. Balcewicz for reporting)
+- **[Active-span ramp writes](specialized-utils/ramps.md#active-span-writes-advanced):** optional `write_mode="active"` reduces payloads for ramps and groups to only the active (non-zero) subset. Full writes remain the default and are required to clear shortened or empty ramps.
 
 ### Correctness and reliability
 
