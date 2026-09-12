@@ -124,6 +124,37 @@ ramp.write()
 ramp.write(device="B:HS24T", slot=1)
 ```
 
+### Active-span writes (advanced)
+
+Use `write_mode="active"` to send only the contiguous span from the first to the last point whose **value or delta time is nonzero**. This mode reduces the write payload without adding reads or tracking device state. Zero points inside that span are included. Activity is determined from the engineering-unit arrays before rounding to wire values; no tolerance is applied.
+
+```python
+ramp.write(write_mode="active")
+```
+
+For example, active points 0 through 7 produce a 32-byte payload instead of the full 256 bytes. Point indices remain unchanged: in slot 2, this writes byte range `SETTING{512:32}.RAW`. Serialization and validation still cover the entire ramp.
+
+**Active mode is a partial update. Points outside the span are left untouched.** It does not check whether those points are zero on the device, including when writing to a different device or slot.
+
+| Workflow | Behavior |
+|---|---|
+| Update points 0–7 | Active mode writes 0–7, including interior zeros. |
+| Expand to points 0–9 | Active mode writes 0–9. |
+| Shrink from 0–7 to 0–5 | Active mode leaves the device's old points 6–7 intact. Use a full write to clear them. |
+| All values and times are zero | Active mode raises `ValueError`. Use a full write to clear the slot. |
+
+```python
+# Previously active through point 7; keep only points 0–5.
+ramp.values[6:] = 0
+ramp.times[6:] = 0
+ramp.write()  # Full write clears the old tail.
+
+# Clear the entire slot.
+ramp.values[:] = 0
+ramp.times[:] = 0
+ramp.write()
+```
+
 ---
 
 ## Context Manager
@@ -168,7 +199,12 @@ write_ramps([ramp1, ramp2])             # list[Ramp]
 write_ramps(group)                      # RampGroup
 write_ramps([group1, group2, ramp3])    # mixed - flattened
 write_ramps(ramps, slot=2)              # override slot for all
+write_ramps([group, ramp, ("Z:ACLTST", 1.5)], write_mode="active")
 ```
+
+In active mode each ramp gets its own span. `(drf, value)` settings share the same backend call; their values are unchanged and the ramp slot override does not apply to them. Results follow the flattened input order. Check each result's `success`: the backend batch is not atomic and may partially succeed.
+
+All ramp payloads are validated before the backend call. If any ramp is empty in active mode, the whole batch raises `ValueError` before writing anything, including scalar settings. To mix partial ramp updates with a ramp that needs clearing, make a separate full write for the latter.
 
 ---
 
@@ -212,7 +248,12 @@ group.write()
 
 # Override targets
 group.write(devices=["B:OTHER1", "B:OTHER2", "B:OTHER3"], slot=1)
+
+# Independent active span per column, in one write_many call
+group.write(write_mode="active")
 ```
+
+For example, column 0 active at points 0–7 sends 32 bytes, while column 1 active at points 4–8 sends 20 bytes. The group does not use a shared span across columns. Any empty active column rejects the whole batch before writing. Use `group.write()` to clear shortened or empty ramps, or `group[device].write()` for a full write of one column. Both individual and group `modify()` contexts continue to use full writes.
 
 ### Group Context Manager (read-modify-write)
 

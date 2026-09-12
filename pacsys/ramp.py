@@ -75,13 +75,15 @@ Example usage:
 from __future__ import annotations
 
 import struct
-from typing import TYPE_CHECKING, ClassVar, NoReturn
+from typing import TYPE_CHECKING, ClassVar, Literal, NoReturn
 
 import numpy as np
 
 from pacsys.scaling import Scaler, ScalingError
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from pacsys.backends import Backend
     from pacsys.types import Value, WriteResult
 
@@ -93,6 +95,11 @@ def _get_backend(backend: Backend | None) -> Backend:
     from pacsys import _get_global_backend
 
     return _get_global_backend()
+
+
+def _validate_write_mode(write_mode: str) -> None:
+    if write_mode not in ("full", "active"):
+        raise ValueError(f"Unknown write_mode {write_mode!r}; expected 'full' or 'active'")
 
 
 def _validate_device_name(drf: str) -> None:
@@ -281,12 +288,31 @@ class Ramp:
             raise ValueError(f"slot must be 0..{cls.MAX_SLOTS - 1}, got {slot}")
 
     @classmethod
-    def _make_drf(cls, device: str, slot: int) -> str:
+    def _make_drf(cls, device: str, slot: int, first: int = 0, count: int | None = None) -> str:
         """Build DRF for a ramp slot using byte range (like alarm_block.py)."""
         cls._validate_slot(slot)
-        offset = slot * cls._slot_bytes()
-        length = cls._slot_bytes()
+        offset = slot * cls._slot_bytes() + first * cls.BYTES_PER_POINT
+        length = (cls.POINTS_PER_SLOT if count is None else count) * cls.BYTES_PER_POINT
         return f"{device}.SETTING{{{offset}:{length}}}.RAW@I"
+
+    def _write_setting(self, device: str, slot: int, write_mode: str) -> tuple[str, bytes]:
+        from .drf_utils import get_device_name
+
+        _validate_write_mode(write_mode)
+        _validate_device_name(device)
+        self._validate_slot(slot)
+        data = self.to_bytes()  # Validate the whole ramp before selecting a span.
+        first, count = 0, self.POINTS_PER_SLOT
+        if write_mode == "active":
+            active = np.flatnonzero((self.values != 0) | (self.times != 0))
+            if not active.size:
+                raise ValueError(f"Empty active ramp for {device}; use write_mode='full' to clear the slot")
+            first = int(active[0])
+            count = int(active[-1]) - first + 1
+            start = first * self.BYTES_PER_POINT
+            data = data[start : start + count * self.BYTES_PER_POINT]
+        drf = self._make_drf(get_device_name(device), slot, first, count)
+        return drf, data
 
     @classmethod
     def _tick_us(cls) -> float:
@@ -473,6 +499,8 @@ class Ramp:
         device: str | None = None,
         slot: int | None = None,
         backend: Backend | None = None,
+        *,
+        write_mode: Literal["full", "active"] = "full",
     ) -> WriteResult:
         """Write ramp table to a corrector magnet.
 
@@ -480,6 +508,10 @@ class Ramp:
             device: Bare device name DRF (e.g. "B:HS23T"). If None, uses stored device from read().
             slot: Ramp slot index. If None, uses stored slot from read().
             backend: Optional backend. If None, uses global default.
+            write_mode: "full" replaces the slot (default). "active" writes only
+                the first-to-last point with nonzero value or delta time, including
+                interior zeros. Outside points are untouched; use "full" when
+                shrinking or clearing a ramp. Empty active ramps raise ValueError.
 
         Returns:
             WriteResult from the backend
@@ -488,8 +520,6 @@ class Ramp:
             ValueError: If no device or slot available, or device is not a bare device name
             RuntimeError: If write fails
         """
-        from pacsys.drf_utils import get_device_name
-
         if device is not None:
             _validate_device_name(device)
         device = device or self.device
@@ -499,11 +529,10 @@ class Ramp:
         if slot is None:
             raise ValueError("No slot specified and none stored from read()")
 
-        name = get_device_name(device)
-        drf = self._make_drf(name, slot)
+        drf, data = self._write_setting(device, slot, write_mode)
         be = _get_backend(backend)
 
-        result = be.write(drf, self.to_bytes())
+        result = be.write(drf, data)
         if not result.success:
             raise RuntimeError(f"Failed to write ramp table: {result.message}")
         return result
@@ -794,29 +823,35 @@ def read_ramps(
 
 
 def write_ramps(
-    ramps: Ramp | list[Ramp] | RampGroup | list[Ramp | RampGroup],
+    ramps: Ramp | RampGroup | Sequence[Ramp | RampGroup | tuple[str, Value]],
     *,
     slot: int | None = None,
     backend: Backend | None = None,
+    write_mode: Literal["full", "active"] = "full",
 ) -> list[WriteResult]:
     """Batched write of ramp tables.
 
-    Accepts a single Ramp, a list of Ramps, a RampGroup, or a mixed list.
-    All are flattened into a single write_many call.
+    Accepts a Ramp, a RampGroup, or a list mixing ramps, groups, and
+    (drf, value) settings. All are flattened into a single write_many call.
 
     Args:
-        ramps: Ramp(s) or RampGroup(s) to write
+        ramps: Ramp(s), RampGroup(s), optionally mixed with (drf, value) settings
         slot: Optional slot override (applies to all ramps)
         backend: Optional backend. If None, uses global default.
+        write_mode: "full" (default) or "active", independently per ramp.
+            Active writes leave outside points untouched; shrinking requires a
+            full write. An empty active ramp rejects the batch before any writes.
+            Scalar settings are unaffected by write_mode and slot.
 
     Returns:
-        List of WriteResult in same order as flattened ramps
+        List of WriteResult in the same order as flattened inputs. Backend
+        failures are returned per setting; the batch is not atomic.
     """
-    from pacsys.drf_utils import get_device_name
+    from .drf_utils import prepare_for_write
 
-    # Normalize to flat list[Ramp]
-    flat: list[Ramp] = []
-    items: list[Ramp | RampGroup] = [ramps] if isinstance(ramps, (Ramp, RampGroup)) else list(ramps)
+    _validate_write_mode(write_mode)
+    flat: list[Ramp | tuple[str, Value]] = []
+    items = [ramps] if isinstance(ramps, (Ramp, RampGroup)) else list(ramps)
     for item in items:
         if isinstance(item, RampGroup):
             flat.extend(item._to_ramps(slot))
@@ -825,15 +860,18 @@ def write_ramps(
 
     settings: list[tuple[str, Value]] = []
     for ramp in flat:
+        if not isinstance(ramp, Ramp):
+            if not isinstance(ramp, tuple) or len(ramp) != 2 or not isinstance(ramp[0], str):
+                raise TypeError("Expected a Ramp, RampGroup, or (drf, value) setting")
+            settings.append((prepare_for_write(ramp[0]), ramp[1]))
+            continue
         dev = ramp.device
         if dev is None:
             raise ValueError("Ramp has no device set - read() first or set .device")
         s = slot if slot is not None else ramp.slot
         if s is None:
             raise ValueError(f"No slot for device {dev} - read() first or set .slot")
-        name = get_device_name(dev)
-        drf = type(ramp)._make_drf(name, s)
-        settings.append((drf, ramp.to_bytes()))
+        settings.append(ramp._write_setting(dev, s, write_mode))
     return _get_backend(backend).write_many(settings)
 
 
@@ -1017,6 +1055,7 @@ class RampGroup:
         devices: list[str] | None = None,
         slot: int | None = None,
         backend: Backend | None = None,
+        write_mode: Literal["full", "active"] = "full",
     ) -> list[WriteResult]:
         """Write group to devices.
 
@@ -1024,6 +1063,9 @@ class RampGroup:
             devices: Override target device names (must match column count)
             slot: Override slot index
             backend: Optional backend
+            write_mode: "full" (default) or "active", independently per column.
+                Outside points are untouched in active mode; use full writes to
+                shrink or clear ramps. Any empty active column rejects the batch.
         """
         if devices is not None:
             for d in devices:
@@ -1032,7 +1074,7 @@ class RampGroup:
         if len(targets) != self.values.shape[1]:
             raise ValueError(f"Expected {self.values.shape[1]} devices, got {len(targets)}")
         ramps = self._to_ramps(slot, targets)
-        return write_ramps(ramps, backend=backend)
+        return write_ramps(ramps, backend=backend, write_mode=write_mode)
 
     @classmethod
     def modify(
