@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 _SLOW_THRESHOLD = 0.050  # 50ms
 _WARN_INTERVAL = 10.0  # rate-limit slow-callback warnings
-_QUEUE_MAX_SIZE = 10_000  # bounded queue to prevent OOM from slow callbacks
+_QUEUE_MAX_SIZE = 10_000  # reading bound to prevent OOM from slow callbacks
 
 
 class CallbackDispatcher:
@@ -79,20 +79,7 @@ class CallbackDispatcher:
         """Stop worker thread if running."""
         self._stop.set()
         if self._queue is not None:
-            # Sentinel must bypass the maxsize bound
-            # Since stop event is set, one of puts will always succeed
-            try:
-                self._queue.put_nowait(None)
-            except queue.Full:
-                # Queue is full - drain one item to make room for sentinel
-                try:
-                    self._queue.get_nowait()
-                except queue.Empty:
-                    pass
-                try:
-                    self._queue.put_nowait(None)
-                except queue.Full:
-                    pass
+            self._queue.put_nowait(None)  # sentinel
         # Snapshot guards concurrent close(); never join the worker from itself
         # (close() from a callback runs on the worker thread -- _stop is set, so
         # the loop exits right after the callback returns; thread is a daemon).
@@ -107,11 +94,11 @@ class CallbackDispatcher:
     # ── internal ──
 
     def _enqueue(self, item: tuple) -> None:
-        """Put item on queue, dropping with a warning if full."""
+        """Put item on queue; readings over the bound are dropped with a warning, errors never are."""
         assert self._queue is not None
-        try:
+        if item[3] or self._queue.qsize() < _QUEUE_MAX_SIZE:
             self._queue.put_nowait(item)
-        except queue.Full:
+        else:
             item[2]._note_dispatch_drop()
             now = time.monotonic()
             if now - self._last_drop_warn_time >= _WARN_INTERVAL:
@@ -127,7 +114,8 @@ class CallbackDispatcher:
         with self._lock:
             if self._started:
                 return
-            self._queue = queue.Queue(maxsize=_QUEUE_MAX_SIZE)
+            # Unbounded: _enqueue bounds readings only, so on_error is never dropped
+            self._queue = queue.Queue()
             t = threading.Thread(target=self._worker_loop, daemon=True, name="pacsys-dispatch")
             t.start()
             self._thread = t

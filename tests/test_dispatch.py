@@ -310,3 +310,25 @@ class TestStopAndDropAccounting:
         finally:
             gate.set()
             d.close()
+
+    def test_error_delivered_when_queue_full(self):
+        """One subscription filling the shared queue must not drop another's on_error."""
+        from pacsys.backends import _dispatch
+
+        d = CallbackDispatcher(DispatchMode.WORKER)
+        slow, other = _FakeHandle(), _FakeHandle()
+        gate = threading.Event()
+        got = threading.Event()
+        try:
+            d.dispatch_reading(lambda r, h: gate.wait(2.0), _make_reading(), slow)
+            time.sleep(0.05)
+            for _ in range(_dispatch._QUEUE_MAX_SIZE):
+                d.dispatch_reading(lambda r, h: None, _make_reading(), slow)
+            d.dispatch_error(lambda exc, h: got.set(), RuntimeError("boom"), other)
+            d.dispatch_reading(lambda r, h: None, _make_reading(), slow)
+            assert (slow.dispatch_drops, other.dispatch_drops) == (1, 0)
+            gate.set()
+            assert got.wait(2.0)
+        finally:
+            gate.set()
+            d.close()
