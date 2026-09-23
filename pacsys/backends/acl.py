@@ -445,6 +445,7 @@ class ACLBackend(Backend):
         Raises:
             RuntimeError: If backend is closed
             DeviceError: If the read fails
+            ReadError: On ACL request timeout
         """
         reading = self.get(drf, timeout=timeout)
 
