@@ -470,6 +470,26 @@ class TestMonitorRestart:
         assert len(watchdogs) == 1
         mon.stop()
 
+    def test_on_stale_restarts_after_stream_error(self, fake):
+        """A dead stream must still go stale so on_stale can resubscribe."""
+        restarted = threading.Event()
+
+        def on_stale(drf, h):
+            if not restarted.is_set():
+                mon.start()
+                restarted.set()
+
+        mon = Monitor(["M:OUTTMP@p,1000"], stale_after=0.1, on_stale=on_stale, backend=fake)
+        mon.start()
+        fake.emit_reading("M:OUTTMP@p,1000", 72.0)
+        fake.emit_error(ConnectionError("proxy restarted"))
+        assert not mon.running
+        assert restarted.wait(timeout=2.0)
+        assert mon.running
+        fake.emit_reading("M:OUTTMP@p,1000", 73.0)
+        assert mon.health("M:OUTTMP@p,1000").total_received == 1
+        mon.stop()
+
     def test_restart_resets_stale_set(self, fake):
         stale = threading.Event()
         mon = Monitor(

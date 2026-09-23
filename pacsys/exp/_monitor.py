@@ -458,12 +458,17 @@ class Monitor:
             stale=stale,
         )
 
-    def _watchdog_loop(self) -> None:
+    def _watchdog_loop(self, token: object) -> None:
         assert self._stale_after is not None
         interval = max(0.1, builtins_min(self._stale_after / 2, 1.0))
         watchdog = threading.current_thread()
-        # Ownership check lets a superseded watchdog exit after a callback-driven restart
-        while self.running and self._watchdog is watchdog:
+
+        def owned() -> bool:
+            # Run token (cleared by stop/restart), not `running`: a dead stream must still
+            # go stale so on_stale can restart. Ownership exits a superseded watchdog.
+            return self._run_token is token and self._watchdog is watchdog
+
+        while owned():
             now = time.monotonic()
             stale_events: list[tuple[str, ChannelHealth]] = []
             recover_events: list[tuple[str, ChannelHealth]] = []
@@ -477,6 +482,8 @@ class Monitor:
                     elif not ch.stale and was_stale:
                         self._stale_set.discard(drf)
                         recover_events.append((drf, ch))
+                # Dead stream with every channel reported stale: nothing left to detect
+                finished = not self.running and len(self._stale_set) == len(self._drfs)
             for drf, ch in stale_events:
                 logger.warning("channel %s stale (%.1fs since last reading)", drf, ch.gap)
                 if self._on_stale:
@@ -484,7 +491,7 @@ class Monitor:
                         self._on_stale(drf, ch)
                     except Exception:
                         logger.exception("on_stale callback failed for %s", drf)
-                if not self.running or self._watchdog is not watchdog:
+                if not owned():
                     return  # a callback stopped/restarted the monitor; abandon this batch
             for drf, ch in recover_events:
                 logger.info("channel %s recovered", drf)
@@ -493,8 +500,10 @@ class Monitor:
                         self._on_recover(drf, ch)
                     except Exception:
                         logger.exception("on_recover callback failed for %s", drf)
-                if not self.running or self._watchdog is not watchdog:
+                if not owned():
                     return
+            if finished:
+                return
             time.sleep(interval)
 
     def health(self, drf: DeviceSpec | None = None) -> ChannelHealth | dict[str, ChannelHealth]:
@@ -544,9 +553,9 @@ class Monitor:
         # Ensure old watchdog is dead before restarting (skip self-join when
         # restarted from an on_stale callback; the loop's ownership check exits it)
         watchdog = self._watchdog
+        self._watchdog = None  # releases ownership so a watchdog outliving its dead stream exits
         if watchdog is not None and threading.current_thread() is not watchdog:
             watchdog.join(timeout=2.0)
-        self._watchdog = None
         # Reset all per-run state
         token = object()
         with self._lock:
@@ -563,13 +572,19 @@ class Monitor:
         # The token (not handle identity) marks deliveries of this run: the
         # reactor can invoke the callback before subscribe() returns the handle
         try:
-            self._handle = backend.subscribe(self._drfs, callback=lambda r, h, t=token: self._on_reading(r, h, t))
+            self._handle = backend.subscribe(
+                self._drfs,
+                callback=lambda r, h, t=token: self._on_reading(r, h, t),
+                on_error=lambda e, h, t=token: self._on_error(e, t),
+            )
         except BaseException:
             with self._lock:
                 self._run_token = None
             raise
         if self._stale_after is not None:
-            self._watchdog = threading.Thread(target=self._watchdog_loop, daemon=True, name="pacsys-watchdog")
+            self._watchdog = threading.Thread(
+                target=self._watchdog_loop, args=(token,), daemon=True, name="pacsys-watchdog"
+            )
             self._watchdog.start()
 
     def stop(self) -> None:
@@ -602,6 +617,13 @@ class Monitor:
                 self._latest[drf] = reading
                 self._received_at[drf] = time.monotonic()
                 self._lock.notify_all()
+
+    def _on_error(self, exc: Exception, token: object) -> None:
+        with self._lock:
+            if token is not self._run_token:
+                return
+            self._lock.notify_all()  # wake await_next so it raises handle.exc
+        logger.error("Monitor subscription for %s failed; channels will go stale: %s", self._drfs, exc)
 
     def snapshot(self) -> MonitorResult:
         """Non-destructive peek at current data."""
