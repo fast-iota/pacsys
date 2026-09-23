@@ -4,6 +4,7 @@ import asyncio
 import struct
 import threading
 import time
+import warnings
 from dataclasses import FrozenInstanceError
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -54,7 +55,18 @@ from pacsys.acnet.errors import (
     parse_error,
     status_message,
 )
-from pacsys.dpm_protocol import ListStatus_reply, Status_reply
+from pacsys.dpm_protocol import (
+    AddToList_reply,
+    AddToList_request,
+    ListStatus_reply,
+    RemoveFromList_reply,
+    RemoveFromList_request,
+    Scalar_reply,
+    StartList_reply,
+    StartList_request,
+    Status_reply,
+    StopList_request,
+)
 
 
 class TestRad50:
@@ -681,7 +693,7 @@ class TestDPMAcnetListState:
             dpm.read("M:OUTTMP", timeout=0)
 
         dpm.close.assert_called_once_with()
-        assert "Failed to stop DPM acquisition after reading M:OUTTMP.READING@I" in caplog.text
+        assert "Failed to clean up DPM list after reading M:OUTTMP.READING@I" in caplog.text
 
     def test_read_uses_parser_for_immediate_event(self, dpm):
         expected_drf = "M:UTEST.ANALOG@I"
@@ -690,6 +702,7 @@ class TestDPMAcnetListState:
         dpm._active = True
         dpm._dev_list = {}
         dpm.add_entry = MagicMock()
+        dpm.remove_entry = MagicMock()
         dpm.readings = MagicMock(return_value=iter([DPMReading(ref_id=tag, data=1.0)]))
 
         reading = dpm.read("M@UTEST")
@@ -712,7 +725,53 @@ class TestDPMAcnetListState:
             dpm.read(drf)
 
         dpm.close.assert_called_once_with()
-        assert "Failed to stop DPM acquisition after reading M:OUTTMP@I" in caplog.text
+        assert "Failed to clean up DPM list after reading M:OUTTMP@I" in caplog.text
+
+    def test_repeated_reads_do_not_reacquire_or_return_stale_values(self):
+        """Server keeps entries until RemoveFromList and StartList restarts all of them (DPMList.java)."""
+        dpm = DPMAcnet()
+        dpm._list_id = 123
+        server: dict[int, str] = {}
+        starts = iter(range(1, 10))
+
+        def send(msg):
+            if isinstance(msg, AddToList_request):
+                server[msg.ref_id] = msg.drf_request
+                return AddToList_reply()
+            if isinstance(msg, RemoveFromList_request):
+                del server[msg.ref_id]
+                return RemoveFromList_reply()
+            if isinstance(msg, StartList_request):
+                n = next(starts)
+                for ref_id in reversed(list(server)):  # newest first: older tags reply after the target
+                    reply = Scalar_reply()
+                    reply.ref_id, reply.data = ref_id, float(n)
+                    dpm._handle_dpm_reply(reply)
+                return StartList_reply()
+            assert isinstance(msg, StopList_request)
+            return Status_reply()
+
+        dpm._send_request = send
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            values = [dpm.read(drf, timeout=0.5).data for drf in ("M:OUTTMP@I", "G:AMANDA@I", "M:OUTTMP@I")]
+
+        assert values == [1.0, 2.0, 3.0]
+        assert not caught
+        assert server == {} and dpm._dev_list == {}
+
+    def test_read_removes_entry_when_start_fails(self, dpm):
+        dpm._active = False
+        dpm._dev_list = {}
+        dpm._send_request = MagicMock(
+            side_effect=[AddToList_reply(), DPMError(-1, "start timeout"), RemoveFromList_reply()]
+        )
+
+        with pytest.raises(DPMError, match="start timeout"):
+            dpm.read("M:OUTTMP@I")
+
+        assert isinstance(dpm._send_request.call_args.args[0], RemoveFromList_request)
+        assert dpm._dev_list == {}
 
     def test_clear_list_commits_after_success(self, dpm):
         reply = ListStatus_reply()

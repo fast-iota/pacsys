@@ -26,6 +26,8 @@ from pacsys.dpm_protocol import (
     OpenList_reply,
     OpenList_request,
     Raw_reply,
+    RemoveFromList_reply,
+    RemoveFromList_request,
     Scalar_reply,
     ScalarArray_reply,
     StartList_reply,
@@ -319,6 +321,22 @@ class DPMAcnet:
 
         logger.debug("Added entry tag=%s, drf=%s", tag, drf)
 
+    def remove_entry(self, tag: int):
+        """Remove a device request from the list."""
+        msg = RemoveFromList_request()
+        msg.list_id = self.list_id
+        msg.ref_id = tag
+
+        reply = self._send_request(msg)
+        if not isinstance(reply, RemoveFromList_reply):
+            raise DPMError(-1, f"Expected RemoveFromList_reply, got {type(reply).__name__}")
+        if reply.status < 0:
+            raise DPMError(reply.status, f"RemoveFromList failed for tag {tag}")
+
+        self._dev_list.pop(tag, None)
+        self._meta.pop(tag, None)
+        logger.debug("Removed entry tag=%s", tag)
+
     def start(self, model: str | None = None):
         """Start data acquisition."""
         msg = StartList_request()
@@ -503,26 +521,34 @@ class DPMAcnet:
 
         # Use a unique tag
         tag = hash(drf) & 0x7FFFFFFF
+        # The server keeps entries until RemoveFromList and restarts all of them on StartList
+        owns_entry = tag not in self._dev_list
 
         self.add_entry(tag, drf)
 
         was_active = self._active
-        if not was_active:
-            self.start()
-
-        other_entries = {t: d for t, d in self._dev_list.items() if t != tag}
-        if other_entries:
-            import warnings
-
-            warnings.warn(
-                f"DPMAcnet.read() called with {len(other_entries)} other active "
-                f"entries in the list. Readings for those devices will be silently "
-                f"discarded. Use a separate DPMAcnet instance for read().",
-                stacklevel=2,
-            )
-
         read_failed = True
         try:
+            if not was_active:
+                # The list is stopped, so anything queued is left over from an earlier acquisition
+                while True:
+                    try:
+                        self._reply_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                self.start()
+
+            other_entries = {t: d for t, d in self._dev_list.items() if t != tag}
+            if other_entries:
+                import warnings
+
+                warnings.warn(
+                    f"DPMAcnet.read() called with {len(other_entries)} other active "
+                    f"entries in the list. Readings for those devices will be silently "
+                    f"discarded. Use a separate DPMAcnet instance for read().",
+                    stacklevel=2,
+                )
+
             start = time.time()
             for reading in self.readings(timeout=timeout):
                 if reading.ref_id == tag:
@@ -538,14 +564,16 @@ class DPMAcnet:
             raise TimeoutError(f"Timeout reading {drf}")
 
         finally:
-            if not was_active:
-                try:
+            try:
+                if not was_active:
                     self.stop()
-                except Exception:  # noqa: BLE001
-                    logger.exception("Failed to stop DPM acquisition after reading %s; closing connection", drf)
-                    self.close()
-                    if not read_failed:
-                        raise
+                if owns_entry and self._terminal_status is None:  # a dead stream took the list with it
+                    self.remove_entry(tag)
+            except Exception:  # noqa: BLE001
+                logger.exception("Failed to clean up DPM list after reading %s; closing connection", drf)
+                self.close()
+                if not read_failed:
+                    raise
 
     def __enter__(self):
         self.connect()
