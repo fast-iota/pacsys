@@ -13,6 +13,7 @@ Tests cover:
 """
 
 import time
+from datetime import datetime, timezone
 from unittest import mock
 from unittest.mock import MagicMock
 
@@ -41,6 +42,7 @@ from tests.devices import (
     make_start_list,
     make_status_reply,
     make_text_reply,
+    make_timed_scalar_array_reply,
 )
 from tests.test_dpm_http_auth import create_mock_kerberos_auth
 
@@ -349,18 +351,21 @@ class TestHistoricalReads:
     @pytest.mark.parametrize(
         "drf",
         [
-            "M:OUTTMP<-LOGGER:1736942400000:1736946000000",
-            "M:OUTTMP<-LOGGERDURATION:60000",
+            "B:ARRDEV[0:1]<-LOGGER:1736942400000:1736946000000",
+            "B:ARRDEV[0:1]<-LOGGERDURATION:60000",
         ],
     )
-    def test_chunked_logger_still_waits_for_terminator(self, drf):
+    def test_chunked_array_logger_keeps_records_and_micros(self, drf):
+        # Array logger records arrive as ScalarArray replies stamped in microseconds
+        # (DPMProtocolReplierPC._sendReply), terminated by an empty TimedScalarArray.
+        t0 = 1736942400_000_000
         replies = [
             make_add_to_list_reply(ref_id=1, status=0),
             make_device_info(ref_id=1),
             make_start_list(),
-            make_scalar_array_reply(values=[1.0, 2.0], ref_id=1),
-            make_scalar_array_reply(values=[3.0], ref_id=1),
-            make_scalar_array_reply(values=[], ref_id=1),
+            make_scalar_array_reply(values=[1.0, 2.0], ref_id=1, timestamp=t0),
+            make_scalar_array_reply(values=[3.0, 4.0], ref_id=1, timestamp=t0 + 1_500_000),
+            make_timed_scalar_array_reply(values=[], ref_id=1),
         ]
         mock_socket = MockSocketWithReplies(list_id=1, replies=replies)
 
@@ -371,8 +376,10 @@ class TestHistoricalReads:
                 assert backend._get_pool().available_count == 0
 
         assert reading.ok
-        assert reading.value_type == ValueType.SCALAR_ARRAY
-        assert reading.value.tolist() == [1.0, 2.0, 3.0]
+        assert reading.value_type == ValueType.TIMED_SCALAR_ARRAY
+        assert reading.value["data"].tolist() == [[1.0, 2.0], [3.0, 4.0]]
+        assert reading.value["micros"].tolist() == [t0, t0 + 1_500_000]
+        assert reading.timestamp == datetime(2025, 1, 15, 12, tzinfo=timezone.utc)
 
 
 # =============================================================================

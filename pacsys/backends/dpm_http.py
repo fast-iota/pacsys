@@ -201,13 +201,27 @@ def _value_to_setting(
     return None, setting, None
 
 
-def _aggregate_logger_chunks(chunks: list, drf: str, meta) -> Reading:
-    """Merge multiple logger reply chunks into a single TIMED_SCALAR_ARRAY Reading."""
-    import numpy as np
+def _reply_timestamp(reply, chunked_logger: bool = False):
+    """Reply timestamp as UTC datetime (None if unset).
 
-    all_data: list[np.ndarray] = []
-    all_micros: list[np.ndarray] = []
-    first_ts = None
+    Array logger records (ScalarArray on a LOGGER/LOGGERDURATION ref) are stamped in
+    microseconds (DPMProtocolReplierPC._sendReply); all other replies use milliseconds.
+    """
+    if not reply.timestamp:
+        return None
+    if chunked_logger and isinstance(reply, ScalarArray_reply):
+        return timestamp_from_millis(reply.timestamp / 1_000)
+    return timestamp_from_millis(reply.timestamp)
+
+
+def _aggregate_logger_chunks(chunks: list, drf: str, meta) -> Reading:
+    """Merge LOGGER/LOGGERDURATION reply chunks into a single TIMED_SCALAR_ARRAY Reading.
+
+    Scalar devices arrive as TimedScalarArray chunks with per-point micros. Array devices
+    arrive as one ScalarArray per record; those become 2-D ``data`` (records x elements)
+    with one ``micros`` entry per record, matching the gRPC backend.
+    """
+    import numpy as np
 
     for chunk in chunks:
         # Propagate first error chunk as the result
@@ -219,19 +233,39 @@ def _aggregate_logger_chunks(chunks: list, drf: str, meta) -> Reading:
                 error_code=error,
                 value=None,
                 message=status_message(facility, error),
-                timestamp=timestamp_from_millis(chunk.timestamp) if chunk.timestamp else None,
+                timestamp=_reply_timestamp(chunk, chunked_logger=True),
                 meta=meta,
             )
+
+    records = [c for c in chunks if isinstance(c, ScalarArray_reply)]
+    if records:
+        if len(records) != len(chunks) or len({len(c.data) for c in records}) != 1:
+            message = "Array logger records have inconsistent lengths or mixed reply types"
+            logger.error("%s (device: %s, lengths: %s)", message, drf, [len(getattr(c, "data", ())) for c in chunks])
+            return Reading(
+                drf=drf, facility_code=FACILITY_ACNET, error_code=ERR_RETRY, value=None, message=message, meta=meta
+            )
+        return Reading(
+            drf=drf,
+            value_type=ValueType.TIMED_SCALAR_ARRAY,
+            value={
+                "data": np.array([c.data for c in records], dtype=float),
+                "micros": np.array([c.timestamp for c in records], dtype=np.int64),
+            },
+            timestamp=_reply_timestamp(records[0], chunked_logger=True),
+            meta=meta,
+        )
+
+    all_data: list[np.ndarray] = []
+    all_micros: list[np.ndarray] = []
+    first_ts = None
+    for chunk in chunks:
         if isinstance(chunk, TimedScalarArray_reply):
             all_data.append(np.asarray(chunk.data))
             if hasattr(chunk, "micros") and chunk.micros:
                 all_micros.append(np.array(chunk.micros, dtype=np.int64))
-            if first_ts is None and chunk.timestamp:
-                first_ts = timestamp_from_millis(chunk.timestamp)
-        elif isinstance(chunk, ScalarArray_reply):
-            all_data.append(np.asarray(chunk.data))
-            if first_ts is None and chunk.timestamp:
-                first_ts = timestamp_from_millis(chunk.timestamp)
+            if first_ts is None:
+                first_ts = _reply_timestamp(chunk)
 
     data = np.concatenate(all_data) if all_data else np.array([], dtype=float)
     if all_micros:
@@ -313,7 +347,7 @@ def _reply_to_value_and_type(reply) -> tuple[Value | None, ValueType | None]:
     return None, None
 
 
-def _reply_to_reading(reply, drf: str, meta: DeviceMeta | None) -> Reading:
+def _reply_to_reading(reply, drf: str, meta: DeviceMeta | None, chunked_logger: bool = False) -> Reading:
     """Convert a DPM reply to a Reading object."""
     if isinstance(reply, Status_reply):
         facility, error = parse_error(reply.status)
@@ -323,7 +357,7 @@ def _reply_to_reading(reply, drf: str, meta: DeviceMeta | None) -> Reading:
             error_code=error,
             value=None,
             message=status_message(facility, error),
-            timestamp=timestamp_from_millis(reply.timestamp) if reply.timestamp else None,
+            timestamp=_reply_timestamp(reply),
             cycle=reply.cycle,
             meta=meta,
         )
@@ -345,7 +379,6 @@ def _reply_to_reading(reply, drf: str, meta: DeviceMeta | None) -> Reading:
 
     # Alarm/status replies have no status field -- receiving them means success (0)
     status = reply.status if hasattr(reply, "status") else 0
-    timestamp = reply.timestamp
     cycle = reply.cycle
 
     facility, error = parse_error(status)
@@ -357,7 +390,7 @@ def _reply_to_reading(reply, drf: str, meta: DeviceMeta | None) -> Reading:
         error_code=error,
         value=value,
         message=status_message(facility, error),
-        timestamp=timestamp_from_millis(timestamp) if timestamp else None,
+        timestamp=_reply_timestamp(reply, chunked_logger),
         cycle=cycle,
         meta=meta,
     )
@@ -663,6 +696,7 @@ class _DpmStreamCore:
 
         metas: dict[int, DeviceMeta] = {}
         drf_map: dict[int, str] = {}
+        chunked_logger_refs = {i + 1 for i, drf in enumerate(drfs) if is_chunked_historical_drf(drf)}
 
         try:
             list_id = self._conn.list_id
@@ -738,7 +772,7 @@ class _DpmStreamCore:
                         logger.warning("Data for unknown ref_id=%s", ref_id)
                         continue
                     meta = metas.get(ref_id)
-                    reading = _reply_to_reading(reply, drf, meta)
+                    reading = _reply_to_reading(reply, drf, meta, ref_id in chunked_logger_refs)
                     dispatch_fn(reading)
 
         except asyncio.CancelledError:

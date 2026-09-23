@@ -768,6 +768,7 @@ class _AsyncDpmCore:
         assert self._conn is not None
         metas: dict[int, DeviceMeta] = {}
         drf_map: dict[int, str] = {}
+        chunked_logger_refs = {i + 1 for i, drf in enumerate(drfs) if is_chunked_historical_drf(drf)}
 
         try:
             list_id = self.list_id
@@ -840,7 +841,7 @@ class _AsyncDpmCore:
                         logger.warning("Data for unknown ref_id=%s", ref_id)
                         continue
                     meta = metas.get(ref_id)
-                    reading = _reply_to_reading(reply, drf, meta)
+                    reading = _reply_to_reading(reply, drf, meta, ref_id in chunked_logger_refs)
                     dispatch_fn(reading)
 
         except asyncio.CancelledError:
