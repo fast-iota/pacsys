@@ -50,6 +50,7 @@ class DataLogger:
         self._stopped = False
         self._closed = False
         self._last_error: Exception | None = None
+        self._stream_error: Exception | None = None
         self._retry_count: int = 0
         self._dropped_count: int = 0
         self._max_retries: int = 3
@@ -60,7 +61,7 @@ class DataLogger:
 
     @property
     def last_error(self) -> Exception | None:
-        """Last write error, or None if no errors occurred."""
+        """Last write or subscription error, or None if no errors occurred."""
         return self._last_error
 
     @property
@@ -70,8 +71,8 @@ class DataLogger:
 
     @property
     def failed(self) -> bool:
-        """True once any batch has been dropped. Logging continues; stop() raises."""
-        return self._dropped_count > 0
+        """True once a batch was dropped or the subscription failed; stop() raises."""
+        return self._dropped_count > 0 or self._stream_error is not None
 
     def start(self) -> None:
         """Start logging."""
@@ -83,11 +84,12 @@ class DataLogger:
             with self._lock:
                 self._stopped = False
                 self._last_error = None
+                self._stream_error = None
                 self._dropped_count = 0
             self._stop_event.clear()
             be = resolve_backend(self._backend)
             try:
-                self._handle = be.subscribe(self._drfs, callback=self._on_reading)
+                self._handle = be.subscribe(self._drfs, callback=self._on_reading, on_error=self._on_error)
                 self._flush_thread = threading.Thread(target=self._flush_loop, daemon=True)
                 self._flush_thread.start()
             except BaseException:
@@ -120,6 +122,10 @@ class DataLogger:
                     with self._lock:
                         self._last_error = exc
                     logger.exception("Error stopping DataLogger subscription")
+                # Fallback in case the on_error callback was never delivered
+                with self._lock:
+                    if self._stream_error is None and self._handle.exc is not None:
+                        self._stream_error = self._last_error = self._handle.exc
             if self._flush_thread is not None:
                 if self._flush_thread is threading.current_thread():
                     error = RuntimeError("DataLogger cannot be stopped from its flush worker")
@@ -142,6 +148,7 @@ class DataLogger:
 
             with self._lock:
                 dropped = self._dropped_count
+                stream_error = self._stream_error
 
             if handle_error is not None:
                 raise RuntimeError("DataLogger subscription did not stop; writer left open") from handle_error
@@ -158,6 +165,9 @@ class DataLogger:
             self._closed = True
             self._handle = None
             self._flush_thread = None
+            if stream_error is not None:
+                also = f"; also dropped {dropped} readings" if dropped else ""
+                raise RuntimeError(f"DataLogger subscription failed; logging ended early{also}") from stream_error
             if dropped:
                 error = RuntimeError(f"Dropped {dropped} readings during DataLogger run (see last_error)")
                 raise error from self._last_error
@@ -167,6 +177,13 @@ class DataLogger:
             if self._stopped:
                 return
             self._buffer.append(reading)
+
+    def _on_error(self, exc: Exception, handle: SubscriptionHandle) -> None:
+        with self._lock:
+            if self._stream_error is None:
+                self._stream_error = exc
+            self._last_error = exc
+        logger.error("DataLogger subscription for %s failed; logging stopped: %s", self._drfs, exc)
 
     def _flush_loop(self) -> None:
         while not self._stop_event.wait(timeout=self._flush_interval):

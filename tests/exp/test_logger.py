@@ -93,6 +93,23 @@ class TestDataLogger:
             rows = list(csv.reader(f))
         assert len(rows) == 2  # header + 1 reading
 
+    def test_subscription_failure_is_reported(self, fake, tmp_path):
+        path = tmp_path / "log.csv"
+        dl = DataLogger(["M:OUTTMP@p,1000"], writer=CsvWriter(path), flush_interval=999, backend=fake)
+        dl.start()
+        fake.emit_reading("M:OUTTMP@p,1000", 72.5)
+        err = ConnectionError("proxy restarted")
+        fake.emit_error(err)
+
+        assert not dl.running
+        assert dl.failed
+        assert dl.last_error is err
+        with pytest.raises(RuntimeError, match="subscription failed") as info:
+            dl.stop()
+        assert info.value.__cause__ is err
+        with path.open(newline="") as f:
+            assert len(list(csv.reader(f))) == 2  # data received before the failure is kept
+
     def test_final_flush_retries_then_reports_drop(self, fake):
         class FailingWriter:
             def __init__(self):

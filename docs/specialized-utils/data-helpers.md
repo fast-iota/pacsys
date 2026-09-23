@@ -402,11 +402,11 @@ dl.stop()  # Flushes remaining data and closes the writer
 | Property | Type | Description |
 |----------|------|-------------|
 | `running` | `bool` | Whether the logger is actively collecting |
-| `last_error` | `Exception \| None` | Last write error, if any |
-| `failed` | `bool` | True once a batch was dropped after exhausting write retries; logging continues |
+| `last_error` | `Exception \| None` | Last write or subscription error, if any |
+| `failed` | `bool` | True once a batch was dropped after exhausting write retries (logging continues) or the subscription failed (logging stops) |
 | `dropped_count` | `int` | Readings lost so far (sticky until the next `start()`) |
 
-A dropped batch is never silent: `stop()` (and context-manager exit) raises `RuntimeError` naming the count, with `last_error` as the cause.
+A dropped batch or failed subscription is never silent: `stop()` (and context-manager exit) flushes what was received, closes the writer, and raises `RuntimeError` chained to the subscription error or, for drops, to `last_error`.
 
 Failed writes are retried up to 3 times before the batch is dropped. Errors are logged and available via `last_error`.
 If a batch is dropped after `stop()` begins, shutdown closes the writer and raises
