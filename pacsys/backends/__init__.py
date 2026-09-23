@@ -137,6 +137,7 @@ class Backend(ABC):
         Raises:
             ValueError: If DRF syntax is invalid
             DeviceError: If the read fails (no usable data)
+            ReadError: On transport-level failures (connection refused, timeout, etc.)
         """
 
     @abstractmethod

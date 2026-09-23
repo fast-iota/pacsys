@@ -22,7 +22,7 @@ import numpy as np
 import pytest
 
 from pacsys.device import ArrayDevice, Device, ScalarDevice, TextDevice
-from pacsys.errors import DeviceError
+from pacsys.errors import DeviceError, ReadError
 from pacsys.testing import FakeBackend
 from pacsys.types import BasicControl, Reading, ValueType, WriteResult
 from pacsys.verify import Verify
@@ -1143,6 +1143,16 @@ class TestVerifyReadbackError:
         assert result.verified is False
         assert result.readback is None
         assert result.attempts == 2
+
+    def test_readback_read_error_keeps_retrying(self, mock_backend):
+        """Backends raise ReadError on readback timeout/transport failure - each counts as a failed attempt."""
+        mock_backend.read.side_effect = ReadError([], "Request timeout")
+        dev = Device("M:OUTTMP", backend=mock_backend)
+        result = dev.write(72.5, verify=Verify(initial_delay=0, retry_delay=0, max_attempts=3))
+        assert result.verified is False
+        assert result.attempts == 3
+        assert mock_backend.read.call_count == 3
+        assert "Request timeout" in result.message
 
     def test_readback_error_then_success(self, mock_backend):
         """If first readback fails but second succeeds, result is verified=True."""

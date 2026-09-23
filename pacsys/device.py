@@ -332,18 +332,18 @@ class Device(_DeviceBase):
 
     def _verify_readback(self, result: WriteResult, plan: _WritePlan, timeout: float | None) -> WriteResult:
         """Run the readback verification loop after a write."""
-        from pacsys.errors import DeviceError
+        from pacsys.errors import DeviceError, ReadError
 
         assert plan.verify is not None and plan.read_drf is not None
         v, backend = plan.verify, self._get_backend()
         time.sleep(v.initial_delay)
         last_readback: Value | None = None
-        last_error: DeviceError | None = None
+        last_error: DeviceError | ReadError | None = None
         for attempt in range(1, v.max_attempts + 1):
             try:
                 last_readback = plan.normalize(backend.read(plan.read_drf, timeout))
                 last_error = None
-            except DeviceError as e:
+            except (DeviceError, ReadError) as e:  # timeouts/transport failures count as failed attempts
                 last_error = e
             else:
                 if plan.matches(last_readback):

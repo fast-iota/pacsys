@@ -474,6 +474,7 @@ def read(device: DeviceSpec, timeout: float | None = None) -> Value:
     Raises:
         ValueError: If DRF syntax is invalid
         DeviceError: If the read returns no usable data
+        ReadError: On transport-level failures (connection refused, timeout, etc.)
 
     Note:
         Even if DRF specifies periodic event (@p,1000), only FIRST reading
