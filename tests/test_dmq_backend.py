@@ -27,7 +27,9 @@ from pika.exceptions import ChannelWrongStateError
 
 from pacsys.acnet.errors import ERR_RETRY, ERR_TIMEOUT, FACILITY_DMQ
 from pacsys.backends.dmq import (
+    MAX_IDLE_TIME,
     DMQBackend,
+    _DMQSubscriptionHandle,
     _ReadJob,
     _reply_to_reading,
     _resolve_reply,
@@ -615,6 +617,51 @@ class TestDMQSetupRaces:
         backend._complete_read(job)
 
         assert job.heartbeat_handle is None and not conn.ioloop._timers
+
+    def test_missing_server_heartbeat_fails_subscription_and_write_session(self):
+        """The server disposes jobs silently (restart, broker reconnect); MAX_IDLE_TIME without "Q" must
+        fail the subscription and close cached write sessions instead of leaving them silently dead."""
+        backend, conn = self._bare_backend()
+        backend._write_sessions = {}
+        on_error = mock.MagicMock()
+        handle = _DMQSubscriptionHandle(backend, "sub-1", [TEMP_DEVICE], is_callback_mode=False, on_error=on_error)
+        sub = _SelectSubscription(
+            sub_id="sub-1", drfs=[TEMP_DEVICE], drf_to_idx={}, drf_to_all_indices={}, handle=handle,
+            callback=None, exchange_name="ex",
+        )  # fmt: skip
+        backend._subscriptions[sub.sub_id] = sub
+        backend._open_channel_for_subscription(sub, b"", {})
+        conn.ioloop._process_callbacks()
+        assert sub.channel is not None and sub.heartbeat_handle is not None
+
+        # A "Q" inside the window keeps the job alive
+        sub.last_server_heartbeat -= MAX_IDLE_TIME + 1
+        backend._on_message(sub, sub.channel, mock.MagicMock(routing_key="Q", delivery_tag=1), None, b"")
+        conn.ioloop._timers.pop(sub.heartbeat_handle)()
+        assert sub.heartbeat_handle in conn.ioloop._timers and not handle.stopped
+
+        sub.last_server_heartbeat -= MAX_IDLE_TIME + 1
+        conn.ioloop._timers.pop(sub.heartbeat_handle)()
+        assert handle.stopped and isinstance(handle.exc, ConnectionError)
+        backend._dispatcher.dispatch_error.assert_called_once_with(on_error, handle.exc, handle)
+        assert sub.sub_id not in backend._subscriptions and not sub.channel.is_open
+        assert sub.heartbeat_handle is None and not conn.ioloop._timers
+
+        # Cached write session: in-flight writes fail now instead of after the full timeout
+        channel = MockSelectChannel(conn, [], [])
+        session = _WriteSession(
+            device=TEMP_DEVICE, init_drf=f"{TEMP_DEVICE}.SETTING@N", channel=channel, exchange_name="wx",
+            queue_name="wq", gss_context=None, last_used=time.monotonic(), init_confirmed=True,
+        )  # fmt: skip
+        tracker = _WriteCompletionTracker(total_devices=1)
+        results = [None]
+        session.pending["corr"] = (0, TEMP_DEVICE, results, tracker)
+        backend._write_sessions[session.init_drf] = session
+        backend._schedule_write_session_heartbeat(session)
+        session.last_server_heartbeat -= MAX_IDLE_TIME + 1
+        conn.ioloop._timers.pop(session.heartbeat_handle)()
+        assert session.init_drf not in backend._write_sessions and not channel.is_open
+        assert tracker.done_event.is_set() and results[0].error_code == ERR_RETRY
 
     def test_connection_loss_fails_in_flight_read_promptly(self):
         with _mock_dmq_backend(replies=[]) as backend:  # no replies: would otherwise wait the full budget

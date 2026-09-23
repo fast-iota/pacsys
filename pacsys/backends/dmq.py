@@ -105,6 +105,9 @@ DMQ_SERVICE_PRINCIPAL = "daeset/bd/dmq.fnal.gov@FNAL.GOV"
 # Server-job heartbeat interval (seconds); the server disposes jobs idle for
 # MAX_IDLE_TIME (30 s) and data traffic does not count as activity
 HEARTBEAT_INTERVAL = 5.0
+# Server "Q" heartbeat silence (seconds) after which a job is presumed disposed
+# (reference client: rabbit/ClientJob.HeartbeatTask, Config.MAX_IDLE_TIME)
+MAX_IDLE_TIME = 30.0
 
 # Default write session idle TTL (seconds) - close session if unused for this long
 DEFAULT_WRITE_SESSION_TTL = 600.0
@@ -215,6 +218,7 @@ class _WriteSession:
     )
     init_timer: "_Timeout | None" = None  # safety timer if PENDING never arrives
     init_message_id: str = ""  # AMQP message_id of the INIT (job-error correlation)
+    last_server_heartbeat: float = field(default_factory=time.monotonic)  # last "Q" (or job start)
 
 
 @dataclass
@@ -501,6 +505,7 @@ class _SelectSubscription:
     setup_complete: threading.Event = field(default_factory=threading.Event)
     setup_error: Exception | None = None
     init_message_id: str = ""  # AMQP message_id of the INIT (job-error correlation)
+    last_server_heartbeat: float = field(default_factory=time.monotonic)  # last "Q" (or job start)
 
 
 class DMQBackend(Backend):
@@ -1100,17 +1105,25 @@ class DMQBackend(Backend):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _schedule_heartbeat(
-        self, owner: "_ReadJob | _WriteSession | _SelectSubscription", alive: Callable[[], bool], label: str
+        self,
+        owner: "_ReadJob | _WriteSession | _SelectSubscription",
+        alive: Callable[[], bool],
+        label: str,
+        on_idle: Callable[[], None] | None = None,
     ) -> None:
         """Schedule a periodic server-job heartbeat on ``owner.channel`` (IO thread).
 
         Re-arms itself until ``alive()`` is False; ``_cancel_heartbeat`` stops it early.
+        With ``on_idle``, also checks server liveness: the server disposes jobs without
+        notifying the client (broker reconnect, restart), so ``MAX_IDLE_TIME`` without a
+        "Q" heartbeat calls ``on_idle()`` and stops re-arming.
         """
         conn = self._select_connection
         if conn is None or not conn.is_open or not alive():
             return
 
         def send_heartbeat():
+            owner.heartbeat_handle = None  # fired
             if not alive() or owner.channel is None or not owner.channel.is_open:
                 return
             try:
@@ -1118,7 +1131,13 @@ class DMQBackend(Backend):
                 logger.debug("Sent heartbeat for %s", label)
             except AMQPError as e:
                 logger.warning("Heartbeat failed for %s: %s", label, e)
-            self._schedule_heartbeat(owner, alive, label)
+            if on_idle is not None:
+                idle = time.monotonic() - cast("_WriteSession | _SelectSubscription", owner).last_server_heartbeat
+                if idle > MAX_IDLE_TIME:
+                    logger.error("No DMQ server heartbeat for %s in %.1fs - server job is gone", label, idle)
+                    on_idle()
+                    return
+            self._schedule_heartbeat(owner, alive, label, on_idle)
 
         owner.heartbeat_handle = conn.ioloop.call_later(HEARTBEAT_INTERVAL, send_heartbeat)
 
@@ -1141,6 +1160,9 @@ class DMQBackend(Backend):
             session,
             lambda: self._write_sessions.get(session.init_drf) is session,
             f"write session {session.device}",
+            on_idle=lambda: self._close_write_session(
+                session.init_drf, reason="DMQ server heartbeat lost", expected=session
+            ),
         )
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -1653,9 +1675,9 @@ class DMQBackend(Backend):
         """Handle write response (IO thread)."""
         channel.basic_ack(cast(int, method.delivery_tag))
 
-        # Skip heartbeats (server sends Q routing key periodically)
         rk = cast(str, method.routing_key)
         if rk == "Q":
+            session.last_server_heartbeat = time.monotonic()
             return
 
         # Extract correlation_id early (before unmarshal) so we can fail
@@ -2331,7 +2353,15 @@ class DMQBackend(Backend):
                 auto_ack=False,
             )
 
-            self._schedule_heartbeat(sub, lambda: not sub.handle._stopped, f"sub {sub.sub_id[:8]}")
+            sub.last_server_heartbeat = time.monotonic()  # idle window starts with the job
+            self._schedule_heartbeat(
+                sub,
+                lambda: not sub.handle._stopped,
+                f"sub {sub.sub_id[:8]}",
+                on_idle=lambda: self._fail_subscription(
+                    sub, ConnectionError(f"DMQ server heartbeat lost for {MAX_IDLE_TIME:.0f}s (server job disposed)")
+                ),
+            )
             sub.setup_complete.set()
             logger.info("Subscription %s setup complete", sub.sub_id[:8])
 
@@ -2407,6 +2437,8 @@ class DMQBackend(Backend):
         body: bytes,
     ) -> None:
         """Handle incoming message for subscription (runs in IO thread)."""
+        if method.routing_key == "Q":
+            sub.last_server_heartbeat = time.monotonic()
         result = _resolve_reply(
             cast(str, method.routing_key), body, sub.drfs, sub.drf_to_idx, properties, sub.init_message_id
         )
