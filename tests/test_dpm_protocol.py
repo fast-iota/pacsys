@@ -61,6 +61,16 @@ def test_scalar_and_text_parity():
         assert vars(unmarshal_reply(_Cursor(msg))) == vars(unmarshal_reply(iter(msg)))
 
 
+def test_non_ascii_strings_decode_as_latin1():
+    """Server marshals strings as ISO-8859-1: one byte per char, high bytes are not UTF-8."""
+    d = DeviceInfo_reply()
+    d.ref_id, d.di, d.name, d.description, d.units = 3, 1234, "M:OUTTMP", "Temp \u00b11\u00b0", "\u00b5A"
+    msg = bytes(d.marshal())
+    assert b"\xb5A" in msg and b"Temp \xb11\xb0" in msg
+    for src in (iter(msg), _Cursor(msg)):
+        assert vars(unmarshal_reply(src)) == vars(d)
+
+
 @pytest.mark.parametrize("cut", [1, 5, 40])
 def test_truncated_array_raises_protocol_error(cut):
     msg = _array_msg(100)

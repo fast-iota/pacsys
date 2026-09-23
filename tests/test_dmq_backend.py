@@ -47,6 +47,7 @@ from pacsys.backends.dmq_protocol import (
     IntegerSample_reply,
     StringArraySample_reply,
     StringSample_reply,
+    unmarshal_reply,
 )
 from pacsys.drf_utils import prepare_for_write
 from pacsys.errors import AuthenticationError, DeviceError, ReadError
@@ -1335,6 +1336,18 @@ class TestDMQWriteConnectionLoss:
             result = holder["results"][0]
             assert not result.success
             assert result.error_code == ERR_TIMEOUT
+
+
+def test_non_ascii_strings_decode_as_latin1():
+    """Server marshals strings as ISO-8859-1: one byte per char, high bytes are not UTF-8."""
+    d = DoubleSample_reply()
+    d.value, d.time, d.unit = 1.5, TIMESTAMP_MILLIS, "\u00b0C"
+    s = StringSample_reply()
+    s.value, s.time = "\u00b5A \u00b11%", TIMESTAMP_MILLIS
+    for reply, wire in ((d, b"\xb0C"), (s, b"\xb5A \xb11%")):
+        msg = bytes(reply.marshal())
+        assert wire in msg
+        assert unmarshal_reply(iter(msg)) == reply
 
 
 # =============================================================================

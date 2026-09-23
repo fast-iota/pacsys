@@ -1870,7 +1870,8 @@ def unmarshal_double(ii):
 
 
 def unmarshal_string(ii):
-    return bytearray(islice(ii, consumeRawInt(ii, 0x40))).decode("utf-8")
+    # Java server marshals strings as ISO-8859-1; marshal_string writes the same
+    return bytearray(islice(ii, consumeRawInt(ii, 0x40))).decode("latin-1")
 
 
 def unmarshal_binary(ii):

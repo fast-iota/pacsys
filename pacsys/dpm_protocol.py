@@ -1257,8 +1257,9 @@ def unmarshal_double(it):
 
 
 def unmarshal_string(ii):
+    # Java server marshals strings as ISO-8859-1; marshal_string writes the same
     n = consumeRawInt(ii, 0x40)
-    return (ii.take(n) if isinstance(ii, _Cursor) else bytes(islice(ii, n))).decode("utf-8")
+    return (ii.take(n) if isinstance(ii, _Cursor) else bytes(islice(ii, n))).decode("latin-1")
 
 
 def unmarshal_binary(ii):
