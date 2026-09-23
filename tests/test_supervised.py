@@ -7,6 +7,7 @@ from dataclasses import replace
 from unittest import mock
 
 import grpc
+import numpy as np
 import pytest
 
 from pacsys._proto.controls.service.DAQ.v1 import DAQ_pb2, DAQ_pb2_grpc
@@ -16,7 +17,7 @@ from pacsys.supervised import (
     SupervisedServer,
     ValueRangePolicy,
 )
-from pacsys.supervised._conversions import reading_to_proto_reply, write_result_to_proto_status
+from pacsys.supervised._conversions import reading_to_proto_replies, write_result_to_proto_status
 from pacsys.supervised._event_classify import all_oneshot, is_oneshot_event
 from pacsys.supervised._policies import Policy, PolicyDecision, RequestContext
 from pacsys.supervised._server import _DAQServicer
@@ -62,6 +63,12 @@ class TestEventClassify:
 
     def test_all_oneshot_false_bare(self):
         assert not all_oneshot(["M:OUTTMP@I", "G:AMANDA"])
+
+    @pytest.mark.parametrize(
+        "extra", ["LOGGER:1700000000000:1700000060000", "LOGGERDURATION:60000", "LOGGERSINGLE:1700000000000"]
+    )
+    def test_historical_is_oneshot(self, extra):
+        assert all_oneshot([f"M:OUTTMP<-{extra}", "G:AMANDA@I"])
 
     def test_all_oneshot_empty(self):
         assert all_oneshot([])
@@ -427,6 +434,77 @@ class TestStreamingRead:
 
 
 # ── Set Tests ─────────────────────────────────────────────────────────────
+
+
+_LOGGER_DRF = "M:OUTTMP<-LOGGER:1700000000000:1700000060000"
+_T0_US = 1_700_000_000_000_000
+
+
+class TestForwardingRoundTrip:
+    """Values the pacsys gRPC client must read back unchanged through the proxy."""
+
+    @pytest.fixture
+    def client(self, server):
+        from pacsys.backends.grpc_backend import GRPCBackend
+
+        with GRPCBackend(host="127.0.0.1", port=server.port, auth=None, timeout=3.0) as c:
+            yield c
+
+    @pytest.mark.parametrize(
+        "data",
+        [np.arange(1000, dtype=float), np.arange(12, dtype=float).reshape(4, 3), np.array([], dtype=float)],
+        ids=["scalar-multichunk", "array-records", "empty"],
+    )
+    def test_logger_read(self, fake_backend, client, data):
+        micros = _T0_US + np.arange(len(data), dtype=np.int64) * 1_000_123
+        fake_backend.set_reading(_LOGGER_DRF, {"data": data, "micros": micros}, value_type=ValueType.TIMED_SCALAR_ARRAY)
+        logged, amanda = client.get_many([_LOGGER_DRF, "G:AMANDA@I"])
+        assert logged.ok and logged.value_type == ValueType.TIMED_SCALAR_ARRAY, logged
+        np.testing.assert_array_equal(logged.value["data"], data)
+        np.testing.assert_array_equal(logged.value["micros"], micros)
+        assert amanda.value == pytest.approx(42.0)
+
+    def test_grpc_basic_status_dict(self, fake_backend, client):
+        status = {"On": "Yes", "Ready": "No", "Shutter": "Closed"}
+        fake_backend.set_reading("Z:ACLTST.STATUS@I", status, value_type=ValueType.BASIC_STATUS)
+        r = client.get("Z:ACLTST.STATUS@I")
+        assert r.ok and r.value_type == ValueType.BASIC_STATUS and r.value == status
+
+    def test_unencodable_reading_fails_only_its_index(self, fake_backend, client):
+        fake_backend.set_reading("M:BADARR@I", np.zeros((2, 2)), value_type=ValueType.SCALAR_ARRAY)
+        bad, good = client.get_many(["M:BADARR@I", "G:AMANDA@I"])
+        assert not bad.ok and "Cannot encode reading" in (bad.message or "")
+        assert good.value == pytest.approx(42.0)
+
+    def test_unencodable_logger_reading_is_error_not_hang(self, fake_backend, client):
+        bad = {"data": np.arange(3.0), "micros": np.arange(2, dtype=np.int64)}
+        fake_backend.set_reading(_LOGGER_DRF, bad, value_type=ValueType.TIMED_SCALAR_ARRAY)
+        r = client.get(_LOGGER_DRF)
+        assert not r.ok and "Cannot encode reading" in (r.message or "")
+
+    def test_stream_survives_unencodable_reading(self, fake_backend, server):
+        drf = "M:OUTTMP@p,1000"
+        with _make_channel(server) as ch:
+            stream = DAQ_pb2_grpc.DAQStub(ch).Read(DAQ_pb2.ReadingList(drf=[drf]), timeout=3.0)
+
+            def emit():
+                _wait_subscribed(fake_backend)
+                timed = {"data": np.array([1.0, 2.0]), "micros": np.array([_T0_US, _T0_US + 1], dtype=np.int64)}
+                fake_backend.emit_reading(drf, timed, value_type=ValueType.TIMED_SCALAR_ARRAY)
+                fake_backend.emit_reading(drf, np.zeros((2, 2)), value_type=ValueType.SCALAR_ARRAY)
+                fake_backend.emit_reading(drf, 7.0)
+
+            emitter = threading.Thread(target=emit, daemon=True)
+            emitter.start()
+            replies = [next(stream) for _ in range(3)]
+            stream.cancel()
+            emitter.join(timeout=2.0)
+
+        timed, bad, scalar = replies
+        assert [rd.data.scalar for rd in timed.readings.reading] == [1.0, 2.0]
+        assert [rd.timestamp.nanos for rd in timed.readings.reading] == [0, 1000]
+        assert bad.WhichOneof("value") == "status" and bad.status.status_code < 0
+        assert scalar.readings.reading[0].data.scalar == pytest.approx(7.0)
 
 
 class TestSet:
@@ -1242,10 +1320,15 @@ class TestBackendExceptionMapping:
 # ── Conversion Edge Case Tests ───────────────────────────────────────────
 
 
+def _single_reply(reading, index):
+    (reply,) = reading_to_proto_replies(reading, index)
+    return reply
+
+
 class TestReadingToProtoReply:
     def test_error_reading(self):
         reading = Reading(drf="M:BAD", facility_code=1, error_code=-42, message="broken")
-        reply = reading_to_proto_reply(reading, 3)
+        reply = _single_reply(reading, 3)
         assert reply.index == 3
         assert reply.WhichOneof("value") == "status"
         assert reply.status.facility_code == 1
@@ -1254,7 +1337,7 @@ class TestReadingToProtoReply:
 
     def test_error_reading_no_message(self):
         reading = Reading(drf="M:BAD", error_code=-1)
-        reply = reading_to_proto_reply(reading, 0)
+        reply = _single_reply(reading, 0)
         assert reply.WhichOneof("value") == "status"
         assert reply.status.message == ""
 
@@ -1263,7 +1346,7 @@ class TestReadingToProtoReply:
 
         ts = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
         reading = Reading(drf="M:OK", value_type=ValueType.SCALAR, value=42.0, timestamp=ts)
-        reply = reading_to_proto_reply(reading, 0)
+        reply = _single_reply(reading, 0)
         assert reply.WhichOneof("value") == "readings"
         rd = reply.readings.reading[0]
         assert rd.data.scalar == pytest.approx(42.0)
@@ -1271,32 +1354,33 @@ class TestReadingToProtoReply:
 
     def test_success_without_timestamp(self):
         reading = Reading(drf="M:OK", value_type=ValueType.SCALAR, value=10.0, timestamp=None)
-        reply = reading_to_proto_reply(reading, 0)
+        reply = _single_reply(reading, 0)
         rd = reply.readings.reading[0]
         assert rd.data.scalar == pytest.approx(10.0)
         assert rd.timestamp.seconds == 0  # unset proto timestamp
 
     def test_success_with_none_value(self):
         reading = Reading(drf="M:OK", value_type=ValueType.SCALAR, value=None, error_code=0)
-        reply = reading_to_proto_reply(reading, 0)
-        # ok=False because value is None, so status oneof is used
-        assert reply.WhichOneof("value") == "status"
+        # ok=False because value is None; a nonzero status keeps logger clients from reading it as a terminator
+        for complete_history in (False, True):
+            (reply,) = reading_to_proto_replies(reading, 0, complete_history=complete_history)
+            assert reply.WhichOneof("value") == "status" and reply.status.status_code < 0
 
     def test_success_message_propagated(self):
         reading = Reading(drf="M:OK", value_type=ValueType.SCALAR, value=1.0, message="info")
-        reply = reading_to_proto_reply(reading, 0)
+        reply = _single_reply(reading, 0)
         rd = reply.readings.reading[0]
         assert rd.status.message == "info"
 
     def test_success_no_message(self):
         reading = Reading(drf="M:OK", value_type=ValueType.SCALAR, value=1.0)
-        reply = reading_to_proto_reply(reading, 0)
+        reply = _single_reply(reading, 0)
         rd = reply.readings.reading[0]
         assert rd.status.message == ""
 
     def test_facility_code_propagated(self):
         reading = Reading(drf="M:OK", value_type=ValueType.SCALAR, value=1.0, facility_code=16)
-        reply = reading_to_proto_reply(reading, 0)
+        reply = _single_reply(reading, 0)
         rd = reply.readings.reading[0]
         assert rd.status.facility_code == 16
 

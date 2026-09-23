@@ -15,12 +15,12 @@ from pacsys.aio._backends import AsyncBackend
 from pacsys.backends import Backend
 from pacsys.backends.grpc_backend import _proto_value_to_python
 from pacsys.drf3 import parse_request
-from pacsys.drf_utils import get_device_name, prepare_for_write
+from pacsys.drf_utils import get_device_name, is_chunked_historical_drf, prepare_for_write
 from pacsys.errors import AuthenticationError
 from pacsys.types import Reading, Value
 
 from ._audit import AuditLog
-from ._conversions import reading_to_proto_reply, write_result_to_proto_status
+from ._conversions import reading_to_proto_replies, write_result_to_proto_status
 from ._event_classify import all_oneshot
 from ._policies import Policy, PolicyDecision, RequestContext, evaluate_policies
 
@@ -233,9 +233,10 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
                 else:
                     readings = await asyncio.to_thread(self._backend.get_many, drfs)
                 for i, reading in enumerate(readings):
-                    reply_proto = reading_to_proto_reply(reading, i)
-                    self._audit_response(seq, peer, "Read", reply_proto)
-                    yield reply_proto
+                    complete_history = is_chunked_historical_drf(drfs[i])
+                    for reply_proto in reading_to_proto_replies(reading, i, complete_history=complete_history):
+                        self._audit_response(seq, peer, "Read", reply_proto)
+                        yield reply_proto
                 elapsed = (time.monotonic() - start) * 1000
                 logger.info("rpc=Read peer=%s elapsed_ms=%.1f items=%d", peer, elapsed, len(readings))
             else:
@@ -258,9 +259,9 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
                                 if indices is None:
                                     raise ValueError(f"Backend returned unexpected DRF {reading.drf!r}")
                                 for idx in indices:
-                                    reply_proto = reading_to_proto_reply(reading, idx)
-                                    self._audit_response(seq, peer, "Read", reply_proto)
-                                    yield reply_proto
+                                    for reply_proto in reading_to_proto_replies(reading, idx):
+                                        self._audit_response(seq, peer, "Read", reply_proto)
+                                        yield reply_proto
                                     item_count += 1
                             if handle.stopped:
                                 break
@@ -319,9 +320,9 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
                             if indices is None:
                                 raise ValueError(f"Backend returned unexpected DRF {reading.drf!r}")
                             for idx in indices:
-                                reply_proto = reading_to_proto_reply(reading, idx)
-                                self._audit_response(seq, peer, "Read", reply_proto)
-                                yield reply_proto
+                                for reply_proto in reading_to_proto_replies(reading, idx):
+                                    self._audit_response(seq, peer, "Read", reply_proto)
+                                    yield reply_proto
                                 item_count += 1
                     finally:
                         await asyncio.to_thread(handle.stop)

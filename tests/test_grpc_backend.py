@@ -436,13 +436,13 @@ class TestWarningData:
 
     @pytest.mark.parametrize("streaming", [False, True])
     def test_supervised_warning_keeps_value(self, backend_with_mock_stub, streaming):
-        from pacsys.supervised._conversions import reading_to_proto_reply
+        from pacsys.supervised._conversions import reading_to_proto_replies
 
         backend, stub = backend_with_mock_stub
         original = Reading(
             drf="M:OUTTMP", value=12.5, value_type=ValueType.SCALAR, facility_code=66, error_code=1, message="warning"
         )
-        stub.Read.return_value = AsyncMockIterator([reading_to_proto_reply(original, 0)])
+        stub.Read.return_value = AsyncMockIterator(reading_to_proto_replies(original, 0))
         if streaming:
             with backend.subscribe([original.drf]) as handle:
                 readings = [r for r, _h in handle.readings(timeout=0.2)]

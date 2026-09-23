@@ -394,10 +394,10 @@ The server automatically detects one-shot vs streaming requests based on the DRF
 
 | Event | Behavior |
 |-------|----------|
-| `@I`, `@N` | One-shot: uses `get_many()`, returns all results |
+| `@I`, `@N`, or a logger source (`<-LOGGER`, `<-LOGGERDURATION`, `<-LOGGERSINGLE`) | One-shot: uses `get_many()`, returns all results |
 | Everything else (no event, `@U`, `@P`, `@Q`, `@E`, `@S`) | Streaming: uses `subscribe()`, yields until client disconnects |
 
-Bare DRFs (no event) and `@U` resolve to the device's default event, which is typically `@p,1000` — so they are routed through streaming.
+Bare DRFs (no event) and `@U` resolve to the device's default event, which is typically `@p,1000` — so they are routed through streaming. Logger results are forwarded the way DPM sends them: in chunks followed by an empty terminator reply. If the server cannot encode a reading, it sends an error status for that request index and keeps the RPC open.
 
 ```python
 # One-shot (returns immediately)
