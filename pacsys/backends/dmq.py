@@ -409,9 +409,8 @@ def _resolve_reply(
 
     Shared by read and subscription message handlers.
     Returns (reply, idx, ref_id), or (reply, None, None) for a job-level
-    INIT failure (ErrorSample on exact routing key "R" with no ref_id,
-    correlated to the INIT message_id), or None if the message should be
-    skipped.
+    failure (ErrorSample on routing key "R" or "R.null" with no ref_id),
+    or None if the message should be skipped.
     """
     if routing_key == "Q":
         return None
@@ -442,11 +441,12 @@ def _resolve_reply(
     elif routing_key.startswith("R."):
         idx = drf_to_idx.get(routing_key[2:])
     if idx is None:
-        # Job-level INIT failure: the server publishes ErrorSample on exact
-        # "R" with no ref_id and correlationId = INIT message_id
-        # (ServerJobManager.sendStatus). Accept an empty correlation id -- the
-        # reply queue is private to this job.
-        if routing_key == "R" and isinstance(reply, ErrorSample_reply) and not ref_id:
+        # Job-level failure, no ref_id: INIT failures arrive on exact "R" with
+        # correlationId = INIT message_id (ServerJobManager.sendStatus);
+        # job-construction failures (BrokenReadingJob) on "R.null" with no
+        # correlationId (ServerReadingJob.sendReading with request == null).
+        # Accept an empty correlation id -- the reply queue is private to this job.
+        if routing_key in ("R", "R.null") and isinstance(reply, ErrorSample_reply) and not ref_id:
             corr_id = getattr(properties, "correlation_id", None)
             if not corr_id or corr_id == init_message_id:
                 return reply, None, None
@@ -911,7 +911,7 @@ class DMQBackend(Backend):
             return
         reply, idx, _ref_id = result
         if idx is None:
-            # Job-level INIT failure: fail all unfilled indices and the job itself
+            # Job-level failure: fail all unfilled indices and the job itself
             error = DeviceError(
                 drf=", ".join(job.drfs),
                 facility_code=reply.facilityCode,
@@ -2371,8 +2371,9 @@ class DMQBackend(Backend):
         sub.handle._signal_error(error)
         if sub.handle._on_error is not None:
             self._dispatcher.dispatch_error(sub.handle._on_error, error, sub.handle)
-        # Close channel -- no DROP, the server never created the job
         if sub.channel is not None and sub.channel.is_open:
+            # DROP releases a BrokenReadingJob ("R.null"); a no-op after an INIT failure
+            self._send_drop(sub.channel, sub.exchange_name)
             if sub.consumer_tag is not None:
                 try:
                     sub.channel.basic_cancel(sub.consumer_tag)
@@ -2414,7 +2415,7 @@ class DMQBackend(Backend):
             return
         reply, idx, _ref_id = result
         if idx is None:
-            # Job-level INIT failure: fail the whole subscription
+            # Job-level failure: fail the whole subscription
             error = DeviceError(
                 drf=", ".join(sub.drfs),
                 facility_code=reply.facilityCode,

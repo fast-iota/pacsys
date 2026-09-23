@@ -1159,6 +1159,37 @@ class TestDMQJobLevelErrors:
             assert handle.stopped
             assert handle.exc is not None
 
+    # BrokenReadingJob: construction errors are published on "R.null" with no correlationId
+    def test_get_many_broken_job_fails_all_devices(self):
+        error = make_error_reply(facility_code=FACILITY_DMQ, error_number=-98, message="Invalid request")
+        with _mock_dmq_backend(replies=[error], routing_keys=["R.null"]) as backend:
+            start = time.monotonic()
+            with pytest.raises(ReadError) as exc_info:
+                backend.get_many([TEMP_DEVICE, TEMP_DEVICE_2], timeout=5.0)
+            assert time.monotonic() - start < 2.0
+            readings = exc_info.value.readings
+            assert [(r.error_code, r.message) for r in readings] == [(-98, "Invalid request")] * 2
+
+    def test_subscribe_broken_job_signals_error(self):
+        error = make_error_reply(facility_code=FACILITY_DMQ, error_number=-98, message="Invalid request")
+        errors = []
+        err_event = threading.Event()
+
+        def on_err(exc, handle):
+            errors.append(exc)
+            err_event.set()
+
+        with _mock_dmq_backend(replies=[error], routing_keys=["R.null"]) as backend:
+            try:
+                handle = backend.subscribe([TEMP_DEVICE], callback=lambda r, h: None, on_error=on_err)
+            except DeviceError as e:
+                assert e.error_code == -98
+                return
+            assert err_event.wait(2.0), "on_error was never called for broken job"
+            assert isinstance(errors[0], DeviceError) and errors[0].error_code == -98
+            assert handle.stopped
+            assert handle.exc is not None
+
     def test_write_init_failure_returns_server_error(self):
         with _init_fail_backend() as backend:
             start = time.monotonic()
