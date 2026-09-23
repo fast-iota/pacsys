@@ -412,7 +412,11 @@ def _aggregate_proto_readings(reading_list, drf: str, now: datetime) -> Reading:
 
 
 def _merge_logger_readings(chunks: list[Reading], drf: str) -> Reading:
-    """Merge multiple logger chunk Readings into a single TIMED_SCALAR_ARRAY."""
+    """Merge multiple logger chunk Readings into a single TIMED_SCALAR_ARRAY.
+
+    Array devices arrive as one scalarArr record per reply (2-D chunk data); records
+    must share one length (DataLoggerFetchJob can send a shorter final record).
+    """
     warning: tuple[int, int, str | None] = (0, 0, None)
     for r in chunks:
         if not r.ok:
@@ -430,6 +434,11 @@ def _merge_logger_readings(chunks: list[Reading], drf: str) -> Reading:
             all_micros.append(r.value["micros"])
         elif isinstance(r.value, np.ndarray):
             all_data.append(r.value)
+
+    if any(d.ndim == 2 for d in all_data) and len({d.shape[1:] for d in all_data}) != 1:
+        message = "Array logger records have inconsistent lengths or mixed reply types"
+        logger.error("%s (device: %s, lengths: %s)", message, drf, sorted({d.shape[1:] for d in all_data}))
+        return Reading(drf=drf, facility_code=FACILITY_ACNET, error_code=ERR_RETRY, message=message, timestamp=first_ts)
 
     data = np.concatenate(all_data) if all_data else np.array([], dtype=float)
     return Reading(

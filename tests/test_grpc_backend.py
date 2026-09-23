@@ -1524,3 +1524,30 @@ class TestLoggerReadErrors:
         assert len(readings) == 1
         assert readings[0].ok
         assert len(readings[0].value["data"]) == 1
+
+    @pytest.mark.parametrize("last_len", [10, 5])
+    def test_array_logger_short_final_record(self, backend_with_mock_stub, last_len):
+        """DataLoggerFetchJob may send a shorter final array record; only that device fails."""
+        from pacsys.acnet.errors import ERR_RETRY, FACILITY_ACNET
+
+        backend, mock_stub = backend_with_mock_stub
+        replies = []
+        for n in (10, 10, last_len):
+            reply = DAQ_pb2.ReadingReply(index=0)
+            rd = reply.readings.reading.add()
+            rd.data.scalarArr.value.extend(range(n))
+            rd.timestamp.seconds = 1234567890
+            replies.append(reply)
+        terminator = DAQ_pb2.ReadingReply(index=0)
+        terminator.readings.SetInParent()
+        mock_stub.Read.return_value = AsyncMockIterator([*replies, terminator, make_reading_reply(1, scalar_value=1.5)])
+
+        readings = backend.get_many(["B:ARR[0:10]<-LOGGER:1700000000000:1700000060000", "M:OUTTMP"])
+
+        if last_len == 10:
+            assert readings[0].value_type == ValueType.TIMED_SCALAR_ARRAY
+            assert readings[0].value["data"].shape == (3, 10)
+            assert readings[0].value["micros"].shape == (3,)
+        else:
+            assert (readings[0].facility_code, readings[0].error_code) == (FACILITY_ACNET, ERR_RETRY)
+        assert readings[1].ok and readings[1].value == 1.5
