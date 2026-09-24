@@ -34,7 +34,7 @@ If the actual value doesn't match the expected type, `read()` raises `TypeError`
 
 ## Reading Properties
 
-Each property has a dedicated read method. All use `@I` (immediate) event.
+Each property has a dedicated read method. All use `@I` (immediate) event, except for historical logger sources (`<-LOGGER`, `<-LOGGERDURATION`, `<-LOGGERSINGLE`): these keep the device's event, or none, because the logger selects data by event.
 
 ```python
 dev = Device("M:OUTTMP")

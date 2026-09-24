@@ -1133,6 +1133,57 @@ class TestDeviceExtra:
         assert "<-" not in drf
 
 
+HISTORICAL_EXTRA_STRINGS = [
+    "LOGGER:1690000000:1690003600",
+    "LOGGERDURATION:60000",
+    "LOGGERSINGLE:ArkIv:1736942400:60",
+]
+
+
+class TestDeviceHistoricalEvent:
+    """Historical extras select logs by event: default stays default, explicit events are kept."""
+
+    @pytest.mark.parametrize("extra", HISTORICAL_EXTRA_STRINGS)
+    def test_default_event_not_injected(self, mock_backend, extra):
+        dev = Device(f"M:OUTTMP<-{extra}", backend=mock_backend)
+        dev.read()
+        assert mock_backend.read.call_args[0][0] == f"M:OUTTMP.READING<-{extra}"
+        dev.setting()
+        assert mock_backend.read.call_args[0][0] == f"M:OUTTMP.SETTING<-{extra}"
+        dev.get(prop="setting")
+        assert mock_backend.get.call_args[0][0] == f"M:OUTTMP.SETTING<-{extra}"
+
+    @pytest.mark.parametrize("extra", HISTORICAL_EXTRA_STRINGS)
+    def test_explicit_logger_event_preserved(self, mock_backend, extra):
+        dev = Device(f"M:OUTTMP@p,1000<-{extra}", backend=mock_backend)
+        dev.read()
+        assert mock_backend.read.call_args[0][0] == f"M:OUTTMP.READING@p,1000<-{extra}"
+        dev.get(prop="setting")
+        assert mock_backend.get.call_args[0][0] == f"M:OUTTMP.SETTING@p,1000<-{extra}"
+
+    def test_range_field_and_extra_params_preserved(self, mock_backend):
+        dev = Device("B:ARRDEV[0:1]<-LOGGERDURATION:60000", backend=mock_backend)
+        dev.read(field="raw")
+        assert mock_backend.read.call_args[0][0] == "B:ARRDEV.READING[0:1].RAW<-LOGGERDURATION:60000"
+        dev.get(prop="status", field="on")
+        assert mock_backend.get.call_args[0][0] == "B:ARRDEV.STATUS[0:1].ON<-LOGGERDURATION:60000"
+
+    def test_live_read_still_forces_immediate(self, mock_backend):
+        dev = Device("M:OUTTMP@p,1000<-FTP", backend=mock_backend)
+        dev.read()
+        assert mock_backend.read.call_args[0][0] == "M:OUTTMP.READING@I<-FTP"
+        dev.get(prop="setting")
+        assert mock_backend.get.call_args[0][0] == "M:OUTTMP.SETTING@I<-FTP"
+
+    def test_subscribe_override_and_write_event_unchanged(self, mock_backend):
+        extra = HISTORICAL_EXTRA_STRINGS[0]
+        dev = Device(f"M:OUTTMP<-{extra}", backend=mock_backend)
+        dev.subscribe(event="p,500")
+        assert mock_backend.subscribe.call_args[0][0] == [f"M:OUTTMP.READING@p,500<-{extra}"]
+        dev.write(1.0)
+        assert mock_backend.write.call_args[0][0] == f"M:OUTTMP.SETTING@N<-{extra}"
+
+
 class TestVerifyReadbackError:
     """Tests for verify readback when DeviceError occurs."""
 

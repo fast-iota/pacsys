@@ -34,18 +34,18 @@ class AsyncDevice(_DeviceBase):
 
     async def read(self, *, field: str | None = None, timeout: float | None = None) -> Value:
         """Read READING property."""
-        drf = self._build_drf(DRF_PROPERTY.READING, self._resolve_field(field, DRF_PROPERTY.READING), "I")
+        drf = self._read_drf(DRF_PROPERTY.READING, self._resolve_field(field, DRF_PROPERTY.READING))
         return await self._get_backend().read(drf, timeout)
 
     async def setting(self, *, field: str | None = None, timeout: float | None = None) -> Value:
         """Read SETTING property."""
-        drf = self._build_drf(DRF_PROPERTY.SETTING, self._resolve_field(field, DRF_PROPERTY.SETTING), "I")
+        drf = self._read_drf(DRF_PROPERTY.SETTING, self._resolve_field(field, DRF_PROPERTY.SETTING))
         return await self._get_backend().read(drf, timeout)
 
     async def status(self, *, field: str | None = None, timeout: float | None = None) -> Value:
         """Read STATUS property."""
         resolved = self._resolve_field(field, DRF_PROPERTY.STATUS)
-        drf = self._build_drf(DRF_PROPERTY.STATUS, resolved, "I")
+        drf = self._read_drf(DRF_PROPERTY.STATUS, resolved)
         value = await self._get_backend().read(drf, timeout)
         if resolved is not None and resolved.name in self._BOOL_STATUS_FIELDS:
             return bool(value)
@@ -86,17 +86,17 @@ class AsyncDevice(_DeviceBase):
 
     async def analog_alarm(self, *, field: str | None = None, timeout: float | None = None) -> Value:
         """Read ANALOG alarm property."""
-        drf = self._build_drf(DRF_PROPERTY.ANALOG, self._resolve_field(field, DRF_PROPERTY.ANALOG), "I")
+        drf = self._read_drf(DRF_PROPERTY.ANALOG, self._resolve_field(field, DRF_PROPERTY.ANALOG))
         return await self._get_backend().read(drf, timeout)
 
     async def digital_alarm(self, *, field: str | None = None, timeout: float | None = None) -> Value:
         """Read DIGITAL alarm property."""
-        drf = self._build_drf(DRF_PROPERTY.DIGITAL, self._resolve_field(field, DRF_PROPERTY.DIGITAL), "I")
+        drf = self._read_drf(DRF_PROPERTY.DIGITAL, self._resolve_field(field, DRF_PROPERTY.DIGITAL))
         return await self._get_backend().read(drf, timeout)
 
     async def description(self, *, field: str | None = None, timeout: float | None = None) -> str:
         """Read DESCRIPTION property."""
-        drf = self._build_drf(DRF_PROPERTY.DESCRIPTION, self._resolve_field(field, DRF_PROPERTY.DESCRIPTION), "I")
+        drf = self._read_drf(DRF_PROPERTY.DESCRIPTION, self._resolve_field(field, DRF_PROPERTY.DESCRIPTION))
         value = await self._get_backend().read(drf, timeout)
         if not isinstance(value, str):
             raise TypeError(f"Expected str from DESCRIPTION, got {type(value).__name__}")
@@ -116,7 +116,7 @@ class AsyncDevice(_DeviceBase):
             return await self._get_backend().get(self.drf, timeout)
         p = self._parse_prop(prop)
         resolved = self._resolve_field(field, p)
-        drf = self._build_drf(p, resolved, "I")
+        drf = self._read_drf(p, resolved)
         return await self._get_backend().get(drf, timeout)
 
     # ─── Write Methods ────────────────────────────────────────────────────

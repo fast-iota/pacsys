@@ -63,26 +63,18 @@ class Device(_DeviceBase):
 
     def read(self, *, field: str | None = None, timeout: float | None = None) -> Value:
         """Read READING property. Raises DeviceError on failure."""
-        drf = self._build_drf(
-            DRF_PROPERTY.READING,
-            self._resolve_field(field, DRF_PROPERTY.READING),
-            "I",
-        )
+        drf = self._read_drf(DRF_PROPERTY.READING, self._resolve_field(field, DRF_PROPERTY.READING))
         return self._get_backend().read(drf, timeout)
 
     def setting(self, *, field: str | None = None, timeout: float | None = None) -> Value:
         """Read SETTING property."""
-        drf = self._build_drf(
-            DRF_PROPERTY.SETTING,
-            self._resolve_field(field, DRF_PROPERTY.SETTING),
-            "I",
-        )
+        drf = self._read_drf(DRF_PROPERTY.SETTING, self._resolve_field(field, DRF_PROPERTY.SETTING))
         return self._get_backend().read(drf, timeout)
 
     def status(self, *, field: str | None = None, timeout: float | None = None) -> Value:
         """Read STATUS property."""
         resolved = self._resolve_field(field, DRF_PROPERTY.STATUS)
-        drf = self._build_drf(DRF_PROPERTY.STATUS, resolved, "I")
+        drf = self._read_drf(DRF_PROPERTY.STATUS, resolved)
         value = self._get_backend().read(drf, timeout)
         if resolved is not None and resolved.name in self._BOOL_STATUS_FIELDS:
             return bool(value)
@@ -90,29 +82,17 @@ class Device(_DeviceBase):
 
     def analog_alarm(self, *, field: str | None = None, timeout: float | None = None) -> Value:
         """Read ANALOG alarm property."""
-        drf = self._build_drf(
-            DRF_PROPERTY.ANALOG,
-            self._resolve_field(field, DRF_PROPERTY.ANALOG),
-            "I",
-        )
+        drf = self._read_drf(DRF_PROPERTY.ANALOG, self._resolve_field(field, DRF_PROPERTY.ANALOG))
         return self._get_backend().read(drf, timeout)
 
     def digital_alarm(self, *, field: str | None = None, timeout: float | None = None) -> Value:
         """Read DIGITAL alarm property."""
-        drf = self._build_drf(
-            DRF_PROPERTY.DIGITAL,
-            self._resolve_field(field, DRF_PROPERTY.DIGITAL),
-            "I",
-        )
+        drf = self._read_drf(DRF_PROPERTY.DIGITAL, self._resolve_field(field, DRF_PROPERTY.DIGITAL))
         return self._get_backend().read(drf, timeout)
 
     def description(self, *, field: str | None = None, timeout: float | None = None) -> str:
         """Read DESCRIPTION property."""
-        drf = self._build_drf(
-            DRF_PROPERTY.DESCRIPTION,
-            self._resolve_field(field, DRF_PROPERTY.DESCRIPTION),
-            "I",
-        )
+        drf = self._read_drf(DRF_PROPERTY.DESCRIPTION, self._resolve_field(field, DRF_PROPERTY.DESCRIPTION))
         value = self._get_backend().read(drf, timeout)
         if not isinstance(value, str):
             raise TypeError(f"Expected str from DESCRIPTION, got {type(value).__name__}")
@@ -132,7 +112,7 @@ class Device(_DeviceBase):
             return self._get_backend().get(self.drf, timeout)
         p = self._parse_prop(prop)
         resolved = self._resolve_field(field, p)
-        drf = self._build_drf(p, resolved, "I")
+        drf = self._read_drf(p, resolved)
         return self._get_backend().get(drf, timeout)
 
     def info(self, timeout: float | None = None) -> DeviceInfoResult:

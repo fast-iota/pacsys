@@ -20,6 +20,8 @@ from pacsys.drf3.property import DRF_PROPERTY, parse_property
 from pacsys.drf3.range import ARRAY_RANGE
 from pacsys.types import BasicControl, Value, WriteResult
 
+from .drf3.extra import HISTORICAL_EXTRAS
+
 if TYPE_CHECKING:
     import numpy as np
 
@@ -175,7 +177,8 @@ class _DeviceBase:
     def is_periodic(self) -> bool:
         return isinstance(self._request.event, PeriodicEvent)
 
-    def _build_drf(self, prop: DRF_PROPERTY, field: DRF_FIELD | None, event: str) -> str:
+    def _build_drf(self, prop: DRF_PROPERTY, field: DRF_FIELD | None, event: str | None) -> str:
+        """Build a DRF for prop/field; event=None omits the event (server default)."""
         if not self._request.is_acnet:
             # EPICS: read/write/subscribe target the PV itself; ACNET-only properties
             # and fields have no analogue and must fail loudly, never be synthesized.
@@ -183,7 +186,7 @@ class _DeviceBase:
                 raise ValueError(f"{prop.name} is ACNET-specific, not supported for non-ACNET device {self.name}")
             if field is not None and field != DEFAULT_FIELD_FOR_PROPERTY.get(prop):
                 raise ValueError(f"ACNET field {field.name} not supported for non-ACNET device {self.name}")
-            return self._request.to_canonical(event=parse_event(event))
+            return self._request.to_canonical(event=parse_event(event) if event is not None else DefaultEvent())
         out = self.name
         out += f".{prop.name}"
         if self._request.range is not None:
@@ -192,10 +195,21 @@ class _DeviceBase:
             default = DEFAULT_FIELD_FOR_PROPERTY.get(prop)
             if field != default:
                 out += f".{field.name}"
-        out += f"@{event}"
+        if event is not None:
+            out += f"@{event}"
         if self._request.extra is not None:
             out += f"<-{self._request.extra_raw}"
         return out
+
+    def _read_drf(self, prop: DRF_PROPERTY, field: DRF_FIELD | None) -> str:
+        """DRF for one-shot read helpers: forces @I, except historical sources keep the device event.
+
+        Loggers select logs by event (exact match only when one is given), so @I would match nothing.
+        """
+        if self._request.extra not in HISTORICAL_EXTRAS:
+            return self._build_drf(prop, field, "I")
+        event = self._request.event
+        return self._build_drf(prop, field, event.raw_string if event is not None and self.has_event else None)
 
     def _parse_prop(self, prop: str) -> DRF_PROPERTY:
         """Resolve a property argument using the DRF parser's aliases."""

@@ -342,3 +342,39 @@ class TestAsyncControlVerify:
             verify=Verify(initial_delay=0, retry_delay=0, max_attempts=1)
         )
         assert result.verified is True and result.readback is True
+
+
+class TestAsyncHistoricalEvent:
+    """Mirrors the sync Device historical-event tests on the shared builder."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "extra", ["LOGGER:1690000000:1690003600", "LOGGERDURATION:60000", "LOGGERSINGLE:ArkIv:1736942400:60"]
+    )
+    @pytest.mark.parametrize(("event", "sent"), [("", ""), ("@p,1000", "@p,1000")])
+    async def test_historical_read_event(self, extra, event, sent):
+        backend = mock.AsyncMock()
+        dev = AsyncDevice(f"M:OUTTMP{event}<-{extra}", backend=backend)
+        await dev.read()
+        assert backend.read.call_args[0][0] == f"M:OUTTMP.READING{sent}<-{extra}"
+        await dev.setting()
+        assert backend.read.call_args[0][0] == f"M:OUTTMP.SETTING{sent}<-{extra}"
+        await dev.get(prop="status", field="on")
+        assert backend.get.call_args[0][0] == f"M:OUTTMP.STATUS.ON{sent}<-{extra}"
+
+    @pytest.mark.asyncio
+    async def test_range_field_preserved_and_live_forces_immediate(self):
+        backend = mock.AsyncMock()
+        await AsyncDevice("B:ARRDEV[0:1]<-LOGGERDURATION:60000", backend=backend).read(field="raw")
+        assert backend.read.call_args[0][0] == "B:ARRDEV.READING[0:1].RAW<-LOGGERDURATION:60000"
+        await AsyncDevice("M:OUTTMP@p,1000<-FTP", backend=backend).read()
+        assert backend.read.call_args[0][0] == "M:OUTTMP.READING@I<-FTP"
+
+    @pytest.mark.asyncio
+    async def test_subscribe_override_and_write_event_unchanged(self):
+        backend = mock.AsyncMock()
+        dev = AsyncDevice("M:OUTTMP<-LOGGER:1690000000:1690003600", backend=backend)
+        await dev.subscribe(event="p,500")
+        assert backend.subscribe.call_args[0][0] == ["M:OUTTMP.READING@p,500<-LOGGER:1690000000:1690003600"]
+        await dev.write(1.0)
+        assert backend.write.call_args[0][0] == "M:OUTTMP.SETTING@N<-LOGGER:1690000000:1690003600"
