@@ -26,6 +26,7 @@ from pacsys.backends.acl import (
     _parse_acl_line,
     _parse_raw_hex,
 )
+from pacsys.device import Device
 from pacsys.errors import DeviceError, ReadError
 from pacsys.types import Reading, ValueType
 from tests.conftest import MockACLResponse
@@ -638,6 +639,92 @@ class TestBasicStatusRead:
                 assert readings[0].value_type == ValueType.BASIC_STATUS
                 assert readings[0].value == {"on": False, "ready": False, "remote": True, "positive": True}
                 assert readings[1].value == 72.5
+
+
+class TestBoolStatusFieldRead:
+    """ACL prints `.STATUS.ON` etc. as `DEV is on = False` text - must become real bools."""
+
+    @pytest.mark.parametrize(("text", "expected"), [("True", True), ("False", False)])
+    def test_device_status_field_batch(self, text, expected):
+        with mock.patch("httpx.Client.get", return_value=MockACLResponse(f"Z:ACLTST is on = {text}")):
+            with ACLBackend() as backend:
+                assert Device("Z:ACLTST", backend=backend).status(field="ON") is expected
+
+    @pytest.mark.parametrize(("text", "expected"), [("True", True), ("False", False)])
+    def test_device_status_field_individual_fallback(self, text, expected):
+        with mock.patch("httpx.Client.get") as mock_get:
+            mock_get.side_effect = [
+                MockACLResponse("", status_code=400),
+                MockACLResponse(f"Z:ACLTST is ready = {text}"),
+            ]
+            with ACLBackend() as backend:
+                assert Device("Z:ACLTST", backend=backend).status(field="READY") is expected
+            assert mock_get.call_count == 2
+
+    def test_get_many_batch_and_fallback(self):
+        drfs = ["Z:ACLTST.STATUS.ON", "Z:ACLTST.STATUS.RAMP", "Z:BAD.STATUS.REMOTE"]
+        with mock.patch("httpx.Client.get") as mock_get:
+            mock_get.side_effect = [
+                MockACLResponse("Z:ACLTST is on = False\nZ:ACLTST is ramping = True"),
+                MockACLResponse("Z:ACLTST is on = False"),
+                MockACLResponse("Z:ACLTST is ramping = True"),
+                MockACLResponse("Invalid device name (Z:BAD) in read device command at line 1 - DBM_NOREC"),
+            ]
+            with ACLBackend() as backend:
+                on, ramp, bad = backend.get_many(drfs)
+        assert (on.value, on.value_type) == (False, ValueType.SCALAR)
+        assert (ramp.value, ramp.value_type) == (True, ValueType.SCALAR)
+        assert bad.is_error
+
+    @pytest.mark.parametrize(
+        "line",
+        ["Z:ACLTST is on = maybe", "Z:ACLTST is on = 1", "Z:ACLTST is on =", "Z:ACLTST is on False"],
+    )
+    def test_malformed_raises(self, line):
+        with mock.patch("httpx.Client.get", return_value=MockACLResponse(line)):
+            with ACLBackend() as backend:
+                with pytest.raises(DeviceError, match="Unparseable ON line"):
+                    Device("Z:ACLTST", backend=backend).status(field="ON")
+
+    def test_malformed_in_batch_fails_only_that_drf(self):
+        with mock.patch("httpx.Client.get") as mock_get:
+            mock_get.return_value = MockACLResponse("Z:ACLTST is positive = yes\nM:OUTTMP = 72.5 DegF")
+            with ACLBackend() as backend:
+                bad, good = backend.get_many(["Z:ACLTST.STATUS.POSITIVE", "M:OUTTMP"])
+        assert bad.error_code == ERR_RETRY
+        assert "Unparseable POSITIVE line" in bad.message
+        assert good.value == 72.5
+
+    def test_malformed_in_individual_fallback(self):
+        with mock.patch("httpx.Client.get") as mock_get:
+            mock_get.side_effect = [
+                MockACLResponse("", status_code=400),
+                MockACLResponse("Z:ACLTST is remote = ?"),
+            ]
+            with ACLBackend() as backend:
+                (reading,) = backend.get_many(["Z:ACLTST.STATUS.REMOTE"])
+        assert reading.error_code == ERR_RETRY
+        assert "Unparseable REMOTE line" in reading.message
+
+    @pytest.mark.parametrize(
+        ("drf", "line", "expected"),
+        [
+            ("Z:ACLTST.STATUS.TEXT", "Z:ACLTST = False", "False"),
+            ("Z:ACLTST.DESCRIPTION", "Z:ACLTST = True", "True"),
+            ("M:OUTTMP", "M:OUTTMP = False", "False"),
+        ],
+    )
+    def test_non_bool_fields_stay_text(self, drf, line, expected):
+        with mock.patch("httpx.Client.get", return_value=MockACLResponse(line)):
+            with ACLBackend() as backend:
+                reading = backend.get(drf)
+        assert (reading.value, reading.value_type) == (expected, ValueType.TEXT)
+
+    def test_status_raw_stays_bytes(self):
+        with mock.patch("httpx.Client.get", return_value=MockACLResponse("Z:ACLTST = 0002")):
+            with ACLBackend() as backend:
+                reading = backend.get("Z:ACLTST.STATUS.RAW")
+        assert (reading.value, reading.value_type) == (b"\x02\x00", ValueType.RAW)
 
 
 class TestWriteNotSupported:

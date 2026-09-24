@@ -78,6 +78,7 @@ _ACL_NATIVE_PROPERTIES = frozenset({DRF_PROPERTY.READING})
 #
 _BASIC_STATUS_FIELDS = ("ON", "READY", "REMOTE", "POSITIVE", "RAMP")
 _BASIC_STATUS_KEYS = ("on", "ready", "remote", "positive", "ramp")
+_BOOL_STATUS_FIELDS = frozenset(DRF_FIELD[f] for f in _BASIC_STATUS_FIELDS)
 
 
 def _is_basic_status_request(drf: str) -> bool:
@@ -85,14 +86,6 @@ def _is_basic_status_request(drf: str) -> bool:
     try:
         req = parse_request(drf)
         return req.property == DRF_PROPERTY.STATUS and req.field in (None, DRF_FIELD.ALL)
-    except (ValueError, TypeError):
-        return False
-
-
-def _is_raw_field(drf: str) -> bool:
-    """Check if a DRF string requests the RAW field."""
-    try:
-        return parse_request(drf).field == DRF_FIELD.RAW
     except (ValueError, TypeError):
         return False
 
@@ -192,11 +185,23 @@ def _parse_raw_hex(text: str) -> bytes:
     return b"".join(parts)
 
 
+def _parse_status_bool(line: str, field: str) -> bool:
+    """Parse an ACL basic-status field line (``Z:ACLTST is on = False``)."""
+    _, sep, raw = line.partition("=")
+    raw = raw.strip()
+    if not sep or raw not in ("True", "False"):
+        raise ValueError(f"Unparseable {field} line: {line!r}")
+    return raw == "True"
+
+
 def _parse_response_line(drf: str, line: str) -> tuple[Value, ValueType]:
-    """Parse a single ACL response line, choosing raw or text parsing."""
-    if _is_raw_field(drf):
+    """Parse a single ACL response line, choosing raw, boolean status or text parsing."""
+    req = parse_request(drf)
+    if req.field == DRF_FIELD.RAW:
         return _parse_raw_hex(line), ValueType.RAW
-    return _parse_acl_line(line, text_only=parse_request(drf).property == DRF_PROPERTY.DESCRIPTION)
+    if req.property == DRF_PROPERTY.STATUS and req.field in _BOOL_STATUS_FIELDS:
+        return _parse_status_bool(line, req.field.name), ValueType.SCALAR
+    return _parse_acl_line(line, text_only=req.property == DRF_PROPERTY.DESCRIPTION)
 
 
 def _parse_acl_line(text: str, *, text_only: bool = False) -> tuple[Value, ValueType]:
@@ -660,17 +665,10 @@ class ACLBackend(Backend):
             if is_err:
                 return Reading(drf=drf, error_code=ERR_RETRY, message=msg, timestamp=now)
 
-            if "= True" in line:
-                status[key] = True
-            elif "= False" in line:
-                status[key] = False
-            else:
-                return Reading(
-                    drf=drf,
-                    error_code=ERR_RETRY,
-                    message=f"Unparseable {field} line: {line!r}",
-                    timestamp=now,
-                )
+            try:
+                status[key] = _parse_status_bool(line, field)
+            except ValueError as exc:
+                return Reading(drf=drf, error_code=ERR_RETRY, message=str(exc), timestamp=now)
 
         return Reading(drf=drf, value_type=ValueType.BASIC_STATUS, value=status, error_code=ERR_OK, timestamp=now)
 
