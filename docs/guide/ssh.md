@@ -360,6 +360,8 @@ client = pacsys.SSHClient(SSHHop(
 ))
 ```
 
+RSA, ECDSA, and Ed25519 keys are supported; the type is detected from the file contents. Passphrase-protected keys are rejected.
+
 ### Password
 
 ```python

@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, patch
 
 import paramiko
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 
 from pacsys.ssh import (
     CommandResult,
@@ -119,6 +121,14 @@ class TestNormalizeHops:
 
 _RealTransport = paramiko.Transport
 _RealChannel = paramiko.Channel
+
+
+def _rsa_key():
+    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+
+def _ec_key():
+    return ec.generate_private_key(ec.SECP256R1())
 
 
 def _make_mock_transport(active=True):
@@ -878,22 +888,99 @@ class TestAuthDispatch:
         ssh._ensure_connected()
         mock_transport.auth_gssapi_with_mic.assert_called_once_with("kerbuser", "host", gss_deleg_creds=True)
 
-    @patch("paramiko.RSAKey.from_private_key_file")
+    @pytest.mark.parametrize(
+        "key_factory,fmt,expected_cls",
+        [
+            (_rsa_key, serialization.PrivateFormat.TraditionalOpenSSL, paramiko.RSAKey),
+            (_rsa_key, serialization.PrivateFormat.OpenSSH, paramiko.RSAKey),
+            (ed25519.Ed25519PrivateKey.generate, serialization.PrivateFormat.OpenSSH, paramiko.Ed25519Key),
+            (_ec_key, serialization.PrivateFormat.TraditionalOpenSSL, paramiko.ECDSAKey),
+            (_ec_key, serialization.PrivateFormat.OpenSSH, paramiko.ECDSAKey),
+        ],
+    )
     @patch("paramiko.Transport")
     @patch("socket.create_connection")
-    def test_key_auth(self, mock_connect, mock_transport_cls, mock_key_load):
+    def test_key_auth_detects_type_from_contents(
+        self, mock_connect, mock_transport_cls, key_factory, fmt, expected_cls, tmp_path
+    ):
         mock_connect.return_value = MagicMock()
         mock_transport = _make_mock_transport()
         mock_transport_cls.return_value = mock_transport
+        key = key_factory()
+        key_file = tmp_path / "id_key"  # name carries no type hint
+        key_file.write_bytes(key.private_bytes(serialization.Encoding.PEM, fmt, serialization.NoEncryption()))
 
-        mock_pkey = MagicMock()
-        mock_key_load.return_value = mock_pkey
+        ssh = SSHClient(SSHHop("host", auth_method="key", key_filename=str(key_file), username="user"))
+        ssh._ensure_connected()
 
-        # Create a temp key file path
-        ssh = SSHClient(SSHHop("host", auth_method="key", key_filename="/tmp/test_key", username="user"))
-        with patch("pathlib.Path.exists", return_value=True):
+        (username, pkey), _ = mock_transport.auth_publickey.call_args
+        assert username == "user"
+        assert type(pkey) is expected_cls
+        expected_pub = key.public_key().public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH)
+        assert f"{pkey.get_name()} {pkey.get_base64()}".encode() == expected_pub
+        mock_transport.auth_password.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "fmt",
+        [serialization.PrivateFormat.OpenSSH, serialization.PrivateFormat.TraditionalOpenSSL],
+    )
+    @patch("paramiko.Transport")
+    @patch("socket.create_connection")
+    def test_key_encrypted_raises(self, mock_connect, mock_transport_cls, fmt, tmp_path):
+        mock_connect.return_value = MagicMock()
+        mock_transport = _make_mock_transport()
+        mock_transport_cls.return_value = mock_transport
+        key_file = tmp_path / "id_rsa"
+        key_file.write_bytes(
+            _rsa_key().private_bytes(serialization.Encoding.PEM, fmt, serialization.BestAvailableEncryption(b"pw"))
+        )
+
+        ssh = SSHClient(SSHHop("host", auth_method="key", key_filename=str(key_file)))
+        with pytest.raises(SSHConnectionError, match="is encrypted") as exc_info:
             ssh._ensure_connected()
-        mock_transport.auth_publickey.assert_called_once_with("user", mock_pkey)
+        assert str(key_file) in str(exc_info.value)
+        mock_transport.auth_publickey.assert_not_called()
+        mock_transport.close.assert_called_once()
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            b"not a key\n",
+            b"-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n",
+            # PKCS#8 parses but Paramiko key classes do not accept it
+            _rsa_key().private_bytes(
+                serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+            ),
+        ],
+        ids=["garbage", "truncated-openssh", "pkcs8"],
+    )
+    @patch("paramiko.Transport")
+    @patch("socket.create_connection")
+    def test_key_invalid_file_cleans_up_and_reports_hop(self, mock_connect, mock_transport_cls, content, tmp_path):
+        hop1_transport = _make_mock_transport()
+        hop2_transport = _make_mock_transport()
+        mock_transport_cls.side_effect = [hop1_transport, hop2_transport]
+        mock_connect.return_value = MagicMock()
+        key_file = tmp_path / "id_ed25519"
+        key_file.write_bytes(content)
+        hops: list[str | SSHHop] = [
+            SSHHop("jump", auth_method="password", password="pw"),
+            SSHHop("target", auth_method="key", key_filename=str(key_file)),
+        ]
+
+        ssh = SSHClient(hops)
+        with pytest.raises(SSHConnectionError, match="Invalid private key file") as exc_info:
+            ssh._ensure_connected()
+
+        assert exc_info.value.hop is hops[1]
+        assert str(key_file) in str(exc_info.value)
+        assert ssh.connected is False
+        assert ssh._transports == []
+        assert ssh._channels == []
+        hop1_transport.close.assert_called()
+        hop2_transport.close.assert_called()
+        hop2_transport.auth_publickey.assert_not_called()
+        hop2_transport.auth_password.assert_not_called()
 
     @patch("paramiko.Transport")
     @patch("socket.create_connection")
