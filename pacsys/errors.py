@@ -48,6 +48,9 @@ class ReadError(PacsysError):
         total = len(self.readings)
         return f"ReadError({ok}/{total} ok, {self.args[0]!r})"
 
+    def __reduce__(self):
+        return (type(self), (self.readings, self.args[0]), self.__dict__)
+
 
 class DeviceError(PacsysError):
     """Raised when a device read fails.
@@ -81,6 +84,9 @@ class DeviceError(PacsysError):
             f"DeviceError(drf={self.drf!r}, facility_code={self.facility_code}, "
             f"error_code={self.error_code}, message={self.message!r})"
         )
+
+    def __reduce__(self):
+        return (type(self), (self.drf, self.facility_code, self.error_code, self.message), self.__dict__)
 
 
 class AuthenticationError(PacsysError):
