@@ -1,5 +1,6 @@
 """Tests for pacsys.errors exception transport."""
 
+import multiprocessing
 import pickle
 from concurrent.futures import ProcessPoolExecutor
 
@@ -50,7 +51,7 @@ class TestReadErrorPickle:
         assert got.extra == "state"
 
     def test_process_pool_delivers_original(self):
-        with ProcessPoolExecutor(max_workers=1) as pool:
+        with ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn")) as pool:
             with pytest.raises(ReadError) as ei:
                 pool.submit(_raise_read_error).result(timeout=10)
             assert str(ei.value) == "batch failed (failed: Z:ACLTST)"
