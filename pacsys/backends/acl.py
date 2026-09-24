@@ -14,6 +14,7 @@ Usage:
 """
 
 import logging
+import math
 import os
 import re
 import time
@@ -345,8 +346,8 @@ class ACLBackend(Backend):
 
         if not effective_url:
             raise ValueError("base_url cannot be empty")
-        if effective_timeout <= 0:
-            raise ValueError(f"timeout must be positive, got {effective_timeout}")
+        if not math.isfinite(effective_timeout) or effective_timeout <= 0:
+            raise ValueError(f"timeout must be positive and finite, got {effective_timeout}")
 
         self._base_url = effective_url
         self._timeout = effective_timeout
@@ -487,7 +488,7 @@ class ACLBackend(Backend):
         raised with the complete, ordered list.
 
         Raises:
-            ValueError: malformed DRF or nonpositive timeout (before any I/O)
+            ValueError: malformed DRF or nonpositive/non-finite timeout (before any I/O)
             ReadError: the time budget was exhausted
 
         .. todo:: When all DRFs share the same property, use ``device_list``
@@ -501,8 +502,8 @@ class ACLBackend(Backend):
             return []
 
         effective_timeout = timeout if timeout is not None else self._timeout
-        if effective_timeout <= 0:
-            raise ValueError(f"timeout must be positive, got {effective_timeout}")
+        if not math.isfinite(effective_timeout) or effective_timeout <= 0:
+            raise ValueError(f"timeout must be positive and finite, got {effective_timeout}")
         deadline = time.monotonic() + effective_timeout
         now = datetime.now(timezone.utc)
 

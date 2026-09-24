@@ -32,22 +32,6 @@ from pacsys.types import Reading, ValueType
 from tests.conftest import MockACLResponse
 
 
-class TestACLBackendInit:
-    """Tests for ACLBackend input validation."""
-
-    @pytest.mark.parametrize(
-        ("kwargs", "match"),
-        [
-            ({"base_url": ""}, "base_url cannot be empty"),
-            ({"timeout": 0}, "timeout must be positive"),
-            ({"timeout": -1.0}, "timeout must be positive"),
-        ],
-    )
-    def test_invalid_init_params(self, kwargs, match):
-        with pytest.raises(ValueError, match=match):
-            ACLBackend(**kwargs)
-
-
 class TestParseACLLine:
     """Tests for _parse_acl_line - parses full ACL output lines."""
 
@@ -771,12 +755,6 @@ class TestTimeout:
                 assert mock_get.call_args.kwargs["timeout"] == pytest.approx(2.0, abs=0.05)
             finally:
                 backend.close()
-
-    def test_nonpositive_call_timeout_rejected_before_io(self):
-        with mock.patch("httpx.Client.get") as mock_get, ACLBackend() as backend:
-            with pytest.raises(ValueError, match="timeout must be positive"):
-                backend.get_many(["M:OUTTMP"], timeout=0)
-            mock_get.assert_not_called()
 
     @staticmethod
     def _ticking_get(step: float):

@@ -456,7 +456,7 @@ class DevDBClient:
             return result
 
         request = DevDB_pb2.DeviceList(device=uncached)
-        reply = self._stub.getDeviceInfo(request, timeout=timeout or self._timeout)
+        reply = self._stub.getDeviceInfo(request, timeout=timeout if timeout is not None else self._timeout)
 
         pending: dict[str, DeviceInfoResult] = {}
         error: tuple[str, str] | None = None

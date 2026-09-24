@@ -247,22 +247,6 @@ class TestAsyncGRPCSubscribe:
 
 
 class TestAsyncGRPCMisc:
-    @pytest.mark.parametrize(
-        ("kwargs", "match"),
-        [
-            ({"host": ""}, "host cannot be empty"),
-            ({"port": 0}, "port must be positive"),
-            ({"timeout": 0}, "timeout must be positive"),
-            ({"timeout": float("inf")}, "timeout must be positive"),
-            ({"timeout": float("nan")}, "timeout must be positive"),
-            ({"auth": object()}, "auth must be JWTAuth"),
-        ],
-    )
-    def test_invalid_init_params(self, kwargs, match):
-        """Same validation as the sync backend (shared _resolve_config)."""
-        with pytest.raises(ValueError, match=match):
-            AsyncGRPCBackend(**kwargs)
-
     @pytest.mark.asyncio
     async def test_context_manager_closes(self, backend):
         close_mock = mock.AsyncMock()

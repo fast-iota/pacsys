@@ -111,8 +111,8 @@ def _resolve_config(
         raise ValueError(f"auth must be JWTAuth or None, got {type(auth).__name__}")
     if not host:
         raise ValueError("host cannot be empty")
-    if port <= 0:
-        raise ValueError(f"port must be positive, got {port}")
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise ValueError(f"port must be an integer from 1 to 65535, got {port!r}")
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError(f"timeout must be positive and finite, got {timeout}")
     return host, port, auth if auth is not None else JWTAuth.from_env(), timeout

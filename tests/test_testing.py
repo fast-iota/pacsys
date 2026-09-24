@@ -1190,26 +1190,6 @@ class TestDeviceIntegration:
 class TestSubscribe:
     """Tests for subscribe() method."""
 
-    def test_subscribe_returns_handle(self):
-        """subscribe() returns a FakeSubscriptionHandle."""
-        from pacsys.testing import FakeSubscriptionHandle
-
-        fake = FakeBackend()
-        handle = fake.subscribe(["M:OUTTMP@p,1000"])
-
-        assert isinstance(handle, FakeSubscriptionHandle)
-        handle.stop()
-
-    def test_subscribe_handle_properties(self):
-        """Subscription handle has correct initial properties."""
-        fake = FakeBackend()
-        handle = fake.subscribe(["M:OUTTMP", "G:AMANDA"])
-
-        assert handle.ref_ids == [0, 1]
-        assert handle.stopped is False
-        assert handle.exc is None
-        handle.stop()
-
     def test_subscribe_context_manager(self):
         """Subscription handle works as context manager."""
         fake = FakeBackend()

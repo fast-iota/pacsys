@@ -957,6 +957,8 @@ class FakeBackend(Backend):
             FakeSubscriptionHandle for managing subscription
         """
         self._check_closed()
+        if not drfs:
+            raise ValueError("drfs cannot be empty")
         _validate_callback(callback, on_error)
         handle = FakeSubscriptionHandle(drfs, callback, on_error, self._remove_subscription, self._dispatcher)
         with self._subscription_condition:
@@ -1177,6 +1179,8 @@ class AsyncFakeBackend(_AsyncBackend):
 
     async def subscribe(self, drfs, callback=None, on_error=None):
         self._check_closed()
+        if not drfs:
+            raise ValueError("drfs cannot be empty")
         _validate_callback(callback, on_error)
         handle = AsyncSubscriptionHandle(remover=self.remove)
         handle._drfs = drfs

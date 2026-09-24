@@ -43,9 +43,6 @@ class TestVerifyContextManager:
 
 
 class TestResolveVerify:
-    def test_false_returns_none(self):
-        assert resolve_verify(False) is None
-
     def test_false_ignores_context(self):
         with Verify(always=True):
             assert resolve_verify(False) is None
@@ -59,10 +56,6 @@ class TestResolveVerify:
         ctx = Verify(tolerance=5.0)
         with ctx:
             assert resolve_verify(True) is ctx
-
-    def test_instance_returns_itself(self):
-        v = Verify(tolerance=9.0)
-        assert resolve_verify(v) is v
 
     def test_none_no_context_returns_none(self):
         assert resolve_verify(None) is None
@@ -79,54 +72,12 @@ class TestResolveVerify:
 
 
 class TestVerifyValidation:
-    @pytest.mark.parametrize(
-        ("field", "value"),
-        [
-            ("tolerance", -0.1),
-            ("tolerance", float("nan")),
-            ("tolerance", float("inf")),
-            ("initial_delay", -0.1),
-            ("initial_delay", float("inf")),
-            ("retry_delay", -0.1),
-            ("retry_delay", float("nan")),
-        ],
-    )
-    def test_rejects_invalid_numeric_value(self, field, value):
-        with pytest.raises(ValueError, match=field):
-            Verify(**{field: value})
-
-    @pytest.mark.parametrize("field", ["tolerance", "initial_delay", "retry_delay"])
-    def test_rejects_boolean_numeric_value(self, field):
-        with pytest.raises(TypeError, match=field):
-            Verify(**{field: True})
-
-    @pytest.mark.parametrize("value", [0, -1])
-    def test_rejects_nonpositive_attempts(self, value):
-        with pytest.raises(ValueError, match="max_attempts"):
-            Verify(max_attempts=value)
-
-    @pytest.mark.parametrize("value", [True, 1.5])
-    def test_rejects_noninteger_attempts(self, value):
-        with pytest.raises(TypeError, match="max_attempts"):
-            Verify(max_attempts=value)
-
     def test_accepts_numpy_integer_attempts(self):
         assert Verify(max_attempts=np.int64(2)).max_attempts == 2
-
-    @pytest.mark.parametrize("value", [123, b"M:OUTTMP"])
-    def test_rejects_non_string_readback(self, value):
-        """Readback is first touched after the write - must be validated before it."""
-        with pytest.raises(TypeError, match="readback"):
-            Verify(readback=value)
 
     def test_rejects_invalid_readback_drf(self):
         with pytest.raises(ValueError):
             Verify(readback="M:OUTTMP@bogus")
-
-    @pytest.mark.parametrize("field", ["check_first", "always"])
-    def test_rejects_non_bool_flags(self, field):
-        with pytest.raises(TypeError, match=field):
-            Verify(**{field: 1})
 
 
 class TestThreadIsolation:

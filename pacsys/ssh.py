@@ -931,7 +931,7 @@ class SSHClient:
         """
         from pacsys.acl_session import _strip_acl_output
 
-        effective_timeout = timeout or 30.0
+        effective_timeout = timeout if timeout is not None else 30.0
 
         if isinstance(command, str):
             command = [command]
