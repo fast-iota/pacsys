@@ -28,7 +28,11 @@ from pacsys.types import (
     _validate_callback,
 )
 
+from .drf3.field import DRF_FIELD
+
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     import numpy as np
 
     from pacsys.backends import Backend
@@ -361,6 +365,29 @@ class Device(_DeviceBase):
         from pacsys import _get_global_devdb
 
         return _get_global_devdb()
+
+
+def _prepare_verified_write(drf: str, value: Value, verify: Verify) -> Callable[[Backend, float | None], WriteResult]:
+    """Plan a verified write to the DRF's own writable target without I/O; the callable runs it later.
+
+    Unlike Device.write() (always SETTING), single ANALOG/DIGITAL alarm fields keep their property.
+    """
+    dev = Device(drf)
+    req = dev._request
+    if isinstance(value, BasicControl):
+        plan = dev._plan_control(value, verify)
+    # parse_value never yields bytes, so a RAW readback cannot match (EPICS .RAW is a PV suffix, not this field)
+    elif req.is_acnet and req.field == DRF_FIELD.RAW:
+        raise ValueError(f"--verify cannot check RAW fields (CLI values are not bytes): {drf}")
+    elif not req.is_acnet or req.property in (DRF_PROPERTY.READING, DRF_PROPERTY.SETTING):
+        plan = dev._plan_write(value, None, verify)
+    # A whole alarm block reads back as a dict, which no CLI value can match
+    elif req.property in (DRF_PROPERTY.ANALOG, DRF_PROPERTY.DIGITAL) and req.field not in (None, DRF_FIELD.ALL):
+        prop, field = req.property, req.field
+        plan = _WritePlan(dev._build_drf(prop, field, "N"), value, value, verify, dev._build_drf(prop, field, "I"))
+    else:
+        raise ValueError(f"--verify supports SETTING, basic control, and single ANALOG/DIGITAL alarm fields, not {drf}")
+    return lambda backend, timeout: dev.with_backend(backend)._execute(plan, timeout)
 
 
 class ScalarDevice(Device):

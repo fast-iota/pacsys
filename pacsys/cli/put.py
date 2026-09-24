@@ -18,32 +18,13 @@ from pacsys.drf3 import parse_request
 from pacsys.drf_utils import prepare_for_control
 from pacsys.types import BasicControl
 
-from .._device_base import _WritePlan
-from ..device import Device
-from ..drf3.field import DRF_FIELD
-from ..drf3.property import DRF_PROPERTY
-from ..types import Value
+from ..device import _prepare_verified_write
 
 if TYPE_CHECKING:
-    from ..verify import Verify
+    from collections.abc import Callable
 
-
-def _plan_verified(drf: str, value: Value, verify: Verify) -> tuple[Device, _WritePlan]:
-    """Plan a verified write to the DRF's own writable target (Device.write() always targets SETTING)."""
-    dev = Device(drf)
-    if isinstance(value, BasicControl):
-        return dev, dev._plan_control(value, verify)
-    req = dev.request
-    # parse_value never yields bytes, so a RAW readback cannot match (EPICS .RAW is a PV suffix, not this field)
-    if req.is_acnet and req.field == DRF_FIELD.RAW:
-        raise ValueError(f"--verify cannot check RAW fields (CLI values are not bytes): {drf}")
-    if not req.is_acnet or req.property in (DRF_PROPERTY.READING, DRF_PROPERTY.SETTING):
-        return dev, dev._plan_write(value, None, verify)
-    # A whole alarm block reads back as a dict, which no CLI value can match
-    if req.property in (DRF_PROPERTY.ANALOG, DRF_PROPERTY.DIGITAL) and req.field not in (None, DRF_FIELD.ALL):
-        prop, field = req.property, req.field
-        return dev, _WritePlan(dev._build_drf(prop, field, "N"), value, value, verify, dev._build_drf(prop, field, "I"))
-    raise ValueError(f"--verify supports SETTING, basic control, and single ANALOG/DIGITAL alarm fields, not {drf}")
+    from ..backends import Backend
+    from ..types import WriteResult
 
 
 def main() -> int:
@@ -81,7 +62,7 @@ def main() -> int:
     use_verify = args.verify or args.tolerance is not None
 
     # Plan every verified write before connecting so no pair is written if a later one is unsupported
-    plans: list[tuple[Device, _WritePlan]] = []
+    runs: list[Callable[[Backend, float | None], WriteResult]] = []
     if use_verify:
         from ..verify import Verify
 
@@ -90,7 +71,7 @@ def main() -> int:
                 tolerance=args.tolerance if args.tolerance is not None else 0.0,
                 max_attempts=args.retries,
             )
-            plans = [_plan_verified(drf, value, verify_cfg) for drf, value in settings]
+            runs = [_prepare_verified_write(drf, value, verify_cfg) for drf, value in settings]
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
             return EXIT_USAGE_ERROR
@@ -106,8 +87,8 @@ def main() -> int:
     has_error = False
     try:
         if use_verify:
-            for dev, plan in plans:
-                result = dev.with_backend(backend)._execute(plan, args.timeout)
+            for run in runs:
+                result = run(backend, args.timeout)
                 print(format_write_result(result, fmt=fmt))
                 if not result.confirmed:
                     has_error = True

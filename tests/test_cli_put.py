@@ -326,6 +326,16 @@ class TestVerifyPath:
         backend.write.assert_called_once_with("M:OUTTMP.SETTING@N", 72.5, timeout=5.0)
         backend.read.assert_called_once_with("M:OUTTMP.SETTING@I", 5.0)
 
+    def test_verify_uses_cli_timeout(self):
+        backend = mock.MagicMock()
+        backend.write.return_value = _ok_result("Z:ACLTST.ANALOG.NOM@N")
+        backend.read.return_value = 5.0
+        rc, _, _, _ = _run_fake(["--timeout", "1.5", "--verify", "Z:ACLTST.ANALOG.NOM", "5"], backend)
+
+        assert rc == 0
+        backend.write.assert_called_once_with("Z:ACLTST.ANALOG.NOM@N", 5.0, timeout=1.5)
+        backend.read.assert_called_once_with("Z:ACLTST.ANALOG.NOM@I", 1.5)
+
 
 class TestVerifyTarget:
     """--verify writes and reads back the DRF's own writable property/field/range."""
