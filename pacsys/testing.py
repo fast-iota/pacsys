@@ -226,6 +226,15 @@ def _perturb_timestamp(ts: datetime | None, drf: str) -> datetime | None:
     return ts + timedelta(milliseconds=abs(offset))
 
 
+def _is_whole_range(rng: ARRAY_RANGE | BYTE_RANGE | None) -> bool:
+    """True if the range selects the entire value: none, ``[]``/``[:]``/``[0:]``, ``{:}``/``{0:}``."""
+    if rng is None or rng.mode == "full":
+        return True
+    if isinstance(rng, ARRAY_RANGE):
+        return rng.mode == "std" and not rng.low and rng.high is None
+    return rng.mode == "std" and not rng.offset and rng.length is None
+
+
 def _write_range(existing: Any, value: Any, rng: ARRAY_RANGE | BYTE_RANGE) -> Any:
     """Slice-assign value into existing array/bytes at the given range.
 
@@ -831,6 +840,8 @@ class FakeBackend(Backend):
 
         Successful writes update the stored reading so that subsequent
         reads of the same device+property return the written value.
+        A partial ranged write (e.g. ``{4:2}``, ``[1]``, ``{0:2}``) slices into
+        the stored value, so it fails unless one was seeded with ``set_reading()``.
 
         Args:
             drf: Device to write
@@ -848,9 +859,16 @@ class FakeBackend(Backend):
 
         # Configured write result (full key first, then base); default is success
         result = self._write_results.get(full) or self._write_results.get(base)
+        if result is not None and not result.success:
+            return result
+        if base not in self._readings and not _is_whole_range(_get_range(drf)):
+            return WriteResult(
+                drf=drf,
+                error_code=ERR_RETRY,
+                message=f"No stored value for partial ranged write {drf}; seed the whole value with set_reading()",
+            )
         try:
-            if result is None or result.success:
-                self._update_state(base, drf, value)
+            self._update_state(base, drf, value)
         except (TypeError, ValueError) as e:
             return WriteResult(drf=drf, error_code=ERR_RETRY, message=f"Invalid write value for {drf}: {e}")
         return result or WriteResult(drf=drf, error_code=ERR_OK)
@@ -858,8 +876,9 @@ class FakeBackend(Backend):
     def _update_state(self, key: str, drf: str, value: Value) -> None:
         """Update device state after a successful write.
 
-        If the write DRF includes a range and an existing array is stored,
-        performs a slice assignment instead of replacing the whole value.
+        If the write DRF includes a range and a value is stored, performs a
+        slice assignment instead of replacing the whole value. Callers reject
+        partial ranges when nothing is stored.
 
         Updates both the base key and the event-specific full key so that
         subsequent reads (which check the full key first) see the write.

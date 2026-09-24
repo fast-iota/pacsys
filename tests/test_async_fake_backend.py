@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from pacsys.testing import AsyncFakeBackend
+from pacsys.types import ValueType
 
 
 class TestAsyncFakeBackendRead:
@@ -47,6 +48,15 @@ class TestAsyncFakeBackendWrite:
         results = asyncio.run(fb.write_many([("M:OUTTMP", 80.0), ("G:AMANDA", 50.0)]))
         assert len(results) == 2
         assert all(r.success for r in results)
+
+    def test_partial_ranged_write_needs_backing_value(self):
+        fb = AsyncFakeBackend()
+        drf = "B:HS23T.SETTING{4:2}.RAW@N"
+        assert not asyncio.run(fb.write(drf, b"xy")).success
+        fb.set_reading("B:HS23T.SETTING.RAW", b"\x00" * 8, value_type=ValueType.RAW)
+        results = asyncio.run(fb.write_many([(drf, b"xy")]))
+        assert results[0].success
+        assert asyncio.run(fb.read("B:HS23T.SETTING{4:2}.RAW@I")) == b"xy"
 
 
 class TestAsyncFakeBackendStreaming:

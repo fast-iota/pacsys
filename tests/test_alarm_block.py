@@ -322,11 +322,13 @@ class TestAlarmSegments:
         [(AnalogAlarm(), "ANALOG"), (DigitalAlarm(), "DIGITAL")],
     )
     def test_raw_write_supports_nonzero_segment(self, alarm, prop, fake_backend):
+        fake_backend.set_reading(f"Z:TEST.{prop}.RAW", bytes(60), value_type=ValueType.RAW)
         alarm.write("Z:TEST", backend=fake_backend, segment=2)
         assert fake_backend.writes[0][0] == f"Z:TEST.{prop}{{40:20}}.RAW@N"
 
     def test_raw_write_preserves_abort_flag(self, fake_backend):
         alarm = AnalogAlarm(flags=AlarmFlags.ABORT)
+        fake_backend.set_reading("Z:TEST.ANALOG.RAW", bytes(20), value_type=ValueType.RAW)
 
         alarm.write("Z:TEST", backend=fake_backend)
 

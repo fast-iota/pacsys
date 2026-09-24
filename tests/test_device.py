@@ -101,6 +101,7 @@ class TestDeviceImmutability:
         req.range.low = 5
         assert dev.drf == "B:HS23T.READING[0:10]"
         assert hash(dev) == hash(Device("B:HS23T[0:10]"))
+        fake.set_reading("B:HS23T.SETTING", np.zeros(11), value_type=ValueType.SCALAR_ARRAY)
         dev.write([1.0] * 11)
         assert fake.was_written("B:HS23T.SETTING[0:10]")
 

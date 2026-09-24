@@ -847,7 +847,8 @@ def write_ramps(
         List of WriteResult in the same order as flattened inputs. Backend
         failures are returned per setting; the batch is not atomic.
     """
-    from .drf_utils import prepare_for_write
+    from .drf_utils import prepare_for_control, prepare_for_write
+    from .types import BasicControl
 
     _validate_write_mode(write_mode)
     flat: list[Ramp | tuple[str, Value]] = []
@@ -863,7 +864,10 @@ def write_ramps(
         if not isinstance(ramp, Ramp):
             if not isinstance(ramp, tuple) or len(ramp) != 2 or not isinstance(ramp[0], str):
                 raise TypeError("Expected a Ramp, RampGroup, or (drf, value) setting")
-            settings.append((prepare_for_write(ramp[0]), ramp[1]))
+            drf, value = ramp
+            if isinstance(value, BasicControl):
+                drf = prepare_for_control(drf)
+            settings.append((prepare_for_write(drf), value))
             continue
         dev = ramp.device
         if dev is None:

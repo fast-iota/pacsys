@@ -202,7 +202,7 @@ write_ramps(ramps, slot=2)              # override slot for all
 write_ramps([group, ramp, ("Z:ACLTST", 1.5)], write_mode="active")
 ```
 
-In active mode each ramp gets its own span. `(drf, value)` settings share the same backend call; their values are unchanged and the ramp slot override does not apply to them. Results follow the flattened input order. Check each result's `success`: the backend batch is not atomic and may partially succeed.
+In active mode each ramp gets its own span. `(drf, value)` settings share the same backend call; their values are unchanged and the ramp slot override does not apply to them. As with `pacsys.write_many`, a `BasicControl` value is sent to the device's CONTROL property; a `BasicControl` for an EPICS PV is rejected before any write. Results follow the flattened input order. Check each result's `success`: the backend batch is not atomic and may partially succeed.
 
 All ramp payloads are validated before the backend call. If any ramp is empty in active mode, the whole batch raises `ValueError` before writing anything, including scalar settings. To mix partial ramp updates with a ramp that needs clearing, make a separate full write for the latter.
 

@@ -21,7 +21,7 @@ from pacsys.ramp import (
     read_ramps,
     write_ramps,
 )
-from pacsys.types import ValueType
+from pacsys.types import BasicControl, ValueType
 
 
 class _TestRamp(Ramp):
@@ -63,6 +63,14 @@ def _make_ramp_bytes(pairs: list[tuple[int, int]], n_points: int = 64) -> bytes:
     for v, t in pairs:
         flat.extend([v, t])
     return struct.pack(fmt, *flat)
+
+
+def _seed_settings(fake_backend, *devices):
+    """Seed zeroed SETTING.RAW covering every slot; FakeBackend rejects ranged writes without backing data."""
+    for dev in devices:
+        fake_backend.set_reading(
+            f"{dev}.SETTING.RAW", bytes(Ramp.MAX_SLOTS * Ramp._slot_bytes()), value_type=ValueType.RAW
+        )
 
 
 class TestFromBytes:
@@ -484,6 +492,7 @@ class TestReadWrite:
             values=np.array([100.0] + [0.0] * 63),
             times=np.zeros(64),
         )
+        _seed_settings(fake_backend, "B:HS23T")
         ramp.write("B:HS23T", slot=0, backend=fake_backend)
 
         assert len(fake_backend.writes) == 1
@@ -498,6 +507,7 @@ class TestReadWrite:
     def test_write_nonzero_slot(self, fake_backend):
         """Writing to slot=3 produces correct byte offset in DRF."""
         ramp = _TestRamp(values=np.zeros(64), times=np.zeros(64))
+        _seed_settings(fake_backend, "B:HS23T")
         ramp.write("B:HS23T", slot=3, backend=fake_backend)
         drf, value = fake_backend.writes[0]
         assert "B:HS23T" in drf
@@ -538,6 +548,7 @@ class TestActiveWrites:
         ramp = _TestRamp(np.zeros(64), np.zeros(64), device="B_HS23T", slot=slot)
         ramp.values[first] = -11
         ramp.times[last] = 20
+        _seed_settings(fake_backend, "B:HS23T")
         fake_backend.get = Mock(side_effect=AssertionError("active writes must not read"))
         fake_backend.get_many = Mock(side_effect=AssertionError("active writes must not read"))
 
@@ -553,6 +564,7 @@ class TestActiveWrites:
         ramp = cls(np.zeros(64), np.zeros(64), device="B:HS23T", slot=0)
         ramp.times[3] = 0.001  # Active even though this rounds to zero ticks.
         ramp.values[8] = 0.5
+        _seed_settings(fake_backend, "B:HS23T")
         ramp.write(backend=fake_backend, write_mode="active")
         drf, payload = fake_backend.writes[0]
         assert "{12:24}" in drf
@@ -605,6 +617,7 @@ class TestActiveWrites:
         group.times[10:12, 1] = 3
         fake_backend.write_many = Mock(wraps=fake_backend.write_many)
         fake_backend.set_write_result("B:HS24T.SETTING.RAW", success=False, message="denied")
+        _seed_settings(fake_backend, "B:HS23T", "B:HS24T", "B:HS25T")
 
         results = write_ramps([ramp, ("Z:ACLTST", 2.0), group], slot=2, backend=fake_backend, write_mode=mode)
 
@@ -626,7 +639,9 @@ class TestActiveWrites:
         group = _TestRampGroup(["B:HS23T", "B:HS24T"], np.zeros((64, 2)), np.zeros((64, 2)))
         group["B:HS23T"].values[3] = 1
         group.times[8, 1] = 2
-        group.write(devices=["B_HS25T", "B_HS26T"], slot=3, backend=fake_backend, write_mode="active")
+        _seed_settings(fake_backend, "B:HS25T", "B:HS26T")
+        results = group.write(devices=["B_HS25T", "B_HS26T"], slot=3, backend=fake_backend, write_mode="active")
+        assert all(r.success for r in results)
         assert fake_backend.writes == [
             ("B:HS25T.SETTING{780:4}.RAW@I", struct.pack("<hh", 1, 0)),
             ("B:HS26T.SETTING{800:4}.RAW@I", struct.pack("<hh", 0, 2)),
@@ -645,6 +660,38 @@ class TestActiveWrites:
         fake_backend.set_write_result("B:HS23T.SETTING.RAW", success=False, message="denied")
         with pytest.raises(RuntimeError, match="denied"):
             ramp.write(backend=fake_backend, write_mode="active")
+
+    def test_active_write_needs_seeded_setting(self, fake_backend):
+        ramp = _TestRamp(np.zeros(64), np.zeros(64), device="B:HS23T", slot=1)
+        ramp.values[4] = 1
+        with pytest.raises(RuntimeError, match="set_reading"):
+            ramp.write(backend=fake_backend, write_mode="active")
+        _seed_settings(fake_backend, "B:HS23T")
+        ramp.write(backend=fake_backend, write_mode="active")
+        assert _TestRamp.read("B:HS23T", slot=1, backend=fake_backend) == ramp
+
+    @pytest.mark.parametrize("mode", ["full", "active"])
+    def test_mixed_batch_routes_basic_control_to_control(self, fake_backend, mode):
+        ramp = _TestRamp(np.zeros(64), np.zeros(64), device="B:HS23T", slot=0)
+        ramp.values[4] = 1
+        _seed_settings(fake_backend, "B:HS23T")
+        results = write_ramps(
+            [ramp, ("B:HS23T", BasicControl.RAMP), ("B|HS24T", BasicControl.ON), ("B:HS25T.SETTING", 1.5)],
+            backend=fake_backend,
+            write_mode=mode,
+        )
+        assert all(r.success for r in results)
+        assert fake_backend.writes[1:] == [
+            ("B:HS23T.CONTROL@N", BasicControl.RAMP),
+            ("B:HS24T.CONTROL@N", BasicControl.ON),
+            ("B:HS25T.SETTING@N", 1.5),
+        ]
+
+    def test_basic_control_on_epics_rejects_before_any_write(self, fake_backend):
+        ramp = _TestRamp(np.ones(64), np.zeros(64), device="B:HS23T", slot=0)
+        with pytest.raises(ValueError, match="ACNET device"):
+            write_ramps([ramp, ("Z:ACLTST", 2.0), ("SOME:EPICS:PV", BasicControl.ON)], backend=fake_backend)
+        assert fake_backend.writes == []
 
     def test_invalid_mode_rejects_even_scalar_only_batch(self, fake_backend):
         with pytest.raises(ValueError, match="Unknown write_mode"):
@@ -942,6 +989,7 @@ class TestRampDeviceSlot:
     def test_write_allows_overrides(self, fake_backend):
         _setup_devices(fake_backend, ["B:HS23T"])
         ramp = _TestRamp.read("B:HS23T", slot=0, backend=fake_backend)
+        _seed_settings(fake_backend, "B:HS24T")
         ramp.write(device="B:HS24T", slot=1, backend=fake_backend)
         drf, _ = fake_backend.writes[0]
         assert "B:HS24T" in drf
@@ -1204,7 +1252,8 @@ class TestRampGroup:
         _setup_devices(fake_backend)
         group = _TestRampGroup.read(list(_DEV_DATA), backend=fake_backend)
         new_devs = ["B:X1", "B:X2", "B:X3"]
-        group.write(devices=new_devs, backend=fake_backend)
+        _seed_settings(fake_backend, *new_devs)
+        assert all(r.success for r in group.write(devices=new_devs, backend=fake_backend))
         written_drfs = [drf for drf, _ in fake_backend.writes[-3:]]
         for drf, dev in zip(written_drfs, new_devs, strict=True):
             assert dev in drf

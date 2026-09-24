@@ -1047,6 +1047,62 @@ class TestWriteUpdatesState:
         fake.write("B:HS23T.READING[0]@N", 99)
         np.testing.assert_array_equal(fake.read("B:HS23T"), [99, 20, 30])
 
+    @pytest.mark.parametrize(
+        "drf,value",
+        [
+            ("B:HS23T.SETTING{4:2}.RAW@N", b"xy"),
+            ("B:HS23T.SETTING{0:2}.RAW@N", b"xy"),
+            ("B:HS23T.SETTING{4}.RAW@N", b"x"),
+            ("B:HS23T.SETTING{4:}.RAW@N", b"xy"),
+            ("B:HS23T.SETTING[1:2]@N", [1.0, 2.0]),
+            ("B:HS23T.SETTING[0:1]@N", [1.0, 2.0]),
+            ("B:HS23T.SETTING[:1]@N", [1.0, 2.0]),
+            ("B:HS23T.SETTING[1]@N", 1.0),
+        ],
+    )
+    def test_partial_ranged_write_without_backing_value_fails(self, drf, value):
+        """Unknown device length: a partial write cannot be modeled, so it fails without creating state."""
+        fake = FakeBackend()
+        result = fake.write(drf, value)
+        assert result.error_code == ERR_RETRY
+        assert "set_reading" in result.message
+        assert fake.writes == [(drf, value)]
+        with pytest.raises(DeviceError, match="No reading configured"):
+            fake.read("B:HS23T.SETTING@I")
+
+    def test_partial_ranged_write_without_backing_value_ignores_configured_success(self):
+        fake = FakeBackend()
+        fake.set_write_result("B:HS23T.SETTING.RAW", success=True)
+        assert not fake.write("B:HS23T.SETTING{4:2}.RAW@N", b"xy").success
+
+    def test_ranged_write_with_configured_failure_returns_it(self):
+        fake = FakeBackend()
+        fake.set_write_result("B:HS23T.SETTING.RAW", success=False, error_code=-7, message="denied")
+        result = fake.write("B:HS23T.SETTING{4:2}.RAW@N", b"xy")
+        assert (result.error_code, result.message) == (-7, "denied")
+
+    @pytest.mark.parametrize(
+        "drf,value",
+        [
+            ("B:HS23T.SETTING{:}.RAW", b"abcd"),
+            ("B:HS23T.SETTING{0:}.RAW", b"abcd"),
+            ("B:HS23T.SETTING[]", [1.0, 2.0]),
+            ("B:HS23T.SETTING[:]", [1.0, 2.0]),
+            ("B:HS23T.SETTING[0:]", [1.0, 2.0]),
+        ],
+    )
+    def test_whole_value_range_write_creates_state(self, drf, value):
+        fake = FakeBackend()
+        assert fake.write(f"{drf}@N", value).success
+        assert list(fake.read(f"{drf}@I")) == list(value)
+
+    def test_partial_byte_write_into_seeded_value(self):
+        fake = FakeBackend()
+        fake.set_reading("B:HS23T.SETTING.RAW", b"\x00" * 8, value_type=ValueType.RAW)
+        assert fake.write("B:HS23T.SETTING{4:2}.RAW@N", b"xy").success
+        assert fake.read("B:HS23T.SETTING{4:2}.RAW@I") == b"xy"
+        assert fake.read("B:HS23T.SETTING.RAW@I") == b"\x00" * 4 + b"xy" + b"\x00" * 2
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Device Integration Tests
