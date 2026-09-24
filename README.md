@@ -225,6 +225,7 @@ acget --format json M:OUTTMP
 # Write devices (requires authentication: -a kerberos, or -a jwt with -b grpc)
 acput Z:ACLTST 72.5
 acput -a kerberos -b dmq --verify --tolerance 0.5 Z:ACLTST 72.5
+acput -a kerberos --verify Z:ACLTST.ANALOG.NOM 5   # alarm field, verified in place
 
 # Monitor (streaming on default event or custom one)
 acmonitor M:OUTTMP

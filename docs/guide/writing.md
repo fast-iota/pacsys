@@ -282,6 +282,8 @@ Note: verification is a `Device.write()` feature, not a backend `write()` featur
 `WriteResult.success` reports backend write acceptance; `WriteResult.confirmed`
 also requires requested verification to succeed.
 
+`acput --verify` writes and reads back the requested target: SETTING (a bare name or READING maps to SETTING), basic control commands (verified through STATUS), or a single alarm field such as `Z:ACLTST.ANALOG.NOM`. The command checks every pair before connecting. It rejects other targets, including whole alarm blocks and ACNET RAW fields (CLI values are never bytes), and writes nothing.
+
 ---
 
 ## Error Handling
