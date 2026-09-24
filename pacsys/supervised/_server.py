@@ -245,10 +245,13 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
                 drf_indices: dict[str, list[int]] = {}
                 for i, drf in enumerate(drfs):
                     drf_indices.setdefault(drf, []).append(i)
+                # Subscribe each exact DRF once: backends may deliver per list position (DPM: one
+                # ref_id each), which the multimap would fan out again (N duplicates -> N^2 replies)
+                unique_drfs = list(drf_indices)
 
                 if isinstance(self._backend, AsyncBackend):
                     logger.debug("stream peer=%s event=started items=%d", peer, len(drfs))
-                    acquisition = asyncio.create_task(self._backend.subscribe(drfs))
+                    acquisition = asyncio.create_task(self._backend.subscribe(unique_drfs))
                     handle = await self._acquire_subscription(acquisition, peer)
                     try:
                         while not context.cancelled():
@@ -300,7 +303,7 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
 
                     logger.debug("stream peer=%s event=started items=%d", peer, len(drfs))
                     acquisition = asyncio.create_task(
-                        asyncio.to_thread(self._backend.subscribe, drfs, on_reading, on_error)
+                        asyncio.to_thread(self._backend.subscribe, unique_drfs, on_reading, on_error)
                     )
                     handle = await self._acquire_subscription(acquisition, peer)
                     try:

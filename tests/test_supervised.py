@@ -180,6 +180,54 @@ class _BlockingAsyncSubscribeBackend(AsyncFakeBackend):
         return self.handle
 
 
+class _PerPositionBackend(FakeBackend):
+    """Delivers one reading per requested list position, like DPM's one ref_id per slot."""
+
+    def __init__(self):
+        super().__init__()
+        self.subscribed = threading.Event()
+        self.subscribed_drfs: list[str] = []
+        self.handle = None
+
+    def subscribe(self, drfs, callback=None, on_error=None):
+        self.subscribed_drfs = list(drfs)
+        self.handle = super().subscribe(drfs, callback, on_error)
+        self.subscribed.set()
+        return self.handle
+
+    def emit_per_position(self, drf, value):
+        for d in self.subscribed_drfs:
+            if d == drf:
+                self.emit_reading(drf, value)
+
+    def active_subscriptions(self):
+        return list(self._subscriptions)
+
+
+class _PerPositionAsyncBackend(AsyncFakeBackend):
+    """Async variant of _PerPositionBackend."""
+
+    def __init__(self):
+        super().__init__()
+        self.subscribed = threading.Event()
+        self.subscribed_drfs: list[str] = []
+        self.handle = None
+
+    async def subscribe(self, drfs, callback=None, on_error=None):
+        self.subscribed_drfs = list(drfs)
+        self.handle = await super().subscribe(drfs, callback, on_error)
+        self.subscribed.set()
+        return self.handle
+
+    def emit_per_position(self, drf, value):
+        for d in self.subscribed_drfs:
+            if d == drf:
+                self.emit_reading(drf, value)
+
+    def active_subscriptions(self):
+        return self._handles + list(self._sync._subscriptions)
+
+
 # ── Server Lifecycle Tests ────────────────────────────────────────────────
 
 
@@ -318,6 +366,43 @@ class TestStreamingRead:
                 break
             await asyncio.sleep(0.01)
         assert backend.handle.stopped
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("backend_cls", [_PerPositionBackend, _PerPositionAsyncBackend])
+    async def test_duplicate_drfs_subscribe_once_per_unique_drf(self, backend_cls):
+        """[X, Y, X, X@other-event, X.other-field, X]: backend sees each exact DRF once, fanout keeps positions."""
+        x, y = "M:OUTTMP@p,1000", "G:AMANDA@p,1000"
+        x_event, x_field = "M:OUTTMP@p,500", "M:OUTTMP.SETTING@p,1000"
+        drfs = [x, y, x, x_event, x_field, x]
+        backend = backend_cls()
+        audit = mock.Mock()
+        audit.log_request.return_value = 1
+        servicer = _DAQServicer(backend, [], audit_log=audit)
+        context = mock.Mock()
+        context.peer.return_value = "test-peer"
+        context.invocation_metadata.return_value = []
+        context.cancelled.return_value = False
+
+        stream = servicer.Read(DAQ_pb2.ReadingList(drf=drfs), context)
+        first = asyncio.create_task(anext(stream))
+        assert await asyncio.to_thread(backend.subscribed.wait, 1.0)
+        try:
+            for drf, value in [(x, 1.0), (x_event, 2.0), (x_field, 3.0), (y, 4.0)]:
+                backend.emit_per_position(drf, value)
+            replies = [await asyncio.wait_for(first, 1.0)]
+            # FIFO delivery: Y is emitted last, so any extra X copies would precede its reply
+            while replies[-1].index != 1 and len(replies) < 20:
+                replies.append(await asyncio.wait_for(anext(stream), 1.0))
+        finally:
+            await stream.aclose()
+
+        got = [(r.index, r.readings.reading[0].data.scalar) for r in replies]
+        assert got == [(0, 1.0), (2, 1.0), (5, 1.0), (3, 2.0), (4, 3.0), (1, 4.0)]
+        assert audit.log_request.call_args.args[0].drfs == drfs
+        assert [c.args[3].index for c in audit.log_response.call_args_list] == [0, 2, 5, 3, 4, 1]
+        assert backend.subscribed_drfs == [x, y, x_event, x_field]
+        assert backend.handle.stopped
+        assert backend.active_subscriptions() == []
 
     def test_streaming_read(self, fake_backend):
         with SupervisedServer(fake_backend, port=0) as srv:
