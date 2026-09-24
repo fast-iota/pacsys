@@ -6,7 +6,7 @@ over multi-hop SSH chains using paramiko and GSSAPI (Kerberos) authentication.
 This is a standalone utility -- not a backend subclass -- useful for running
 remote commands, transferring files, and setting up tunnels (e.g., for gRPC).
 
-Requires the `kerberos` extra: `pip install pacsys[kerberos]`.
+Requires the `kerberos` extra (`pip install pacsys[kerberos]`), which pulls in Paramiko >= 3.2, < 5.
 
 ## Quick Start
 

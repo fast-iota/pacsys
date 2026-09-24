@@ -51,7 +51,7 @@ pacsys-info = "pacsys.cli.info:main"
 [project.optional-dependencies]
 kerberos = [
   "gssapi >= 1.8.0",
-  "paramiko[gssapi] >= 3.0, < 5",  # 5.x removed GSSAPI support
+  "paramiko[gssapi] >= 3.2, < 5",  # 3.2 added PKey.from_path; 5.x removed GSSAPI support
 ]
 parquet = [
   "pyarrow >= 14.0",

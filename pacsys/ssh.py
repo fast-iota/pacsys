@@ -19,7 +19,6 @@ Example:
 from __future__ import annotations
 
 import getpass
-import io
 import logging
 import re
 import select
@@ -479,44 +478,20 @@ HopSpec = str | SSHHop
 
 
 def _load_private_key(key_path: Path, hop: SSHHop) -> paramiko.PKey:
-    """Load an unencrypted RSA/ECDSA/Ed25519 key, picking the Paramiko class from file contents.
-
-    Mirrors ``PKey.from_path`` (Paramiko >= 3.2) so Paramiko 3.0/3.1 are supported too.
-    """
+    """Load an unencrypted RSA/ECDSA/Ed25519 key via ``PKey.from_path``, adding hop context to failures."""
     from cryptography.exceptions import UnsupportedAlgorithm
-    from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 
     try:
-        data = key_path.read_bytes()
+        return paramiko.PKey.from_path(key_path)
     except OSError as e:
         raise SSHConnectionError(f"Cannot read key file {key_path}: {e}", hop=hop) from e
-    try:
-        try:
-            loaded = serialization.load_ssh_private_key(data, password=None)
-        except ValueError:
-            loaded = serialization.load_pem_private_key(data, password=None)
-    except TypeError as e:
+    except TypeError as e:  # cryptography: encrypted key with no password
         raise SSHConnectionError(
             f"Key file {key_path} is encrypted; passphrase-protected keys are not supported", hop=hop
         ) from e
-    except (ValueError, UnsupportedAlgorithm) as e:
-        raise SSHConnectionError(f"Invalid private key file {key_path}: {e}", hop=hop) from e
-
-    key_class: type[paramiko.PKey]
-    if isinstance(loaded, rsa.RSAPrivateKey):
-        key_class = paramiko.RSAKey
-    elif isinstance(loaded, ed25519.Ed25519PrivateKey):
-        key_class = paramiko.Ed25519Key
-    elif isinstance(loaded, ec.EllipticCurvePrivateKey):
-        key_class = paramiko.ECDSAKey
-    else:
-        raise SSHConnectionError(
-            f"Unsupported key type {type(loaded).__name__} in {key_path} (expected RSA, ECDSA or Ed25519)", hop=hop
-        )
-    try:
-        return key_class.from_private_key(io.StringIO(data.decode("ascii")))
-    except (paramiko.SSHException, UnicodeDecodeError) as e:
+    except paramiko.UnknownKeyType as e:
+        raise SSHConnectionError(f"Unsupported key type in {key_path} (expected RSA, ECDSA or Ed25519)", hop=hop) from e
+    except (ValueError, UnsupportedAlgorithm, paramiko.SSHException) as e:
         raise SSHConnectionError(f"Invalid private key file {key_path}: {e}", hop=hop) from e
 
 
