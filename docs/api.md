@@ -23,6 +23,11 @@ These functions use a global backend that is automatically initialized on first 
       show_root_heading: true
       heading_level: 3
 
+::: pacsys.read_many
+    options:
+      show_root_heading: true
+      heading_level: 3
+
 ::: pacsys.write
     options:
       show_root_heading: true

@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/fast-iota/pacsys/actions/workflows/tests.yml"><img src="https://github.com/fast-iota/pacsys/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
   <a href="https://fast-iota.github.io/pacsys/"><img src="https://img.shields.io/badge/docs-available-blue" alt="Documentation"></a>
-  <a href="https://github.com/fast-iota/pacsys/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-green" alt="License: GPL-3.0"></a>
+  <a href="https://github.com/fast-iota/pacsys/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-green" alt="License: GPL-3.0"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python 3.10+"></a>
 </p>
 
@@ -115,7 +115,9 @@ with pacsys.dpm(auth=pacsys.KerberosAuth(), role="testing") as backend:
 Native async versions with the same API surface (`AsyncDevice` mirrors `Device` except `info()`, which needs the sync DevDB client).
 
 ```python
+import pacsys
 import pacsys.aio as aio
+from pacsys.aio import AsyncDevice
 
 # Module-level API (mirrors pacsys.read, pacsys.get, etc.)
 value = await aio.read("M:OUTTMP")
@@ -125,17 +127,15 @@ reading = await aio.get("M:OUTTMP")
 async with aio.dpm(auth=pacsys.KerberosAuth()) as backend:
     await backend.write("Z:ACLTST", 72.5)
 
-# Async streaming
-async with await backend.subscribe(["M:OUTTMP@p,1000"]) as stream:
-    async for reading, handle in stream.readings(timeout=30):
-        print(f"{reading.name}: {reading.value}")
+    # Async streaming
+    async with await backend.subscribe(["M:OUTTMP@p,1000"]) as stream:
+        async for reading, handle in stream.readings(timeout=30):
+            print(f"{reading.name}: {reading.value}")
 
-# AsyncDevice
-from pacsys.aio import AsyncDevice
-
-dev = AsyncDevice("M:OUTTMP", backend=backend)
-temp = await dev.read()
-await dev.on()
+    # AsyncDevice
+    dev = AsyncDevice("M:OUTTMP", backend=backend)
+    temp = await dev.read()
+    await dev.on()
 ```
 
 ## SSH Utilities
@@ -223,7 +223,7 @@ acget M:OUTTMP Z:ACLTST
 acget --format json M:OUTTMP
 
 # Write devices (requires authentication: -a kerberos, or -a jwt with -b grpc)
-acput Z:ACLTST 72.5
+acput -a kerberos Z:ACLTST 72.5
 acput -a kerberos -b dmq --verify --tolerance 0.5 Z:ACLTST 72.5
 acput -a kerberos --verify Z:ACLTST.ANALOG.NOM 5   # alarm field, verified in place
 

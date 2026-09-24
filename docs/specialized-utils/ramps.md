@@ -100,6 +100,7 @@ For `RampGroup`, `.cumtimes` operates column-wise (per device).
 ## Read/Write
 
 ```python
+import numpy as np
 from pacsys.ramp import BoosterHVRamp
 
 # Read - stores device and slot on the ramp
@@ -110,12 +111,16 @@ print(ramp.cumtimes)  # float64 array, absolute microseconds
 ramp.device  # "B:HS23T"
 ramp.slot    # 0
 
-# Modify
+# Modify - replaces the whole table: zero the tail so old points can't exceed max_time
+ramp.values[:] = 0
+ramp.times[:] = 0
 ramp.values[:8] = [1.0, 2.0, 3.0, 4.0, 4.0, 3.0, 2.0, 1.0]  # Amps
-ramp.times[:8] = [0, 10000, 20000, 30000, 40000, 50000, 60000, 70000]  # delta microseconds
+ramp.times[:8] = [0, 5000, 5000, 5000, 5000, 5000, 5000, 5000]  # delta microseconds
 
-# Or set absolute times (automatically converted to deltas)
-ramp.cumtimes = np.array([0, 10000, 30000, 60000, ...])
+# Or set equivalent absolute times (automatically converted to deltas)
+cumtimes = np.full(ramp.POINTS_PER_SLOT, 35000.0)  # tail holds the last time (zero deltas)
+cumtimes[:8] = [0, 5000, 10000, 15000, 20000, 25000, 30000, 35000]
+ramp.cumtimes = cumtimes
 
 # Write back (uses stored device/slot)
 ramp.write()
