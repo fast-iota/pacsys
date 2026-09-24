@@ -486,19 +486,16 @@ class TestForwardingRoundTrip:
         drf = "M:OUTTMP@p,1000"
         with _make_channel(server) as ch:
             stream = DAQ_pb2_grpc.DAQStub(ch).Read(DAQ_pb2.ReadingList(drf=[drf]), timeout=3.0)
-
-            def emit():
-                _wait_subscribed(fake_backend)
+            try:
+                # RPC starts eagerly; the server may already be subscribed here
+                assert fake_backend.wait_for_subscription(drf)
                 timed = {"data": np.array([1.0, 2.0]), "micros": np.array([_T0_US, _T0_US + 1], dtype=np.int64)}
                 fake_backend.emit_reading(drf, timed, value_type=ValueType.TIMED_SCALAR_ARRAY)
                 fake_backend.emit_reading(drf, np.zeros((2, 2)), value_type=ValueType.SCALAR_ARRAY)
                 fake_backend.emit_reading(drf, 7.0)
-
-            emitter = threading.Thread(target=emit, daemon=True)
-            emitter.start()
-            replies = [next(stream) for _ in range(3)]
-            stream.cancel()
-            emitter.join(timeout=2.0)
+                replies = [next(stream) for _ in range(3)]
+            finally:
+                stream.cancel()
 
         timed, bad, scalar = replies
         assert [rd.data.scalar for rd in timed.readings.reading] == [1.0, 2.0]
