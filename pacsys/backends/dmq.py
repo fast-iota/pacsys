@@ -2627,7 +2627,8 @@ class DMQBackend(Backend):
     def stop_streaming(self) -> None:
         """Stop all streaming subscriptions.
 
-        Cancels all subscriptions and closes the SelectConnection.
+        The SelectConnection is shared with one-shot reads and write sessions,
+        so it stays open until close().
         """
         logger.debug("Stopping all streaming")
 
@@ -2639,8 +2640,19 @@ class DMQBackend(Backend):
             sub.handle._stop_requested = True
             sub.handle._signal_stop()
             self._cancel_subscription_async(sub)
+        logger.info("All streaming stopped")
 
-        # Close the SelectConnection and stop the IO thread
+    def close(self) -> None:
+        """Close the backend and release all resources."""
+        if self._closed:
+            return
+
+        self._closed = True
+        self.stop_streaming()
+
+        # Close the SelectConnection and stop the IO thread. Write state
+        # (_write_sessions) is cleared on the IO thread during connection close
+        # to avoid cross-thread mutation.
         conn = self._select_connection
         io_thread = self._io_thread
         if conn is not None and conn.is_open:
@@ -2663,19 +2675,6 @@ class DMQBackend(Backend):
                     self._io_thread = None
                 if self._select_connection is conn:
                     self._select_connection = None
-        logger.info("All streaming stopped")
-
-    def close(self) -> None:
-        """Close the backend and release all resources."""
-        if self._closed:
-            return
-
-        self._closed = True
-
-        # Stop streaming and close SelectConnection
-        # Write state (_write_sessions) is cleared on the IO thread during
-        # connection close to avoid cross-thread mutation.
-        self.stop_streaming()
         self._dispatcher.close()
 
         # After IO thread has joined, safe to clear any remnants
