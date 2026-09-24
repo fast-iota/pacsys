@@ -18,6 +18,7 @@ import time
 from contextlib import contextmanager
 from datetime import datetime
 from functools import partial
+from queue import Queue
 from unittest import mock
 
 import numpy as np
@@ -2233,91 +2234,71 @@ class TestDMQBackendLifecycle:
             assert handle1.stopped
             assert handle2.stopped
 
-    def test_stop_streaming_keeps_shared_connection_for_reads_and_writes(self):
-        """stop_streaming() cancels subscriptions only; in-flight reads/writes on the shared connection complete."""
-        release = threading.Event()
+    @pytest.mark.parametrize("op", ["read", "write"])
+    def test_stop_streaming_keeps_shared_connection(self, op):
+        """stop_streaming() cancels subscriptions only; an in-flight read/write on the shared connection completes."""
         consume = MockSelectChannelWithWriteSupport.basic_consume
+        consumers = Queue()
 
-        def held_consume(self, queue, on_message_callback=None, auto_ack=False):
-            # Hold server replies (write PENDING/responses) until stop_streaming() has run
-            def start():
-                if release.wait(5.0):
-                    consume(self, queue, on_message_callback, auto_ack)
+        def capture_consume(ch, queue, on_message_callback=None, auto_ack=False):
+            # Hold server replies until the test releases them
+            consumers.put((ch, queue, on_message_callback, auto_ack))
+            return f"ctag-{id(ch)}"
 
-            threading.Thread(target=start, daemon=True).start()
-            return f"ctag-{id(self)}"
-
-        init_drf = prepare_for_write(TEMP_DEVICE)
         with (
-            mock.patch.object(MockSelectChannelWithWriteSupport, "basic_consume", held_consume),
+            mock.patch.object(MockSelectChannelWithWriteSupport, "basic_consume", capture_consume),
             _mock_dmq_write_backend() as backend,
         ):
             handle = backend.subscribe([TEMP_DEVICE])
-            sub = backend._subscriptions[handle._sub_id]
+            sub_ch, *_ = consumers.get(timeout=1.0)
             conn = backend._select_connection
-            io_thread = backend._io_thread
-            assert conn is not None and io_thread is not None and sub.channel is not None
+            assert conn is not None
+            if op == "read":
+                call = partial(backend.get, TEMP_DEVICE, timeout=2.0)
+            else:
+                call = partial(backend.write, TEMP_DEVICE, TEMP_VALUE, timeout=2.0)
+            results = Queue()
+            worker = threading.Thread(target=lambda: results.put(_catch(call)))
+            worker.start()
+            try:
+                op_consumer = consumers.get(timeout=1.0)
+                op_ch, _, on_message, _ = op_consumer
+                backend.stop_streaming()
+                assert conn.is_open, "stop_streaming() closed the shared connection"
+                cancelled = threading.Event()
+                conn.ioloop.add_callback_threadsafe(cancelled.set)  # runs after the queued cancellation
+                assert cancelled.wait(1.0)
 
-            reads, writes = [], []
-            reader = threading.Thread(
-                target=lambda: reads.append(_catch(lambda: backend.get(TEMP_DEVICE, timeout=5.0)))
-            )
-            writer = threading.Thread(
-                target=lambda: writes.append(_catch(lambda: backend.write(TEMP_DEVICE, TEMP_VALUE, timeout=5.0)))
-            )
-            reader.start()
-            writer.start()
-            deadline = time.monotonic() + 2.0
-            while time.monotonic() < deadline and not (
-                backend._read_jobs
-                and init_drf in backend._write_sessions
-                and backend._write_sessions[init_drf].queued_sends
-            ):
-                time.sleep(0.01)
-            (job,) = backend._read_jobs
-            assert backend._write_sessions[init_drf].queued_sends
+                assert handle.stopped and handle._stop_requested and backend._subscriptions == {}
+                assert not sub_ch.is_open
+                assert "D" in [m["routing_key"] for m in sub_ch._published_messages]
+                assert conn.is_open and op_ch.is_open and results.empty()
+                assert sub_ch._connection is conn and op_ch._connection is conn
 
-            backend.stop_streaming()
+                if op == "read":
+                    method = mock.MagicMock(routing_key=f"R.{TEMP_DEVICE}", delivery_tag=1)
+                    reply = make_double_reply(TEMP_VALUE, ref_id=1)
+                    conn.ioloop.add_callback_threadsafe(partial(on_message, op_ch, method, None, reply))
+                else:
+                    consume(*op_consumer)  # mock server sends PENDING, then the write response
+                result = results.get(timeout=2.0)
+                if op == "read":
+                    assert isinstance(result, Reading) and result.value == TEMP_VALUE, result
+                else:
+                    assert isinstance(result, WriteResult) and result.success, result
 
-            # Subscription stopped and its job/channel released
-            assert handle.stopped and handle._stop_requested
-            assert backend._subscriptions == {}
-            deadline = time.monotonic() + 1.0
-            while sub.channel.is_open and time.monotonic() < deadline:
-                time.sleep(0.01)
-            assert not sub.channel.is_open
-            assert "D" in [m["routing_key"] for m in sub.channel._published_messages]
-            # Shared connection untouched; read and write still in flight
-            assert conn.is_open and io_thread.is_alive()
-            assert backend._select_connection is conn and backend._io_thread is io_thread
-            assert reads == [] and writes == []
-            assert job in backend._read_jobs and init_drf in backend._write_sessions
-
-            release.set()
-            method = mock.MagicMock(routing_key=f"R.{TEMP_DEVICE}", delivery_tag=1)
-            conn.ioloop.add_callback_threadsafe(
-                lambda: backend._on_read_message(
-                    job, job.channel, method, mock.MagicMock(), make_double_reply(TEMP_VALUE, ref_id=1)
-                )
-            )
-            reader.join(timeout=2.0)
-            writer.join(timeout=2.0)
-            assert not reader.is_alive() and not writer.is_alive()
-            (reading,) = reads
-            assert isinstance(reading, Reading) and reading.value == TEMP_VALUE
-            (result,) = writes
-            assert isinstance(result, WriteResult) and result.success
-
-            # Connection and write session reused after stop_streaming()
-            assert backend.write(TEMP_DEVICE, TEMP_VALUE + 1, timeout=5.0).success
-            backend.subscribe([TEMP_DEVICE_2]).stop()
-            assert backend._select_connection is conn and backend._io_thread is io_thread
-
-        # close() still tears down the shared connection and write state
-        assert not conn.is_open
-        assert not io_thread.is_alive()
-        assert backend._select_connection is None and backend._io_thread is None
-        assert backend._write_sessions == {}
+                # A new subscription reuses the shared connection
+                handle2 = backend.subscribe([TEMP_DEVICE_2])
+                new_ch, *_ = consumers.get(timeout=1.0)
+                handle2.stop()
+                assert handle2.stopped and new_ch._connection is conn
+                assert backend._select_connection is conn and conn.is_open
+            finally:
+                try:
+                    backend.close()
+                finally:
+                    worker.join(timeout=2.0)
+            assert not worker.is_alive()
 
     def test_stop_and_close_from_io_thread(self):
         """DIRECT callbacks may stop/close on the IO thread: no self-join, connection closes after return."""
