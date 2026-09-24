@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 _ROOT = Path(__file__).parents[1]
 
 
@@ -127,6 +129,36 @@ assert "asyncio" not in sys.modules
 backend._ensure_reactor()
 assert "asyncio" in sys.modules
 backend.close()
+"""
+    )
+
+
+def test_wildcard_import_without_mcp_extra():
+    _run_isolated(
+        """
+import sys
+
+sys.modules["mcp"] = None
+from pacsys import *
+
+try:
+    from pacsys import create_server
+except ImportError as e:
+    assert "mcp" in str(e)
+else:
+    raise AssertionError("create_server imported without mcp")
+"""
+    )
+
+
+def test_explicit_create_server_import_with_mcp_extra():
+    pytest.importorskip("mcp")
+    _run_isolated(
+        """
+from pacsys import create_server
+from pacsys.mcp import create_server as mcp_create_server
+
+assert create_server is mcp_create_server
 """
     )
 

@@ -1041,8 +1041,7 @@ __all__ = [
     "StatusBitDef",
     "ExtStatusBitDef",
     "ControlCommandDef",
-    # MCP server
-    "create_server",
+    # create_server stays lazy-only: `import *` must not require the mcp extra
     # Simple API functions
     "read",
     "read_many",
