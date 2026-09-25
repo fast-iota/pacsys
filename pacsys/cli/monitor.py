@@ -95,7 +95,7 @@ def main() -> int:
                     reference_time=reference_time,
                 )
                 print(line, flush=True)
-                counts[reading.name] += 1
+                counts[reading.drf] += 1
                 total += 1
                 if not reading.ok:
                     has_error = True
@@ -111,7 +111,7 @@ def main() -> int:
 
     # Print summary to stderr
     elapsed = time.monotonic() - t0
-    parts = [f"{n} readings from {dev}" for dev, n in counts.items()]
+    parts = [f"{n} readings from {drf}" for drf, n in counts.items()]
     summary = ", ".join(parts)
     print(f"--- {summary} (total in {elapsed:.1f}s) ---", file=sys.stderr)
 

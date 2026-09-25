@@ -8,6 +8,18 @@ convenience keys). For round-trippable serialization use ``Reading.to_dict()``
 from pacsys.types import Reading, WriteResult, _value_to_json
 
 
+def _add_status(d: dict, status: Reading | WriteResult, failure: str) -> None:
+    """Add non-success status codes, ``message`` (usable results) or ``error`` (failures)."""
+    if status.error_code != 0:
+        d["facility_code"] = status.facility_code
+        d["error_code"] = status.error_code
+    if status.ok:
+        if status.message:
+            d["message"] = status.message
+    else:
+        d["error"] = status.message or f"{failure} (facility={status.facility_code}, error={status.error_code})"
+
+
 def reading_to_dict(reading: Reading) -> dict:
     """Convert a Reading to a JSON-safe dict for MCP tool output."""
     d: dict = {
@@ -22,8 +34,7 @@ def reading_to_dict(reading: Reading) -> dict:
         d["timestamp"] = reading.timestamp.isoformat()
     if reading.cycle is not None:
         d["cycle"] = reading.cycle
-    if not reading.ok:
-        d["error"] = reading.message or f"Read failed (facility={reading.facility_code}, error={reading.error_code})"
+    _add_status(d, reading, "Read failed")
     return d
 
 
@@ -35,6 +46,5 @@ def write_result_to_dict(result: WriteResult) -> dict:
     }
     if result.message:
         d["message"] = result.message
-    if not result.ok:
-        d["error"] = result.message
+    _add_status(d, result, "Write failed")
     return d

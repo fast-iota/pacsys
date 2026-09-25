@@ -27,10 +27,11 @@ def test_scalar_reading():
 
 
 def test_error_reading():
-    r = Reading(drf="M:BADDEV", error_code=-42, message="DIO_NO_SUCH - device not found")
+    r = Reading(drf="M:BADDEV", facility_code=16, error_code=-42, message="DIO_NO_SUCH - device not found")
     d = reading_to_dict(r)
     assert d["ok"] is False
     assert d["value"] is None
+    assert (d["facility_code"], d["error_code"]) == (16, -42)
     assert d["error"] == "DIO_NO_SUCH - device not found"
 
 
@@ -66,13 +67,28 @@ def test_none_value_reading():
     assert d["value"] is None
 
 
-def test_status_only_warning_includes_diagnostic():
-    r = Reading(drf="Z:NOTFND", facility_code=17, error_code=1, message="DPM_PEND")
+def test_warning_reading_includes_diagnostic():
+    usable = reading_to_dict(
+        Reading(
+            drf="M:OUTTMP",
+            value_type=ValueType.SCALAR,
+            value=72.5,
+            facility_code=17,
+            error_code=2,
+            message="stale",
+        )
+    )
+    status_only = reading_to_dict(Reading(drf="Z:NOTFND", facility_code=17, error_code=1, message="DPM_PEND"))
 
-    d = reading_to_dict(r)
-
-    assert d["ok"] is False
-    assert d["error"] == "DPM_PEND"
+    assert usable["ok"] is True
+    assert usable["value"] == 72.5
+    assert (usable["facility_code"], usable["error_code"]) == (17, 2)
+    assert usable["message"] == "stale"
+    assert "error" not in usable
+    assert status_only["ok"] is False
+    assert (status_only["facility_code"], status_only["error_code"]) == (17, 1)
+    assert status_only["error"] == "DPM_PEND"
+    assert "message" not in status_only
 
 
 def test_write_result_success():
@@ -84,7 +100,15 @@ def test_write_result_success():
 
 
 def test_write_result_error():
-    wr = WriteResult(drf="Z:ACLTST", error_code=-1, message="Permission denied")
-    d = write_result_to_dict(wr)
-    assert d["ok"] is False
-    assert d["error"] == "Permission denied"
+    denied = write_result_to_dict(
+        WriteResult(drf="Z:ACLTST", facility_code=1, error_code=-1, message="Permission denied")
+    )
+    silent = write_result_to_dict(WriteResult(drf="Z:ACLTST", facility_code=17, error_code=-44))
+
+    assert denied["ok"] is False
+    assert (denied["facility_code"], denied["error_code"]) == (1, -1)
+    assert denied["message"] == denied["error"] == "Permission denied"
+    assert silent["ok"] is False
+    assert (silent["facility_code"], silent["error_code"]) == (17, -44)
+    assert silent["error"] == "Write failed (facility=17, error=-44)"
+    assert "message" not in silent

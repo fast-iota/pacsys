@@ -193,9 +193,13 @@ On error:
   "name": "M:BADDEV",
   "drf": "M:BADDEV",
   "value": null,
+  "facility_code": 16,
+  "error_code": -42,
   "error": "DIO_NO_SUCH - device not found"
 }
 ```
+
+Any non-zero status adds `facility_code` and `error_code`. A warning (`error_code > 0`) with usable data stays `"ok": true` and carries its text in `message`; failures carry `error` (the status message, or `"Read failed (facility=F, error=E)"` when there is none).
 
 ### write_device
 
@@ -218,6 +222,12 @@ On denial:
 
 ```json
 {"ok": false, "drf": "Z:ACLTST.SETTING@N", "error": "Value 200.0 for Z:ACLTST outside range [0.0, 100.0]"}
+```
+
+A backend write failure also includes the status codes; `error` falls back to `"Write failed (facility=F, error=E)"` when the server sends no message:
+
+```json
+{"ok": false, "drf": "Z:ACLTST.SETTING@N", "facility_code": 17, "error_code": -44, "error": "Write failed (facility=17, error=-44)"}
 ```
 
 ### device_info

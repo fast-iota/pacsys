@@ -690,7 +690,7 @@ class TestSetAuditAndCommit:
                 assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED
             assert len(decisions) == 1
             assert not decisions[0].allowed
-            assert "G:AMANDA" in decisions[0].reason
+            assert decisions[0].reason == "No write policy approves: G:AMANDA"
             assert fb.writes == []
         finally:
             srv.stop()
@@ -719,8 +719,10 @@ class TestSetAuditAndCommit:
                 with pytest.raises(grpc.RpcError) as exc_info:
                     list(stub.Read(request, timeout=5.0))
                 assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED
+                assert exc_info.value.details() == "Read denied by policy: M:OUTTMP"
             assert len(decisions) == 1
             assert not decisions[0].allowed
+            assert decisions[0].reason == "Read denied by policy: M:OUTTMP"
             assert fb.reads == []
         finally:
             srv.stop()

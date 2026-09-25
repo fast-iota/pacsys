@@ -153,14 +153,16 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
             return ctx, PolicyDecision(allowed=True, ctx=ctx)
         return ctx, evaluate_policies(self._policies, ctx)
 
-    def _unapproved_decision(self, drfs, decision) -> PolicyDecision | None:
+    def _unapproved_decision(self, drfs, decision, rpc_method: str) -> PolicyDecision | None:
         """Return a denial for unapproved slots after an allowed policy chain."""
         assert decision.ctx is not None
         unapproved = set(range(len(drfs))) - set(decision.ctx.allowed)
         if not unapproved:
             return None
         names = ", ".join(get_device_name(drfs[i]) for i in sorted(unapproved))
-        if not any(p.allows_writes for p in self._policies):
+        if rpc_method == "Read":
+            reason = f"Read denied by policy: {names}"
+        elif not any(p.allows_writes for p in self._policies):
             reason = "No policy explicitly allows write operations"
         else:
             reason = f"No write policy approves: {names}"
@@ -213,7 +215,7 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
             return
 
         if decision.allowed:
-            decision = self._unapproved_decision(drfs, decision) or decision
+            decision = self._unapproved_decision(drfs, decision, "Read") or decision
         seq = self._audit_request(req_ctx, decision)
 
         if not decision.allowed:
@@ -386,7 +388,7 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
             return DAQ_pb2.SettingReply()
 
         if decision.allowed:
-            decision = self._unapproved_decision(drfs, decision) or decision
+            decision = self._unapproved_decision(drfs, decision, "Set") or decision
         try:
             seq = self._audit_request(req_ctx, decision, required=decision.allowed)
         except Exception as e:  # noqa: BLE001 - already logged in _audit_request

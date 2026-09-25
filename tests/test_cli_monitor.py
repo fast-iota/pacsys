@@ -315,9 +315,9 @@ class TestSummaryPrinted:
     def test_summary_printed(self, mock_mb):
         from pacsys.cli.monitor import main
 
-        r1 = _make_reading(value=72.5, name="M:OUTTMP")
-        r2 = _make_reading(value=73.0, name="M:OUTTMP")
-        r3 = _make_reading(drf="G:AMANDA@p,1000", value=1.23, name="G:AMANDA", units="mm")
+        r1 = _make_reading(value=72.5)
+        r2 = _make_reading(value=73.0)
+        r3 = _make_reading(drf="M:OUTTMP.SETTING@p,1000", value=70.0)  # same device, distinct DRF
         handle = _make_handle([r1, r2, r3])
 
         backend = mock.MagicMock()
@@ -326,12 +326,11 @@ class TestSummaryPrinted:
 
         buf = io.StringIO()
         err = io.StringIO()
-        with mock.patch("sys.argv", ["acmonitor", "M:OUTTMP", "G:AMANDA"]):
+        with mock.patch("sys.argv", ["acmonitor", "M:OUTTMP", "M:OUTTMP.SETTING"]):
             with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
                 rc = main()
 
         assert rc == 0
-        summary = err.getvalue()
-        assert "---" in summary
-        assert "2 readings from M:OUTTMP" in summary
-        assert "1 readings from G:AMANDA" in summary
+        assert err.getvalue().startswith(
+            "--- 2 readings from M:OUTTMP@p,1000, 1 readings from M:OUTTMP.SETTING@p,1000 (total in "
+        )
