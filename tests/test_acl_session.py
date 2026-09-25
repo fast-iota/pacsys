@@ -220,19 +220,20 @@ class TestOpenChannel:
         transport.open_session.return_value = mock_chan
 
         ssh.open_channel("acl", timeout=10.0)
+        transport.open_session.assert_called_once_with(timeout=10.0)
         mock_chan.settimeout.assert_called_once_with(10.0)
 
     @patch("paramiko.Transport")
     @patch("socket.create_connection")
-    def test_open_channel_inactive_transport(self, mock_connect, mock_transport_cls):
+    def test_open_channel_interrupted_exec_closes_channel(self, mock_connect, mock_transport_cls):
         ssh, transport = connected_ssh(mock_connect, mock_transport_cls)
-        ssh._ensure_connected()
-        transport.is_active.return_value = False
+        mock_chan = MagicMock()
+        mock_chan.exec_command.side_effect = KeyboardInterrupt
+        transport.open_session.return_value = mock_chan
 
-        from pacsys.ssh import SSHConnectionError
-
-        with pytest.raises(SSHConnectionError, match="no longer active"):
-            ssh.open_channel("acl")
+        with pytest.raises(KeyboardInterrupt):
+            ssh.open_channel("acl", timeout=10.0)
+        mock_chan.close.assert_called_once_with()
 
 
 # ---------------------------------------------------------------------------

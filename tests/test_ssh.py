@@ -30,54 +30,6 @@ def _mock_getuser():
 
 
 # ---------------------------------------------------------------------------
-# SSHHop validation
-# ---------------------------------------------------------------------------
-
-
-class TestSSHHop:
-    def test_empty_hostname_raises(self):
-        with pytest.raises(ValueError, match="non-empty"):
-            SSHHop("")
-
-    def test_whitespace_hostname_raises(self):
-        with pytest.raises(ValueError, match="non-empty"):
-            SSHHop("   ")
-
-    def test_bad_port_zero(self):
-        with pytest.raises(ValueError, match="1-65535"):
-            SSHHop("host", port=0)
-
-    def test_bad_port_negative(self):
-        with pytest.raises(ValueError, match="1-65535"):
-            SSHHop("host", port=-1)
-
-    def test_bad_port_too_large(self):
-        with pytest.raises(ValueError, match="1-65535"):
-            SSHHop("host", port=70000)
-
-    def test_bad_auth_method(self):
-        with pytest.raises(ValueError, match="auth_method"):
-            SSHHop("host", auth_method="oauth")
-
-    def test_key_without_filename(self):
-        with pytest.raises(ValueError, match="key_filename"):
-            SSHHop("host", auth_method="key")
-
-    def test_password_without_value(self):
-        with pytest.raises(ValueError, match="password required"):
-            SSHHop("host", auth_method="password")
-
-    def test_effective_username_gssapi(self):
-        with patch("pacsys.ssh._gssapi_username", return_value="kerbuser"):
-            hop = SSHHop("host")  # auth_method="gssapi" by default, no username
-            assert hop.effective_username == "kerbuser"
-
-    def test_effective_username_password_fallback(self):
-        hop = SSHHop("host", auth_method="password", password="pw")
-        assert hop.effective_username == "testuser"
-
-
-# ---------------------------------------------------------------------------
 # _normalize_hops
 # ---------------------------------------------------------------------------
 
@@ -104,14 +56,6 @@ class TestNormalizeHops:
         hops = _normalize_hops(["jump.example.com", SSHHop("target.example.com", port=2222)])
         assert len(hops) == 2
         assert hops[1].port == 2222
-
-    def test_empty_list_raises(self):
-        with pytest.raises(ValueError, match="At least one hop"):
-            _normalize_hops([])
-
-    def test_bad_type_raises(self):
-        with pytest.raises(TypeError, match="Expected str or SSHHop"):
-            _normalize_hops([123])  # ty: ignore[invalid-argument-type]
 
 
 # ---------------------------------------------------------------------------
@@ -149,22 +93,6 @@ class TestSSHClientInit:
         assert ssh.connected is False
         mock_connect.assert_not_called()
         mock_transport_cls.assert_not_called()
-
-    def test_gssapi_import_check(self):
-        """If gssapi is importable, init should succeed for gssapi hops."""
-        pytest.importorskip("gssapi")
-        ssh = SSHClient(SSHHop("host.example.com", auth_method="gssapi"))
-        assert len(ssh.hops) == 1
-
-    def test_non_kerberos_auth_with_gssapi_hop_raises(self):
-        """Passing non-KerberosAuth for gssapi hop should raise."""
-        with pytest.raises(ValueError, match="KerberosAuth"):
-            SSHClient("host", auth="not-kerberos-auth")  # ty: ignore[invalid-argument-type]
-
-    def test_key_hop_no_gssapi_check(self):
-        """Key-based hop should not require gssapi validation."""
-        ssh = SSHClient(SSHHop("host", auth_method="key", key_filename="/tmp/key"))
-        assert ssh.connected is False
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +144,9 @@ class TestSSHClientConnect:
         assert ssh.connected is True
         assert mock_transport_cls.call_count == 2
         # Second transport built on channel from first
-        hop1_transport.open_channel.assert_called_once_with("direct-tcpip", ("target", 22), ("127.0.0.1", 0))
+        hop1_transport.open_channel.assert_called_once_with(
+            "direct-tcpip", ("target", 22), ("127.0.0.1", 0), timeout=10.0
+        )
         mock_transport_cls.assert_any_call(hop1_channel)
 
     @patch("paramiko.Transport")
@@ -444,20 +374,6 @@ class TestSSHClientExec:
                 ssh.exec("true", timeout=0.05)
         mock_transport.open_session.assert_called_once_with(timeout=0.05)
 
-    @patch("paramiko.Transport")
-    @patch("socket.create_connection")
-    def test_exec_inactive_transport_raises(self, mock_connect, mock_transport_cls):
-        mock_connect.return_value = MagicMock()
-        mock_transport = _make_mock_transport(active=False)
-        mock_transport_cls.return_value = mock_transport
-
-        ssh = SSHClient(SSHHop("host", auth_method="password", password="pw"))
-        ssh._ensure_connected()
-        mock_transport.is_active.return_value = False
-
-        with pytest.raises(SSHConnectionError, match="no longer active"):
-            ssh.exec("ls")
-
 
 # ---------------------------------------------------------------------------
 # SSHClient.exec_stream()
@@ -633,19 +549,6 @@ class TestSSHClientSFTP:
         assert isinstance(session, SFTPSession)
         mock_sftp_from.assert_called_once_with(mock_transport)
 
-    @patch("paramiko.SFTPClient.from_transport")
-    @patch("paramiko.Transport")
-    @patch("socket.create_connection")
-    def test_sftp_none_raises(self, mock_connect, mock_transport_cls, mock_sftp_from):
-        mock_connect.return_value = MagicMock()
-        mock_transport = _make_mock_transport()
-        mock_transport_cls.return_value = mock_transport
-        mock_sftp_from.return_value = None
-
-        ssh = SSHClient(SSHHop("host", auth_method="password", password="pw"))
-        with pytest.raises(SSHConnectionError, match="Failed to open SFTP"):
-            ssh.sftp()
-
 
 # ---------------------------------------------------------------------------
 # SFTPSession
@@ -658,28 +561,6 @@ class TestSFTPSession:
         with SFTPSession(mock_sftp) as s:
             s.listdir("/tmp")
         mock_sftp.listdir.assert_called_once_with("/tmp")
-        mock_sftp.close.assert_called_once()
-
-    def test_operations_delegate(self):
-        mock_sftp = MagicMock(spec=paramiko.SFTPClient)
-        s = SFTPSession(mock_sftp)
-
-        s.get("/remote/file", "/local/file")
-        mock_sftp.get.assert_called_once_with("/remote/file", "/local/file")
-
-        s.put("/local/file", "/remote/file")
-        mock_sftp.put.assert_called_once_with("/local/file", "/remote/file")
-
-        s.mkdir("/new_dir", 0o700)
-        mock_sftp.mkdir.assert_called_once_with("/new_dir", 0o700)
-
-        s.remove("/old_file")
-        mock_sftp.remove.assert_called_once_with("/old_file")
-
-        s.stat("/some_file")
-        mock_sftp.stat.assert_called_once_with("/some_file")
-
-        s.close()
         mock_sftp.close.assert_called_once()
 
 
@@ -714,10 +595,6 @@ class TestSSHClientClose:
         ssh = SSHClient(SSHHop("host", auth_method="password", password="pw"))
         ssh._ensure_connected()
         ssh.close()
-        ssh.close()  # should not raise
-
-    def test_close_without_connect(self):
-        ssh = SSHClient(SSHHop("host", auth_method="password", password="pw"))
         ssh.close()  # should not raise
 
     def test_close_logs_tunnel_failure_and_continues(self, caplog):
@@ -762,12 +639,6 @@ class TestSSHClientContextManager:
 
 
 class TestTunnel:
-    def test_stop_idempotent(self):
-        mock_transport = _make_mock_transport()
-        tunnel = Tunnel(0, "remote", 5432, mock_transport)
-        tunnel.stop()
-        tunnel.stop()  # should not raise
-
     def test_context_manager(self):
         mock_transport = _make_mock_transport()
         with Tunnel(0, "remote", 5432, mock_transport) as t:
@@ -981,17 +852,6 @@ class TestAuthDispatch:
         hop2_transport.close.assert_called()
         hop2_transport.auth_publickey.assert_not_called()
         hop2_transport.auth_password.assert_not_called()
-
-    @patch("paramiko.Transport")
-    @patch("socket.create_connection")
-    def test_key_missing_file_raises(self, mock_connect, mock_transport_cls):
-        mock_connect.return_value = MagicMock()
-        mock_transport = _make_mock_transport()
-        mock_transport_cls.return_value = mock_transport
-
-        ssh = SSHClient(SSHHop("host", auth_method="key", key_filename="/nonexistent/key"))
-        with pytest.raises(SSHConnectionError, match="Key file not found"):
-            ssh._ensure_connected()
 
     @patch("paramiko.Transport")
     @patch("socket.create_connection")

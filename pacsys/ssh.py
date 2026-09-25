@@ -226,6 +226,8 @@ class Tunnel:
 
                 try:
                     _bidirectional_forward(self.request, chan, tunnel._stop_event)
+                except ConnectionError as e:
+                    logger.debug("Tunnel peer disconnected: %s", e)
                 finally:
                     chan.close()
 
@@ -607,6 +609,7 @@ class SSHClient:
                         "direct-tcpip",
                         (hop.hostname, hop.port),
                         ("127.0.0.1", 0),
+                        timeout=self._connect_timeout,
                     )
                     self._channels.append(chan)
                     current_transport = paramiko.Transport(chan)
@@ -882,7 +885,8 @@ class SSHClient:
 
         Args:
             command: Command to execute on the remote host
-            timeout: Channel timeout in seconds (None = no timeout)
+            timeout: Timeout in seconds for session opening and channel reads/writes
+                (None = Paramiko's default for opening, blocking reads/writes)
 
         Returns:
             paramiko.Channel with the command running and stdin open
@@ -891,10 +895,13 @@ class SSHClient:
         if not transport.is_active():
             raise SSHConnectionError("Transport is no longer active")
 
-        chan = transport.open_session()
-        if timeout is not None:
+        chan = transport.open_session(timeout=timeout)
+        try:
             chan.settimeout(timeout)
-        chan.exec_command(command)
+            chan.exec_command(command)
+        except BaseException:
+            chan.close()
+            raise
         return chan
 
     def remote_process(self, command: str, *, timeout: float = 30.0) -> RemoteProcess:
