@@ -16,6 +16,7 @@ from pacsys.acnet.errors import (
     FTP_BUMPED,
     FTP_COLLECTING,
     FTP_ENDOFDATA,
+    FTP_INVTYP,
     FTP_NO_SETUP,
     FTP_PEND,
     FTP_WAIT_DELAY,
@@ -1102,24 +1103,30 @@ class TestFTPClientContinuous:
         with pytest.raises(AcnetError):
             client.start_continuous(node=3018, devices=[mouttmp], rate_hz=1440)
 
-    def test_start_continuous_end_after_setup_cancels(self, mouttmp):
-        """is_last on the setup reply must cancel the request before raising."""
+    @pytest.mark.parametrize(
+        ("header", "payload", "match", "expected"),
+        [
+            (0, struct.pack("<HHh", 0, REPLY_TYPE_SETUP, 0), "Unexpected end", 0),
+            (0, struct.pack("<h", FTP_INVTYP), "Continuous plot setup failed", FTP_INVTYP),
+            (0, struct.pack("<hHh", FTP_INVTYP, REPLY_TYPE_SETUP, 0), "Continuous plot setup failed", FTP_INVTYP),
+            (ACNET_DISCONNECTED, struct.pack("<h", FTP_INVTYP), "Continuous plot setup failed", ACNET_DISCONNECTED),
+        ],
+    )
+    def test_start_continuous_end_after_setup_cancels(self, mouttmp, header, payload, match, expected):
+        """is_last on the setup reply must cancel the request and surface any payload error."""
         ctx = MagicMock()
         conn = MagicMock()
 
         def fake_request_multiple(node, task, data, reply_handler, timeout):
-            reply = MagicMock()
-            reply.status = 0
-            reply.data = struct.pack("<HH", 0, REPLY_TYPE_SETUP) + struct.pack("<H", 0)
-            reply.last = True
-            reply_handler(reply)
+            reply_handler(MagicMock(status=header, data=payload, last=True))
             return ctx
 
         conn.request_multiple = fake_request_multiple
 
         client = FTPClient(conn)
-        with pytest.raises(AcnetError, match="Unexpected end"):
+        with pytest.raises(AcnetError, match=match) as exc_info:
             client.start_continuous(node=3018, devices=[mouttmp], rate_hz=1440)
+        assert exc_info.value.status == expected
         ctx.cancel.assert_called_once()
 
     @pytest.mark.parametrize("status", [FTP_BUMPED, ACNET_DISCONNECTED])
@@ -1184,21 +1191,31 @@ class TestFTPClientSnapshotSetup:
             client.start_snapshot(node=3018, devices=[mouttmp], rate_hz=1440)
         ctx.cancel.assert_called_once()
 
-    def test_start_snapshot_end_after_setup_cancels(self, mouttmp):
-        """is_last on the setup reply cancels the request and raises."""
+    @pytest.mark.parametrize(
+        ("header", "payload", "match", "expected"),
+        [
+            (0, b"", "Unexpected end", 0),
+            (0, b"\xff", "Unexpected end", 0),
+            (0, struct.pack("<h", FTP_INVTYP), "Snapshot setup failed", FTP_INVTYP),
+            (0, struct.pack("<h", FTP_INVTYP) + b"\x00" * 40, "Snapshot setup failed", FTP_INVTYP),
+            (ACNET_DISCONNECTED, struct.pack("<h", FTP_INVTYP), "Snapshot setup failed", ACNET_DISCONNECTED),
+        ],
+    )
+    def test_start_snapshot_end_after_setup_cancels(self, mouttmp, header, payload, match, expected):
+        """is_last on the setup reply cancels the request and surfaces any payload error."""
         ctx = MagicMock()
         conn = MagicMock()
 
         def fake_request_multiple(node, task, data, reply_handler, timeout):
-            reply = MagicMock(status=0, data=b"", last=True)
-            reply_handler(reply)
+            reply_handler(MagicMock(status=header, data=payload, last=True))
             return ctx
 
         conn.request_multiple = fake_request_multiple
 
         client = FTPClient(conn)
-        with pytest.raises(AcnetError, match="Unexpected end"):
+        with pytest.raises(AcnetError, match=match) as exc_info:
             client.start_snapshot(node=3018, devices=[mouttmp], rate_hz=1440)
+        assert exc_info.value.status == expected
         ctx.cancel.assert_called_once()
 
 

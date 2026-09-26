@@ -1541,6 +1541,8 @@ class FTPClient:
                 raise AcnetError(status, "Continuous plot setup failed")
 
             if is_last:
+                if len(data) >= 2 and (error := struct.unpack_from("<h", data, 0)[0]) < 0:
+                    raise AcnetError(error, "Continuous plot setup failed")
                 raise AcnetError(0, "Unexpected end of replies after setup")
 
             setup_statuses = parse_continuous_first_reply(data, len(devices))
@@ -1682,6 +1684,8 @@ class FTPClient:
                 raise AcnetError(status, "Snapshot setup failed")
 
             if is_last:
+                if len(data) >= 2 and (error := struct.unpack_from("<h", data, 0)[0]) < 0:
+                    raise AcnetError(error, "Snapshot setup failed")
                 raise AcnetError(0, "Unexpected end of replies after setup")
 
             setup_reply = parse_snapshot_setup_reply(data, len(devices))
