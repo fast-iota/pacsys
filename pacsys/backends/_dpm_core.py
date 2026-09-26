@@ -137,6 +137,10 @@ class _AsyncDpmCore:
                 continue
             if isinstance(reply, Authenticate_reply):
                 return reply
+            if isinstance(reply, Status_reply):
+                facility, error = parse_error(reply.status)
+                msg = status_message(facility, error) or f"status={reply.status}"
+                raise AuthenticationError(f"DPM rejected {phase}: {msg}")
             raise AuthenticationError(f"Expected Authenticate_reply during {phase}, got {type(reply).__name__}")
 
     async def authenticate(self, deadline: float | None = None) -> None:
@@ -262,9 +266,8 @@ class _AsyncDpmCore:
             if isinstance(reply, Status_reply):
                 if reply.status != 0:
                     facility, error = parse_error(reply.status)
-                    raise AuthenticationError(
-                        f"EnableSettings failed: facility={facility}, error={error} (DPM_PRIV = privilege denied)"
-                    )
+                    msg = status_message(facility, error) or f"status={reply.status}"
+                    raise AuthenticationError(f"EnableSettings failed: {msg}")
                 self._settings_enabled = True
                 return
             raise AuthenticationError(f"Expected Status_reply, got {type(reply).__name__}")

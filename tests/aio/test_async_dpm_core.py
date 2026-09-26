@@ -7,7 +7,7 @@ from unittest import mock
 import numpy as np
 import pytest
 
-from pacsys.acnet.errors import DAE_LJ_NO_DATA, ERR_TIMEOUT
+from pacsys.acnet.errors import DAE_LJ_NO_DATA, DPM_INTERNAL_ERROR, DPM_PRIV, ERR_TIMEOUT
 from pacsys.backends._dpm_core import _AsyncDpmCore
 from pacsys.backends.dpm_http import _AsyncDPMConnection
 from pacsys.dpm_connection import DPMConnectionError
@@ -648,15 +648,12 @@ class TestEnableSettings:
 
     @pytest.mark.asyncio
     async def test_enable_settings_failure(self, make_core):
-        fail = Status_reply()
-        fail.ref_id = 0
-        fail.status = 0x10002  # some error status
-        replies = [fail]
-        core, conn = make_core(replies)
+        core, conn = make_core([_status_err(status=DPM_INTERNAL_ERROR)])
         core._mic = b"fake_mic"
         core._mic_message = b"1234"
-        with pytest.raises(AuthenticationError, match="EnableSettings failed"):
+        with pytest.raises(AuthenticationError, match="EnableSettings failed: DPM_INTERNAL_ERROR"):
             await core.enable_settings()
+        assert core._settings_enabled is False
 
     @pytest.mark.asyncio
     async def test_enable_settings_requires_mic(self, make_core):
@@ -976,20 +973,23 @@ class TestAuthenticate:
         mock_gssapi = MockGSSAPIModule()
         with mock.patch.dict("sys.modules", {"gssapi": mock_gssapi}):
             auth = mock_kerberos_auth(mock_gssapi)
-            core, conn = make_core([_status_ok()], auth=auth)
-            with pytest.raises(AuthenticationError, match="Expected Authenticate_reply"):
+            core, conn = make_core([_start_ok()], auth=auth)
+            with pytest.raises(
+                AuthenticationError, match="Expected Authenticate_reply during Kerberos service-name reply"
+            ):
                 await core.authenticate()
 
     @pytest.mark.asyncio
-    async def test_wrong_reply_type_phase2(self, make_core, mock_kerberos_auth):
-        """Non-Authenticate_reply in phase 2 raises AuthenticationError."""
+    async def test_status_rejection_phase2(self, make_core, mock_kerberos_auth):
+        """DPM rejects authentication with a Status_reply carrying the real status."""
         mock_gssapi = MockGSSAPIModule()
         mock_gssapi.SecurityContext = MockGSSAPIContextForAuth
         with mock.patch.dict("sys.modules", {"gssapi": mock_gssapi}):
             auth = mock_kerberos_auth(mock_gssapi)
-            core, conn = make_core([make_auth_reply("dpm"), _status_ok()], auth=auth)
-            with pytest.raises(AuthenticationError, match="Expected Authenticate_reply"):
+            core, conn = make_core([make_auth_reply("dpm"), _status_err(status=DPM_PRIV)], auth=auth)
+            with pytest.raises(AuthenticationError, match="DPM rejected Kerberos token reply: DPM_PRIV"):
                 await core.authenticate()
+        assert core._mic is None
 
     @pytest.mark.asyncio
     async def test_context_incomplete_raises(self, make_core, mock_kerberos_auth):

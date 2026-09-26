@@ -1252,6 +1252,10 @@ class DPMHTTPBackend(Backend):
                 continue
             if isinstance(reply, Authenticate_reply):
                 return reply
+            if isinstance(reply, Status_reply):
+                facility, error = parse_error(reply.status)
+                msg = status_message(facility, error) or f"status={reply.status}"
+                raise AuthenticationError(f"DPM rejected {phase}: {msg}")
             raise AuthenticationError(f"Expected Authenticate_reply during {phase}, got {type(reply).__name__}")
 
     def _authenticate_connection(
@@ -1368,7 +1372,7 @@ class DPMHTTPBackend(Backend):
         enable_req.message = message
         conn.send_message(enable_req, timeout=_remaining_timeout(deadline, "EnableSettings request"))
 
-        # Server replies with Status_reply (status=0 on success, DPM_PRIV on failure).
+        # Server replies with Status_reply (status=0 on success, DPM error status on failure).
         # Skip any ListStatus_reply heartbeats that may arrive first.
         while True:
             try:
@@ -1380,9 +1384,8 @@ class DPMHTTPBackend(Backend):
             if isinstance(reply, Status_reply):
                 if reply.status != 0:
                     facility, error = parse_error(reply.status)
-                    raise AuthenticationError(
-                        f"EnableSettings failed: facility={facility}, error={error} (DPM_PRIV = privilege denied)"
-                    )
+                    msg = status_message(facility, error) or f"status={reply.status}"
+                    raise AuthenticationError(f"EnableSettings failed: {msg}")
                 break
             raise AuthenticationError(f"Unexpected reply during EnableSettings: {type(reply).__name__}")
         logger.debug("EnableSettings accepted")

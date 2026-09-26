@@ -14,7 +14,7 @@ from unittest import mock
 
 import pytest
 
-from pacsys.acnet.errors import make_error
+from pacsys.acnet.errors import DPM_PRIV, make_error
 from pacsys.auth import KerberosAuth
 from pacsys.backends.dpm_http import DPMHTTPBackend
 from pacsys.errors import AuthenticationError
@@ -242,6 +242,22 @@ class TestWriteFailure:
                     result = backend.write(TEMP_DEVICE, TEMP_VALUE)
                     assert not result.success
                     assert result.error_code == -42
+                finally:
+                    backend.close()
+
+    def test_write_auth_rejection_surfaces_status_and_releases_connection(self):
+        mock_gssapi = MockGSSAPIModule()
+        replies = [make_auth_reply(), make_list_status_reply(), make_status_reply(DPM_PRIV, ref_id=0)]
+        mock_socket = MockSocketWithReplies(list_id=1, replies=replies)
+
+        with mock.patch.dict("sys.modules", {"gssapi": mock_gssapi}):
+            with mock.patch("socket.socket", return_value=mock_socket):
+                backend = DPMHTTPBackend(auth=KerberosAuth(), role="Operator")
+                try:
+                    with pytest.raises(AuthenticationError, match="DPM rejected Kerberos token reply: DPM_PRIV"):
+                        backend.write(TEMP_DEVICE, TEMP_VALUE)
+                    assert backend._write_in_flight == 0
+                    assert mock_socket._closed
                 finally:
                     backend.close()
 
