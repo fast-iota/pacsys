@@ -349,40 +349,46 @@ class AsyncAcnetConnectionBase:
 
     async def close(self):
         """Close the connection and clean up."""
-        # Send DISCONNECT before marking disposed
-        if self._connected:
-            try:
-                await self._do_disconnect()
-            except Exception:  # noqa: BLE001
-                logger.debug("Disconnect failed while closing %s", self._handle_name, exc_info=True)
-
-        self._disposed = True
-
-        if self._keepalive_task and not self._keepalive_task.done():
-            self._keepalive_task.cancel()
-            try:
-                await self._keepalive_task
-            except asyncio.CancelledError:
-                pass
-
-        if self._read_task and not self._read_task.done():
-            self._read_task.cancel()
-            try:
-                await self._read_task
-            except asyncio.CancelledError:
-                pass
-
         try:
-            await self._close_transport()
-        finally:
-            if self._pending_ack and not self._pending_ack.done():
-                self._pending_ack.set_exception(AcnetUnavailableError())
+            # Send DISCONNECT before marking disposed
+            if self._connected:
+                try:
+                    await self._do_disconnect()
+                except Exception:  # noqa: BLE001
+                    logger.debug("Disconnect failed while closing %s", self._handle_name, exc_info=True)
 
-            # Also needed when the connection already dropped (_connected is
-            # False, so _do_disconnect never ran): handlers would otherwise be
-            # left waiting forever. Idempotent - the dict is snapshot+cleared.
-            self._fail_reply_handlers()
-            self._reply_buffer.clear()
+            self._disposed = True
+
+            if self._keepalive_task and not self._keepalive_task.done():
+                self._keepalive_task.cancel()
+                try:
+                    await self._keepalive_task
+                except asyncio.CancelledError:
+                    pass
+
+            if self._read_task and not self._read_task.done():
+                self._read_task.cancel()
+                try:
+                    await self._read_task
+                except asyncio.CancelledError:
+                    pass
+
+            try:
+                await self._close_transport()
+            finally:
+                if self._pending_ack and not self._pending_ack.done():
+                    self._pending_ack.set_exception(AcnetUnavailableError())
+
+                # Also needed when the connection already dropped (_connected is
+                # False, so _do_disconnect never ran): handlers would otherwise be
+                # left waiting forever. Idempotent - the dict is snapshot+cleared.
+                self._fail_reply_handlers()
+                self._reply_buffer.clear()
+        finally:
+            # No reply can reach incoming-request peers, however close exits
+            for request in self._requests_in.values():
+                request.cancel()
+            self._requests_in.clear()
 
         logger.info("Closed async ACNET connection %s", self._handle_name)
 

@@ -272,7 +272,7 @@ class DPMConnection:
         except OSError as e:
             self._cleanup_socket()
             raise DPMConnectionError(f"Failed to connect to {self._host}:{self._port}: {e}") from e
-        except Exception:
+        except BaseException:
             self._cleanup_socket()
             raise
 

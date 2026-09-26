@@ -20,7 +20,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from pacsys.acnet.errors import DAE_LJ_NO_DATA, ERR_TIMEOUT, make_error
-from pacsys.backends.dpm_http import DPMHTTPBackend, _value_to_setting
+from pacsys.backends.dpm_http import _MAX_WRITE_CONNECTIONS, DPMHTTPBackend, _value_to_setting
 from pacsys.dpm_connection import DPMConnection, DPMConnectionError
 from pacsys.dpm_protocol import ApplySettings_request, ListStatus_reply, Raw_reply, StartList_reply
 from pacsys.errors import AuthenticationError, DeviceError, ReadError
@@ -778,6 +778,84 @@ class TestWriteConnectionAuthContext:
         assert results[0].error_code == ERR_TIMEOUT
         conn.close.assert_called_once()
         assert backend._write_in_flight == 0
+
+    @pytest.mark.parametrize("phase", ["construct", "connect", "auth"])
+    def test_interrupted_setup_releases_write_capacity(self, phase):
+        backend = DPMHTTPBackend(auth=create_mock_kerberos_auth())
+        backend._write_in_flight = _MAX_WRITE_CONNECTIONS - 1  # a leaked slot would exhaust capacity
+        broken, good = MagicMock(), MagicMock()
+        good.list_id = 2
+        if phase == "connect":
+            broken.connect.side_effect = KeyboardInterrupt
+        factory = [KeyboardInterrupt(), good] if phase == "construct" else [broken, good]
+        wc = None
+        try:
+            with (
+                mock.patch("pacsys.backends.dpm_http.DPMConnection", side_effect=factory),
+                mock.patch.object(backend, "_authenticate_connection", return_value=(b"mic", b"1234")) as auth,
+                mock.patch.object(backend, "_enable_settings"),
+            ):
+                if phase == "auth":
+                    auth.side_effect = [KeyboardInterrupt(), (b"mic", b"1234")]
+                with pytest.raises(KeyboardInterrupt):
+                    backend._get_write_connection()
+                wc = backend._get_write_connection()
+
+            if phase != "construct":
+                broken.close.assert_called_once()
+            assert wc.conn is good
+            assert backend._write_in_flight == _MAX_WRITE_CONNECTIONS
+        finally:
+            if wc is not None:
+                backend._discard_write_connection(wc)
+            backend.close()
+
+    def test_interrupted_write_is_not_retried_and_releases_capacity(self):
+        interrupted, fresh = MagicMock(), MagicMock()
+        interrupted.list_id, fresh.list_id = 1, 2
+        interrupted.recv_message.side_effect = [make_device_info(), make_start_list()]
+        interrupted.send_message.side_effect = KeyboardInterrupt  # ApplySettings may already be applied
+        fresh.recv_message.side_effect = [make_device_info(), make_start_list(), make_apply_settings_reply()]
+
+        with DPMHTTPBackend(auth=create_mock_kerberos_auth()) as backend:
+            backend._write_in_flight = _MAX_WRITE_CONNECTIONS - 1  # a leaked slot would exhaust capacity
+            with (
+                mock.patch("pacsys.backends.dpm_http.DPMConnection", side_effect=[interrupted, fresh]) as factory,
+                mock.patch.object(backend, "_authenticate_connection", return_value=(b"mic", b"1234")),
+                mock.patch.object(backend, "_enable_settings"),
+            ):
+                with pytest.raises(KeyboardInterrupt):
+                    backend.write(TEMP_DEVICE, 1.0, timeout=0.5)
+
+                assert factory.call_count == 1
+                interrupted.send_message.assert_called_once()
+                assert isinstance(interrupted.send_message.call_args.args[0], ApplySettings_request)
+                interrupted.close.assert_called_once()
+                assert backend._write_in_flight == _MAX_WRITE_CONNECTIONS - 1
+
+                assert backend.write(TEMP_DEVICE, 2.0, timeout=0.5).ok
+            assert backend._write_in_flight == _MAX_WRITE_CONNECTIONS - 1
+            assert [wc.conn for wc in backend._write_connections] == [fresh]
+
+    def test_interrupted_release_is_not_retried_or_double_counted(self):
+        conn = MagicMock()
+        conn.list_id = 1
+        conn.recv_message.side_effect = [make_device_info(), make_start_list(), make_apply_settings_reply()]
+        conn.close.side_effect = KeyboardInterrupt  # raised by cleanup after a successful StopList
+
+        with DPMHTTPBackend(auth=create_mock_kerberos_auth()) as backend:
+            backend._write_pool_size = 0  # release closes instead of pooling
+            with (
+                mock.patch("pacsys.backends.dpm_http.DPMConnection", side_effect=[conn]) as factory,
+                mock.patch.object(backend, "_authenticate_connection", return_value=(b"mic", b"1234")),
+                mock.patch.object(backend, "_enable_settings"),
+                pytest.raises(KeyboardInterrupt),
+            ):
+                backend.write(TEMP_DEVICE, 1.0, timeout=0.5)
+
+            assert factory.call_count == 1
+            conn.close.assert_called_once()
+            assert backend._write_in_flight == 0
 
     def test_expired_setup_sends_nothing_and_returns_timeout(self):
         backend = DPMHTTPBackend(auth=create_mock_kerberos_auth())

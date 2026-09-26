@@ -600,46 +600,22 @@ class TestContextManager:
 
         pool.close()
 
-    def test_connection_context_manager_discards_on_broken_pipe(self):
-        """Test that broken connections are discarded, not returned to pool."""
+    @pytest.mark.parametrize(
+        "error",
+        [BrokenPipeError("pipe broke"), ConnectionResetError("reset"), OSError("socket gone"), KeyboardInterrupt()],
+    )
+    def test_connection_context_manager_discards_broken_or_interrupted(self, error):
+        """Broken or interrupted connections are discarded, not returned to pool."""
         pool = ConnectionPool()
 
         with mock.patch("socket.socket", return_value=create_mock_socket()):
-            with pytest.raises(BrokenPipeError):  # noqa: PT012 -- exercises context cleanup
+            with pytest.raises(type(error)):  # noqa: PT012 -- exercises context cleanup
                 with pool.connection() as _:
                     assert pool.in_use_count == 1
-                    raise BrokenPipeError("pipe broke")
+                    raise error
 
             assert pool.in_use_count == 0
             assert pool.available_count == 0  # discarded, not released
-
-        pool.close()
-
-    def test_connection_context_manager_discards_on_connection_reset(self):
-        """Test that reset connections are discarded, not returned to pool."""
-        pool = ConnectionPool()
-
-        with mock.patch("socket.socket", return_value=create_mock_socket()):
-            with pytest.raises(ConnectionResetError):
-                with pool.connection() as _:
-                    raise ConnectionResetError("reset")
-
-            assert pool.in_use_count == 0
-            assert pool.available_count == 0
-
-        pool.close()
-
-    def test_connection_context_manager_discards_on_oserror(self):
-        """Test that OSError causes discard (covers socket.error etc)."""
-        pool = ConnectionPool()
-
-        with mock.patch("socket.socket", return_value=create_mock_socket()):
-            with pytest.raises(OSError, match="socket gone"):
-                with pool.connection() as _:
-                    raise OSError("socket gone")
-
-            assert pool.in_use_count == 0
-            assert pool.available_count == 0
 
         pool.close()
 
@@ -730,16 +706,24 @@ class TestEdgeCases:
             # Dead connection should not be returned to available pool
             assert pool.available_count == 0
 
-    def test_borrow_when_creation_fails(self):
-        """Test borrow behavior when connection creation fails."""
-        pool = ConnectionPool(pool_size=2)
+    @pytest.mark.parametrize(
+        ("error", "raised"),
+        [(OSError("Connection refused"), DPMConnectionError), (KeyboardInterrupt(), KeyboardInterrupt)],
+    )
+    def test_borrow_when_creation_fails(self, error, raised):
+        """Failed or interrupted creation closes the socket and releases the reserved slot."""
+        failing = create_mock_socket()
+        failing.connect.side_effect = error
 
-        with mock.patch("socket.socket") as mock_socket_cls:
-            mock_socket_cls.return_value.connect.side_effect = OSError("Connection refused")
-
-            with pytest.raises(DPMConnectionError, match="Failed to connect"):
+        with (
+            ConnectionPool(pool_size=1) as pool,
+            mock.patch("socket.socket", side_effect=[failing, create_mock_socket(list_id=2)]),
+        ):
+            with pytest.raises(raised):
                 pool.borrow()
 
-            # Pool should still be usable
-            assert pool.in_use_count == 0
-            assert pool.available_count == 0
+            failing.close.assert_called_once()
+            assert pool.total_count == 0
+            conn = pool.borrow(wait_timeout=0.5)
+            assert conn.list_id == 2
+            pool.release(conn)

@@ -659,7 +659,7 @@ class TestCloseCleanup:
 
         _run(_test())
 
-    def test_close_fails_handlers_even_if_transport_close_raises(self):
+    def test_close_fails_handlers_and_cancels_incoming_even_if_transport_close_raises(self):
         async def _test():
             conn = _make_tcp_conn()
             conn._connected = False
@@ -669,12 +669,48 @@ class TestCloseCleanup:
 
             received = []
             self._arm(conn, received)
+            raw = struct.pack("<HhHHIHHH", ACNET_FLG_REQ, 0, 0, 0, 0, 0, 42, 18)
+            incoming = AcnetPacket.parse(raw)
+            conn._requests_in[incoming.reply_id] = incoming
 
             with pytest.raises(RuntimeError):
                 await conn.close()
 
             assert len(conn._reply_handlers) == 0
             assert [r.status for r in received] == [ACNET_DISCONNECTED]
+            assert incoming.cancelled
+            assert not conn._requests_in
+
+        _run(_test())
+
+    @pytest.mark.parametrize("phase", ["disconnect", "task_await"])
+    def test_close_cancels_incoming_when_interrupted(self, phase):
+        async def _test():
+            conn = _make_tcp_conn()
+            conn._keepalive_task = None
+            if phase == "disconnect":
+                conn._read_task = None
+                conn._do_disconnect = AsyncMock(side_effect=asyncio.CancelledError)
+            else:
+                conn._connected = False
+
+                async def _read_loop():
+                    try:
+                        await asyncio.sleep(10)
+                    except asyncio.CancelledError:
+                        raise RuntimeError("read loop teardown failed") from None
+
+                conn._read_task = asyncio.create_task(_read_loop())
+                await asyncio.sleep(0)
+            raw = struct.pack("<HhHHIHHH", ACNET_FLG_REQ, 0, 0, 0, 0, 0, 42, 18)
+            incoming = AcnetPacket.parse(raw)
+            conn._requests_in[incoming.reply_id] = incoming
+
+            with pytest.raises(asyncio.CancelledError if phase == "disconnect" else RuntimeError):
+                await conn.close()
+
+            assert incoming.cancelled
+            assert not conn._requests_in
 
         _run(_test())
 

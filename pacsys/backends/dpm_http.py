@@ -1453,18 +1453,20 @@ class DPMHTTPBackend(Backend):
             self._write_in_flight += 1
 
         # Create new connection outside the lock
-        conn = DPMConnection(host=self._host, port=self._port, timeout=self._timeout)
+        conn: DPMConnection | None = None
         try:
+            conn = DPMConnection(host=self._host, port=self._port, timeout=self._timeout)
             conn.connect(timeout=_remaining_timeout(deadline, "DPM write connection"))
             wc = _WriteConnection(conn, current_principal, current_role)
             mic, message = self._authenticate_connection(conn, deadline)
             self._enable_settings(conn, mic, message, deadline)
             wc.authenticated = True
             logger.debug("Created new authenticated write connection (list_id=%s)", conn.list_id)
-        except Exception:
+        except BaseException:
             with self._write_lock:
                 self._write_in_flight -= 1
-            conn.close()
+            if conn is not None:
+                conn.close()
             raise
 
         return wc
@@ -1827,63 +1829,67 @@ class DPMHTTPBackend(Backend):
                     for drf, _ in settings
                 ]
 
-            conn = wc.conn
-            list_id = conn.list_id
-            apply_reply = None
-
+            # Sole cleanup owner for wc: outside the handlers below, so a cleanup
+            # failure is never treated as a write error. Reuse only after StopList.
+            list_stopped = False
             try:
-                assert list_id is not None, "list_id must be set after connect"
-                apply_reply, add_errors = self._execute_write(
-                    conn, list_id, prepared_settings, setting_payloads, deadline
-                )
+                conn = wc.conn
+                list_id = conn.list_id
+                apply_reply = None
 
-                if apply_reply is None:
-                    # Timeout: server's late reply may still be in the TCP stream,
-                    # so discard the connection to avoid corrupting the next write.
-                    self._discard_write_connection(wc)
+                try:
+                    assert list_id is not None, "list_id must be set after connect"
+                    apply_reply, add_errors = self._execute_write(
+                        conn, list_id, prepared_settings, setting_payloads, deadline
+                    )
+
+                    if apply_reply is None:
+                        # Timeout: server's late reply may still be in the TCP stream,
+                        # so discard the connection to avoid corrupting the next write.
+                        last_error = None
+                        break
+
+                    # Stop list (but keep connection and auth for reuse)
+                    stop_req = StopList_request()
+                    stop_req.list_id = list_id
+                    try:
+                        conn.send_message(
+                            stop_req,
+                            timeout=_remaining_timeout(deadline, "write list cleanup"),
+                        )
+                    except (TimeoutError, OSError, DPMConnectionError):
+                        logger.warning("Write succeeded but list cleanup failed; discarding connection")
+                    else:
+                        list_stopped = True
+                    last_error = None
+                    break  # Success
+
+                except _WriteOutcomeUnknown as e:
+                    logger.warning("%s (devices: %s)", e, summarize_drfs([drf for drf, _ in settings]))
+                    add_errors = e.add_errors
+                    missing_code = e.error_code
+                    missing_message = str(e)
                     last_error = None
                     break
-
-                # Stop list (but keep connection and auth for reuse)
-                stop_req = StopList_request()
-                stop_req.list_id = list_id
-                try:
-                    conn.send_message(
-                        stop_req,
-                        timeout=_remaining_timeout(deadline, "write list cleanup"),
-                    )
-                except (TimeoutError, OSError, DPMConnectionError):
-                    logger.warning("Write succeeded but list cleanup failed; discarding connection")
-                    self._discard_write_connection(wc)
-                else:
+                except TimeoutError:
+                    logger.warning("Write deadline expired during attempt %s", attempt + 1)
+                    last_error = None
+                    break
+                except (BrokenPipeError, ConnectionResetError, OSError, DPMConnectionError) as e:
+                    logger.warning("Write connection error (attempt %s): %s", attempt + 1, e)
+                    last_error = e
+                    if attempt == 0 and time.monotonic() < deadline:
+                        continue  # Retry with fresh connection
+                    break
+                except BaseException as e:
+                    # Includes interrupts: ApplySettings may already be applied, so never retry
+                    logger.warning("Unexpected write error: %r", e)
+                    raise
+            finally:
+                if list_stopped:
                     self._release_write_connection(wc)
-                last_error = None
-                break  # Success
-
-            except _WriteOutcomeUnknown as e:
-                logger.warning("%s (devices: %s)", e, summarize_drfs([drf for drf, _ in settings]))
-                self._discard_write_connection(wc)
-                add_errors = e.add_errors
-                missing_code = e.error_code
-                missing_message = str(e)
-                last_error = None
-                break
-            except TimeoutError:
-                logger.warning("Write deadline expired during attempt %s", attempt + 1)
-                self._discard_write_connection(wc)
-                last_error = None
-                break
-            except (BrokenPipeError, ConnectionResetError, OSError, DPMConnectionError) as e:
-                logger.warning("Write connection error (attempt %s): %s", attempt + 1, e)
-                self._discard_write_connection(wc)
-                last_error = e
-                if attempt == 0 and time.monotonic() < deadline:
-                    continue  # Retry with fresh connection
-                break
-            except Exception as e:  # noqa: BLE001
-                logger.warning("Unexpected write error: %s", e)
-                self._discard_write_connection(wc)
-                raise
+                else:
+                    self._discard_write_connection(wc)
 
         if last_error is not None:
             return [

@@ -249,7 +249,7 @@ class ConnectionPool:
                     )
                 connect_timeout = min(remaining, self._timeout)
             conn = self._create_connection(connect_timeout)
-        except Exception:
+        except BaseException:
             # Release the reservation on failure
             with self._condition:
                 self._pending_creates -= 1
@@ -388,6 +388,10 @@ class ConnectionPool:
             DPMConnectionError,
         ):
             broken = True
+            raise
+        except BaseException as e:
+            # Interrupted mid-protocol (KeyboardInterrupt etc.): stream position unknown
+            broken = not isinstance(e, Exception)
             raise
         finally:
             if broken:
