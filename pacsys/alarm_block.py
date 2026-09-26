@@ -26,7 +26,6 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass, field
 from enum import IntEnum, IntFlag
-from numbers import Integral
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -41,11 +40,6 @@ def _get_backend(backend: Backend | None) -> Backend:
     from pacsys import _get_global_backend
 
     return _get_global_backend()
-
-
-def _require_raw_segment(segment: int) -> None:
-    if isinstance(segment, bool) or not isinstance(segment, Integral) or segment < 0:
-        raise ValueError(f"segment must be a non-negative integer, got {segment!r}")
 
 
 def _require_structured_segment(segment: int) -> None:
@@ -559,7 +553,6 @@ class AnalogAlarm(AlarmBlock):
         """
         from pacsys.drf_utils import get_device_name
 
-        _require_raw_segment(segment)
         name = get_device_name(device)
         offset = segment * 20
         drf = f"{name}.ANALOG{{{offset}:20}}.RAW@N"
@@ -694,7 +687,6 @@ class DigitalAlarm(AlarmBlock):
         """
         from pacsys.drf_utils import get_device_name
 
-        _require_raw_segment(segment)
         name = get_device_name(device)
         offset = segment * 20
         drf = f"{name}.DIGITAL{{{offset}:20}}.RAW@N"
