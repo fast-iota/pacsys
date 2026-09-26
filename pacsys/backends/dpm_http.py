@@ -1750,7 +1750,13 @@ class DPMHTTPBackend(Backend):
         if text_settings:
             setattr(apply_req, "text_array", text_settings)
 
-        remaining = _remaining_timeout(deadline, "ApplySettings request")
+        try:
+            remaining = _remaining_timeout(deadline, "ApplySettings request")
+        except TimeoutError:
+            # Nothing sent yet: keep known setup rejections, report the rest as timed out
+            drf_summary = summarize_drfs([drf for drf, _ in prepared_settings])
+            logger.warning("Write deadline expired before ApplySettings (devices: %s)", drf_summary)
+            return None, add_errors
         try:
             # A failed send may have delivered settings; never replay from this point.
             conn.send_message(apply_req, timeout=remaining)

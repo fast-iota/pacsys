@@ -944,6 +944,35 @@ class TestWriteConnectionAuthContext:
         assert (results[0].facility_code, results[0].error_code) == (66, -42)
         assert not results[1].ok and "outcome unknown" in results[1].message
 
+    def test_deadline_before_apply_settings_preserves_rejected_device_status(self):
+        now = [100.0]
+        wc = MagicMock()
+        wc.conn.list_id = 1
+        replies = [make_add_to_list_reply(ref_id=1, status=make_error(66, -42)), make_device_info(ref_id=2)]
+        replies.append(make_start_list())
+
+        def receive(timeout):
+            if len(replies) == 1:
+                now[0] += timeout  # last setup reply arrives exactly at the deadline
+            return replies.pop(0)
+
+        wc.conn.recv_message.side_effect = receive
+        with DPMHTTPBackend(auth=create_mock_kerberos_auth()) as backend:
+            with (
+                mock.patch.object(backend, "_get_write_connection", return_value=wc) as checkout,
+                mock.patch.object(backend, "_discard_write_connection") as discard,
+                mock.patch.object(backend, "_release_write_connection") as release,
+                mock.patch("pacsys.backends.dpm_http.time.monotonic", side_effect=lambda: now[0]),
+            ):
+                results = backend.write_many([("M:BADDEV", 1.0), (TEMP_DEVICE, 2.0)], timeout=0.2)
+
+        checkout.assert_called_once()
+        wc.conn.send_message.assert_not_called()  # no ApplySettings
+        discard.assert_called_once_with(wc)
+        release.assert_not_called()
+        assert (results[0].facility_code, results[0].error_code) == (66, -42)
+        assert results[1].error_code == ERR_TIMEOUT
+
 
 # =============================================================================
 # Error Handling Tests

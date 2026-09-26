@@ -7,7 +7,9 @@ from unittest import mock
 import numpy as np
 import pytest
 
-from pacsys.acnet.errors import DAE_LJ_NO_DATA, DPM_INTERNAL_ERROR, DPM_PRIV, ERR_TIMEOUT
+from pacsys.acnet.errors import DAE_LJ_NO_DATA, DPM_INTERNAL_ERROR, DPM_PRIV, ERR_TIMEOUT, parse_error
+from pacsys.aio._dpm_http import AsyncDPMHTTPBackend
+from pacsys.auth import KerberosAuth
 from pacsys.backends._dpm_core import _AsyncDpmCore
 from pacsys.backends.dpm_http import _AsyncDPMConnection
 from pacsys.dpm_connection import DPMConnectionError
@@ -556,6 +558,30 @@ class TestWriteMany:
         facility, error = parse_error(0xBB06)
         assert results[0].error_code == error
         assert results[0].facility_code == facility
+
+    @pytest.mark.asyncio
+    async def test_apply_settings_send_timeout_preserves_rejected_device_status(self, make_core):
+        core, conn = make_core([_add_error(1, status=DPM_PRIV), _device_info(2), _start_ok()])
+        core._settings_enabled = True
+        core._principal = "test@fnal.gov"
+
+        async def stalled_send(msg):
+            conn.sent.append(msg)
+            await asyncio.sleep(1)
+
+        conn.send_message = stalled_send
+        backend = AsyncDPMHTTPBackend(host="localhost", port=6802, auth=KerberosAuth(_lazy=True))
+        backend._create_core = mock.AsyncMock(return_value=core)
+
+        try:
+            results = await backend.write_many([("M:BADDEV", 1.0), ("M:OUTTMP", 72.5)], timeout=0.1)
+
+            assert sum(isinstance(m, ApplySettings_request) for m in conn.sent) == 1
+            assert (results[0].facility_code, results[0].error_code) == parse_error(DPM_PRIV)
+            assert results[1].error_code == ERR_TIMEOUT
+            assert conn._closed and not core.connected
+        finally:
+            await backend.close()
 
     @pytest.mark.asyncio
     async def test_write_prevalidates_before_authentication(self, make_core):

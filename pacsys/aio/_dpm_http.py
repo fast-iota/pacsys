@@ -27,6 +27,14 @@ from pacsys.types import (
 
 logger = logging.getLogger(__name__)
 
+_TIMEOUT_ERRORS = (TimeoutError, asyncio.TimeoutError)  # distinct classes on 3.10
+
+
+def _connect_error_code(e: BaseException) -> int:
+    """ERR_TIMEOUT for an expired budget, even when wrapped as a connection error."""
+    return ERR_TIMEOUT if isinstance(e, _TIMEOUT_ERRORS) or isinstance(e.__cause__, _TIMEOUT_ERRORS) else ERR_RETRY
+
+
 # Alarm field maps — must match sync DPMHTTPBackend exactly
 _ANALOG_ALARM_FIELDS = {
     "minimum": "MIN",
@@ -249,11 +257,12 @@ class AsyncDPMHTTPBackend(AsyncBackend):
         try:
             core = await self._borrow_core(_remaining_timeout(deadline, "DPM read"))
         except (PoolExhaustedError, DPMConnectionError, OSError) as e:
+            error_code = _connect_error_code(e)
             readings = [
                 Reading(
                     drf=drf,
                     facility_code=FACILITY_ACNET,
-                    error_code=ERR_RETRY,
+                    error_code=error_code,
                     message=f"Connection error: {e}",
                     cycle=0,
                 )
@@ -327,7 +336,7 @@ class AsyncDPMHTTPBackend(AsyncBackend):
                 self._create_core(),
                 timeout=connection_timeout,
             )
-        except (TimeoutError, asyncio.TimeoutError) as e:  # distinct classes on 3.10
+        except _TIMEOUT_ERRORS as e:
             error_msg = f"DPM write connection timed out: {e}"
             return [
                 WriteResult(
@@ -340,8 +349,9 @@ class AsyncDPMHTTPBackend(AsyncBackend):
             ]
         except (DPMConnectionError, OSError) as e:
             error_msg = f"Failed to get write connection: {e}"
+            error_code = _connect_error_code(e)
             return [
-                WriteResult(drf=drf, facility_code=FACILITY_ACNET, error_code=ERR_RETRY, message=error_msg)
+                WriteResult(drf=drf, facility_code=FACILITY_ACNET, error_code=error_code, message=error_msg)
                 for drf, _ in settings
             ]
         try:

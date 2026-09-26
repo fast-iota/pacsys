@@ -95,7 +95,7 @@ class TestAsyncDPMRead:
             await backend.close()
 
     @pytest.mark.asyncio
-    async def test_get_many_connect_timeout_is_bounded_and_retryable(self):
+    async def test_get_many_connect_timeout_is_bounded(self):
         backend = AsyncDPMHTTPBackend(host="localhost", port=6802)
 
         cancelled = asyncio.Event()
@@ -112,7 +112,7 @@ class TestAsyncDPMRead:
             with pytest.raises(ReadError) as exc_info:
                 await asyncio.wait_for(backend.get_many(["M:OUTTMP"], timeout=0.2), timeout=1.0)
             assert cancelled.is_set()
-            assert exc_info.value.readings[0].error_code == ERR_RETRY  # sync twin: connect timeout is retryable
+            assert exc_info.value.readings[0].error_code == ERR_TIMEOUT
             assert "connect timed out" in exc_info.value.readings[0].message
             assert backend._pool_count == 0
         finally:
@@ -578,6 +578,26 @@ class TestAsyncDPMCloseRaces:
             with pytest.raises(ReadError, match="Connection refused") as exc_info:
                 await b.get_many(["M:OUTTMP"])
             assert exc_info.value.readings[0].error_code == ERR_RETRY
+
+    @pytest.mark.asyncio
+    async def test_wrapped_connect_timeout_reports_err_timeout(self):
+        """_AsyncDPMConnection wraps its own expiry as DPMConnectionError; the cause still classifies it."""
+        b = AsyncDPMHTTPBackend(host="localhost", port=6802, timeout=0.05, auth=KerberosAuth(_lazy=True))
+
+        async def hang(*_args, **_kwargs):
+            await asyncio.sleep(10)
+
+        try:
+            with mock.patch("asyncio.open_connection", side_effect=hang):
+                with pytest.raises(ReadError) as exc_info:
+                    await b.get_many(["M:OUTTMP"], timeout=1.0)
+                results = await b.write_many([("M:OUTTMP", 72.5)], timeout=1.0)
+            assert isinstance(exc_info.value.__cause__, DPMConnectionError)
+            assert exc_info.value.readings[0].error_code == ERR_TIMEOUT
+            assert results[0].error_code == ERR_TIMEOUT and "Failed to get write connection" in results[0].message
+            assert b._pool_count == 0
+        finally:
+            await b.close()
 
     @pytest.mark.asyncio
     async def test_closed_backend_subscribe_raises(self, backend):

@@ -667,11 +667,16 @@ class _AsyncDpmCore:
         if text_settings:
             setattr(apply_req, "text_array", text_settings)
 
-        await _await_with_deadline(
-            lambda: conn.send_message(apply_req),
-            deadline,
-            "ApplySettings request",
-        )
+        try:
+            await _await_with_deadline(
+                lambda: conn.send_message(apply_req),
+                deadline,
+                "ApplySettings request",
+            )
+        except TimeoutError as e:
+            # Settings may be partially sent: never retry; keep known setup rejections
+            logger.warning("%s (devices: %s)", e, summarize_drfs([drf for drf, _ in settings]))
+            return self._build_write_results(settings, None, add_errors)
 
         # Phase 3: Wait for ApplySettings reply
         apply_reply = None
