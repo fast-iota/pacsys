@@ -94,6 +94,31 @@ class TestAsyncFakeBackendStreaming:
 
         asyncio.run(_run())
 
+    @pytest.mark.parametrize("async_callback", [False, True], ids=["sync", "async"])
+    def test_iterator_delivers_error_callback(self, async_callback):
+        async def _run():
+            async with AsyncFakeBackend() as fb:
+                errors = []
+
+                def on_error(exc, handle):
+                    errors.append((exc, handle))
+
+                async def async_on_error(exc, handle):
+                    on_error(exc, handle)
+
+                handle = await fb.subscribe(["M:OUTTMP"], on_error=async_on_error if async_callback else on_error)
+                error = ConnectionError("Simulated disconnect")
+                fb.emit_error(error)
+                fb.emit_error(ConnectionError("Repeated disconnect"))
+
+                with pytest.raises(ConnectionError) as caught:
+                    await anext(handle.readings(timeout=0.1))
+                assert caught.value is error
+                await handle.stop()
+                assert errors == [(error, handle)]
+
+        asyncio.run(_run())
+
     def test_callback_mode(self):
         async def _run():
             fb = AsyncFakeBackend()

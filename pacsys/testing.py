@@ -16,7 +16,6 @@ from typing import Any
 
 from pacsys.acnet.errors import ERR_NOPROP, ERR_OK, ERR_RETRY, FACILITY_ACNET, FACILITY_DBM
 from pacsys.aio._backends import AsyncBackend as _AsyncBackend
-from pacsys.aio._subscription import AsyncSubscriptionHandle, _callback_feeder
 from pacsys.backends import Backend
 from pacsys.backends._dispatch import CallbackDispatcher
 from pacsys.drf3 import parse_request
@@ -38,6 +37,8 @@ from pacsys.types import (
     WriteResult,
     _validate_callback,
 )
+
+from .aio._subscription import AsyncSubscriptionHandle, _call_on_error, _callback_feeder
 
 
 def _base_key(drf: str) -> str:
@@ -1191,6 +1192,8 @@ class AsyncFakeBackend(_AsyncBackend):
 
         def _on_error(exc, _sync_handle):
             handle._signal_error(exc)
+            if on_error is not None and callback is None:
+                handle._spawn(_call_on_error(on_error, exc, handle))
 
         sync_handle = self._sync.subscribe(drfs, callback=_on_reading, on_error=_on_error)
         self._sync_handles.append(sync_handle)
