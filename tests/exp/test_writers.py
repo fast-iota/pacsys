@@ -427,22 +427,32 @@ class TestParquetWriter:
         assert base64.b64decode(encoded) == raw
 
     def test_error_reading(self, tmp_path):
-        """Error readings: no value columns populated, error_code set."""
-        pytest.importorskip("pyarrow")
-        from pacsys.exp._writers import ParquetWriter
+        """Status survives file roundtrips, including warnings with data."""
+        pa = pytest.importorskip("pyarrow")
+        from pacsys.exp import ParquetWriter
 
         path = tmp_path / "test.parquet"
-        r = Reading(drf="M:OUTTMP", error_code=-66, timestamp=TS)
+        readings = [
+            _reading(),
+            Reading(drf="M:OUTTMP", facility_code=17, error_code=-66, message="Read failed", timestamp=TS),
+            _reading(facility_code=1, error_code=1, message="Warning with data"),
+            Reading(drf="M:OUTTMP", facility_code=255, error_code=-66, message="", timestamp=TS),
+        ]
         writer = ParquetWriter(path)
-        writer.write_readings([r])
+        writer.write_readings(readings)
         writer.close()
 
         table = _read_parquet(path)
-        assert table.column("value").to_pylist() == [None]
-        assert table.column("int_value").to_pylist() == [None]
-        assert table.column("value_array").to_pylist() == [None]
-        assert table.column("value_text").to_pylist() == [None]
-        assert table.column("error_code").to_pylist() == [-66]
+        assert table.column("value").to_pylist() == [72.5, None, 72.5, None]
+        assert table.column("int_value").to_pylist() == [None] * 4
+        assert table.column("value_array").to_pylist() == [None] * 4
+        assert table.column("value_text").to_pylist() == [None] * 4
+        assert table.column("error_code").to_pylist() == [0, -66, 1, -66]
+        assert table.column("facility_code").to_pylist() == [0, 17, 1, 255]
+        assert table.column("message").to_pylist() == [None, "Read failed", "Warning with data", ""]
+        assert table.schema.field("facility_code").type == pa.int16()
+        assert table.schema.field("message").type == pa.string()
+        assert table.column_names[-3:] == ["cycle", "facility_code", "message"]
 
     def test_timestamp_native(self, tmp_path):
         """Timestamps stored as native pyarrow timestamps."""

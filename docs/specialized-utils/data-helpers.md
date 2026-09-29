@@ -455,12 +455,15 @@ writer = ParquetWriter("output.parquet")
 | `timestamp` | `timestamp[us, UTC]` | Reading timestamp |
 | `drf` | `string` | DRF string |
 | `value_type` | `string` | Value type name |
-| `value` | `float64` | Scalar values |
+| `value` | `float64` | Float scalar values |
+| `int_value` | `int64` | Integer and boolean scalar values |
 | `value_array` | `list<float64>` | Array values |
 | `value_text` | `string` | Text, JSON-encoded alarms/status, base64-encoded raw bytes |
 | `error_code` | `int16` | ACNET error code |
 | `units` | `string` | Engineering units |
 | `cycle` | `int64` | Cycle number |
+| `facility_code` | `int16` | ACNET facility identifier |
+| `message` | `string` | Status message; null when absent, distinct from an empty string |
 
 You can also implement your own writer by conforming to the `LogWriter` protocol.
 

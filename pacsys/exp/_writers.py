@@ -163,6 +163,8 @@ class ParquetWriter:
         error_code  - int16
         units       - string
         cycle       - int64
+        facility_code - int16
+        message     - string (null when absent)
     """
 
     def __init__(self, path: str | Path):
@@ -186,6 +188,8 @@ class ParquetWriter:
                 ("error_code", pa.int16()),
                 ("units", pa.string()),
                 ("cycle", pa.int64()),
+                ("facility_code", pa.int16()),
+                ("message", pa.string()),
             ]
         )
         self._writer: pq.ParquetWriter | None = None
@@ -204,6 +208,8 @@ class ParquetWriter:
             "error_code": [],
             "units": [],
             "cycle": [],
+            "facility_code": [],
+            "message": [],
         }
         for r in readings:
             cols["timestamp"].append(r.timestamp)
@@ -217,6 +223,8 @@ class ParquetWriter:
             cols["error_code"].append(r.error_code)
             cols["units"].append(r.units)
             cols["cycle"].append(r.cycle)
+            cols["facility_code"].append(r.facility_code)
+            cols["message"].append(r.message)
         batch = self._pa.table(cols, schema=self._schema)
         if self._writer is None:
             self._writer = self._pq.ParquetWriter(self._path, self._schema, compression="zstd")
