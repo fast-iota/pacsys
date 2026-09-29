@@ -6,7 +6,6 @@ import time
 
 from pacsys.acnet.errors import ERR_RETRY, ERR_TIMEOUT, FACILITY_ACNET
 from pacsys.aio._backends import AsyncBackend
-from pacsys.aio._subscription import AsyncSubscriptionHandle, _callback_feeder
 from pacsys.auth import KerberosAuth
 from pacsys.backends import ALARM_READONLY_KEYS
 from pacsys.backends._dpm_core import _AsyncDpmCore
@@ -24,6 +23,8 @@ from pacsys.types import (
     WriteResult,
     _validate_callback,
 )
+
+from ._subscription import AsyncSubscriptionHandle, _call_on_error, _callback_feeder
 
 logger = logging.getLogger(__name__)
 
@@ -407,13 +408,18 @@ class AsyncDPMHTTPBackend(AsyncBackend):
             handle = AsyncSubscriptionHandle(remover=self.remove)
             handle._drfs = drfs
 
+            def _error_adapter(exc: Exception) -> None:
+                handle._signal_error(exc)
+                if on_error is not None and callback is None:
+                    handle._spawn(_call_on_error(on_error, exc, handle))
+
             async def _run_stream():
                 try:
-                    await core.stream(drfs, handle._dispatch, handle._is_stopped, handle._signal_error)
+                    await core.stream(drfs, handle._dispatch, handle._is_stopped, _error_adapter)
                 except Exception as exc:  # noqa: BLE001
                     # A failure escaping the core is a subscription error, not a
                     # graceful end -- consumers must see it raised.
-                    handle._signal_error(exc)
+                    _error_adapter(exc)
                 finally:
                     # Stream end (StartList/job failure, transport error, cancel) must
                     # stop the handle and close the dedicated core or the socket leaks

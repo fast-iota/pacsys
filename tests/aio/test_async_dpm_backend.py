@@ -285,7 +285,9 @@ class TestAsyncDPMSubscribe:
         assert not handle._queue.empty()
 
     @pytest.mark.asyncio
-    async def test_stream_death_closes_core_and_removes_handle(self, backend):
+    @pytest.mark.parametrize("callback_mode", [False, True])
+    @pytest.mark.parametrize("async_on_error", [False, True])
+    async def test_stream_death_closes_core_and_removes_handle(self, backend, callback_mode, async_on_error):
         # Stream error exit must close the dedicated core, stop the handle,
         # and drop it from _handles -- without an explicit handle.stop()
         err = RuntimeError("StartList failed")
@@ -300,14 +302,23 @@ class TestAsyncDPMSubscribe:
             return core
 
         backend._create_core = fake_create
-        handle = await backend.subscribe(["M:OUTTMP@p,1000"])
+        on_error = mock.AsyncMock() if async_on_error else mock.Mock()
+        handle = await backend.subscribe(
+            ["M:OUTTMP@p,1000"], callback=mock.Mock() if callback_mode else None, on_error=on_error
+        )
         await handle._task
         core.close.assert_awaited()
         assert handle.stopped
         assert handle not in backend._handles
-        with pytest.raises(RuntimeError, match="StartList failed"):
-            async for _ in handle.readings(timeout=0.1):
-                pass
+        if not callback_mode:
+            with pytest.raises(RuntimeError, match="StartList failed") as raised:
+                async for _ in handle.readings(timeout=0.1):
+                    pass
+            assert raised.value is err
+        await handle.stop()
+        on_error.assert_called_once_with(err, handle)
+        if async_on_error:
+            on_error.assert_awaited_once_with(err, handle)
 
     @pytest.mark.asyncio
     async def test_subscribe_setup_failure_closes_core(self, backend):
@@ -327,12 +338,15 @@ class TestAsyncDPMSubscribe:
         assert backend._handles == []
 
     @pytest.mark.asyncio
-    async def test_stream_exception_raises_in_readings(self, backend):
+    @pytest.mark.parametrize("callback_mode", [False, True])
+    @pytest.mark.parametrize("async_on_error", [False, True])
+    async def test_stream_exception_raises_in_readings(self, backend, callback_mode, async_on_error):
         """An exception escaping core.stream() is a subscription error, not a graceful end."""
         core = _mock_core()
+        err = ConnectionResetError("boom mid-stream")
 
         async def fake_stream(drfs, dispatch, stop, error):
-            raise ConnectionResetError("boom mid-stream")
+            raise err
 
         core.stream = fake_stream
 
@@ -340,11 +354,20 @@ class TestAsyncDPMSubscribe:
             return core
 
         backend._create_core = fake_create
-        handle = await backend.subscribe(["M:OUTTMP@p,1000"])
+        on_error = mock.AsyncMock() if async_on_error else mock.Mock()
+        handle = await backend.subscribe(
+            ["M:OUTTMP@p,1000"], callback=mock.Mock() if callback_mode else None, on_error=on_error
+        )
         await handle._task
-        with pytest.raises(ConnectionResetError, match="boom mid-stream"):
-            async for _ in handle.readings(timeout=0.1):
-                pass
+        if not callback_mode:
+            with pytest.raises(ConnectionResetError, match="boom mid-stream") as raised:
+                async for _ in handle.readings(timeout=0.1):
+                    pass
+            assert raised.value is err
+        await handle.stop()
+        on_error.assert_called_once_with(err, handle)
+        if async_on_error:
+            on_error.assert_awaited_once_with(err, handle)
 
     @pytest.mark.asyncio
     async def test_normal_stream_end_closes_core(self, backend):
