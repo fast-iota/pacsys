@@ -72,6 +72,7 @@ The ACL CGI only decodes `+`/`%20` (space) and `%27` (quote) from the query stri
 - **No writes or streaming**: Read-only, request/response only. Periodic DRFs (`@p`, `@q`) in `get_many()` come back as per-device error readings; the other devices are still read.
 - **Error handling**: ACL aborts the entire script on the first bad device. `get_many()` detects this and falls back to individual reads so valid devices still return data.
 - **Timeouts**: `timeout` bounds the whole `get_many()` call — the batch, any per-device fallback and the five per-field requests behind a `.STATUS` read share one deadline. When it runs out, the remaining devices get `ERR_TIMEOUT` readings and `ReadError` is raised with the complete list.
+- **Clocked status**: `.STATUS@E,...` preserves the clock event for each of the five sequential field requests. Each waits separately, so fields may sample different clock firings under the same timeout.
 
 ## When to Use
 

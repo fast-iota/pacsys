@@ -636,14 +636,14 @@ class ACLBackend(Backend):
         the dict, matching DPM's behavior.  Any other ACL error (e.g.
         nonexistent device → DBM_NOREC) immediately fails the whole read.
         """
-        device = parse_request(drf).device
+        req = parse_request(drf)
         now = datetime.now(timezone.utc)
         status: dict[str, bool] = {}
 
         for key, field in zip(_BASIC_STATUS_KEYS, _BASIC_STATUS_FIELDS, strict=True):
             if (remaining := _remaining(deadline)) <= 0:
                 return _timeout_reading(drf, now)
-            url = self._build_url([f"{device}.STATUS.{field}"])
+            url = self._build_url([req.to_canonical(range=None, field=DRF_FIELD[field])])
             try:
                 lines = self._fetch(url, remaining, drf=drf).strip().splitlines()
             except DeviceError as e:

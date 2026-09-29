@@ -519,7 +519,16 @@ class TestIsBasicStatusRequest:
 class TestBasicStatusRead:
     """Tests for basic status reading via individual field queries."""
 
-    def test_all_fields_present(self):
+    @pytest.mark.parametrize(
+        "drf, command, qualifiers",
+        [
+            ("N|LGXS", "read", ""),
+            ("N:LGXS.STATUS@I", "read", ""),
+            ("N:LGXS.STATUS@e,02", "read/pendwait", "/event='e,02'"),
+            ("N|LGXS[0:4]@e,02,e,500", "read/pendwait", "/event='e,02,e,500'"),
+        ],
+    )
+    def test_all_fields_present(self, drf, command, qualifiers):
         """All 5 status fields return True/False → full dict."""
         with mock.patch("httpx.Client.get") as mock_get:
             mock_get.side_effect = [
@@ -530,7 +539,8 @@ class TestBasicStatusRead:
                 MockACLResponse("N:LGXS is ramping = False"),
             ]
             with ACLBackend() as backend:
-                reading = backend.get("N|LGXS")
+                reading = backend.get(drf)
+                assert reading.drf == drf
                 assert reading.ok
                 assert reading.value_type == ValueType.BASIC_STATUS
                 assert reading.value == {
@@ -540,6 +550,10 @@ class TestBasicStatusRead:
                     "positive": True,
                     "ramp": False,
                 }
+                assert [call.args[0] for call in mock_get.call_args_list] == [
+                    f"{backend.base_url}?acl={command}+N:LGXS.STATUS.{field}{qualifiers}"
+                    for field in ("ON", "READY", "REMOTE", "POSITIVE", "RAMP")
+                ]
 
     def test_missing_attribute_omitted(self):
         """DIO_NOATT for remote → key omitted from dict (matches DPM)."""
