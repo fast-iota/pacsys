@@ -1093,17 +1093,15 @@ def _common_unscale(
 ) -> float:
     """Unscale common (engineering) value to primary units."""
     c = constants
-    lim_idx = p_index // 2
+
+    def _limits() -> tuple[float, float]:
+        lim_idx = p_index // 2
+        if 0 <= lim_idx < len(_LOWLIM):
+            return _LOWLIM[lim_idx], _UPRLIM[lim_idx]
+        raise ScalingError(f"Unsupported p_index {p_index} for inverse transform search limits")
 
     if c_index == 0 or c_index == 80:
         return xx
-
-    # Default primary-unit limits for binary search
-    if lim_idx < len(_LOWLIM):
-        pulow = _LOWLIM[lim_idx]
-        puupr = _UPRLIM[lim_idx]
-    else:
-        raise ScalingError(f"Unsupported p_index {p_index} for inverse transform")
 
     if c_index in (2, 40):
         return (xx - c[2]) * c[1] / c[0]
@@ -1135,6 +1133,7 @@ def _common_unscale(
             if discr < 0:
                 raise ScalingError("Negative discriminant")
             return (-bb + math.sqrt(discr)) / (2.0 * aa)
+        pulow, puupr = _limits()
         tol = puupr / _TOL_DIVISOR
         return _binary_search(xx, c_index, constants, pulow, puupr, tol)
 
@@ -1179,7 +1178,7 @@ def _common_unscale(
             pu = 15.0
         else:
             pl = 0.00001 if c[5] == 0 else 1.00001 * c[5]
-            pu = puupr
+            _, pu = _limits()
         tol = pu / _TOL_DIVISOR
         return _root_bisection(xx, c_index, constants, pl, pu, tol)
 
@@ -1217,6 +1216,7 @@ def _common_unscale(
 
     if c_index == 68:
         # Binary search with overridden upper limit
+        pulow, _ = _limits()
         pu = 0.0
         tol = (pu - pulow) / _TOL_DIVISOR
         upper_bound = _common_scale(pulow, c_index, constants)
@@ -1225,6 +1225,7 @@ def _common_unscale(
         return _binary_search(xx, c_index, constants, pulow, pu, tol)
 
     if c_index == 74:
+        pulow, puupr = _limits()
         a = xx * c[5] - c[2]
         b = xx * c[4] - c[1]
         g = xx * c[3] - c[0]
@@ -1287,6 +1288,7 @@ def _common_unscale(
         raise ScalingError(_UNSUPPORTED_SUB)
 
     # Default: binary search
+    pulow, puupr = _limits()
     tol = puupr / _TOL_DIVISOR
     return _binary_search(xx, c_index, constants, pulow, puupr, tol)
 

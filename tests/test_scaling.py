@@ -933,6 +933,16 @@ class TestFullPipeline:
             (12, 6, (3.0, 2.0), 100, 2),
             # Identity primary + offset-divide common
             (10, 4, (5.0, 2.0), 15, 2),
+            # Primaries without search limits still support analytical inverses
+            (82, 2, (2.0, 1.0, 0.0), 1000, 2),
+            (82, 2, (2.0, 1.0, 0.0), 4095, 2),
+            (84, 2, (2.0, 1.0, 0.0), 0x0000803F, 4),
+            (84, 12, (0.0, 0.0, 1.0, 0.0, 0.0), 0x0000803F, 4),
+            # Vapor pressure threshold and log-linear inverses need no bounds
+            (82, 38, (0.0, 1.0, 0.0, 0.0, 0.0, 0.0), 0, 2),
+            (82, 38, (0.0, 1.0, 0.0, 0.0, 0.0, 0.0), 1000, 2),
+            # This numerical inverse supplies its own fixed bounds
+            (82, 64, (0.0,), 1000, 2),
         ],
     )
     def test_full_roundtrip(self, p_index, c_index, constants, raw, input_len):
@@ -940,6 +950,22 @@ class TestFullPipeline:
         value = s.scale(raw)
         recovered = s.unscale(value)
         assert recovered == raw
+
+    @pytest.mark.parametrize(
+        ("c_index", "constants"),
+        [
+            (12, (0.0, 1.0, 0.0, 2.0, 1.0)),
+            (38, (0.0, 0.0, 0.0, 1.0, 0.0, 0.0)),
+            (68, (1.0, 1.0, 0.0, 1.0, 1.0, 1.0)),
+            (74, (0.0, 0.0, 1.0, 1.0, 0.0, 0.0)),
+            (26, (0.0, 0.0, 0.0, 0.0, 1.0, 0.0)),
+        ],
+    )
+    def test_inverse_requires_primary_search_limits(self, c_index, constants):
+        s = Scaler(p_index=84, c_index=c_index, constants=constants, input_len=4)
+        value = s.scale(0x0000803F)
+        with pytest.raises(ScalingError, match="p_index 84.*search limits"):
+            s.unscale(value)
 
 
 # ---- Edge cases and error paths ----------------------------------------------
