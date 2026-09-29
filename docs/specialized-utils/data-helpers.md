@@ -427,7 +427,8 @@ class LogWriter(Protocol):
 
 ### CsvWriter
 
-Simple CSV output with columns: `timestamp`, `drf`, `value`, `units`.
+Simple CSV output with columns: `timestamp`, `drf`, `value`, `units`, `facility_code`, `error_code`, `message`.
+Status fields are preserved from each reading; missing messages are empty. Error rows can be distinguished from successful empty text values, and warnings retain their values.
 Each batch is flushed to the operating system before `write_readings()` returns.
 Parquet files require a successful `close()` before they are readable.
 

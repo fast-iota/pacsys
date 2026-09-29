@@ -86,16 +86,17 @@ def _format_value_str(r: Reading) -> str:
 class CsvWriter:
     """Write readings to a CSV file.
 
-    Columns: timestamp, drf, value, units
+    Columns: timestamp, drf, value, units, facility_code, error_code, message.
     Values are serialized as parseable strings: scalars as-is, arrays as JSON
-    lists, dicts as JSON objects, raw bytes as base64.
+    lists, dicts as JSON objects, raw bytes as base64. Status fields come directly
+    from each reading; missing messages are empty.
     """
 
     def __init__(self, path: str | Path):
         self._path = Path(path)
         self._file = self._path.open("w", newline="")
         self._writer = csv.writer(self._file)
-        self._writer.writerow(["timestamp", "drf", "value", "units"])
+        self._writer.writerow(["timestamp", "drf", "value", "units", "facility_code", "error_code", "message"])
 
     def write_readings(self, readings: list[Reading]) -> None:
         for r in readings:
@@ -105,6 +106,9 @@ class CsvWriter:
                     r.drf,
                     _format_value_str(r),
                     r.units or "",
+                    r.facility_code,
+                    r.error_code,
+                    r.message if r.message is not None else "",
                 ]
             )
         self._file.flush()

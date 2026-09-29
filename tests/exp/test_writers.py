@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import numpy as np
 import pytest
 
-from pacsys.exp._writers import CsvWriter, LogWriter
+from pacsys.exp import CsvWriter, LogWriter
 from pacsys.types import DeviceMeta, Reading, ValueType
 
 TS = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
@@ -33,10 +33,29 @@ class TestCsvWriter:
 
         with path.open(newline="") as f:
             rows = list(csv.reader(f))
-        assert rows[0] == ["timestamp", "drf", "value", "units"]
+        assert rows[0] == ["timestamp", "drf", "value", "units", "facility_code", "error_code", "message"]
         assert len(rows) == 3
         assert rows[1][1] == "M:OUTTMP"
         assert rows[1][2] == "72.5"
+        assert rows[1][4:] == ["0", "0", ""]
+
+    def test_preserves_reading_status(self, tmp_path):
+        path = tmp_path / "test.csv"
+        readings = [
+            Reading(drf="M:OUTTMP", value_type=ValueType.TEXT, value="", timestamp=TS),
+            Reading(drf="M:OUTTMP", facility_code=17, error_code=-1, message="Read failed", timestamp=TS),
+            _reading(facility_code=1, error_code=1, message="Warning with data"),
+        ]
+        writer = CsvWriter(path)
+        writer.write_readings(readings)
+        writer.close()
+
+        with path.open(newline="") as f:
+            rows = list(csv.DictReader(f))
+        assert [row["value"] for row in rows] == ["", "", "72.5"]
+        assert [row["facility_code"] for row in rows] == ["0", "17", "1"]
+        assert [row["error_code"] for row in rows] == ["0", "-1", "1"]
+        assert [row["message"] for row in rows] == ["", "Read failed", "Warning with data"]
 
     def test_rows_are_visible_before_close(self, tmp_path):
         path = tmp_path / "test.csv"
