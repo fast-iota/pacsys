@@ -34,22 +34,28 @@ This means:
 
 ## Quick Start
 
+This local demo uses a shared bearer token. Pass the same value to the server and the client's `JWTAuth`.
+
 ```python
+from pacsys import JWTAuth
 from pacsys.testing import FakeBackend
 from pacsys.supervised import SupervisedServer, DeviceAccessPolicy
 import pacsys
 
 fb = FakeBackend()
 fb.set_reading("M:OUTTMP", 72.5)
+token = "demo-token"
 
 # Reads work by default; writes require explicit approval
-with SupervisedServer(fb, port=50099, policies=[
+with SupervisedServer(fb, port=50099, token=token, policies=[
     DeviceAccessPolicy(patterns=["M:*"], action="set", mode="allow"),
 ]) as srv:
-    with pacsys.grpc(host="localhost", port=50099) as client:
-        print(client.read("M:OUTTMP"))      # 72.5
-        client.write("M:OUTTMP", 80.0)      # OK (M:* approved)
-        client.write("Z:SECRET", 1.0)        # PERMISSION_DENIED
+    with pacsys.grpc(host="localhost", port=50099, auth=JWTAuth(token=token)) as client:
+        print(client.read("M:OUTTMP"))  # 72.5
+        allowed = client.write("M:OUTTMP", 80.0)
+        print(allowed.ok)  # True (M:* approved)
+        denied = client.write("Z:SECRET", 1.0)
+        print(denied.ok, denied.message)  # False; message includes PERMISSION_DENIED
 ```
 
 ---
@@ -382,8 +388,7 @@ import pacsys.aio as aio
 from pacsys.supervised import SupervisedServer
 
 backend = aio.dpm()
-with SupervisedServer(backend, port=50051) as srv:
-    srv.run()
+SupervisedServer(backend, port=50051).run()  # blocks until SIGINT/SIGTERM
 ```
 
 ---
