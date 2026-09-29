@@ -78,6 +78,9 @@ with pacsys.DevDBClient(host="...") as db:
     eng = scaler.scale(raw_int)
 ```
 
+`input_len` is required: pass the device's raw data width in bytes (1, 2, or 4).
+`PropertyInfo` does not include this width; an incorrect width can silently produce incorrect values.
+
 `PropertyInfo` carries the scaling parameters:
 
 | Field | Type | Description |

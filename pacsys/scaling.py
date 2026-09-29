@@ -1376,13 +1376,13 @@ class Scaler:
         return _primary_unscale(primary, self.p_index, self.input_len)
 
     @classmethod
-    def from_property_info(cls, prop: PropertyInfo, input_len: int = 2) -> Scaler:
+    def from_property_info(cls, prop: PropertyInfo, input_len: int) -> Scaler:
         """Create a Scaler from DevDB PropertyInfo.
 
         Args:
             prop: PropertyInfo from DevDB (has p_index, c_index, coeff)
-            input_len: Raw data width in bytes (default: 2). DevDB doesn't
-                       store this, so it must be provided separately.
+            input_len: Required raw data width in bytes (1, 2, or 4).
+                       PropertyInfo does not include this width.
         """
         return cls(
             p_index=prop.p_index,

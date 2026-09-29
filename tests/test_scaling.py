@@ -870,7 +870,7 @@ class TestScalerNumpy:
 
 
 class TestScalerFromPropertyInfo:
-    def test_from_property_info(self):
+    def test_factory_scaling_pipeline(self):
         from pacsys.devdb import PropertyInfo
 
         prop = PropertyInfo(
@@ -878,40 +878,20 @@ class TestScalerFromPropertyInfo:
             common_units="degF",
             min_val=-10.0,
             max_val=10.0,
-            p_index=2,
+            p_index=16,
             c_index=2,
-            coeff=(100.0, 1.0, 0.0),
+            coeff=(10.0, 2.0, 0.0),
             is_step_motor=False,
             is_destructive_read=False,
             is_fe_scaling=False,
             is_contr_setting=False,
             is_knobbable=False,
         )
-        s = Scaler.from_property_info(prop, input_len=2)
-        assert s.p_index == 2
-        assert s.c_index == 2
-        assert s.constants == (100.0, 1.0, 0.0)
-        assert s.input_len == 2
-
-    def test_default_input_len(self):
-        from pacsys.devdb import PropertyInfo
-
-        prop = PropertyInfo(
-            primary_units=None,
-            common_units=None,
-            min_val=0.0,
-            max_val=0.0,
-            p_index=10,
-            c_index=0,
-            coeff=(),
-            is_step_motor=False,
-            is_destructive_read=False,
-            is_fe_scaling=False,
-            is_contr_setting=False,
-            is_knobbable=False,
-        )
-        s = Scaler.from_property_info(prop)
-        assert s.input_len == 2
+        s = Scaler.from_property_info(prop, input_len=4)
+        raw = 0x42C80000
+        engineering = s.scale(raw)
+        assert engineering == 500.0
+        assert s.unscale(engineering) == raw
 
 
 # ---- Full pipeline round-trip ------------------------------------------------
