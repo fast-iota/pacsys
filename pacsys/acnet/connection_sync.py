@@ -159,8 +159,8 @@ class _SyncAcnetConnectionBase:
             pending = asyncio.all_tasks(loop)
             for t in pending:
                 t.cancel()
-            if pending:
-                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            # Publish completion callbacks even when no tasks remain.
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             loop.close()
 
         self._reactor_thread = threading.Thread(

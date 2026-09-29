@@ -966,8 +966,8 @@ class GRPCBackend(Backend):
                 pending = asyncio.all_tasks(loop)
                 for task in pending:
                     task.cancel()
-                if pending:
-                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                # Publish completion callbacks even when no tasks remain.
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
                 loop.close()
                 if self._loop is loop:
                     self._loop = None
