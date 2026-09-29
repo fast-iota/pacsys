@@ -26,6 +26,7 @@ import pytest
 from pika.adapters.select_connection import SelectConnection
 from pika.exceptions import ChannelWrongStateError
 
+from pacsys import DispatchMode
 from pacsys.acnet.errors import ERR_RETRY, ERR_TIMEOUT, FACILITY_DMQ
 from pacsys.backends.dmq import (
     MAX_IDLE_TIME,
@@ -1599,6 +1600,38 @@ class TestDMQBackendSubscribe:
             handle.stop()
             assert len(callback_results) >= 1
             assert callback_results[0].value == TEMP_VALUE
+
+    def test_direct_callback_stop_suppresses_duplicates_and_late_messages(self):
+        received = []
+
+        def callback(reading, handle):
+            received.append(reading.value)
+            handle.stop()
+
+        with _mock_dmq_backend(dispatch_mode=DispatchMode.DIRECT) as backend:
+            handle = backend.subscribe([TEMP_DEVICE, TEMP_DEVICE], callback=callback)
+            sub = backend._subscriptions[handle._sub_id]
+            channel = sub.channel
+            conn = backend._select_connection
+            assert channel is not None and conn is not None
+            on_message = channel._on_message_callback
+            done = threading.Event()
+
+            def deliver():
+                try:
+                    # Both messages arrive before the queued cancellation can run.
+                    for tag, value in enumerate((TEMP_VALUE, TEMP_VALUE + 1), start=1):
+                        method = mock.MagicMock(routing_key=f"R.{TEMP_DEVICE}", delivery_tag=tag)
+                        on_message(channel, method, None, make_double_reply(value, ref_id=1))
+                finally:
+                    done.set()
+
+            with mock.patch.object(channel, "basic_ack") as ack:
+                conn.ioloop.add_callback_threadsafe(deliver)
+                assert done.wait(1.0)
+                assert received == [TEMP_VALUE]
+                assert handle.stopped and handle._stop_requested
+                assert ack.call_args_list == [mock.call(1), mock.call(2)]
 
     def test_subscribe_stop(self):
         """Test that handle.stop() stops subscription."""

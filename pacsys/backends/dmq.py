@@ -2462,6 +2462,8 @@ class DMQBackend(Backend):
 
         # Deliver to all indices sharing this DRF (handles duplicate subscriptions)
         for i in sub.drf_to_all_indices.get(drf, (idx,)):
+            if handle._stopped:
+                return
             reading = _reply_to_reading(reply, sub.drfs[i])
             if sub.callback is not None:
                 self._dispatcher.dispatch_reading(sub.callback, reading, handle)
