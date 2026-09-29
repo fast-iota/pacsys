@@ -58,6 +58,13 @@ with errors or warnings without data remain unusable.
 | `port` | 50051 | `PACSYS_GRPC_PORT` |
 | `auth` | None | `PACSYS_JWT_TOKEN` |
 
+Both sync and async backends use a five-minute keepalive interval for active
+RPCs, with a ten-second acknowledgement timeout. This matches gRPC's
+default server minimum and avoids disconnecting quiet subscriptions for excessive
+pings. Idle channels without active RPCs do not send keepalive pings. Detecting a
+silent connection loss can therefore take about five minutes plus ten seconds;
+ordinary RPC timeouts are unchanged.
+
 ## Write Permissions (JWT)
 
 JWT tokens are introspected server-side via a Keycloak endpoint. Your token's `realm_access.roles` determine which devices you can write to. Roles are mapped to ACNET console classes (e.g. `MCR`, `ASTA`, ...). The same bitwise check logic is applied as for DPM/HTTP.

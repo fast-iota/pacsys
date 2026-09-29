@@ -472,9 +472,9 @@ class _DaqCore:
     async def connect(self):
         target = f"{self._host}:{self._port}"
         options = [
-            ("grpc.keepalive_time_ms", 30000),
+            # Match the default server minimum to avoid GOAWAY on quiet streams.
+            ("grpc.keepalive_time_ms", 300000),
             ("grpc.keepalive_timeout_ms", 10000),
-            ("grpc.keepalive_permit_without_calls", True),
             ("grpc.http2.max_pings_without_data", 0),
         ]
         self._channel = grpc_aio.insecure_channel(target, options=options)
