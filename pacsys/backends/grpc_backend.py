@@ -24,7 +24,6 @@ from pacsys.auth import Auth, JWTAuth
 from pacsys.backends import ALARM_READONLY_KEYS, Backend, summarize_drfs, validate_alarm_dict
 from pacsys.backends._dispatch import CallbackDispatcher
 from pacsys.backends._subscription import BufferedSubscriptionHandle
-from pacsys.drf_utils import is_chunked_historical_drf, prepare_for_write
 from pacsys.errors import AuthenticationError, DeviceError, ReadError
 from pacsys.types import (
     BackendCapability,
@@ -39,6 +38,8 @@ from pacsys.types import (
     _normalize_numpy_scalar,
     _validate_callback,
 )
+
+from ..drf_utils import ensure_immediate_event, is_chunked_historical_drf, prepare_for_write
 
 logger = logging.getLogger(__name__)
 
@@ -496,7 +497,7 @@ class _DaqCore:
         assert self._stub is not None, "Not connected"
         request = DAQ_pb2.ReadingList()
         for drf in drfs:
-            request.drf.append(drf)
+            request.drf.append(ensure_immediate_event(drf))
 
         logger.debug("gRPC async Read request: %s devices", len(drfs))
 

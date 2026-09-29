@@ -468,6 +468,51 @@ class TestWarningData:
 class TestMultipleDeviceRead:
     """Tests for multiple device get_many operations."""
 
+    def test_get_many_normalizes_default_events_on_wire(self, backend_with_mock_stub):
+        backend, mock_stub = backend_with_mock_stub
+        drfs = [
+            "M:OUTTMP",
+            "M_OUTTMP@U",
+            "M:OUTTMP@p,1000",
+            "M:OUTTMP@E,0F",
+            "pv:name.VAL",
+            "M:OUTTMP<-LOGGER:1700000000000:1700000060000",
+            "M:OUTTMP<-LOGGERDURATION:60000",
+            "M:OUTTMP<-LOGGERSINGLE:ArkIv:1736942400:60",
+        ]
+        replies = []
+        for index in range(len(drfs)):
+            replies.append(make_reading_reply(index, scalar_value=float(index)))
+            if index in (5, 6):
+                terminator = DAQ_pb2.ReadingReply(index=index)
+                terminator.readings.SetInParent()
+                replies.append(terminator)
+        mock_stub.Read.return_value = AsyncMockIterator(replies)
+
+        readings = backend.get_many(drfs)
+
+        mock_stub.Read.assert_called_once()
+        assert list(mock_stub.Read.call_args.args[0].drf) == [
+            "M:OUTTMP.READING@I",
+            "M:OUTTMP.SETTING@I",
+            *drfs[2:4],
+            "pv:name.VAL@I",
+            *drfs[5:],
+        ]
+        assert [reading.drf for reading in readings] == drfs
+        assert all(reading.ok for reading in readings)
+        assert readings[5].value["data"].tolist() == [5.0]
+        assert readings[6].value["data"].tolist() == [6.0]
+        assert readings[7].value == 7.0
+
+    def test_get_many_malformed_batch_raises_before_rpc(self, backend_with_mock_stub):
+        backend, mock_stub = backend_with_mock_stub
+
+        with pytest.raises(ValueError):
+            backend.get_many(["M:OUTTMP", "M:OUTTMP{bad}"])
+
+        mock_stub.Read.assert_not_called()
+
     def test_get_many_multiple_devices(self, backend_with_mock_stub):
         backend, mock_stub = backend_with_mock_stub
         mock_stub.Read.return_value = AsyncMockIterator(
