@@ -26,6 +26,7 @@ from pacsys.backends.dpm_http import (
     _reply_to_reading,
     _SettingPayload,
     _value_to_setting,
+    _WriteOutcomeUnknown,
 )
 from pacsys.dpm_connection import DPMConnectionError, _remaining_timeout
 from pacsys.dpm_protocol import (
@@ -668,42 +669,53 @@ class _AsyncDpmCore:
             setattr(apply_req, "text_array", text_settings)
 
         try:
-            await _await_with_deadline(
-                lambda: conn.send_message(apply_req),
-                deadline,
-                "ApplySettings request",
+            remaining = _remaining_timeout(deadline, "ApplySettings request")
+        except TimeoutError:
+            logger.warning(
+                "Write deadline expired before ApplySettings (devices: %s)",
+                summarize_drfs([drf for drf, _ in settings]),
             )
-        except TimeoutError as e:
-            # Settings may be partially sent: never retry; keep known setup rejections
-            logger.warning("%s (devices: %s)", e, summarize_drfs([drf for drf, _ in settings]))
             return self._build_write_results(settings, None, add_errors)
 
-        # Phase 3: Wait for ApplySettings reply
-        apply_reply = None
-        while time.monotonic() < deadline:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
+        try:
+            # A failed send may have delivered settings; never replay from this point.
             try:
-                reply = await conn.recv_message(timeout=min(remaining, 2.0))
-            except asyncio.TimeoutError:
-                if time.monotonic() >= deadline:
+                await asyncio.wait_for(conn.send_message(apply_req), timeout=remaining)
+            except asyncio.TimeoutError as e:
+                raise TimeoutError("Timed out during ApplySettings request") from e
+
+            # Phase 3: Wait for ApplySettings reply
+            while time.monotonic() < deadline:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
                     break
-                continue
+                try:
+                    reply = await conn.recv_message(timeout=min(remaining, 2.0))
+                except (TimeoutError, asyncio.TimeoutError):
+                    if time.monotonic() >= deadline:
+                        break
+                    continue
 
-            if isinstance(reply, ApplySettings_reply):
-                apply_reply = reply
-                break
-            if isinstance(reply, ListStatus_reply):
-                pass
+                if isinstance(reply, ApplySettings_reply):
+                    return self._build_write_results(settings, reply, add_errors)
+                if isinstance(reply, ListStatus_reply):
+                    pass
 
-        return self._build_write_results(settings, apply_reply, add_errors)
+            raise TimeoutError("ApplySettings reply timed out")
+        except (OSError, DPMConnectionError) as e:
+            outcome = _WriteOutcomeUnknown(e, add_errors)
+            logger.warning("%s (devices: %s)", outcome, summarize_drfs([drf for drf, _ in settings]))
+            return self._build_write_results(
+                settings, None, add_errors, missing_code=outcome.error_code, missing_message=str(outcome)
+            )
 
     def _build_write_results(
         self,
         settings: list[tuple[str, Value]],
         apply_reply: ApplySettings_reply | None,
         add_errors: dict[int, int],
+        missing_code: int = ERR_TIMEOUT,
+        missing_message: str = "No reply from server",
     ) -> list[WriteResult]:
         """Convert ApplySettings_reply + add_errors into WriteResult list."""
         # Build ref_id → status map from SettingStatus_struct list
@@ -763,8 +775,8 @@ class _AsyncDpmCore:
                     WriteResult(
                         drf=drf,
                         facility_code=FACILITY_ACNET,
-                        error_code=ERR_TIMEOUT,
-                        message="No reply from server",
+                        error_code=missing_code,
+                        message=missing_message,
                     )
                 )
         return results

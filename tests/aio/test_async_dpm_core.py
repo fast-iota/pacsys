@@ -7,7 +7,7 @@ from unittest import mock
 import numpy as np
 import pytest
 
-from pacsys.acnet.errors import DAE_LJ_NO_DATA, DPM_INTERNAL_ERROR, DPM_PRIV, ERR_TIMEOUT, parse_error
+from pacsys.acnet.errors import DAE_LJ_NO_DATA, DPM_INTERNAL_ERROR, DPM_PRIV, ERR_RETRY, ERR_TIMEOUT, parse_error
 from pacsys.aio._dpm_http import AsyncDPMHTTPBackend
 from pacsys.auth import KerberosAuth
 from pacsys.backends._dpm_core import _AsyncDpmCore
@@ -560,25 +560,77 @@ class TestWriteMany:
         assert results[0].facility_code == facility
 
     @pytest.mark.asyncio
-    async def test_apply_settings_send_timeout_preserves_rejected_device_status(self, make_core):
-        core, conn = make_core([_add_error(1, status=DPM_PRIV), _device_info(2), _start_ok()])
+    @pytest.mark.parametrize("rejection", [_add_error, _status_err])
+    @pytest.mark.parametrize(
+        "failure, expected_code",
+        [
+            ("send_reset", ERR_RETRY),
+            ("recv_disconnect", ERR_RETRY),
+            ("send_timeout", ERR_TIMEOUT),
+            ("reply_timeout", ERR_TIMEOUT),
+            ("expired_before_send", ERR_TIMEOUT),
+            ("cancel_send", None),
+            ("cancel_recv", None),
+        ],
+    )
+    async def test_apply_settings_failure_preserves_status_and_closes_core(
+        self, make_core, rejection, failure, expected_code
+    ):
+        core, conn = make_core(
+            [_add_ok(0), _list_status(), rejection(1, status=DPM_PRIV), _device_info(2), _start_ok()]
+        )
         core._settings_enabled = True
         core._principal = "test@fnal.gov"
+        core.close = mock.AsyncMock(wraps=core.close)
+        recv_message = conn.recv_message
 
-        async def stalled_send(msg):
+        async def send(msg):
             conn.sent.append(msg)
-            await asyncio.sleep(1)
+            if failure == "send_reset":
+                raise ConnectionResetError("connection reset during send")
+            if failure == "send_timeout":
+                await asyncio.sleep(1)
+            if failure == "cancel_send":
+                raise asyncio.CancelledError
 
-        conn.send_message = stalled_send
+        async def recv(timeout=None):
+            if conn._idx == len(conn._replies):
+                if failure == "recv_disconnect":
+                    raise DPMConnectionError("connection closed during reply")
+                if failure == "cancel_recv":
+                    raise asyncio.CancelledError
+            reply = await recv_message(timeout)
+            if isinstance(reply, StartList_reply):
+                if failure == "expired_before_send":
+                    await asyncio.sleep(0.12)
+                else:
+                    conn._replies.append(_list_status())
+            return reply
+
+        conn.send_message = send
+        conn.recv_message = recv
         backend = AsyncDPMHTTPBackend(host="localhost", port=6802, auth=KerberosAuth(_lazy=True))
         backend._create_core = mock.AsyncMock(return_value=core)
 
         try:
-            results = await backend.write_many([("M:BADDEV", 1.0), ("M:OUTTMP", 72.5)], timeout=0.1)
+            settings = [("M:BADDEV", 1.0), ("M:OUTTMP", 72.5)]
+            if failure.startswith("cancel_"):
+                with pytest.raises(asyncio.CancelledError):
+                    await backend.write_many(settings, timeout=0.1)
+            else:
+                results = await backend.write_many(settings, timeout=0.1)
+                assert len(results) == 2
+                assert (results[0].facility_code, results[0].error_code) == parse_error(DPM_PRIV)
+                assert "unknown" not in results[0].message
+                assert results[1].error_code == expected_code
+                if failure == "expired_before_send":
+                    assert results[1].message == "No reply from server"
+                else:
+                    assert "Write outcome unknown after ApplySettings; not retried" in results[1].message
 
-            assert sum(isinstance(m, ApplySettings_request) for m in conn.sent) == 1
-            assert (results[0].facility_code, results[0].error_code) == parse_error(DPM_PRIV)
-            assert results[1].error_code == ERR_TIMEOUT
+            assert sum(isinstance(m, ApplySettings_request) for m in conn.sent) == (failure != "expired_before_send")
+            backend._create_core.assert_awaited_once()
+            core.close.assert_awaited_once()
             assert conn._closed and not core.connected
         finally:
             await backend.close()
