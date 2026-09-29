@@ -50,6 +50,13 @@ both `reading.ok` and `reading.is_warning` are true. Batched and logger results
 retain all usable samples and the first warning's status and message. Samples
 with errors or warnings without data remain unusable.
 
+Sync and async subscriptions retry `UNAVAILABLE` and `CANCELLED` stream errors
+indefinitely until stopped, with exponential backoff from 1 to 30 seconds. Each
+retryable error logs a warning and invokes the optional `on_error` callback,
+including in iterator mode. `handle.exc` is reserved for terminal errors and
+remains `None` during retries. `readings(timeout=...)` limits iteration time, not
+the subscription's lifetime; stop the subscription to end retries.
+
 ## Configuration
 
 | Parameter | Default | Environment Variable |
