@@ -348,21 +348,21 @@ with pacsys.dpm(auth=auth, role="testing") as backend:
 
 ## Dict Write Shortcut
 
-All writable backends (DPM/HTTP, gRPC, DMQ) support writing alarm fields as a dict:
+Use DPM/HTTP (`pacsys.dpm()`) to write alarm fields as a dict:
 
 ```python
 backend.write("Z@ACLTST", {"minimum": 40.0, "maximum": 50.0, "alarm_enable": True})
 backend.write("Z$ACLTST", {"nominal": 0x0001, "mask": 0x00FF})
 ```
 
-The backends handle this differently:
+DPM/HTTP expands the dict into sequential per-field writes (e.g.,
+`DEVICE.ANALOG.MIN`, `DEVICE.ANALOG.MAX`). Each field triggers a server-side
+read-modify-write of the 20-byte alarm block. The operation is not atomic: if a
+later field fails, earlier changes remain applied.
 
-- **gRPC** and **DMQ** send the alarm as a single atomic structured message (protobuf
-  `Value.anaAlarm` / SDD `AnalogAlarmSample_reply`).
-- **DPM/HTTP** expands the dict into sequential per-field writes (e.g.,
-  `DEVICE.ANALOG.MIN`, `DEVICE.ANALOG.MAX`) because the PC binary protocol has no
-  structured alarm message. Each field triggers a server-side read-modify-write of
-  the 20-byte alarm block.
+DPM/gRPC alarm dict writes are unsupported: the client returns a failed
+`WriteResult` without sending the alarm dict. DMQ support on deployed servers is unverified;
+the reference server rejects structured alarm writes. Use DPM/HTTP for this shortcut.
 
 Read-only keys (`abort`, `alarm_status`, `tries_now`) raise `ValueError`.
 

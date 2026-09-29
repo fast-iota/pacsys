@@ -138,7 +138,7 @@ def _value_to_proto_value(value: Value, *, for_write: bool = False) -> "device_p
         if for_write:
             raise NotImplementedError(
                 "Alarm writes are not supported via gRPC -- the DPM server does not handle "
-                "alarm settings over this protocol. Use the DPM/HTTP or DMQ backend instead."
+                "alarm settings over this protocol. Use the DPM/HTTP backend instead."
             )
         if _is_basic_status_dict(value):
             for k, v in value.items():

@@ -220,10 +220,10 @@ backend.write("Z$ACLTST.MASK", 0x00FF)     # Set mask
 
 ### Dict Shortcut
 
-On any writable backend, you can write multiple alarm fields by passing a dict:
+Use DPM/HTTP (`pacsys.dpm()`) to write multiple alarm fields by passing a dict:
 
 ```python
-# Analog alarm - set multiple fields at once
+# Analog alarm - set multiple fields sequentially
 backend.write("Z@ACLTST", {
     "minimum": 40.0,
     "maximum": 50.0,
@@ -246,8 +246,13 @@ Allowed keys for digital alarms: `nominal`, `mask`, `alarm_enable`, `abort_inhib
 Unknown and read-only keys (`abort`, `alarm_status`, `tries_now`) raise
 `ValueError`. Boolean values are converted to 0/1 automatically.
 
-!!! info "Implementation Detail"
-    The DPM protocol used in DPM/HTTP has no structured alarm write message. The dict is expanded to individual per-field writes issued sequentially (alarm fields share a hardware block and would overwrite each other in a batch).
+The dict is expanded to sequential per-field writes because alarm fields share a
+hardware block. The operation is not atomic: if a later field fails, earlier
+changes remain applied.
+
+DPM/gRPC alarm dict writes are unsupported: the client returns a failed
+`WriteResult` without sending the alarm dict. DMQ support on deployed servers is unverified;
+the reference server rejects structured alarm writes. Use DPM/HTTP for this shortcut.
 
 ### Context Manager (Recommended)
 
@@ -329,7 +334,7 @@ print(f"Failed: {results[1].error_code}")
 | Feature | DPM/HTTP | gRPC | DMQ |
 |---------|----------|----------|-----|
 | Auth type | Kerberos + role | JWT | Kerberos (no role) |
-| Alarm dict write | Yes (sequential) | Yes (atomic) | Yes (atomic) |
+| Alarm dict write | Yes (sequential, not atomic) | Unsupported | Unverified; reference server rejects |
 
 ---
 
