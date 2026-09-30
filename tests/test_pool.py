@@ -219,6 +219,63 @@ class TestPoolExhaustion:
 
             pool.release(conn1)
 
+    @pytest.mark.parametrize("make_available", ["release", "discard"])
+    def test_timed_out_waiter_passes_notification(self, make_available):
+        pool = ConnectionPool(pool_size=1)
+        waiting = [threading.Event(), threading.Event()]
+        finished = [threading.Event(), threading.Event()]
+        results = [None, None]
+        errors = [None, None]
+        real_wait = pool._condition.wait
+
+        def wait(timeout=None):
+            index = 0 if threading.current_thread() is threads[0] else 1
+            # Set under the condition lock, so the next borrower/release cannot
+            # overtake registration in the real wait.
+            waiting[index].set()
+            notified = real_wait(timeout)
+            if index == 0:
+                assert notified
+                # Model timeout before lock reacquisition consuming a real notify.
+                return False
+            return notified
+
+        def borrow(index):
+            try:
+                results[index] = pool.borrow(wait_timeout=5.0 if index == 0 else None)
+            except Exception as exc:  # noqa: BLE001
+                errors[index] = exc
+            finally:
+                finished[index].set()
+
+        threads = [threading.Thread(target=borrow, args=(index,)) for index in range(2)]
+        with (
+            mock.patch("socket.socket", side_effect=lambda *args, **kwargs: create_mock_socket()),
+            mock.patch.object(pool._condition, "wait", side_effect=wait),
+        ):
+            conn = pool.borrow()
+            try:
+                threads[0].start()
+                assert waiting[0].wait(1.0)
+                threads[1].start()
+                assert waiting[1].wait(1.0)
+                getattr(pool, make_available)(conn)
+
+                assert finished[0].wait(1.0)
+                assert isinstance(errors[0], PoolExhaustedError)
+                assert finished[1].wait(1.0), "Available capacity stranded behind timed-out waiter"
+                assert errors[1] is None
+                assert results[1] is not None
+                assert (results[1] is conn) == (make_available == "release")
+                assert pool.in_use_count == 1
+                pool.release(results[1])
+            finally:
+                pool.close(drain_timeout=0)
+                for thread in threads:
+                    if thread.ident is not None:
+                        thread.join(timeout=2.0)
+                assert not any(thread.is_alive() for thread in threads)
+
     @pytest.mark.parametrize(("wait_timeout", "expect"), [(0.05, 0.05), (None, 30.0)])
     def test_borrow_budget_covers_connect(self, wait_timeout, expect):
         """Creating a connection happens inside wait_timeout, not after it."""

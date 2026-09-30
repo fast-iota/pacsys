@@ -28,7 +28,7 @@ import threading
 import time
 from contextlib import contextmanager
 
-from pacsys.dpm_connection import DPMConnection, DPMConnectionError
+from .dpm_connection import DPMConnection, DPMConnectionError
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +218,8 @@ class ConnectionPool:
                     remaining = None
                 logger.debug("Pool exhausted, waiting for available connection")
                 if not self._condition.wait(timeout=remaining):
+                    # A timeout can consume a notification before reacquiring the lock.
+                    self._condition.notify()
                     raise PoolExhaustedError(
                         f"No DPM connection to {self._host}:{self._port} available after {wait_timeout}s "
                         f"(pool_size={self._pool_size}, all in use)"
