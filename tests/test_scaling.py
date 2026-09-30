@@ -759,6 +759,28 @@ class TestCommonBinarySearchRoundTrip:
 
 
 class TestScaler:
+    @pytest.mark.parametrize("as_array", [False, True], ids=["scalar", "array"])
+    @pytest.mark.parametrize(
+        ("c_index", "constants", "invalid", "valid", "expected"),
+        [
+            (48, (1.0, -8.0, 1.0), 2.0, 1.0, -8.0),
+            (48, (1.0, 2.0, 0.5), -1.0, 4.0, 2.0 * 2.0**0.25),
+            (68, (1.0, 1.0, 0.0, 0.0, 0.5, 1.0), 0.5, math.e, 1.0),
+        ],
+        ids=["c48_constant_power", "c48_input_power", "c68_log_power"],
+    )
+    def test_fractional_power_returns_real_nan(self, c_index, constants, invalid, valid, expected, as_array):
+        s = Scaler(p_index=10, c_index=c_index, constants=constants, input_len=2)
+        if as_array:
+            result = s.primary_to_common(np.array([invalid, valid]))
+            assert result.dtype == np.dtype(float)
+            np.testing.assert_allclose(result, [math.nan, expected])
+        else:
+            result = s.primary_to_common(invalid)
+            assert isinstance(result, float)
+            assert math.isnan(result)
+            assert s.primary_to_common(valid) == pytest.approx(expected)
+
     def test_basic_pipeline(self):
         # Identity primary (p_index=10), linear common (c_index=2)
         s = Scaler(p_index=10, c_index=2, constants=(2.0, 1.0, 0.0), input_len=2)

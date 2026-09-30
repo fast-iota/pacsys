@@ -19,10 +19,10 @@ import struct
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-from pacsys.errors import PacsysError
+from .errors import PacsysError
 
 if TYPE_CHECKING:
-    from pacsys.devdb import PropertyInfo
+    from .devdb import PropertyInfo
 
 try:
     import numpy as np
@@ -804,7 +804,8 @@ def _common_scale(data: float, c_index: int, constants: tuple[float, ...]) -> fl
         # C1*C2^(1/X)*X^C3
         if len(c) < 3:
             raise ScalingError("Insufficient constants")
-        return c[0] * (c[1] ** (1.0 / x)) * (x ** c[2])
+        result = c[0] * (c[1] ** (1.0 / x)) * (x ** c[2])
+        return math.nan if isinstance(result, complex) else result
 
     if c_index == 50:
         # C1*acos(X/C2)
@@ -875,7 +876,8 @@ def _common_scale(data: float, c_index: int, constants: tuple[float, ...]) -> fl
         arg = c[0] * x + c[3]
         if c[0] != 0.0 and arg <= 0.0:
             return 0.0
-        return c[5] * (c[1] * math.log(arg) + c[2] * x) ** c[4]
+        result = c[5] * (c[1] * math.log(arg) + c[2] * x) ** c[4]
+        return math.nan if isinstance(result, complex) else result
 
     if c_index == 70:
         # C1*exp(-X/C2) + C3*exp(-X/C4) + C5*exp(-X/C6) + 4
