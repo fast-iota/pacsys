@@ -67,7 +67,7 @@ ACK_CONNECT_EXT = 16  # ackConnectExt - extended connect response
 
 # Timeouts (milliseconds)
 DEFAULT_TIMEOUT = 5000  # Default request timeout
-INFINITE_TIMEOUT = 0x7FFFFFFF  # Max timeout (~24.8 days), used for timeout=0 requests
+INFINITE_TIMEOUT = 0x7FFFFFFF  # timeout=0 wire value; acnetd caps the idle interval at 390s
 # Buffer sizes
 CMD_BUFFER_SIZE = 16  # Command buffer size
 SEND_BUFFER_SIZE = 256 * 1024  # Socket send buffer

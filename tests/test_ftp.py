@@ -13,6 +13,7 @@ import pytest
 
 from pacsys.acnet.errors import (
     ACNET_DISCONNECTED,
+    ACNET_PEND,
     FTP_BUMPED,
     FTP_COLLECTING,
     FTP_ENDOFDATA,
@@ -1064,14 +1065,16 @@ class TestFTPClientClassCodes:
 
 
 class TestFTPClientContinuous:
-    def test_start_continuous_success(self, mouttmp):
+    @pytest.mark.parametrize("status", [0, ACNET_PEND])
+    def test_start_continuous_success(self, mouttmp, status):
         conn = MagicMock()
         conn.raw_handle = 0x12345678
 
         def fake_request_multiple(node, task, data, reply_handler, timeout):
+            reply_handler(MagicMock(status=ACNET_PEND, data=b"", last=False))
             # Send setup reply
             setup_reply = MagicMock()
-            setup_reply.status = 0
+            setup_reply.status = status
             setup_reply.data = struct.pack("<HH", 0, REPLY_TYPE_SETUP) + struct.pack("<H", 0)
             setup_reply.last = False
             reply_handler(setup_reply)
@@ -1106,6 +1109,7 @@ class TestFTPClientContinuous:
     @pytest.mark.parametrize(
         ("header", "payload", "match", "expected"),
         [
+            (ACNET_PEND, b"", "Unexpected end", 0),
             (0, struct.pack("<HHh", 0, REPLY_TYPE_SETUP, 0), "Unexpected end", 0),
             (0, struct.pack("<h", FTP_INVTYP), "Continuous plot setup failed", FTP_INVTYP),
             (0, struct.pack("<hHh", FTP_INVTYP, REPLY_TYPE_SETUP, 0), "Continuous plot setup failed", FTP_INVTYP),
@@ -1141,22 +1145,80 @@ class TestFTPClientContinuous:
                     last=False,
                 )
             )
+            reply_handler(MagicMock(status=ACNET_PEND, data=b"", last=False))
+            payload = struct.pack("<hH4xhHHHh", 0, REPLY_TYPE_DATA, 0, 14, 1, 50, 42)
+            reply_handler(MagicMock(status=ACNET_PEND, data=payload, last=False))
             reply_handler(MagicMock(status=status, data=b"", last=True))
             return MagicMock()
 
         conn.request_multiple = fake_request_multiple
 
         stream = FTPClient(conn).start_continuous(node=3018, devices=[mouttmp], rate_hz=1440)
-        with pytest.raises(AcnetError, match="Continuous plot terminated") as exc_info:
-            next(stream.readings(timeout=0.1))
+        with stream:
+            readings = stream.readings(timeout=0.1)
+            assert next(readings) == {0: [FTPDataPoint(timestamp_us=5000, raw_value=42)]}
+            with pytest.raises(AcnetError, match="Continuous plot terminated") as exc_info:
+                next(readings)
 
         assert exc_info.value.status == status
         assert stream.stopped
 
 
 class TestFTPClientSnapshotSetup:
-    def test_start_snapshot_no_protocol_timeout(self, mouttmp):
-        """Snapshot mult request must use protocol timeout 0 (event-armed
+    @pytest.mark.parametrize("method", ["start_continuous", "start_snapshot"])
+    def test_heartbeat_alone_does_not_complete_setup(self, mouttmp, method):
+        conn = MagicMock()
+        ctx = MagicMock()
+
+        def fake_request_multiple(node, task, data, reply_handler, timeout):
+            reply_handler(MagicMock(status=ACNET_PEND, data=b"", last=False))
+            return ctx
+
+        conn.request_multiple = fake_request_multiple
+        with pytest.raises(AcnetTimeoutError):
+            getattr(FTPClient(conn), method)(node=3018, devices=[mouttmp], rate_hz=1440, timeout=0.01)
+        ctx.cancel.assert_called_once()
+
+    @pytest.mark.parametrize("heartbeat_before_setup", [False, True])
+    def test_heartbeats_preserve_snapshot_and_restart_statuses(self, mouttmp, heartbeat_before_setup):
+        conn = MagicMock()
+        ctx = MagicMock()
+        captured = {}
+        payload = TestParseSnapshotSetupReply()._build_setup_reply()
+
+        def fake_request_multiple(node, task, data, reply_handler, timeout):
+            captured["handler"] = reply_handler
+            if heartbeat_before_setup:
+                reply_handler(MagicMock(status=ACNET_PEND, data=b"", last=False))
+            reply_handler(MagicMock(status=ACNET_PEND, data=payload, last=False))
+            return ctx
+
+        def fake_request_single(*, reply_handler, **kwargs):
+            reply_handler(
+                MagicMock(status=0, data=struct.pack("<h", 0), last=True, _received_at=time.perf_counter_ns())
+            )
+            return MagicMock()
+
+        conn.request_multiple = fake_request_multiple
+        conn.request_single = fake_request_single
+        with FTPClient(conn).start_snapshot(node=3018, devices=[mouttmp], rate_hz=1440) as snap:
+            handler = captured["handler"]
+            heartbeat = MagicMock(status=ACNET_PEND, data=b"", last=False)
+            handler(heartbeat)
+            handler(MagicMock(status=ACNET_PEND, data=payload, last=False, _received_at=time.perf_counter_ns()))
+            assert snap.wait(timeout=0.2)
+            snap.restart(timeout=0.2)
+            handler(heartbeat)
+            handler(MagicMock(status=0, data=payload, last=False, _received_at=time.perf_counter_ns()))
+            assert not snap.wait(timeout=0.05)
+            assert snap.state == SnapshotState.PENDING
+            handler(MagicMock(status=0, data=payload, last=False, _received_at=time.perf_counter_ns()))
+            assert snap.wait(timeout=0.2)
+        assert not snap._monitor_thread.is_alive()
+        ctx.cancel.assert_called_once()
+
+    def test_start_snapshot_max_protocol_timeout(self, mouttmp):
+        """Snapshot mult request requests maximum idle timeout (event-armed
         captures sit silent pre-arm; setup ack is bounded client-side)."""
         conn = MagicMock()
         captured = {}
@@ -1194,6 +1256,7 @@ class TestFTPClientSnapshotSetup:
     @pytest.mark.parametrize(
         ("header", "payload", "match", "expected"),
         [
+            (ACNET_PEND, b"", "Unexpected end", 0),
             (0, b"", "Unexpected end", 0),
             (0, b"\xff", "Unexpected end", 0),
             (0, struct.pack("<h", FTP_INVTYP), "Snapshot setup failed", FTP_INVTYP),

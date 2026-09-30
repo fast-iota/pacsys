@@ -22,6 +22,7 @@ from . import rad50
 from .connection_sync import AcnetConnectionTCP, AcnetConnectionUDP, AcnetRequestContext
 from .errors import (
     ACNET_DISCONNECTED,
+    ACNET_PEND,
     ACNET_UTIME,
     FACILITY_FTP,
     FTP_COLLECTING,
@@ -852,7 +853,7 @@ class FTPStream:
     def readings(self, timeout: float = 1.0):
         """Yield dicts of {device_index: [FTPDataPoint, ...]} per reply.
 
-        Blocks up to `timeout` seconds waiting for each reply.
+        `timeout` is the queue polling interval, not a stream lifetime limit.
         Stops iteration when the stream is stopped or connection ends.
         """
         while not self._stopped:
@@ -1513,6 +1514,8 @@ class FTPClient:
         setup_result: list = []  # [status, data] or [exception]
 
         def handler(reply):
+            if reply.status == ACNET_PEND and not reply.data and not reply.last:
+                return
             if not setup_event.is_set():
                 # First reply is setup ack
                 setup_result.append((reply.status, reply.data, reply.last))
@@ -1654,15 +1657,16 @@ class FTPClient:
         setup_result: list = []
 
         def handler(reply):
+            if reply.status == ACNET_PEND and not reply.data and not reply.last:
+                return
             if not setup_event.is_set():
                 setup_result.append((reply.status, reply.data, reply.last))
                 setup_event.set()
             else:
                 reply_queue.put((reply.status, reply.data, reply.last), received_at=reply._received_at)
 
-        # Protocol timeout 0: pre-arm silence is normal for event-armed
-        # snapshots, and acnetd's mult-request expiry would otherwise emit
-        # ACNET_PEND churn every `timeout` (precedent: dpm_acnet OpenList).
+        # Timeout 0 requests the maximum idle interval (acnetd caps it at 390s).
+        # Empty ACNET_PEND heartbeats are filtered above during pre-arm silence.
         # The setup ack itself is bounded by the client-side wait below.
         ctx = self._connection.request_multiple(
             node=node,
