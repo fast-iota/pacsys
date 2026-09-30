@@ -754,7 +754,6 @@ class TestDMQCleanup:
         session.consumer_tag = None
         session.heartbeat_handle = None
         session.cleanup_handle = None
-        session.init_timer = None
         session.queued_sends = []
         session.pending = {}
         session.init_confirmed = False
@@ -830,22 +829,6 @@ class TestDMQCleanup:
         assert session.init_drf not in backend._write_sessions
         assert "Failed to cancel heartbeat timer" in caplog.text
 
-    def test_flush_timer_failure_logs_and_dispatches_queued_writes(self, caplog):
-        backend = DMQBackend.__new__(DMQBackend)
-        backend._select_connection = mock.MagicMock()
-        backend._select_connection.ioloop.remove_timeout.side_effect = RuntimeError("invalid timer")
-        backend._send_settings_async = mock.MagicMock()
-        queued = ([(0, TEMP_DEVICE, 1.0)], [None], mock.MagicMock())
-        session = self._write_session(init_timer=object(), queued_sends=[queued])
-
-        backend._flush_queued_writes(session)
-
-        assert session.init_timer is None
-        assert session.init_confirmed
-        assert not session.queued_sends
-        backend._send_settings_async.assert_called_once_with(session, *queued)
-        assert "Failed to cancel INIT timer" in caplog.text
-
     def test_channel_close_timer_failure_logs_and_completes_tracker(self, caplog):
         backend = DMQBackend.__new__(DMQBackend)
         backend._select_connection = mock.MagicMock()
@@ -861,6 +844,93 @@ class TestDMQCleanup:
         assert results[0] is not None
         tracker.device_complete.assert_called_once_with()
         assert "Failed to cancel cleanup timer" in caplog.text
+
+    @pytest.mark.parametrize("write_session_ttl", [600.0, 4.0])
+    @pytest.mark.parametrize("abort", ["none", "short", "all"])
+    def test_write_init_waits_for_caller_budget(self, abort, write_session_ttl):
+        backend = DMQBackend.__new__(DMQBackend)
+        backend._select_connection = mock.MagicMock()
+        backend._select_connection.is_open = True
+        backend._write_session_ttl = write_session_ttl
+        backend._local_ip = b"127.0.0.1"
+        backend._create_gss_context = mock.MagicMock(return_value=_mock_gss_context())
+        backend._write_sessions = {}
+        init_drf = prepare_for_write(TEMP_DEVICE)
+        short = _WriteCompletionTracker(total_devices=1)
+        long = _WriteCompletionTracker(total_devices=1)
+        short_results = [None]
+        long_results = [None]
+        short_write = ([(0, TEMP_DEVICE, b"short")], short_results, short)
+        long_write = ([(0, TEMP_DEVICE, b"long")], long_results, long)
+        backend._pending_session_setups = {init_drf: [short_write, long_write] if abort == "short" else [long_write]}
+        channel = mock.MagicMock(is_open=True)
+        timers = []
+        now = time.monotonic()
+        with mock.patch("pacsys.backends.dmq.time.monotonic", return_value=now) as clock:
+            backend._select_connection.ioloop.call_later.side_effect = lambda delay, callback: timers.append(
+                (clock.return_value + delay, callback)
+            )
+            backend._create_write_session(channel, "write-exchange", "write-queue", init_drf)
+            session = backend._write_sessions[init_drf]
+            assert [call.kwargs["routing_key"] for call in channel.basic_publish.call_args_list] == ["I"]
+
+            if abort == "short":
+                clock.return_value = now + 2.0
+                backend._abort_pending_writes({init_drf}, short)
+                assert short_results[0].error_code == ERR_TIMEOUT
+                assert short.done_event.is_set() and short.completed_devices == 1
+                assert session.queued_sends == [long_write]
+                channel.close.assert_not_called()
+
+            clock.return_value = now + 6.0
+            for due, callback in tuple(timers):
+                if due <= clock.return_value:
+                    timers.remove((due, callback))
+                    callback()
+
+            assert backend._write_sessions[init_drf] is session
+            assert long_results == [None] and not long.done_event.is_set()
+            assert not session.init_confirmed and not session.pending
+            assert session.queued_sends == [long_write]
+            if abort == "all":
+                backend._abort_pending_writes({init_drf}, long)
+                assert long_results[0].error_code == ERR_TIMEOUT
+                assert long.done_event.is_set() and long.completed_devices == 1
+                assert not backend._write_sessions and not session.queued_sends
+                channel.close.assert_called_once_with()
+                assert not any(
+                    call.kwargs["routing_key"].startswith("S.") for call in channel.basic_publish.call_args_list
+                )
+                return
+
+            pending = ErrorSample_reply()
+            pending.facilityCode = FACILITY_DMQ
+            pending.errorNumber = 1
+            pending.time = 0
+            method = mock.MagicMock(routing_key="R", delivery_tag=1)
+            properties = mock.MagicMock(correlation_id=session.init_message_id)
+            on_message = channel.basic_consume.call_args.kwargs["on_message_callback"]
+            on_message(channel, method, properties, bytes(pending.marshal()))
+            assert session.init_confirmed and not session.queued_sends
+            setting = channel.basic_publish.call_args.kwargs
+            assert setting["routing_key"] == f"S.{init_drf}" and setting["body"] == b"long"
+            assert len(session.pending) == 1
+            properties.correlation_id = setting["properties"].message_id
+            on_message(channel, method, properties, make_double_reply(TEMP_VALUE, ref_id=1))
+            assert long_results[0].success
+            assert long.done_event.is_set() and long.completed_devices == 1
+            assert not session.pending
+            if abort == "short":
+                assert short_results[0].error_code == ERR_TIMEOUT and short.completed_devices == 1
+            if write_session_ttl == 4.0:
+                clock.return_value = now + 10.0
+                for due, callback in tuple(timers):
+                    if due <= clock.return_value:
+                        timers.remove((due, callback))
+                        callback()
+                assert not backend._write_sessions
+                channel.close.assert_called_once_with()
+                assert long_results[0].success and long.completed_devices == 1
 
     def test_timeout_only_aborts_callers_writes_and_preserves_fifo(self):
         backend = DMQBackend.__new__(DMQBackend)
@@ -993,7 +1063,7 @@ class TestDMQCleanup:
         replacement.channel.close.assert_not_called()
 
     @pytest.mark.parametrize("reason", [RuntimeError("connection closed"), BaseException("connection closed")])
-    def test_connection_close_timer_failure_logs_and_completes_tracker(self, caplog, reason):
+    def test_connection_close_completes_tracker_and_reads(self, reason):
         backend = DMQBackend.__new__(DMQBackend)
         backend._connection_ready = threading.Event()
         backend._connection_ready.set()
@@ -1002,7 +1072,7 @@ class TestDMQCleanup:
         tracker = mock.MagicMock()
         results = [None]
         queued = ([(0, TEMP_DEVICE, 1.0)], results, tracker)
-        session = self._write_session(init_timer=object(), queued_sends=[queued])
+        session = self._write_session(queued_sends=[queued])
         backend._write_sessions = {session.init_drf: session}
         job = _ReadJob(drfs=[TEMP_DEVICE], prepared_drfs=[TEMP_DEVICE], drf_to_idx={TEMP_DEVICE: 0})
         backend._read_jobs = {job}
@@ -1010,7 +1080,6 @@ class TestDMQCleanup:
         backend._subscriptions = {}
         backend._dispatcher = mock.MagicMock()
         connection = mock.MagicMock()
-        connection.ioloop.remove_timeout.side_effect = RuntimeError("invalid timer")
 
         backend._on_connection_closed(connection, reason)
 
@@ -1023,7 +1092,6 @@ class TestDMQCleanup:
         assert job.error is reason or job.error.__cause__ is reason
         assert not backend._read_jobs
         connection.ioloop.stop.assert_called_once_with()
-        assert "Failed to cancel INIT timer after connection loss" in caplog.text
 
     def test_subscription_timer_failure_logs_and_finishes_cleanup(self, caplog):
         backend = DMQBackend.__new__(DMQBackend)
@@ -1312,7 +1380,7 @@ class TestDMQJobLevelErrors:
             assert not result.success
             assert result.error_code == SECURITY_VIOLATION
             assert "Security violation" in (result.message or "")
-            assert elapsed < 3.0  # not the 5s INIT timer, not the 8s timeout
+            assert elapsed < 3.0  # before the 8s caller timeout
 
 
 # =============================================================================

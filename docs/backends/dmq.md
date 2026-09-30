@@ -140,7 +140,9 @@ FIFO ordering to match responses to pending writes.
 | `DMQ_PENDING` | 1 | Not an error - INIT still processing, wait for final status |
 
 For writes, the server sends PENDING only after full job creation (`InitTask.run`),
-which includes ACNET backend setup. This can take up to 5s (`CLIENT_INIT_RATE`).
+which includes ACNET backend setup. `CLIENT_INIT_RATE` is the reference client's
+INIT retry interval, not a server deadline. Queued writes wait for PENDING within
+each caller's timeout; the session heartbeat and idle cleanup still apply.
 For reads, PENDING is sent immediately.
 
 The signing format must match Java's `GSSUtil.createBody`: the MIC covers not

@@ -216,7 +216,6 @@ class _WriteSession:
     queued_sends: list[tuple[list[tuple[int, str, bytes]], list, "_WriteCompletionTracker"]] = field(
         default_factory=list
     )
-    init_timer: "_Timeout | None" = None  # safety timer if PENDING never arrives
     init_message_id: str = ""  # AMQP message_id of the INIT (job-error correlation)
     last_server_heartbeat: float = field(default_factory=time.monotonic)  # last "Q" (or job start)
 
@@ -1184,8 +1183,8 @@ class DMQBackend(Backend):
         def do_cleanup():
             if self._write_sessions.get(session.init_drf) is not session:
                 return
-            # Don't cleanup if there are pending writes
-            if any(tracker is not None for _, _, _, tracker in session.pending.values()):
+            # Keep sessions with queued or pending writes alive.
+            if session.queued_sends or any(tracker is not None for _, _, _, tracker in session.pending.values()):
                 self._schedule_write_session_cleanup(session)
                 return
             self._close_write_session(
@@ -1215,7 +1214,6 @@ class DMQBackend(Backend):
         timers = (
             ("heartbeat", session.heartbeat_handle),
             ("cleanup", session.cleanup_handle),
-            ("INIT", session.init_timer),
         )
         for timer_name, handle in timers:
             if handle is not None and conn is not None:
@@ -1490,14 +1488,6 @@ class DMQBackend(Backend):
             auto_ack=False,
         )
 
-        # Fail fast: if PENDING doesn't arrive within 5s, the server failed to
-        # process INIT.  impl1 sends PENDING for settings only after full job
-        # creation (InitTask.run), so allow up to CLIENT_INIT_RATE (5000ms).
-        if self._select_connection is not None:
-            session.init_timer = self._select_connection.ioloop.call_later(
-                5.0, lambda: self._fail_unconfirmed_session(session)
-            )
-
         # Schedule heartbeat and idle cleanup
         self._schedule_write_session_heartbeat(session)
         self._schedule_write_session_cleanup(session)
@@ -1509,33 +1499,11 @@ class DMQBackend(Backend):
 
         Called when PENDING response arrives, proving S.# is bound.
         """
-        if session.init_timer is not None and self._select_connection is not None:
-            try:
-                self._select_connection.ioloop.remove_timeout(session.init_timer)
-            except Exception:  # noqa: BLE001
-                logger.exception("Failed to cancel INIT timer for write session %s", session.init_drf)
-            session.init_timer = None
         queued = session.queued_sends
         session.queued_sends = []
         session.init_confirmed = True
         for q_settings, q_results, q_tracker in queued:
             self._send_settings_async(session, q_settings, q_results, q_tracker)
-
-    def _fail_unconfirmed_session(self, session: _WriteSession) -> None:
-        """Fail-fast: server didn't confirm INIT within deadline (IO thread)."""
-        if session.init_confirmed:
-            return
-        session.init_timer = None
-        logger.error(
-            "Write session for %s (%s): server did not confirm INIT (no PENDING received)",
-            session.device,
-            session.init_drf,
-        )
-        self._close_write_session(
-            session.init_drf,
-            reason="no INIT confirmation from server",
-            expected=session,
-        )
 
     def _on_write_session_channel_closed(self, session: _WriteSession, reason: Exception) -> None:
         """Write session channel closed (IO thread)."""
@@ -1547,7 +1515,6 @@ class DMQBackend(Backend):
             timers = (
                 ("heartbeat", session.heartbeat_handle),
                 ("cleanup", session.cleanup_handle),
-                ("INIT", session.init_timer),
             )
             for timer_name, handle in timers:
                 if handle is not None and conn is not None:
@@ -2236,12 +2203,6 @@ class DMQBackend(Backend):
         self._pending_session_setups.clear()
 
         for session in self._write_sessions.values():
-            # Cancel init timer
-            if session.init_timer is not None:
-                try:
-                    connection.ioloop.remove_timeout(session.init_timer)
-                except Exception:  # noqa: BLE001
-                    logger.exception("Failed to cancel INIT timer after connection loss for %s", session.init_drf)
             # Fail queued sends
             for q_settings, q_results, q_tracker in session.queued_sends:
                 for i, drf, _ in q_settings:
