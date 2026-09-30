@@ -591,7 +591,7 @@ class _AsyncDPMConnection:
                     remaining = _remaining_timeout(deadline, "DPM connection cleanup")
                     await asyncio.wait_for(writer.wait_closed(), timeout=remaining)
             except (TimeoutError, asyncio.TimeoutError):
-                logger.warning("DPM connection cleanup deadline expired; aborting transport")
+                logger.debug("DPM connection cleanup deadline expired; aborting transport")
                 writer.transport.abort()
             except asyncio.CancelledError:
                 writer.transport.abort()
