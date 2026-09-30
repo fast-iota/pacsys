@@ -1920,6 +1920,8 @@ class DMQBackend(Backend):
             _set_sample_ref_id(sample, ref_id)
             return sample
         if isinstance(value, int):
+            if not -(2**31) <= value < 2**31:
+                raise ValueError("DMQ integer settings must fit in signed 32 bits")
             sample = IntegerSample_reply()
             sample.value = value
             sample.time = timestamp_ms

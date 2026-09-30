@@ -30,6 +30,7 @@ sequenceDiagram
 - **GSS-API signing**: Messages are signed with MIC for authentication
 - **Shared streaming connection**: All subscriptions share a single AMQP connection via SelectConnection with multiple channels
 - **Connection caching**: Write connections are cached per device for performance
+- **Integer settings**: Python and NumPy integer scalars must fit in signed 32 bits (`-2**31` through `2**31 - 1`); out-of-range values raise `ValueError` before I/O.
 - **Heartbeats**: Client sends heartbeats every 5 seconds to maintain connections
 
 ## Usage

@@ -1933,19 +1933,28 @@ class TestDMQBackendWrite:
         assert len(backend._write_sessions) == 0
 
     @pytest.mark.parametrize(
-        ("value", "match"),
+        ("value", "exception", "match"),
         [
-            pytest.param(b"\x00\x01\x02\x03", "does not support writing bytes", id="bytes"),
-            pytest.param((1.0, 2.0), "Unsupported", id="tuple"),
-            pytest.param([1.0, "x"], "only strings", id="mixed-array"),
-            pytest.param(np.zeros((2, 2)), "one-dimensional", id="2d-array"),
+            pytest.param(b"\x00\x01\x02\x03", TypeError, "does not support writing bytes", id="bytes"),
+            pytest.param((1.0, 2.0), TypeError, "Unsupported", id="tuple"),
+            pytest.param([1.0, "x"], TypeError, "only strings", id="mixed-array"),
+            pytest.param(np.zeros((2, 2)), TypeError, "one-dimensional", id="2d-array"),
+            pytest.param(-(2**31) - 1, ValueError, "signed 32 bits", id="int-underflow"),
+            pytest.param(2**31, ValueError, "signed 32 bits", id="int-overflow"),
+            pytest.param(2**32 + 5, ValueError, "signed 32 bits", id="int-wraparound"),
+            pytest.param(10**5000, ValueError, "signed 32 bits", id="huge-int"),
+            pytest.param(np.int64(-(2**31) - 1), ValueError, "signed 32 bits", id="numpy-underflow"),
+            pytest.param(np.int64(2**31), ValueError, "signed 32 bits", id="numpy-overflow"),
+            pytest.param(np.uint64(2**64 - 1), ValueError, "signed 32 bits", id="numpy-unsigned"),
         ],
     )
-    def test_write_invalid_value_raises_before_io(self, value, match):
+    def test_write_invalid_value_raises_before_io(self, value, exception, match):
         """Client-side value errors raise on the caller thread; no session is opened or poisoned."""
         with _mock_dmq_write_backend() as backend:
-            with pytest.raises(TypeError, match=match):
-                backend.write_many([(TEMP_DEVICE, 1.0), (TEMP_DEVICE, value)], timeout=5.0)
+            with mock.patch.object(backend, "_ensure_io_thread") as ensure_io:
+                with pytest.raises(exception, match=match):
+                    backend.write_many([(TEMP_DEVICE, 1.0), (TEMP_DEVICE, value)], timeout=5.0)
+                ensure_io.assert_not_called()
             assert backend._write_sessions == {}
             assert backend._pending_session_setups == {}
 
@@ -2140,6 +2149,10 @@ class TestValueToSample:
         ("value", "sample_cls", "expected"),
         [
             (np.int64(3), IntegerSample_reply, 3),
+            (-(2**31), IntegerSample_reply, -(2**31)),
+            (2**31 - 1, IntegerSample_reply, 2**31 - 1),
+            (np.int64(-(2**31)), IntegerSample_reply, -(2**31)),
+            (np.uint64(2**31 - 1), IntegerSample_reply, 2**31 - 1),
             (np.bool_(True), IntegerSample_reply, 1),
             (np.float32(1.5), DoubleSample_reply, 1.5),
             (np.longdouble(1.5), DoubleSample_reply, 1.5),  # .item() would stay a NumPy scalar
@@ -2152,6 +2165,7 @@ class TestValueToSample:
         sample = object.__new__(DMQBackend)._value_to_sample(value)
         assert isinstance(sample, sample_cls)
         assert sample.value == expected
+        assert unmarshal_reply(iter(sample.marshal())) == sample
 
 
 # =============================================================================
