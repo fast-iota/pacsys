@@ -1410,6 +1410,14 @@ def _single_reply(reading, index):
 
 
 class TestReadingToProtoReply:
+    def test_numpy_text_array(self):
+        reading = Reading(drf="M:TEXT", value_type=ValueType.TEXT_ARRAY, value=np.array(["hello", "世界"]))
+        reply = _single_reply(reading, 3)
+        assert reply.index == 3
+        assert reply.WhichOneof("value") == "readings"
+        assert reply.readings.reading[0].data.WhichOneof("value") == "textArr"
+        assert list(reply.readings.reading[0].data.textArr.value) == ["hello", "世界"]
+
     def test_error_reading(self):
         reading = Reading(drf="M:BAD", facility_code=1, error_code=-42, message="broken")
         reply = _single_reply(reading, 3)

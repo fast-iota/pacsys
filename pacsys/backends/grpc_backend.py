@@ -123,6 +123,10 @@ def _value_to_proto_value(value: Value, *, for_write: bool = False) -> "device_p
     """Convert Python value to proto Value message."""
     proto_value = device_pb2.Value()
     value = _normalize_numpy_scalar(value)  # NumPy scalars (int64, bool_, ...) behave like their Python peers
+    if isinstance(value, np.ndarray):
+        if value.ndim != 1:
+            raise ValueError("Only one-dimensional arrays can be converted to proto values")
+        value = cast(np.ndarray, value).tolist()
     if isinstance(value, (list, tuple)):
         value = [_normalize_numpy_scalar(v) for v in value]
 
@@ -152,8 +156,6 @@ def _value_to_proto_value(value: Value, *, for_write: bool = False) -> "device_p
             proto_value.textArr.value.extend(v for v in value if isinstance(v, str))
         else:
             raise ValueError(f"Cannot convert mixed list to proto value: {value}")
-    elif isinstance(value, np.ndarray):
-        proto_value.scalarArr.value.extend(value.tolist())
     else:
         raise TypeError(f"Cannot convert value of type {type(value)} to proto value")
 

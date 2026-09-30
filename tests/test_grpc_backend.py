@@ -22,6 +22,7 @@ import threading
 import time
 from unittest import mock
 
+import numpy as np
 import pytest
 
 from pacsys.auth import JWTAuth
@@ -578,6 +579,33 @@ class TestWriteOperations:
         assert len(results) == 2
         assert all(r.success for r in results)
 
+    def test_write_many_numpy_arrays(self, auth_backend_with_mock_stub):
+        backend, mock_stub = auth_backend_with_mock_stub
+        mock_stub.Set = mock.AsyncMock(return_value=make_setting_reply([0, -42]))
+        settings = [
+            ("M:BAD", np.array([1, "text"], dtype=object)),
+            ("M:TEXT", np.array(["hello", "世界"])),
+            ("M:MATRIX", np.array([[1, 2]])),
+            ("M:NUMBER", np.array([1.0, 2.5])),
+            ("M:ZERO", np.array(3)),
+        ]
+
+        results = backend.write_many(settings)
+
+        mock_stub.Set.assert_awaited_once()
+        request = mock_stub.Set.call_args.args[0]
+        assert [s.device for s in request.setting] == ["M:TEXT.SETTING@N", "M:NUMBER.SETTING@N"]
+        assert request.setting[0].value.WhichOneof("value") == "textArr"
+        assert list(request.setting[0].value.textArr.value) == ["hello", "世界"]
+        assert request.setting[1].value.WhichOneof("value") == "scalarArr"
+        assert list(request.setting[1].value.scalarArr.value) == [1.0, 2.5]
+        assert [r.drf for r in results] == [f"{drf}.SETTING@N" for drf, _ in settings]
+        assert results[1].success
+        assert results[3].error_code == -42
+        for index in (0, 2, 4):
+            assert not results[index].success
+            assert results[index].message
+
     def test_write_prepares_drf(self, auth_backend_with_mock_stub):
         """write() applies prepare_for_write to convert shorthand DRFs."""
         backend, mock_stub = auth_backend_with_mock_stub
@@ -775,8 +803,6 @@ class TestValueConversion:
 
     def test_numpy_scalars_match_python_peers(self):
         """NumPy scalars (alone or in lists) are accepted like DPM does."""
-        import numpy as np
-
         assert grpc_backend._value_to_proto_value(np.int64(3)).scalar == 3.0
         assert grpc_backend._value_to_proto_value(np.bool_(True)).scalar == 1.0
         assert grpc_backend._value_to_proto_value(np.longdouble(1.5)).scalar == 1.5
@@ -784,6 +810,18 @@ class TestValueConversion:
         assert list(proto.scalarArr.value) == [1.0, 2.5]
         with pytest.raises(TypeError):  # never silently encoded as a number
             grpc_backend._value_to_proto_value(np.datetime64("2020-01-01T00:00:00.000000001"))
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            np.array([1.5], dtype=np.longdouble),
+            np.array([np.longdouble(1.5)], dtype=object),
+            np.array([np.str_("hello")], dtype=object),
+            np.array([], dtype=str),
+        ],
+    )
+    def test_numpy_arrays_match_lists(self, value):
+        assert grpc_backend._value_to_proto_value(value) == grpc_backend._value_to_proto_value(value.tolist())
 
     @pytest.mark.parametrize(
         ("field", "set_val", "expected_val", "expected_type"),
