@@ -52,7 +52,9 @@ class AsyncDevice(_DeviceBase):
         return value
 
     async def digital_status(self, timeout: float | None = None):
-        """Fetch full digital status (BIT_VALUE + BIT_NAMES + BIT_VALUES)."""
+        """Fetch full ACNET digital status (BIT_VALUE + BIT_NAMES + BIT_VALUES)."""
+        if not self._request.is_acnet:
+            raise ValueError(f"STATUS is ACNET-specific, not supported for non-ACNET device {self.name}")
         from pacsys.digital_status import DigitalStatus
         from pacsys.errors import DeviceError
 

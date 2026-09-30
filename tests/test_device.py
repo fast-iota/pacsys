@@ -185,6 +185,8 @@ class TestEpicsDevice:
         with pytest.raises(ValueError, match="non-ACNET"):
             dev.status()
         with pytest.raises(ValueError, match="non-ACNET"):
+            dev.digital_status()
+        with pytest.raises(ValueError, match="non-ACNET"):
             dev.control(BasicControl.ON)
         with pytest.raises(ValueError, match="non-ACNET"):
             dev.analog_alarm()
