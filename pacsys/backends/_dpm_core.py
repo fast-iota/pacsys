@@ -331,7 +331,7 @@ class _AsyncDpmCore:
                 if remaining <= 0:
                     break
                 try:
-                    reply = await conn.recv_message(timeout=min(remaining, 2.0))
+                    reply = await conn.recv_message(timeout=remaining)
                 except asyncio.TimeoutError:
                     if time.monotonic() >= deadline:
                         break
@@ -591,7 +591,7 @@ class _AsyncDpmCore:
             if remaining <= 0:
                 break
             try:
-                reply = await conn.recv_message(timeout=min(remaining, 2.0))
+                reply = await conn.recv_message(timeout=remaining)
             except asyncio.TimeoutError:
                 if time.monotonic() >= deadline:
                     break
@@ -690,7 +690,7 @@ class _AsyncDpmCore:
                 if remaining <= 0:
                     break
                 try:
-                    reply = await conn.recv_message(timeout=min(remaining, 2.0))
+                    reply = await conn.recv_message(timeout=remaining)
                 except (TimeoutError, asyncio.TimeoutError):
                     if time.monotonic() >= deadline:
                         break

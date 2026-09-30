@@ -22,6 +22,7 @@ from pacsys.dpm_protocol import (
     DeviceInfo_reply,
     ListStatus_reply,
     Scalar_reply,
+    ScalarArray_reply,
     SettingStatus_struct,
     StartList_reply,
     Status_reply,
@@ -242,6 +243,54 @@ def make_core():
 
 
 class TestReadMany:
+    @pytest.mark.asyncio
+    async def test_read_frame_can_cross_two_seconds_within_call_deadline(self):
+        core = _AsyncDpmCore("localhost", 6802, timeout=5.0)
+        conn = core._conn = _AsyncDPMConnection("localhost", 6802)
+        conn._list_id = 42
+        reader = conn._reader = asyncio.StreamReader()
+        writer = conn._writer = mock.MagicMock()
+        writer.drain = mock.AsyncMock()
+        writer.wait_closed = mock.AsyncMock()
+        info = _device_info(1)
+        info.format_hint = 0
+        for reply in [_add_ok(1), info, _start_ok()]:
+            body = bytes(reply.marshal())
+            reader.feed_data(struct.pack(">I", len(body)) + body)
+
+        reply = ScalarArray_reply()
+        reply.ref_id = 1
+        reply.data = [1.0, 2.0, 3.0]
+        reply.timestamp = 1000
+        reply.cycle = 0
+        body = bytes(reply.marshal())
+        timers = []
+        recv_message = conn.recv_message
+
+        async def recv(timeout=None):
+            reply = await recv_message(timeout)
+            if isinstance(reply, StartList_reply):
+                # Start timing at the data receive, after all setup replies.
+                loop = asyncio.get_running_loop()
+                timers.append(loop.call_later(1.7, reader.feed_data, struct.pack(">I", len(body)) + body[:8]))
+                timers.append(loop.call_later(2.3, reader.feed_data, body[8:]))
+            return reply
+
+        try:
+            with mock.patch.object(conn, "recv_message", side_effect=recv):
+                readings = await core.read_many(["M:OUTTMP[:]@I"], timeout=5.0)
+            assert len(readings) == 1
+            assert readings[0].ok
+            assert readings[0].value_type == ValueType.SCALAR_ARRAY
+            np.testing.assert_array_equal(readings[0].value, [1.0, 2.0, 3.0])
+            assert core.connected
+            assert conn._reader is reader
+            writer.transport.abort.assert_not_called()
+        finally:
+            for timer in timers:
+                timer.cancel()
+            await core.close()
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize("phase", ["setup", "cleanup", "close"])
     async def test_read_deadline_bounds_sends_and_socket_close(self, make_core, phase):
