@@ -29,6 +29,8 @@ sequenceDiagram
 - **Connection pooling**: Multiple reads share pooled connections
 - **Independent subscriptions**: Each `subscribe()` creates its own TCP connection
 - **Kerberos auth**: Required for writes, optional for reads
+- **Text writes**: Strings and text arrays must be Latin-1 encodable. Unsupported
+  characters raise `UnicodeEncodeError` before any connection or write setup.
 - **Heartbeats**: Server sends `ListStatus_reply` every ~2 seconds
 - **Read deadline**: `timeout=` includes list setup and cleanup for sync and async
   reads. Cleanup cannot extend the deadline; already received readings are preserved

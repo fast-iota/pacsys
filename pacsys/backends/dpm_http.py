@@ -162,6 +162,7 @@ def _value_to_setting(
         return setting, None, None
 
     if isinstance(value, str):
+        value.encode("latin-1")  # DPM SDD strings carry one byte per character.
         setting = TextSetting_struct()
         setting.ref_id = ref_id
         setting.data = [value]
@@ -183,6 +184,8 @@ def _value_to_setting(
     if items is not None and items:
         text_items = [isinstance(item, str) for item in items]
         if all(text_items):
+            for item in cast("list[str]", items):
+                item.encode("latin-1")
             setting = TextSetting_struct()
             setting.ref_id = ref_id
             setting.data = cast("list[str]", items)

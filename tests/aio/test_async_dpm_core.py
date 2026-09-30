@@ -698,6 +698,19 @@ class TestWriteMany:
         assert not conn.sent
 
     @pytest.mark.asyncio
+    async def test_non_latin1_prevalidates_before_authentication(self, make_core):
+        core, conn = make_core([])
+        core.authenticate = mock.AsyncMock()
+        core.enable_settings = mock.AsyncMock()
+
+        with pytest.raises(UnicodeEncodeError):
+            await core.write_many([("M:OUTTMP.SETTING@N", 1.0), ("G:AMANDA.SETTING@N", ["ok", "☃"])])
+
+        core.authenticate.assert_not_awaited()
+        core.enable_settings.assert_not_awaited()
+        assert not conn.sent
+
+    @pytest.mark.asyncio
     async def test_expired_authentication_sends_no_write_setup(self, make_core):
         auth = mock.MagicMock()
         auth.principal = "test@fnal.gov"

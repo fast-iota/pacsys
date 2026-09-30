@@ -17,12 +17,13 @@ from datetime import datetime, timezone
 from unittest import mock
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 
 from pacsys.acnet.errors import DAE_LJ_NO_DATA, ERR_TIMEOUT, make_error
 from pacsys.backends.dpm_http import _MAX_WRITE_CONNECTIONS, DPMHTTPBackend, _value_to_setting
 from pacsys.dpm_connection import DPMConnection, DPMConnectionError
-from pacsys.dpm_protocol import ApplySettings_request, ListStatus_reply, Raw_reply, StartList_reply
+from pacsys.dpm_protocol import ApplySettings_request, ListStatus_reply, Raw_reply, StartList_reply, unmarshal_request
 from pacsys.errors import AuthenticationError, DeviceError, ReadError
 from pacsys.pool import PoolExhaustedError
 from pacsys.types import BasicControl, Reading, ValueType
@@ -76,6 +77,32 @@ class TestDPMHTTPBackendInit:
 
 
 class TestValueToSetting:
+    @pytest.mark.parametrize(
+        ("value", "field", "expected"),
+        [
+            ("caféÿ", "text_array", ["caféÿ"]),
+            (["caféÿ", ""], "text_array", ["caféÿ", ""]),
+            (("caféÿ", ""), "text_array", ["caféÿ", ""]),
+            (np.array(["caféÿ", ""]), "text_array", ["caféÿ", ""]),
+            ("", "text_array", [""]),
+            ([], "scaled_array", []),
+            ((), "scaled_array", []),
+            (np.array([], dtype=str), "scaled_array", []),
+        ],
+    )
+    def test_setting_wire_round_trip(self, value, field, expected):
+        raw, scaled, text = _value_to_setting(7, value)
+        request = ApplySettings_request()
+        setattr(request, field, [text if text is not None else scaled])
+        wire = bytes(request.marshal())
+        decoded = unmarshal_request(iter(wire))
+        setting = getattr(decoded, field)[0]
+        assert raw is None
+        assert setting.ref_id == 7
+        assert setting.data == expected
+        if "caféÿ" in expected:
+            assert b"caf\xe9\xff" in wire
+
     def test_rejects_multidimensional_array(self):
         import numpy as np
 
@@ -96,6 +123,16 @@ class TestValueToSetting:
             get_connection.assert_not_called()
         finally:
             backend.close()
+
+    @pytest.mark.parametrize("value", ["☃", ["ok", "☃"], ("ok", "☃"), np.array(["ok", "☃"])])
+    def test_write_rejects_non_latin1_before_getting_connection(self, value):
+        with DPMHTTPBackend(auth=create_mock_kerberos_auth()) as backend:
+            with mock.patch.object(
+                backend, "_get_write_connection", side_effect=AssertionError("unexpected connection")
+            ) as get_connection:
+                with pytest.raises(UnicodeEncodeError):
+                    backend.write_many([("M:OUTTMP", 1.0), ("G:AMANDA", value)])
+            get_connection.assert_not_called()
 
     def test_write_rejects_nonpositive_call_timeout_before_connecting(self):
         backend = DPMHTTPBackend(auth=create_mock_kerberos_auth())

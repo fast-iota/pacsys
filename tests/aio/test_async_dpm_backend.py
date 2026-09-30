@@ -3,6 +3,7 @@
 import asyncio
 from unittest import mock
 
+import numpy as np
 import pytest
 
 from pacsys.acnet.errors import ERR_RETRY, ERR_TIMEOUT
@@ -252,6 +253,15 @@ class TestAsyncDPMWrite:
             await backend.write_many([("M:OUTTMP", ["on", 1])])
 
         backend._create_core.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["☃", ["ok", "☃"], ("ok", "☃"), np.array(["ok", "☃"])])
+    async def test_write_rejects_non_latin1_before_connecting(self, value):
+        async with AsyncDPMHTTPBackend(auth=KerberosAuth(_lazy=True)) as backend:
+            backend._create_core = mock.AsyncMock(side_effect=AssertionError("unexpected connection"))
+            with pytest.raises(UnicodeEncodeError):
+                await backend.write_many([("M:OUTTMP", 1.0), ("G:AMANDA", value)])
+            backend._create_core.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_write_rejects_nonpositive_call_timeout_before_connecting(self):
