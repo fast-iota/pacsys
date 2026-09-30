@@ -6,16 +6,16 @@ import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from pacsys.drf_utils import has_event, replace_event
-from pacsys.exp._resolve import resolve_backend, resolve_drf
-from pacsys.exp._values import numeric_value
+from ..drf_utils import has_event, replace_event
+from ._resolve import resolve_backend, resolve_drf
+from ._values import numeric_value
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from datetime import datetime
 
-    from pacsys.backends import Backend
-    from pacsys.types import DeviceSpec, Reading, Value
+    from ..backends import Backend
+    from ..types import DeviceSpec, Reading, Value
 
 builtins_min = min
 builtins_max = max
@@ -168,7 +168,10 @@ def read_fresh(
                             done.set()
 
     def on_error(exc, handle):
-        error_box.append(exc)
+        terminal = handle.exc
+        if terminal is None:
+            return
+        error_box.append(terminal)
         done.set()
 
     handle = None

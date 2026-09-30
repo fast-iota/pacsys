@@ -6,12 +6,12 @@ import logging
 import threading
 from typing import TYPE_CHECKING
 
-from pacsys.exp._resolve import resolve_backend, resolve_drf
+from ._resolve import resolve_backend, resolve_drf
 
 if TYPE_CHECKING:
-    from pacsys.backends import Backend
-    from pacsys.exp._writers import LogWriter
-    from pacsys.types import DeviceSpec, Reading, SubscriptionHandle
+    from ..backends import Backend
+    from ..types import DeviceSpec, Reading, SubscriptionHandle
+    from ._writers import LogWriter
 
 logger = logging.getLogger(__name__)
 
@@ -179,11 +179,14 @@ class DataLogger:
             self._buffer.append(reading)
 
     def _on_error(self, exc: Exception, handle: SubscriptionHandle) -> None:
+        terminal = handle.exc
+        if terminal is None:
+            return
         with self._lock:
             if self._stream_error is None:
-                self._stream_error = exc
-            self._last_error = exc
-        logger.error("DataLogger subscription for %s failed; logging stopped: %s", self._drfs, exc)
+                self._stream_error = terminal
+            self._last_error = terminal
+        logger.error("DataLogger subscription for %s failed; logging stopped: %s", self._drfs, terminal)
 
     def _flush_loop(self) -> None:
         while not self._stop_event.wait(timeout=self._flush_interval):

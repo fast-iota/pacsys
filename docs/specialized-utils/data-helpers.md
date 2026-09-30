@@ -196,7 +196,7 @@ reading; missing timestamps raise `ValueError` instead of producing an invalid i
 
 Wait for one or more fresh readings per channel via a temporary subscription.
 Consider it a `pacsys.read()` but with a lot more options and ability to collect
-multiple readings.
+multiple readings. Recoverable subscription errors leave the original timeout in effect; terminal errors are raised.
 
 ```python
 from pacsys.exp import read_fresh
@@ -276,7 +276,7 @@ print(f"Crossed threshold at {reading.timestamp}: {reading.value}")
 | `timeout` | `float` | `30.0` | Max seconds to wait |
 | `backend` | `Backend \| None` | `None` | Backend to use |
 
-Returns the `Reading` that satisfied the condition. Raises `TimeoutError` if the condition is not met within the timeout.
+Returns the `Reading` that satisfied the condition. Raises `TimeoutError` if the condition is not met within the timeout. Recoverable subscription errors leave that timeout in effect; terminal errors are raised.
 
 ---
 
@@ -405,6 +405,8 @@ dl.stop()  # Flushes remaining data and closes the writer
 | `last_error` | `Exception \| None` | Last write or subscription error, if any |
 | `failed` | `bool` | True once a batch was dropped after exhausting write retries (logging continues) or the subscription failed (logging stops) |
 | `dropped_count` | `int` | Readings lost so far (sticky until the next `start()`) |
+
+Recoverable subscription errors allow logging to continue while the backend retries; they do not set `failed` or `last_error`.
 
 A dropped batch or failed subscription is never silent: `stop()` (and context-manager exit) flushes what was received, closes the writer, and raises `RuntimeError` chained to the subscription error or, for drops, to `last_error`.
 
