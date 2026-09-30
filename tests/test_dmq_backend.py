@@ -27,7 +27,7 @@ from pika.adapters.select_connection import SelectConnection
 from pika.exceptions import ChannelWrongStateError
 
 from pacsys import DispatchMode
-from pacsys.acnet.errors import ERR_RETRY, ERR_TIMEOUT, FACILITY_DMQ
+from pacsys.acnet.errors import ERR_RETRY, ERR_TIMEOUT, FACILITY_ACNET, FACILITY_DMQ
 from pacsys.backends.dmq import (
     MAX_IDLE_TIME,
     DMQBackend,
@@ -904,6 +904,70 @@ class TestDMQCleanup:
         backend._on_write_message(session, session.channel, method, properties, body)
         assert other_results[0].success
         assert other.completed_devices == 1
+
+    def test_evict_timed_out_session_after_other_caller_completes(self):
+        backend = DMQBackend.__new__(DMQBackend)
+        backend._select_connection = mock.MagicMock()
+        backend._pending_session_setups = {}
+        timed_out = _WriteCompletionTracker(total_devices=1)
+        other = _WriteCompletionTracker(total_devices=1)
+        timed_out_results = [None]
+        other_results = [None]
+        session = self._write_session(last_used=1.0, init_confirmed=True)
+        session.pending = {
+            "other": (0, TEMP_DEVICE, other_results, other),
+            "timed-out": (0, TEMP_DEVICE, timed_out_results, timed_out),
+        }
+        backend._write_sessions = {session.init_drf: session}
+
+        backend._abort_pending_writes({session.init_drf}, timed_out)
+
+        timeout_result = timed_out_results[0]
+        assert timeout_result is not None and timeout_result.error_code == ERR_TIMEOUT
+        assert timed_out.done_event.is_set() and timed_out.completed_devices == 1
+        assert session.pending["timed-out"][3] is None
+        assert not backend._evict_lru_write_session()
+        session.channel.close.assert_not_called()
+        assert other_results == [None] and not other.done_event.is_set()
+
+        method = mock.MagicMock(routing_key=f"R.{TEMP_DEVICE}", delivery_tag=1)
+        properties = mock.MagicMock(correlation_id="")
+        backend._on_write_message(session, session.channel, method, properties, make_double_reply(TEMP_VALUE, ref_id=1))
+
+        assert other_results[0].success
+        assert other.done_event.is_set() and other.completed_devices == 1
+        assert list(session.pending) == ["timed-out"]
+        assert backend._evict_lru_write_session()
+        assert not backend._write_sessions and not session.pending
+        assert timed_out_results[0] is timeout_result
+        assert timed_out.completed_devices == other.completed_devices == 1
+        session.channel.basic_publish.assert_called_once_with(exchange=session.exchange_name, routing_key="D", body=b"")
+        session.channel.close.assert_called_once_with()
+
+    @pytest.mark.parametrize("tombstone_last_used", [1.0, 3.0])
+    def test_evict_uses_lru_order_and_preserves_queued_writes(self, tombstone_last_used):
+        backend = DMQBackend.__new__(DMQBackend)
+        backend._select_connection = None
+        queued = self._write_session(init_drf="queued", last_used=0.0)
+        queued.queued_sends = [([(0, TEMP_DEVICE, b"")], [None], _WriteCompletionTracker(total_devices=1))]
+        idle = self._write_session(init_drf="idle", last_used=2.0)
+        tombstone = self._write_session(init_drf="tombstone", last_used=tombstone_last_used)
+        result = WriteResult(drf=TEMP_DEVICE, facility_code=FACILITY_ACNET, error_code=ERR_TIMEOUT)
+        tombstone.pending = {"timed-out": (0, TEMP_DEVICE, [result], None)}
+        backend._write_sessions = {session.init_drf: session for session in (queued, idle, tombstone)}
+        first, second = (tombstone, idle) if tombstone_last_used < idle.last_used else (idle, tombstone)
+
+        assert backend._evict_lru_write_session()
+        assert set(backend._write_sessions) == {queued.init_drf, second.init_drf}
+        first.channel.close.assert_called_once_with()
+        second.channel.close.assert_not_called()
+        assert backend._evict_lru_write_session()
+        second.channel.close.assert_called_once_with()
+        assert not backend._evict_lru_write_session()
+        assert backend._write_sessions == {queued.init_drf: queued}
+        queued.channel.close.assert_not_called()
+        assert queued.queued_sends[0][1] == [None]
+        assert queued.queued_sends[0][2].completed_devices == 0
 
     def test_stale_write_session_callbacks_ignore_replacement(self):
         backend = DMQBackend.__new__(DMQBackend)

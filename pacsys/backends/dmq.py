@@ -1275,7 +1275,11 @@ class DMQBackend(Backend):
         lru_key = None
         lru_time = float("inf")
         for key, session in self._write_sessions.items():
-            if not session.pending and not session.queued_sends and session.last_used < lru_time:
+            if (
+                not any(tracker is not None for _, _, _, tracker in session.pending.values())
+                and not session.queued_sends
+                and session.last_used < lru_time
+            ):
                 lru_time = session.last_used
                 lru_key = key
         if lru_key is None:
