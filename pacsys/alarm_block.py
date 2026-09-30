@@ -535,7 +535,7 @@ class AnalogAlarm(AlarmBlock):
         # Attach structured data for engineering unit access
         struct_reading = readings[1]
         if struct_reading.ok and isinstance(struct_reading.value, dict):
-            alarm._structured = struct_reading.value
+            alarm._structured = dict(struct_reading.value)
             alarm._initial_structured = dict(struct_reading.value)
 
         return alarm
@@ -669,7 +669,7 @@ class DigitalAlarm(AlarmBlock):
         # Attach structured data
         struct_reading = readings[1]
         if struct_reading.ok and isinstance(struct_reading.value, dict):
-            alarm._structured = struct_reading.value
+            alarm._structured = dict(struct_reading.value)
             alarm._initial_structured = dict(struct_reading.value)
 
         return alarm
@@ -765,7 +765,7 @@ class _AlarmModifyContext:
 
         struct_reading = readings[1]
         if struct_reading.ok and isinstance(struct_reading.value, dict):
-            self._structured = struct_reading.value
+            self._structured = dict(struct_reading.value)
             # Attach engineering unit values to block
             self._block._structured = self._structured
             self._block._initial_structured = dict(self._structured)

@@ -14,7 +14,7 @@ from pacsys.alarm_block import (
     LimitType,
 )
 from pacsys.errors import DeviceError
-from pacsys.types import ValueType
+from pacsys.types import Reading, ValueType
 
 
 def _analog_structured(**overrides):
@@ -340,6 +340,46 @@ class TestAlarmReadStatus:
                 pass
 
         assert exc_info.value.error_code == 1
+
+
+@pytest.mark.parametrize(
+    ("alarm_cls", "prop", "structured", "value_type"),
+    [
+        (AnalogAlarm, "ANALOG", _analog_structured(), ValueType.ANALOG_ALARM),
+        (DigitalAlarm, "DIGITAL", _digital_structured(), ValueType.DIGITAL_ALARM),
+    ],
+)
+@pytest.mark.parametrize("abort_modify", [False, True], ids=["read", "aborted-modify"])
+def test_alarm_edits_preserve_retained_reading(alarm_cls, prop, structured, value_type, abort_modify, mock_backend):
+    raw = alarm_cls()
+    raw.is_active = True
+    source = Reading(drf=f"Z:TEST.{prop}@I", value_type=value_type, value=structured)
+    original = dict(source.value)
+    mock_backend.get_many.return_value = [
+        Reading(drf=f"Z:TEST.{prop}{{0:20}}.RAW@I", value_type=ValueType.RAW, value=raw.to_bytes()),
+        source,
+    ]
+
+    def edit(alarm):
+        alarm.bypass = True
+        if isinstance(alarm, AnalogAlarm):
+            alarm.minimum = 25.0
+
+    if abort_modify:
+        with pytest.raises(RuntimeError, match="abandon edits"):
+            with alarm_cls.modify("Z:TEST", backend=mock_backend) as alarm:
+                edit(alarm)
+                raise RuntimeError("abandon edits")
+    else:
+        alarm = alarm_cls.read("Z:TEST", backend=mock_backend)
+        edit(alarm)
+
+    assert source.value == original
+    assert alarm._initial_structured == original
+    reread = alarm_cls.read("Z:TEST", backend=mock_backend)
+    assert reread._structured == original
+    mock_backend.write.assert_not_called()
+    mock_backend.write_many.assert_not_called()
 
 
 class TestModifyContext:
