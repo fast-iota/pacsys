@@ -46,7 +46,9 @@ Example usage:
         ramp.values[10] = 2.5  # set point 10 to 2.5 Amps
 
     # Set absolute times (automatically converted to deltas):
-    ramp.cumtimes = np.array([0, 100, 300, 600, ...])
+    cumtimes = np.full(ramp.POINTS_PER_SLOT, 600.0)
+    cumtimes[:4] = [0, 100, 300, 600]
+    ramp.cumtimes = cumtimes
 
     # Custom machine type using Scaler (recommended for standard ACNET transforms):
     from pacsys import Scaler
@@ -193,7 +195,7 @@ class Ramp:
 
     POINTS_PER_SLOT: ClassVar[int] = 64
     BYTES_PER_POINT: ClassVar[int] = 4  # int16 value + int16 time
-    MAX_SLOTS: ClassVar[int] = 16  # sanity bound for slot index
+    MAX_SLOTS: ClassVar[int] = 15  # stored tables; Java map 0 is the null table
 
     # Card update rate in Hz. Determines tick period for time conversion.
     # Card types: 453=720Hz, 465/466=1/5/10KHz, 473=100KHz.
@@ -517,7 +519,9 @@ class Ramp:
             WriteResult from the backend
 
         Raises:
-            ValueError: If no device or slot available, or device is not a bare device name
+            TypeError: If slot is not an integer (booleans are rejected)
+            ValueError: If device or slot is missing or invalid, write_mode is unknown,
+                an active ramp is empty, or ramp bounds or serialization validation fails
             RuntimeError: If write fails
         """
         if device is not None:
@@ -618,7 +622,7 @@ class Ramp:
     # (modify(), post-construction device/slot assignment), so no stable hash exists.
 
     def __repr__(self) -> str:
-        n_active = int(np.count_nonzero(self.values))
+        n_active = int(np.count_nonzero((self.values != 0) | (self.times != 0)))
         return f"{type(self).__name__}({n_active}/{self.POINTS_PER_SLOT} active points)"
 
     def __str__(self) -> str:

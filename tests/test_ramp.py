@@ -255,9 +255,9 @@ class TestValidation:
         with pytest.raises(ValueError, match="slot must be 0"):
             _TestRamp.read("B:HS23T", slot=-1)
 
-    def test_slot_too_large_rejected(self):
+    def test_slot_too_large_rejected(self, fake_backend):
         with pytest.raises(ValueError, match="slot must be 0"):
-            _TestRamp.read("B:HS23T", slot=16)
+            _TestRamp.read("B:HS23T", slot=15, backend=fake_backend)
 
     def test_bool_slot_rejected(self):
         with pytest.raises(TypeError, match="slot must be an int"):
@@ -543,7 +543,7 @@ class TestReadWrite:
 
 
 class TestActiveWrites:
-    @pytest.mark.parametrize("first,last,slot", [(0, 0, 0), (63, 63, 15), (7, 12, 2), (0, 63, 1)])
+    @pytest.mark.parametrize("first,last,slot", [(0, 0, 0), (63, 63, 14), (7, 12, 2), (0, 63, 1)])
     def test_span_payload_and_offset(self, fake_backend, first, last, slot):
         ramp = _TestRamp(np.zeros(64), np.zeros(64), device="B_HS23T", slot=slot)
         ramp.values[first] = -11

@@ -89,8 +89,10 @@ ramp.cumtimes   # [0, 100, 300, 600, ...]  absolute times since start
 Setting `.cumtimes` automatically converts to deltas and stores in `.times`:
 
 ```python
-ramp.cumtimes = np.array([0, 100, 300, 600, ...])
-ramp.times  # [0, 100, 200, 300, ...]  (computed via np.diff)
+cumtimes = np.full(ramp.POINTS_PER_SLOT, 600.0)
+cumtimes[:4] = [0, 100, 300, 600]
+ramp.cumtimes = cumtimes
+ramp.times  # [0, 100, 200, 300, 0, ...]  (computed via np.diff)
 ```
 
 For `RampGroup`, `.cumtimes` operates column-wise (per device).
@@ -436,10 +438,13 @@ ramp.values = np.zeros(65)       # ValueError: Expected 64 values, got 65
 ramp.values = np.zeros((64, 2))  # ValueError: values must be 1-D
 ```
 
-Slot index is validated on all read/write/modify operations (must be `int`, `0..15`):
+Slot index is validated on all read/write/modify operations (must be `int`, `0..14` by default).
+These are zero-based physical storage slots: in the Java 453/46x/473 reference,
+maps 1–15 select stored tables and map 0 is the null table with no storage.
+Custom subclasses can override `MAX_SLOTS`.
 
 ```python
-BoosterHVRamp.read("B:HS23T", slot=-1)   # ValueError: slot must be 0..15
+BoosterHVRamp.read("B:HS23T", slot=-1)   # ValueError: slot must be 0..14
 BoosterHVRamp.read("B:HS23T", slot=True)  # TypeError: slot must be an int
 ```
 
