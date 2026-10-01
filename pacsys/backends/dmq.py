@@ -2343,7 +2343,6 @@ class DMQBackend(Backend):
 
     def _on_channel_closed(self, channel: Channel, reason: Exception, sub: _SelectSubscription) -> None:
         """Channel closed callback (runs in IO thread)."""
-        logger.debug("Channel closed for sub %s: %s", sub.sub_id[:8], reason)
         # Unblock a subscribe() still waiting on setup (a no-op once setup completed).
         # First error wins: _fail_subscription closes the channel itself after recording
         # the server's DeviceError, which must not be overwritten by the generic close reason.
@@ -2354,6 +2353,7 @@ class DMQBackend(Backend):
             was_active = self._subscriptions.pop(sub.sub_id, None) is not None
         if not was_active:
             return  # user-initiated close via remove() - already cleaned up
+        logger.warning("Channel closed for sub %s: %s (devices: %s)", sub.sub_id[:8], reason, summarize_drfs(sub.drfs))
         sub.handle._signal_error(reason)
         if sub.handle._on_error is not None:
             self._dispatcher.dispatch_error(sub.handle._on_error, reason, sub.handle)

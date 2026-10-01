@@ -95,13 +95,6 @@ def _grpc_error_code(e: "grpc.aio.AioRpcError") -> int:
     return ERR_RETRY
 
 
-def _grpc_facility_code(e: "grpc.aio.AioRpcError") -> int:
-    """Map gRPC status to ACNET facility code. DEADLINE_EXCEEDED → FACILITY_ACNET, else 0."""
-    if GRPC_AVAILABLE and e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
-        return FACILITY_ACNET
-    return 0
-
-
 def _resolve_config(
     host: str | None, port: int | None, auth: Auth | None, timeout: float | None
 ) -> "tuple[str, int, JWTAuth | None, float]":
@@ -310,7 +303,7 @@ def _reply_to_readings(reply, drfs: list[str]) -> list[Reading]:
         return [
             Reading(
                 drf=drf,
-                facility_code=facility,
+                facility_code=facility if error != 0 else FACILITY_ACNET,
                 error_code=error if error != 0 else ERR_RETRY,
                 message=message or "gRPC error",
                 timestamp=now,
@@ -602,12 +595,11 @@ class _DaqCore:
                 missing,
             )
             ec = _grpc_error_code(e)
-            fc = _grpc_facility_code(e)
             for i in range(len(drfs)):
                 if results[i] is None:
                     results[i] = Reading(
                         drf=drfs[i],
-                        facility_code=fc,
+                        facility_code=FACILITY_ACNET,
                         error_code=ec,
                         message=error_message,
                         timestamp=now,
@@ -621,7 +613,13 @@ class _DaqCore:
                 call.cancel()
             for i in range(len(drfs)):
                 if results[i] is None:
-                    results[i] = Reading(drf=drfs[i], error_code=ERR_RETRY, message=error_message, timestamp=now)
+                    results[i] = Reading(
+                        drf=drfs[i],
+                        facility_code=FACILITY_ACNET,
+                        error_code=ERR_RETRY,
+                        message=error_message,
+                        timestamp=now,
+                    )
 
         # Backfill missing (stream ended without responses for some devices)
         has_missing = False
@@ -630,6 +628,7 @@ class _DaqCore:
                 has_missing = True
                 results[i] = Reading(
                     drf=drfs[i],
+                    facility_code=FACILITY_ACNET,
                     error_code=ERR_RETRY,
                     message="No response received",
                     timestamp=now,
@@ -693,6 +692,7 @@ class _DaqCore:
                     else:
                         rpc_results[orig_idx] = WriteResult(
                             drf=drf,
+                            facility_code=FACILITY_ACNET,
                             error_code=ERR_RETRY,
                             message="No status received from server",
                         )
@@ -702,25 +702,36 @@ class _DaqCore:
                 error_message = f"gRPC error ({target}): {e.code().name}: {e.details()}"
                 logger.error(error_message)
                 ec = _grpc_error_code(e)
-                fc = _grpc_facility_code(e)
                 for orig_idx, drf, _ in valid_items:
-                    rpc_results[orig_idx] = WriteResult(drf=drf, facility_code=fc, error_code=ec, message=error_message)
+                    rpc_results[orig_idx] = WriteResult(
+                        drf=drf, facility_code=FACILITY_ACNET, error_code=ec, message=error_message
+                    )
 
             except Exception as e:  # noqa: BLE001
                 error_message = f"gRPC error ({self._host}:{self._port}): {type(e).__name__}: {e}"
                 logger.error(error_message)
                 for orig_idx, drf, _ in valid_items:
-                    rpc_results[orig_idx] = WriteResult(drf=drf, error_code=ERR_RETRY, message=error_message)
+                    rpc_results[orig_idx] = WriteResult(
+                        drf=drf, facility_code=FACILITY_ACNET, error_code=ERR_RETRY, message=error_message
+                    )
 
         # Phase 3: Merge in original order
         results = []
         for i, (drf, _) in enumerate(settings):
             if i in validation_errors:
-                results.append(WriteResult(drf=drf, error_code=ERR_RETRY, message=validation_errors[i]))
+                results.append(
+                    WriteResult(
+                        drf=drf, facility_code=FACILITY_ACNET, error_code=ERR_RETRY, message=validation_errors[i]
+                    )
+                )
             elif i in rpc_results:
                 results.append(rpc_results[i])
             else:
-                results.append(WriteResult(drf=drf, error_code=ERR_RETRY, message="Internal error: no result"))
+                results.append(
+                    WriteResult(
+                        drf=drf, facility_code=FACILITY_ACNET, error_code=ERR_RETRY, message="Internal error: no result"
+                    )
+                )
 
         return results
 
@@ -785,11 +796,10 @@ class _DaqCore:
                 target = f"{self._host}:{self._port}"
                 code = e.code()
                 ec = _grpc_error_code(e)
-                fc = _grpc_facility_code(e)
                 drf_summary = summarize_drfs(drfs)
                 exc = DeviceError(
                     drf=drfs[0] if drfs else "?",
-                    facility_code=fc,
+                    facility_code=FACILITY_ACNET,
                     error_code=ec,
                     message=f"gRPC stream error ({target}): {code.name}: {e.details()} (devices: {drf_summary})",
                 )

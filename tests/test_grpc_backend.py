@@ -25,6 +25,7 @@ from unittest import mock
 import numpy as np
 import pytest
 
+from pacsys.acnet.errors import ERR_RETRY, ERR_TIMEOUT, FACILITY_ACNET
 from pacsys.auth import JWTAuth
 from pacsys.errors import AuthenticationError, DeviceError, ReadError
 from pacsys.types import Reading, ValueType, WriteResult
@@ -363,13 +364,15 @@ class TestSingleDeviceRead:
             backend.read("M:BADDEV")
         assert "Device not found" in exc_info.value.message
 
-    def test_get_error_returns_reading_with_error(self, backend_with_mock_stub):
+    @pytest.mark.parametrize("code", [-42, 0])
+    def test_get_error_returns_reading_with_error(self, backend_with_mock_stub, code):
         backend, mock_stub = backend_with_mock_stub
         mock_stub.Read.return_value = AsyncMockIterator(
-            [make_reading_reply(0, error_code=-42, error_message="Device not found")]
+            [make_reading_reply(0, error_code=code, error_message="Device not found")]
         )
 
         reading = backend.get("M:BADDEV")
+        assert (reading.facility_code, reading.error_code) == ((FACILITY_ACNET, ERR_RETRY) if code == 0 else (0, code))
         assert reading.is_error
         assert not reading.ok
         assert "Device not found" in reading.message
@@ -604,6 +607,7 @@ class TestWriteOperations:
         assert results[3].error_code == -42
         for index in (0, 2, 4):
             assert not results[index].success
+            assert (results[index].facility_code, results[index].error_code) == (FACILITY_ACNET, ERR_RETRY)
             assert results[index].message
 
     def test_write_prepares_drf(self, auth_backend_with_mock_stub):
@@ -638,6 +642,7 @@ class TestWriteOperations:
         assert len(results) == 2
         assert results[0].success
         assert not results[1].success
+        assert (results[1].facility_code, results[1].error_code) == (FACILITY_ACNET, ERR_RETRY)
         assert "No status received" in results[1].message
 
     def test_write_unsupported_type_returns_error(self, auth_backend_with_mock_stub):
@@ -646,16 +651,26 @@ class TestWriteOperations:
         result = backend.write("M:OUTTMP", object())
 
         assert not result.success
+        assert (result.facility_code, result.error_code) == (FACILITY_ACNET, ERR_RETRY)
         assert "Cannot convert value of type" in result.message
         mock_stub.Set.assert_not_called()
 
-    def test_unexpected_write_error_becomes_write_results(self, auth_backend_with_mock_stub):
+    @pytest.mark.parametrize(
+        "error, code",
+        [
+            (RuntimeError("programming bug"), ERR_RETRY),
+            (AsyncMockRpcError(grpc.StatusCode.UNAVAILABLE, "programming bug"), ERR_RETRY),
+            (AsyncMockRpcError(grpc.StatusCode.DEADLINE_EXCEEDED, "programming bug"), ERR_TIMEOUT),
+        ],
+    )
+    def test_unexpected_write_error_becomes_write_results(self, auth_backend_with_mock_stub, error, code):
         backend, mock_stub = auth_backend_with_mock_stub
-        mock_stub.Set = mock.AsyncMock(side_effect=RuntimeError("programming bug"))
+        mock_stub.Set = mock.AsyncMock(side_effect=error)
 
         results = backend.write_many([("M:OUTTMP", 72.5)])
         assert len(results) == 1
         assert not results[0].success
+        assert (results[0].facility_code, results[0].error_code) == (FACILITY_ACNET, code)
         assert "programming bug" in results[0].message
 
 
@@ -673,6 +688,10 @@ class TestGRPCErrors:
 
         with pytest.raises(ReadError) as exc_info:
             backend.read("M:OUTTMP")
+        assert (exc_info.value.readings[0].facility_code, exc_info.value.readings[0].error_code) == (
+            FACILITY_ACNET,
+            ERR_RETRY,
+        )
         assert "UNAVAILABLE" in str(exc_info.value)
         assert isinstance(exc_info.value.__cause__, grpc.aio.AioRpcError)
 
@@ -685,6 +704,7 @@ class TestGRPCErrors:
         readings = exc_info.value.readings
         assert len(readings) == 2
         assert all(r.is_error for r in readings)
+        assert all((r.facility_code, r.error_code) == (FACILITY_ACNET, ERR_TIMEOUT) for r in readings)
         assert all("DEADLINE_EXCEEDED" in r.message for r in readings)
         assert isinstance(exc_info.value.__cause__, grpc.aio.AioRpcError)
 
@@ -697,6 +717,7 @@ class TestGRPCErrors:
         readings = exc_info.value.readings
         assert len(readings) == 1
         assert readings[0].is_error
+        assert (readings[0].facility_code, readings[0].error_code) == (FACILITY_ACNET, ERR_RETRY)
         assert "programming bug" in readings[0].message
         assert isinstance(exc_info.value.__cause__, RuntimeError)
 
@@ -1382,6 +1403,7 @@ class TestDaqCoreStream:
         assert len(errors) == 2
         assert [fatal for _, fatal in errors] == [False, True]
         assert all(isinstance(e, DeviceError) for e, _ in errors)
+        assert all((e.facility_code, e.error_code) == (FACILITY_ACNET, ERR_RETRY) for e, _ in errors)
         assert "UNAVAILABLE" in errors[0][0].message
         assert "boom" in errors[1][0].message
         assert stub.Read.call_count == 2
