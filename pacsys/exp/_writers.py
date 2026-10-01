@@ -56,7 +56,7 @@ def _timed_array_to_json(v: Value) -> str:
         if not isinstance(k, str):
             raise TypeError("Timed scalar array keys must be strings")
         if isinstance(arr, np.ndarray):
-            out[k] = _ndarray_to_list(arr)
+            out[k] = cast("Any", arr).tolist() if k == "data" and arr.ndim == 2 else _ndarray_to_list(arr)
         elif isinstance(arr, list):
             out[k] = arr
         else:

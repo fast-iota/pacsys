@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import numpy as np
 import pytest
 
-from pacsys.exp import CsvWriter, LogWriter
+from pacsys.exp import CsvWriter, LogWriter, ParquetWriter
 from pacsys.types import DeviceMeta, Reading, ValueType
 
 TS = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
@@ -305,30 +305,6 @@ class TestParquetWriter:
         table = _read_parquet(path)
         assert table.column("value_array").to_pylist() == [[1.0, 0.0]]
 
-    def test_timed_scalar_array(self, tmp_path):
-        """Timed scalar arrays (dict with data+micros) stored as JSON in value_text."""
-        pytest.importorskip("pyarrow")
-        np = pytest.importorskip("numpy")
-        from pacsys.exp._writers import ParquetWriter
-
-        path = tmp_path / "test.parquet"
-        r = Reading(
-            drf="M:OUTTMP",
-            value_type=ValueType.TIMED_SCALAR_ARRAY,
-            value={"data": np.array([1.0, 2.0, 3.0]), "micros": np.array([100, 200, 300], dtype=np.int64)},
-            timestamp=TS,
-        )
-        writer = ParquetWriter(path)
-        writer.write_readings([r])
-        writer.close()
-
-        table = _read_parquet(path)
-        assert table.column("value").to_pylist() == [None]
-        assert table.column("value_array").to_pylist() == [None]
-        result = json.loads(table.column("value_text").to_pylist()[0])
-        assert result["data"] == [1.0, 2.0, 3.0]
-        assert result["micros"] == [100, 200, 300]
-
     def test_text_value(self, tmp_path):
         """Text values stored as plain string in value_text."""
         pytest.importorskip("pyarrow")
@@ -595,3 +571,56 @@ class TestParquetWriter:
 
         writer = ParquetWriter.__new__(ParquetWriter)
         assert isinstance(writer, LogWriter)
+
+
+@pytest.mark.parametrize("writer_type", [CsvWriter, ParquetWriter])
+@pytest.mark.parametrize("data", [[1.0, 2.0, 3.0], [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]], ids=["scalar", "records"])
+def test_timed_scalar_array_roundtrip(tmp_path, writer_type, data):
+    if writer_type is ParquetWriter:
+        pytest.importorskip("pyarrow")
+    path = tmp_path / "readings"
+    reading = Reading(
+        drf="M:OUTTMP",
+        value_type=ValueType.TIMED_SCALAR_ARRAY,
+        value={"data": np.array(data), "micros": np.array([100, 200, 300], dtype=np.int64)},
+        timestamp=TS,
+    )
+    writer = writer_type(path)
+    try:
+        writer.write_readings([reading])
+    finally:
+        writer.close()
+
+    if writer_type is CsvWriter:
+        with path.open(newline="") as f:
+            rows = list(csv.DictReader(f))
+        assert len(rows) == 1
+        result = json.loads(rows[0]["value"])
+    else:
+        table = _read_parquet(path)
+        assert table.column("value").to_pylist() == [None]
+        assert table.column("value_array").to_pylist() == [None]
+        assert table.column("value_type").to_pylist() == ["timedScalarArr"]
+        result = json.loads(table.column("value_text").to_pylist()[0])
+    assert result == {"data": data, "micros": [100, 200, 300]}
+
+
+@pytest.mark.parametrize("writer_type", [CsvWriter, ParquetWriter])
+@pytest.mark.parametrize(
+    "value_type,value",
+    [
+        (ValueType.TIMED_SCALAR_ARRAY, {"data": np.zeros((1, 1, 1)), "micros": np.array([100])}),
+        (ValueType.TIMED_SCALAR_ARRAY, {"data": np.array([[1.0]]), "micros": np.array([[100]])}),
+        (ValueType.SCALAR_ARRAY, np.array([[1.0]])),
+    ],
+    ids=["3d-data", "2d-micros", "2d-scalar-array"],
+)
+def test_writer_rejects_unsupported_array_dimensions(tmp_path, writer_type, value_type, value):
+    if writer_type is ParquetWriter:
+        pytest.importorskip("pyarrow")
+    writer = writer_type(tmp_path / "readings")
+    try:
+        with pytest.raises(TypeError, match="one-dimensional"):
+            writer.write_readings([Reading(drf="M:OUTTMP", value_type=value_type, value=value)])
+    finally:
+        writer.close()

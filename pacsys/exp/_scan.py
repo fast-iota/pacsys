@@ -81,6 +81,8 @@ def scan(
     np.linspace) or `start`/`stop`/`steps` (linear range). Exactly one
     mode must be used.
 
+    Read devices are unique by resolved DRF string, in first-seen order.
+    Use ``readings_per_step`` to control sampling per device at each step.
     With ``readings_per_step > 1`` OK readings are averaged per step (arrays
     element-wise); non-numeric values or mismatched array shapes raise.
 
@@ -91,7 +93,7 @@ def scan(
             device returns values that cannot be averaged.
     """
     write_drf = resolve_drf(write_device)
-    read_drfs = [resolve_drf(d) for d in read_devices]
+    read_drfs = list(dict.fromkeys(resolve_drf(d) for d in read_devices))
     be = resolve_backend(backend)
 
     if readings_per_step < 1:

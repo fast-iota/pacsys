@@ -6,8 +6,9 @@ from unittest import mock
 import numpy as np
 import pytest
 
-from pacsys.exp import ScanRestoreError
-from pacsys.exp._scan import ScanResult, _build_values, _read_step, scan
+from pacsys import Device
+from pacsys.exp import ScanRestoreError, scan
+from pacsys.exp._scan import ScanResult, _build_values, _read_step
 from pacsys.testing import FakeBackend
 from pacsys.types import Reading, ValueType, WriteResult
 from pacsys.verify import Verify
@@ -76,6 +77,38 @@ class TestScan:
         assert len(result.readings) == 3
         assert len(result.write_results) == 3
         assert all(wr.ok for wr in result.write_results)
+
+    @pytest.mark.parametrize("readings_per_step", [1, 3])
+    def test_duplicate_read_devices(self, fake, readings_per_step):
+        drfs = ["M:OUTTMP", "G:AMANDA", "M:OUTTMP[0]@I", "M:OUTTMP[1]@I", "M:OUTTMP[0]@P,100", "M:OUTTMP.READING"]
+        calls = []
+
+        def get_many(requests, *, timeout):
+            calls.append(list(requests))
+            return [
+                Reading(drf=drf, value_type=ValueType.SCALAR, value=len(calls) * 10 + i)
+                for i, drf in enumerate(requests)
+            ]
+
+        with mock.patch.object(fake, "get_many", side_effect=get_many):
+            result = scan(
+                "Z:ACLTST",
+                [drfs[0], drfs[0], *drfs[1:], Device(drfs[-1]), drfs[1]],
+                values=[1.0, 2.0],
+                readings_per_step=readings_per_step,
+                settle=0,
+                restore=False,
+                backend=fake,
+            )
+
+        assert calls == [drfs] * (2 * readings_per_step)
+        assert result.read_devices == drfs
+        assert len(result.readings) == 2
+        for step, readings in enumerate(result.readings):
+            assert list(readings) == drfs
+            first_sample = step * readings_per_step + 1
+            mean_sample = first_sample + (readings_per_step - 1) / 2
+            assert [r.value for r in readings.values()] == [mean_sample * 10 + i for i in range(len(drfs))]
 
     def test_verification_failure_stops_before_reading(self, fake):
         write_device = mock.Mock()

@@ -155,7 +155,7 @@ class AuditLog:
             self._writes_since_flush = 0
 
     def close(self):
-        """Flush and close both files."""
+        """Flush and release file handles; subsequent writes reopen files in append mode."""
         with self._lock:
             for label, f in (("JSON", self._json_file), ("protobuf", self._proto_file)):
                 if f is not None:

@@ -283,6 +283,7 @@ Returns the `Reading` that satisfied the condition. Raises `TimeoutError` if the
 ## scan
 
 Ramp a device through a series of values while reading other devices at each step. Automatically restores the original setting value on completion or error.
+Read devices are unique by resolved DRF string in first-seen order, including in `ScanResult.read_devices`; use `readings_per_step` to control sampling.
 
 If restoration fails after the scan completes, `ScanRestoreError.result` retains the
 collected data with `restored=False`. A raised restoration exception is preserved as
@@ -426,6 +427,8 @@ class LogWriter(Protocol):
     def write_readings(self, readings: list[Reading]) -> None: ...
     def close(self) -> None: ...
 ```
+
+Timed arrays retain their `data` and `micros` fields as JSON in CSV values and Parquet `value_text`; historical array data preserves its rows of elements with one timestamp per row.
 
 ### CsvWriter
 

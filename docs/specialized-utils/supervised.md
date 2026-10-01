@@ -243,7 +243,7 @@ with SupervisedServer(backend, port=50051, audit_log=audit) as srv:
 | `0x02` | `SettingRequest` |
 | `0x03` | `SettingReply` |
 
-The server calls `close()` automatically on `stop()`.
+The server calls `close()` automatically on `stop()`; this flushes and releases file handles, and subsequent audit writes reopen the files in append mode.
 
 ### Combining Policies
 
