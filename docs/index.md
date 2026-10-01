@@ -1,6 +1,6 @@
 [![PyPI](https://img.shields.io/pypi/v/pacsys?color=blue)](https://pypi.org/project/pacsys/)
 [![Python](https://img.shields.io/pypi/pyversions/pacsys)](https://pypi.org/project/pacsys/)
-[![License](https://img.shields.io/github/license/fast-iota/pacsys)](https://github.com/fast-iota/pacsys/blob/master/LICENSE)
+[![License](https://img.shields.io/github/license/fast-iota/pacsys)](https://github.com/fast-iota/pacsys/blob/main/LICENSE)
 
 PACSys is a Python library that lets you interact with ACNET (aka ACSys).
 
