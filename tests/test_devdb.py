@@ -758,7 +758,7 @@ class TestDevDBClientGetDeviceInfo:
 
 class TestDeviceInfoIntegration:
     def test_info_raises_without_devdb(self):
-        """Device.info() raises RuntimeError when DevDB is not configured."""
+        """Device.info() raises RuntimeError when DevDB client dependencies are unavailable."""
         from pacsys.device import Device
 
         dev = Device("Z:ACLTST", backend=mock.MagicMock())

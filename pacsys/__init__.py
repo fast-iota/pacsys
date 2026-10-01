@@ -383,11 +383,10 @@ def _create_global_acl(timeout: float) -> "ACLBackend":
 
 
 def _get_global_devdb() -> Optional["DevDBClient"]:
-    """Get or create the global DevDB client if configured.
+    """Get or create the global DevDB client using config > env > defaults.
 
-    Returns None if DevDB is not configured (no host in env or configure()).
-    The global DevDB is opt-in -- only created if PACSYS_DEVDB_HOST is set
-    or configure(devdb_host=...) was called.
+    Returns None if gRPC or DevDB stub imports raise ImportError or TypeError.
+    Other import or client initialization errors may propagate.
     """
     global _global_devdb, _devdb_initialized
 
@@ -1073,7 +1072,4 @@ __all__ = [
     "SupervisedServer",
     # Submodule
     "acnet",
-    # Internal (for Device)
-    "_get_global_backend",
-    "_get_global_devdb",
 ]

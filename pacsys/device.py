@@ -125,8 +125,8 @@ class Device(_DeviceBase):
         devdb = self._get_devdb()
         if devdb is None:
             raise RuntimeError(
-                "DevDB not available. Configure with pacsys.configure(devdb_host=...) "
-                "or set PACSYS_DEVDB_HOST environment variable."
+                "DevDB not available. Could not import gRPC client dependencies; "
+                "check your grpcio/protobuf installation."
             )
         return devdb.get_device_info([self.name], timeout=timeout)[self.name]
 
@@ -366,7 +366,7 @@ class Device(_DeviceBase):
         return _get_global_backend()
 
     def _get_devdb(self):
-        """Get global DevDB client, or None if not configured."""
+        """Get the global DevDB client via pacsys._get_global_devdb()."""
         from pacsys import _get_global_devdb
 
         return _get_global_devdb()

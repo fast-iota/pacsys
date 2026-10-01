@@ -368,7 +368,11 @@ def _get_devdb():
 
     devdb = pacsys._get_global_devdb()
     if devdb is None:
-        print("Warning: DevDB not configured (set PACSYS_DEVDB_HOST to enable)", file=sys.stderr)
+        print(
+            "Warning: DevDB not available. Could not import gRPC client dependencies; "
+            "check your grpcio/protobuf installation.",
+            file=sys.stderr,
+        )
         return None
     try:
         devdb.get_device_info(["Z:NO_OP"], timeout=2.0)

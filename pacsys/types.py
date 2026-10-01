@@ -231,12 +231,14 @@ class BasicControl(IntEnum):
     also defined in the DMQ DAQData.proto enum; commands 7-9 (LOCAL, REMOTE,
     TRIP) are sent as numeric values on DMQ since the proto enum lacks them.
 
-    Each command toggles a status bit (see _CONTROL_STATUS_MAP in device.py).
+    Commands request a state or action. Use Device.control() or convenience
+    methods such as Device.on(). Device.control(..., verify=True) checks
+    the corresponding basic-status condition.
 
     Usage::
 
-        backend.write("Z|ACLTST", BasicControl.ON)
-        backend.write("Z&ACLTST", BasicControl.OFF)
+        backend.write("Z:ACLTST.CONTROL", BasicControl.ON)
+        backend.write("Z:ACLTST.CONTROL", BasicControl.OFF)
     """
 
     RESET = 0
