@@ -111,6 +111,56 @@ class TestFTD:
             ftd.to_word()
 
 
+@pytest.mark.parametrize(
+    ("alarm_cls", "flags", "field"),
+    [
+        (AnalogAlarm, 0x0361, "data_length"),
+        (DigitalAlarm, 0x00E1, "nominal"),
+        (AnalogAlarm, 0x0301, "limit_type"),
+    ],
+)
+def test_reserved_metadata_preserves_wire_bytes(alarm_cls, flags, field):
+    raw = struct.pack("<H4s4sBBH6s", flags, b"abcd", b"efgh", 2, 3, 60, b"abcdef")
+    alarm = alarm_cls.from_bytes(raw)
+    assert alarm.to_bytes() == raw
+    with pytest.raises(ValueError):
+        getattr(alarm, field)
+    assert alarm.to_bytes() == raw
+
+
+def test_percent_tolerance_identified_from_wire():
+    raw = struct.pack("<H4s4sBBH6s", 0x0121, b"abcd", b"efgh", 0, 1, 60, b"abcdef")
+    alarm = AnalogAlarm.from_bytes(raw)
+    assert alarm.limit_type.name == "NOM_PCT_TOL"
+    assert alarm.to_bytes() == raw
+
+
+@pytest.mark.parametrize(
+    ("alarm_cls", "prop", "flags"),
+    [
+        (AnalogAlarm, "ANALOG", 0x0361),
+        (DigitalAlarm, "DIGITAL", 0x00E1),
+    ],
+)
+@pytest.mark.parametrize("repair", [False, True])
+def test_modify_unknown_metadata_raw_only(fake_backend, alarm_cls, prop, flags, repair):
+    initial = alarm_cls(flags=flags).to_bytes()
+    fake_backend.set_reading(f"Z:TEST.{prop}{{0:20}}.RAW@I", initial, value_type=ValueType.RAW)
+    fake_backend.set_error(f"Z:TEST.{prop}@I", -1, "Structured scaling unavailable")
+    with alarm_cls.modify("Z:TEST", backend=fake_backend) as alarm:
+        alarm.ftd = FTD.periodic_ticks(60)
+        if repair:
+            alarm.data_length = DataLength.BYTES_2
+            if isinstance(alarm, AnalogAlarm):
+                alarm.limit_type = LimitType.MIN_MAX
+    expected = alarm.to_bytes()
+    assert fake_backend.writes == [(f"Z:TEST.{prop}{{0:20}}.RAW@N", expected)]
+    assert expected[2:12] == initial[2:12]
+    assert expected[14:] == initial[14:]
+    if not repair:
+        assert expected[:2] == initial[:2]
+
+
 class TestAnalogAlarm:
     def test_parse_from_bytes(self):
         """Parse analog alarm from raw bytes (ACNET network order)."""
@@ -511,14 +561,19 @@ class TestModifyContext:
         assert fake_backend.writes == []
 
     @pytest.mark.parametrize(
-        ("field", "changed"),
-        [("data_length", DataLength.BYTES_4), ("data_type", DataType.FLOAT), ("limit_type", LimitType.NOM_TOL)],
+        ("field", "changed", "initial_flags"),
+        [
+            ("data_length", DataLength.BYTES_4, 0x0220),
+            ("data_type", DataType.FLOAT, 0x0220),
+            ("limit_type", LimitType.NOM_TOL, 0x0220),
+            ("data_length", DataLength.BYTES_4, 0x0260),
+            ("limit_type", 1, 0x0020),
+        ],
     )
-    def test_modify_rejects_engineering_limits_with_interpretation_change(self, fake_backend, field, changed):
-        alarm_data = AnalogAlarm()
-        alarm_data.limit_type = LimitType.MIN_MAX
-        alarm_data.data_type = DataType.SIGNED_INT
-        alarm_data.data_length = DataLength.BYTES_2
+    def test_modify_rejects_engineering_limits_with_interpretation_change(
+        self, fake_backend, field, changed, initial_flags
+    ):
+        alarm_data = AnalogAlarm(flags=initial_flags)
         fake_backend.set_reading("Z:TEST.ANALOG{0:20}.RAW@I", alarm_data.to_bytes(), value_type=ValueType.RAW)
         fake_backend.set_analog_alarm("Z:TEST.ANALOG@I", _analog_structured())
 

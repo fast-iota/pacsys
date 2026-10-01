@@ -98,6 +98,7 @@ class LimitType(IntEnum):
     """Analog alarm limit type (K field)."""
 
     NOM_TOL = 0  # Nominal/Tolerance
+    NOM_PCT_TOL = 1  # Nominal/Percent Tolerance
     MIN_MAX = 2  # Minimum/Maximum
 
 
@@ -322,11 +323,12 @@ class AlarmBlock:
     def data_length(self) -> DataLength:
         """Data length (Q field)."""
         q = (self.flags >> 5) & 0x03
-        return DataLength(min(q, 2))
+        return DataLength(q)
 
     @data_length.setter
     def data_length(self, value: DataLength) -> None:
-        self.flags = (self.flags & ~0x60) | ((value & 0x03) << 5)
+        value = DataLength(value)
+        self.flags = (self.flags & ~0x60) | (value << 5)
 
     @property
     def data_bytes(self) -> int:
@@ -338,24 +340,22 @@ class AnalogAlarm(AlarmBlock):
     """
     Analog alarm block with typed value access.
 
-    Use minimum/maximum properties for engineering-unit limits. The raw alarm
-    block also has a NOM_TOL limit_type (nominal/tolerance), but no backend
-    protocol supports writing it in engineering units -- only minimum/maximum
-    are available in structured alarm messages (DPM PC binary, gRPC protobuf,
-    DMQ SDD). To set a nominal/tolerance alarm, convert manually:
-        minimum = nominal - tolerance
-        maximum = nominal + tolerance
+    Use minimum/maximum for server-supplied engineering-unit limits when
+    structured scaling is available. Raw limit modes include nominal/tolerance,
+    nominal/percent tolerance, and minimum/maximum. No client-side conversion
+    between these modes is performed.
     """
 
     @property
     def limit_type(self) -> LimitType:
-        """Limit type (K field): NOM_TOL or MIN_MAX."""
+        """Limit type (K field): NOM_TOL, NOM_PCT_TOL, or MIN_MAX."""
         k = (self.flags >> 8) & 0x03
-        return LimitType.MIN_MAX if k == 2 else LimitType.NOM_TOL
+        return LimitType(k)
 
     @limit_type.setter
     def limit_type(self, value: LimitType) -> None:
-        self.flags = (self.flags & ~0x300) | ((value & 0x03) << 8)
+        value = LimitType(value)
+        self.flags = (self.flags & ~0x300) | (value << 8)
 
     @property
     def is_high(self) -> bool:
@@ -448,8 +448,8 @@ class AnalogAlarm(AlarmBlock):
     def minimum(self) -> float | None:
         """Minimum in engineering units.
 
-        Returns None if structured data not available (e.g., from from_bytes()).
-        Populated automatically by read() and modify().
+        Returns None when structured data is unavailable, including failed
+        structured scaling during read() or modify(), or from from_bytes().
         """
         if self._structured is not None:
             return self._structured.get("minimum")
@@ -459,15 +459,15 @@ class AnalogAlarm(AlarmBlock):
     def minimum(self, value: float) -> None:
         """Set minimum in engineering units."""
         if self._structured is None:
-            raise ValueError("No structured data - use read() or modify() first")
+            raise ValueError("No structured data available for engineering-unit limits")
         self._structured["minimum"] = value
 
     @property
     def maximum(self) -> float | None:
         """Maximum in engineering units.
 
-        Returns None if structured data not available (e.g., from from_bytes()).
-        Populated automatically by read() and modify().
+        Returns None when structured data is unavailable, including failed
+        structured scaling during read() or modify(), or from from_bytes().
         """
         if self._structured is not None:
             return self._structured.get("maximum")
@@ -477,7 +477,7 @@ class AnalogAlarm(AlarmBlock):
     def maximum(self, value: float) -> None:
         """Set maximum in engineering units."""
         if self._structured is None:
-            raise ValueError("No structured data - use read() or modify() first")
+            raise ValueError("No structured data available for engineering-unit limits")
         self._structured["maximum"] = value
 
     @classmethod
@@ -576,11 +576,20 @@ class AnalogAlarm(AlarmBlock):
     def __repr__(self) -> str:
         status = "active" if self.is_active else "bypassed"
         state = "ALARM" if self.is_bad else "ok"
-        min_v = self.minimum if self.minimum is not None else self._min_value_raw
-        max_v = self.maximum if self.maximum is not None else self._max_value_raw
+        if self.flags & 0x60 == 0x60:
+            min_v = self.minimum if self.minimum is not None else self.value1_raw.hex()
+            max_v = self.maximum if self.maximum is not None else self.value2_raw.hex()
+        else:
+            min_v = self.minimum if self.minimum is not None else self._min_value_raw
+            max_v = self.maximum if self.maximum is not None else self._max_value_raw
         limits = f"min={min_v}, max={max_v}"
-        if self.limit_type == LimitType.NOM_TOL:
-            limits += " (NOM_TOL raw)"
+        k = (self.flags >> 8) & 0x03
+        if k == 3:
+            limits += " (unknown K=3)"
+        elif k != LimitType.MIN_MAX:
+            limits += f" ({LimitType(k).name} raw)"
+        if self.flags & 0x60 == 0x60:
+            limits += " (unknown Q=3; raw hex fallback)"
         return f"AnalogAlarm({status}, {state}, {limits}, {self.ftd})"
 
 
@@ -710,6 +719,11 @@ class DigitalAlarm(AlarmBlock):
     def __repr__(self) -> str:
         status = "active" if self.is_active else "bypassed"
         state = "ALARM" if self.is_bad else "ok"
+        if self.flags & 0x60 == 0x60:
+            return (
+                f"DigitalAlarm({status}, {state}, nominal_raw={self.value1_raw.hex()}, "
+                f"mask_raw={self.value2_raw.hex()}, unknown Q=3, {self.ftd})"
+            )
         return f"DigitalAlarm({status}, {state}, nom=0x{self.nominal:X}, mask=0x{self.mask:X}, {self.ftd})"
 
 
@@ -820,11 +834,11 @@ class _AlarmModifyContext:
             if value2_raw_changed and value2_eng_changed:
                 raise ValueError("Cannot change both raw value2 and engineering maximum")
 
-        data_length_changed = self._block.data_length != init_block.data_length
+        data_length_changed = bool((self._block.flags ^ init_block.flags) & 0x60)
         interpretation_changed = (
             isinstance(self._block, AnalogAlarm)
             and isinstance(init_block, AnalogAlarm)
-            and (self._block.data_type != init_block.data_type or self._block.limit_type != init_block.limit_type)
+            and (self._block.data_type != init_block.data_type or (self._block.flags ^ init_block.flags) & 0x300)
         )
         if eng_changed and (data_length_changed or interpretation_changed):
             raise ValueError("Cannot change engineering limits with data_length, data_type, or limit_type")

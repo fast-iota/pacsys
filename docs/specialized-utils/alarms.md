@@ -54,7 +54,7 @@ retaining the server-transformed analog limits.
 
 ### Engineering Units
 
-Both `read()` and `modify()` fetch engineering ('common') values. If you read alarm channels as `.RAW` directly, you will get the raw byte values without raw-to-primary-to-common transforms.
+Both `read()` and `modify()` request server-supplied engineering ('common') values alongside the raw block. If structured scaling is unavailable, the raw block remains usable, but `minimum`/`maximum` may be `None`; setting them without structured data raises `ValueError`. Reading `.RAW` directly returns bytes without scaling transforms.
 
 ```python
 alarm = AnalogAlarm.read("M:OUTTMP")
@@ -138,9 +138,9 @@ with AnalogAlarm.modify("Z:ACLTST") as alarm:
     alarm.maximum = 100.0
 ```
 
-### NOM_TOL vs MIN_MAX
+### Raw Limit Modes
 
-Just use `minimum`/`maximum` in engineering units -- DPM handles the NOM_TOL/MIN_MAX conversion server-side. To set a nom/tol-style alarm, convert to min/max yourself: `minimum = nom - tol`, `maximum = nom + tol`.
+`minimum`/`maximum` expose engineering limits supplied by the server. Availability and conversion depend on the server and device scaling; these properties do not guarantee conversion for every raw limit mode.
 
 <details markdown>
 <summary>Raw alarm block internals</summary>
@@ -152,48 +152,22 @@ the two 4-byte value fields are interpreted:
 |--------------|--------|----------------|----------------|
 | `MIN_MAX` | `0b10` | minimum | maximum |
 | `NOM_TOL` | `0b00` | nominal | tolerance |
+| `NOM_PCT_TOL` | `0b01` | nominal | percent tolerance |
 
-These raw values are in **primary (raw) units** - the integer or float stored in the
-front-end hardware before any scaling transform is applied. The `minimum`/`maximum`
-properties, on the other hand, are in **engineering (common) units** - the scaled values
-returned by DPM after applying the device's raw-to-common transform.
+`value1`/`value2` decode the integer or float stored in the front-end hardware
+without applying device scaling. `minimum`/`maximum` contain server-supplied
+engineering values when structured scaling succeeds.
 
-#### How DPM handles this server-side
+Structured analog messages expose `minimum` and `maximum`, not nominal/tolerance
+fields. Changing `limit_type` writes raw metadata; it does not convert either value.
+`NOM_PCT_TOL` identifies the raw percent-tolerance mode without adding percent
+arithmetic or guaranteeing structured engineering conversion.
 
-When you write a structured alarm field (e.g., `minimum`, `maximum`), DPM performs a
-**read-modify-write** on the 20-byte alarm block for every field write. It reads the
-current block, checks the K bits, modifies the raw values accordingly, and writes the
-block back. The K bits are **never changed** by a field write - DPM adapts the
-coordinate system instead:
-
-- **Writing `minimum`/`maximum` to a MIN_MAX device**: values are stored directly in
-  value1/value2 after unscaling from engineering to raw units.
-- **Writing `minimum`/`maximum` to a NOM_TOL device**: DPM converts to
-  nominal/tolerance coordinates: `nominal = (min + max) / 2`,
-  `tolerance = (max - min) / 2`, then stores in value1/value2.
-- **Writing `nominal`/`tolerance` to a NOM_TOL device**: stored directly.
-- **Writing `nominal`/`tolerance` to a MIN_MAX device**: DPM converts to min/max
-  coordinates: `min = nom - tol`, `max = nom + tol`.
-
-This means `minimum`/`maximum` always work correctly regardless of the device's
-underlying limit mode - DPM transparently handles the conversion.
-
-No backend protocol (DPM PC binary, gRPC protobuf, DMQ SDD) has structured fields for
-nominal/tolerance - they all only expose `minimum` and `maximum` in engineering units.
-The `limit_type` flag is only accessible via raw byte writes, but writing raw values
-requires knowing the device's transform, which pacsys cannot do client-side.
+Q bits 5–6 encode lengths 1, 2, and 4 bytes as codes 0, 1, and 2. Reserved Q=3
+and K=3 raise `ValueError` on typed metadata access. Raw parsing and serialization
+preserve these codes, so raw-only inspection and repairs remain possible.
 
 </details>
-
-```python
-nominal = 50.0
-tolerance = 5.0
-
-with AnalogAlarm.modify("Z:ACLTST") as alarm:
-    alarm.minimum = nominal - tolerance  # 45.0 (engineering units)
-    alarm.maximum = nominal + tolerance  # 55.0
-    # DPM stores as nom=50, tol=5 if device is in NOM_TOL mode
-```
 
 You can still *read* the `limit_type` flag to check which mode a device uses, and
 access the raw values via `value1`/`value2`:
@@ -205,9 +179,12 @@ alarm = AnalogAlarm.read("Z:ACLTST")
 if alarm.limit_type == LimitType.NOM_TOL:
     print(f"Nominal (raw units): {alarm.value1}")
     print(f"Tolerance (raw units): {alarm.value2}")
-else:
+elif alarm.limit_type == LimitType.MIN_MAX:
     print(f"Min (eng units): {alarm.minimum}")
     print(f"Max (eng units): {alarm.maximum}")
+elif alarm.limit_type == LimitType.NOM_PCT_TOL:
+    print(f"Nominal (raw units): {alarm.value1}")
+    print(f"Percent tolerance (raw): {alarm.value2}")
 ```
 
 Changing `value1` or `value2` inside `modify()` performs a raw alarm-block
@@ -222,11 +199,11 @@ limits are interpreted, so they cannot be combined with server-scaled limit edit
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `limit_type` | `LimitType` | `MIN_MAX` or `NOM_TOL` (read-only useful; see above) |
+| `limit_type` | `LimitType` | `MIN_MAX`, `NOM_TOL`, or `NOM_PCT_TOL` (raw metadata; see above) |
 | `minimum` | `float` or `None` | Minimum in engineering units |
 | `maximum` | `float` or `None` | Maximum in engineering units |
-| `value1` | `int` or `float` | Raw value 1 (min or nominal, primary units) |
-| `value2` | `int` or `float` | Raw value 2 (max or tolerance, primary units) |
+| `value1` | `int` or `float` | Raw value 1 (minimum or nominal) |
+| `value2` | `int` or `float` | Raw value 2 (maximum, tolerance, or percent tolerance) |
 | `is_high` | `bool` | Reading exceeds high limit |
 | `is_low` | `bool` | Reading below low limit |
 | `data_type` | `DataType` | Value type (signed/unsigned/float) |
