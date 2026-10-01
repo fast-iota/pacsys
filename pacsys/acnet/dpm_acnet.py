@@ -454,7 +454,7 @@ class DPMAcnet:
     def _enqueue(self, reading: DPMReading) -> None:
         """Queue a reading for readings() (reactor thread); drops the newest on overflow."""
         if self._terminal_status is not None:
-            return  # stream already ended: keep the sentinel the last item
+            return  # Skip readings once stream termination is observed.
         try:
             self._reply_queue.put_nowait(reading)
         except queue.Full:
@@ -471,7 +471,7 @@ class DPMAcnet:
             if self._terminal_status is not None:
                 return
             self._terminal_status = status
-        # Nothing else enqueues after _terminal_status is set, so this loop ends
+        # Make room for the sentinel; an in-flight _enqueue may still add a reading.
         while True:
             try:
                 self._reply_queue.put_nowait(None)

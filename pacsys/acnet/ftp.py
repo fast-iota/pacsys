@@ -66,13 +66,13 @@ _snap_counter = itertools.count(1)
 
 
 def _next_ftp_task_name() -> int:
-    """Generate next unique RAD50 task name for continuous FTP (FTP001, FTP002, ...)."""
+    """Generate a continuous FTP task name (FTPnnn), cycling through 001–999."""
     n = next(_ftp_counter) % 999 + 1  # wrap to 1-999, keeps name within 6-char RAD50 limit
     return rad50.encode(f"FTP{n:03d}")
 
 
 def _next_snap_task_name() -> int:
-    """Generate next unique RAD50 task name for snapshot (SNP001, SNP002, ...)."""
+    """Generate a snapshot task name (SNPnnn), cycling through 001–999."""
     n = next(_snap_counter) % 999 + 1  # wrap to 1-999, keeps name within 6-char RAD50 limit
     return rad50.encode(f"SNP{n:03d}")
 

@@ -571,9 +571,18 @@ class TestEdgeCases:
         with pytest.raises(ValueError, match="array range"):
             Device("B:HS23T").with_range(**kwargs)
 
-    def test_device_with_lowercase_drf(self):
-        dev = Device("m:outtmp")
-        assert dev.name.upper() == "M:OUTTMP"
+    @pytest.mark.parametrize(("drf", "value"), [("m:outtmp", 72.5), ("m_outtmp", 68.0)])
+    def test_device_with_lowercase_drf(self, fake, drf, value):
+        fake.set_reading("M:OUTTMP.READING", 72.5)
+        fake.set_reading("M:OUTTMP.SETTING", 68.0)
+        dev = Device(drf, backend=fake)
+        canonical = Device(drf.upper(), backend=fake)
+        assert dev.name == "M:OUTTMP"
+        assert dev.drf == canonical.drf
+        assert dev == canonical
+        assert hash(dev) == hash(canonical)
+        assert dev.read() == 72.5
+        assert dev.get().value == value
 
 
 # ─── New tests for property-specific reads ─────────────────────────────

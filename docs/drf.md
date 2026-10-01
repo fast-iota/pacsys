@@ -66,14 +66,17 @@ The parser normalizes DRF strings for consistent comparison:
 | Property qualifier → `:` | `M_OUTTMP` → `M:OUTTMP` |
 | Aliases → canonical names | `.READ` → `.READING` |
 | Default field omitted | `.READING.SCALED` → `.READING` |
-| Case: device name preserved, rest uppercase | `m:outtmp.read` → `m:outtmp.READING` |
+| ACNET device names uppercase | `m:outtmp.read` → `M:OUTTMP.READING` |
 
 ```python
 from pacsys.drf3 import parse_request
 
 req = parse_request("m:outtmp.read@p,1000")
-print(req.to_canonical())  # "m:outtmp.READING@p,1000"
+print(req.to_canonical())  # "M:OUTTMP.READING@p,1000"
 ```
+
+ACNET normalization preserves the original device token in `raw_string` and leaves
+EPICS names and suffixes unchanged. Existing event and extra handling is unchanged.
 
 ---
 

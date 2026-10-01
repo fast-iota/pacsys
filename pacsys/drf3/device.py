@@ -43,6 +43,6 @@ def parse_device(raw_string, assume_epics: bool = True) -> Device:
         if assume_epics:
             return Device(raw_string=raw_string, canonical_string=raw_string, is_acnet=False)
         raise ValueError(f"{raw_string} is not a valid device")
-    ld = list(raw_string)
+    ld = list(raw_string.upper())
     ld[1] = ":"
     return Device(raw_string=raw_string, canonical_string="".join(ld), is_acnet=True)
