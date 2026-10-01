@@ -67,6 +67,27 @@ class TestCsvWriter:
         finally:
             writer.close()
 
+    def test_conversion_failure_does_not_write_batch_prefix(self, tmp_path):
+        path = tmp_path / "test.csv"
+        good = _reading()
+        malformed = Reading(drf="D:ARRAY", value_type=ValueType.SCALAR_ARRAY, value=np.array([[1.0, 2.0]]))
+        fixed = Reading(drf="D:ARRAY", value_type=ValueType.SCALAR_ARRAY, value=np.array([1.0, 2.0]))
+        writer = CsvWriter(path)
+        try:
+            with pytest.raises(TypeError, match="one-dimensional"):
+                writer.write_readings([good, malformed])
+            writer.write_readings([good, fixed])
+        finally:
+            writer.close()
+
+        with path.open(newline="") as f:
+            rows = list(csv.reader(f))
+        assert rows == [
+            ["timestamp", "drf", "value", "units", "facility_code", "error_code", "message"],
+            [TS.isoformat(), "M:OUTTMP", "72.5", "", "0", "0", ""],
+            ["", "D:ARRAY", "[1.0, 2.0]", "", "0", "0", ""],
+        ]
+
     def test_csv_array_as_json(self, tmp_path):
         """Scalar arrays are serialized as JSON lists, not Python repr."""
         import numpy as np

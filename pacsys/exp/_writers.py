@@ -99,8 +99,9 @@ class CsvWriter:
         self._writer.writerow(["timestamp", "drf", "value", "units", "facility_code", "error_code", "message"])
 
     def write_readings(self, readings: list[Reading]) -> None:
+        rows = []
         for r in readings:
-            self._writer.writerow(
+            rows.append(
                 [
                     r.timestamp.isoformat() if r.timestamp else "",
                     r.drf,
@@ -111,6 +112,7 @@ class CsvWriter:
                     r.message if r.message is not None else "",
                 ]
             )
+        self._writer.writerows(rows)
         self._file.flush()
 
     def close(self) -> None:

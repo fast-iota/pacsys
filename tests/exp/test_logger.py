@@ -4,12 +4,13 @@ import csv
 import threading
 import time
 
+import numpy as np
 import pytest
 
 from pacsys.exp._logger import DataLogger
 from pacsys.exp._writers import CsvWriter
 from pacsys.testing import FakeBackend
-from pacsys.types import Reading
+from pacsys.types import Reading, ValueType
 
 
 @pytest.fixture
@@ -140,6 +141,26 @@ class TestDataLogger:
         assert writer.closed
         assert dl.last_error is not None
         assert dl._buffer == []
+
+    def test_csv_conversion_failure_retries_without_partial_output(self, fake, tmp_path):
+        path = tmp_path / "log.csv"
+        writer = CsvWriter(path)
+        dl = DataLogger(["M:OUTTMP@p,1000"], writer=writer, flush_interval=999, backend=fake)
+        dl.start()
+        try:
+            fake.emit_reading("M:OUTTMP@p,1000", 72.5)
+            fake.emit_reading("M:OUTTMP@p,1000", np.array([[1.0, 2.0]]), value_type=ValueType.SCALAR_ARRAY)
+        finally:
+            with pytest.raises(RuntimeError, match="Dropped 2 readings") as info:
+                dl.stop()
+
+        assert isinstance(info.value.__cause__, TypeError)
+        assert dl.dropped_count == 2
+        assert writer._file.closed
+        with path.open(newline="") as f:
+            assert list(csv.reader(f)) == [
+                ["timestamp", "drf", "value", "units", "facility_code", "error_code", "message"]
+            ]
 
     def test_worker_drop_during_stop_is_reported(self, fake):
         class BlockingFailingWriter:
