@@ -969,7 +969,7 @@ class TestDPMAcnetOpenList:
         import queue
         from types import SimpleNamespace
 
-        d = DPMAcnet.__new__(DPMAcnet)
+        d = DPMAcnet()
         d._reply_queue = queue.Queue()
         d._meta = {}
         d._con = MagicMock()
@@ -1023,10 +1023,10 @@ class TestDPMAcnetStreamTermination:
         assert list(d.readings(timeout=0.5)) == ["r1"]
 
     @staticmethod
-    def _terminal_reply(status):
+    def _terminal_reply(status, data=b""):
         from types import SimpleNamespace
 
-        return SimpleNamespace(last=True, status=status, data=b"")
+        return SimpleNamespace(last=True, status=status, data=data)
 
     def _open(self, dpm):
         """Drive _open_list with a fake connection; returns the captured reply handler."""
@@ -1046,6 +1046,75 @@ class TestDPMAcnetStreamTermination:
         dpm._open_list()
         assert dpm._list_id == 7
         return captured["handler"]
+
+    @pytest.mark.parametrize("payload_status", [DAE_LJ_NO_DATA, 0, None])
+    def test_terminal_handshake_preserves_status(self, payload_status):
+        from pacsys.acnet.errors import ACNET_ENDMULT
+
+        dpm = DPMAcnet()
+        status = Status_reply()
+        status.ref_id = 0
+        status.status = payload_status or 0
+        header = ACNET_ENDMULT if payload_status is not None else 0
+        data = bytes(status.marshal()) if payload_status is not None else b""
+        dpm._con = MagicMock(
+            request_multiple=lambda **kwargs: kwargs["reply_handler"](self._terminal_reply(header, data))
+        )
+        dpm._dpm_node = 1
+
+        with pytest.raises(DPMError, match="OpenList failed") as exc_info:
+            dpm._open_list()
+
+        assert exc_info.value.status == (payload_status or header)
+        assert list(dpm.readings(timeout=0.01)) == []
+
+    def test_terminal_status_payload_reaches_read_error_once(self):
+        from pacsys.acnet.errors import ACNET_ENDMULT
+
+        dpm = DPMAcnet()
+        handler = self._open(dpm)
+        dpm._active = True
+        dpm._send_request = MagicMock(return_value=Status_reply())
+        status = Status_reply()
+        status.ref_id = 0
+        status.status = DAE_LJ_NO_DATA
+        handler(self._terminal_reply(ACNET_ENDMULT, bytes(status.marshal())))
+        handler(self._terminal_reply(0))
+
+        assert dpm._reply_queue.qsize() == 1
+        with pytest.raises(DPMError) as exc_info:
+            dpm.read("M:OUTTMP", timeout=0.01)
+        assert exc_info.value.status == DAE_LJ_NO_DATA
+        assert list(dpm.readings(timeout=0.01)) == []
+
+    @pytest.mark.parametrize("payload", [b"\xff", bytes(Scalar_reply().marshal()), bytes(Status_reply().marshal())])
+    def test_terminal_payload_falls_back_to_header(self, payload, caplog):
+        from pacsys.acnet.errors import ACNET_ENDMULT
+
+        dpm = DPMAcnet()
+        handler = self._open(dpm)
+        handler(self._terminal_reply(ACNET_ENDMULT, payload))
+
+        assert dpm._terminal_status == ACNET_ENDMULT
+        assert list(dpm.readings(timeout=0.01)) == []
+        if payload == b"\xff":
+            assert len(caplog.records) == 1
+            assert caplog.records[0].levelname == "WARNING"
+
+    def test_malformed_stream_reply_logs_and_later_reading_arrives(self, caplog):
+        dpm = DPMAcnet()
+        handler = self._open(dpm)
+        handler(SimpleNamespace(last=False, status=0, data=b"\xff"))
+        scalar = Scalar_reply()
+        scalar.ref_id = 3
+        scalar.data = 4.5
+        handler(SimpleNamespace(last=False, status=0, data=bytes(scalar.marshal())))
+
+        assert len(caplog.records) == 1
+        assert caplog.records[0].levelname == "WARNING"
+        assert dpm._terminal_status is None
+        readings = list(dpm.readings(timeout=0.01))
+        assert [(reading.ref_id, reading.data) for reading in readings] == [(3, 4.5)]
 
     def test_terminal_reply_wakes_consumer_when_queue_full(self):
         """The sentinel must land even when a slow consumer filled the queue (oldest reading dropped)."""

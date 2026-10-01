@@ -127,7 +127,7 @@ class DPMAcnet:
 
         # Reply handling; a None sentinel ends the stream (see _terminate)
         self._reply_queue: queue.Queue = queue.Queue(maxsize=_REPLY_QUEUE_SIZE)
-        self._terminal_status: int | None = None  # ACNET status that ended the stream
+        self._terminal_status: int | None = None  # Status from DPM payload or ACNET header
         self._request_ctx = None
 
         # Lock for state
@@ -213,9 +213,22 @@ class DPMAcnet:
 
         def handle_reply(reply):
             if reply.last:
-                self._terminate(reply.status)  # any final reply ends the stream (acnetd drops the handler)
+                status = reply.status
+                if reply.data:
+                    try:
+                        resp = unmarshal_reply(_Cursor(reply.data))
+                        if isinstance(resp, Status_reply) and resp.status != 0:
+                            status = resp.status
+                    except Exception:  # noqa: BLE001
+                        logger.warning(
+                            "Failed to decode final DPM reply for list %s (ACNET status %s)",
+                            self._list_id,
+                            reply.status,
+                            exc_info=True,
+                        )
+                self._terminate(status)  # any final reply ends the stream (acnetd drops the handler)
                 if not result_event.is_set():
-                    result["error"] = f"stream terminated: status {reply.status}"
+                    result["error"] = f"stream terminated: status {status}"
                     result_event.set()
                 return
             try:
@@ -228,7 +241,15 @@ class DPMAcnet:
                     if not result_event.is_set():
                         result["error"] = f"expected OpenList_reply, got {type(resp).__name__}"
             except Exception as e:  # noqa: BLE001
-                result["error"] = str(e)
+                if result_event.is_set():
+                    logger.warning(
+                        "Failed to handle DPM reply for list %s (ACNET status %s)",
+                        self._list_id,
+                        reply.status,
+                        exc_info=True,
+                    )
+                else:
+                    result["error"] = str(e)
             result_event.set()
 
         # Send as multiple-reply request (stays open for data)
@@ -247,7 +268,8 @@ class DPMAcnet:
             raise DPMError(-1, "Timeout waiting for OpenList reply")
 
         if error := cast(str | None, result["error"]):
-            raise DPMError(-1, f"OpenList failed: {error}")
+            status = self._terminal_status if self._terminal_status is not None else -1
+            raise DPMError(status, f"OpenList failed: {error}")
 
         self._list_id = result["list_id"]
 
