@@ -1664,7 +1664,7 @@ class TestLoggerReadErrors:
         assert readings[1].ok and readings[1].value == 1.5
 
 
-@pytest.mark.parametrize("operation", ["read", "write"])
+@pytest.mark.parametrize("operation", ["read", "write", "subscribe"])
 @pytest.mark.parametrize("close_first", [True, False])
 def test_close_races_operation_submission(sample_jwt, operation, close_first):
     backend = grpc_backend.GRPCBackend(auth=JWTAuth(token=sample_jwt))
@@ -1691,6 +1691,7 @@ def test_close_races_operation_submission(sample_jwt, operation, close_first):
 
     core.read_many.side_effect = create
     core.write_many.side_effect = create
+    core.stream.side_effect = create
     core.close = close
     backend._core = core
     ensure = backend._ensure_reactor
@@ -1707,12 +1708,19 @@ def test_close_races_operation_submission(sample_jwt, operation, close_first):
         try:
             if operation == "read":
                 outcome.append(backend.get_many(["M:OUTTMP"]))
-            else:
+            elif operation == "write":
                 outcome.append(backend.write_many([("M:OUTTMP", 1.0)]))
+            else:
+                outcome.append(backend.subscribe(["M:OUTTMP"]))
         except Exception as exc:  # noqa: BLE001 -- report worker failures to the test thread
             outcome.append(exc)
 
-    with mock.patch.object(backend, "_ensure_reactor", side_effect=gated_ensure):
+    with (
+        mock.patch.object(backend, "_ensure_reactor", side_effect=gated_ensure),
+        mock.patch.object(
+            grpc_backend, "_GRPCSubscriptionHandle", wraps=grpc_backend._GRPCSubscriptionHandle
+        ) as handle_factory,
+    ):
         worker = threading.Thread(target=call)
         worker.start()
         try:
@@ -1726,8 +1734,15 @@ def test_close_races_operation_submission(sample_jwt, operation, close_first):
     assert len(outcome) == 1
     if close_first:
         assert not created.is_set()
+        handle_factory.assert_not_called()
+        assert not backend._handles
         assert isinstance(outcome[0], RuntimeError)
         assert str(outcome[0]) == "Backend is closed"
     else:
         assert created.is_set()
-        assert outcome[0] == result or isinstance(outcome[0], CancelledError)
+        if operation == "subscribe" and not isinstance(outcome[0], CancelledError):
+            assert outcome[0].stopped
+            assert outcome[0]._task.done()
+            assert not backend._handles
+        else:
+            assert outcome[0] == result or isinstance(outcome[0], CancelledError)

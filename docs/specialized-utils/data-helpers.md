@@ -282,7 +282,7 @@ Returns the `Reading` that satisfied the condition. Raises `TimeoutError` if the
 
 ## scan
 
-Ramp a device through a series of values while reading other devices at each step. Automatically restores the original setting value on completion or error.
+Ramp an ACNET SETTING or an EPICS PV through a series of values while reading other devices at each step. ACNET write devices must use READING or SETTING; both target SETTING. Other ACNET properties are rejected before I/O. Automatically restores the original setting or PV value on completion or error.
 Read devices are unique by resolved DRF string in first-seen order, including in `ScanResult.read_devices`; use `readings_per_step` to control sampling.
 
 If restoration fails after the scan completes, `ScanRestoreError.result` retains the

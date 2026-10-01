@@ -111,7 +111,7 @@ class TestScan:
             assert [r.value for r in readings.values()] == [mean_sample * 10 + i for i in range(len(drfs))]
 
     def test_verification_failure_stops_before_reading(self, fake):
-        write_device = mock.Mock()
+        write_device = mock.Mock(request=Device("Z:ACLTST").request)
         write_device.setting.return_value = 42.0
         write_device.write.side_effect = [
             WriteResult(drf="Z:ACLTST.SETTING@N", verified=True, readback=1.0),
@@ -151,22 +151,34 @@ class TestScan:
         assert len(result.write_results) == 1
         assert result.readings == []
 
-    def test_restores_original_setting(self, fake):
-        fake.set_reading("Z:ACLTST.SETTING", 42.0)
-        scan(
-            write_device="Z:ACLTST",
+    @pytest.mark.parametrize(
+        "write_drf, setting_drf, original",
+        [
+            ("Z:ACLTST", "Z:ACLTST.SETTING", 42.0),
+            ("Z_ACLTST", "Z:ACLTST.SETTING", 42.0),
+            ("Z:ACLTST.READING[2].PRIMARY", "Z:ACLTST.SETTING[2].PRIMARY", [0.0, 0.0, 42.0]),
+            ("Z:ACLTST.SETTING[2].RAW", "Z:ACLTST.SETTING[2].RAW", [0.0, 0.0, 42.0]),
+            ("test:pv.VAL", "test:pv.VAL", 42.0),
+        ],
+    )
+    def test_restores_original_setting(self, fake, write_drf, setting_drf, original):
+        fake.set_reading(
+            setting_drf, original, value_type=ValueType.SCALAR_ARRAY if isinstance(original, list) else ValueType.SCALAR
+        )
+        result = scan(
+            write_device=write_drf,
             read_devices=["M:OUTTMP"],
             values=[1.0, 2.0],
             settle=0,
             restore=True,
             backend=fake,
         )
-        # Last write should restore the original SETTING value (42.0)
-        last_write = fake.writes[-1]
-        assert last_write[1] == 42.0
+        assert result.restored
+        assert fake.reads[0] == setting_drf + "@I"
+        assert fake.writes == [(setting_drf + "@N", value) for value in (1.0, 2.0, 42.0)]
 
     def test_failed_error_cleanup_restore_is_logged(self, fake, caplog):
-        write_device = mock.Mock()
+        write_device = mock.Mock(request=Device("Z:ACLTST").request)
         write_device.setting.return_value = 42.0
         write_device.write.side_effect = [
             WriteResult(drf="Z:ACLTST.SETTING@N"),
@@ -197,7 +209,7 @@ class TestScan:
         ],
     )
     def test_failed_normal_restore_preserves_scan_result(self, fake, failure):
-        write_device = mock.Mock()
+        write_device = mock.Mock(request=Device("Z:ACLTST").request)
         write_device.setting.return_value = 42.0
         write_device.write.side_effect = [
             WriteResult(drf="Z:ACLTST.SETTING@N"),

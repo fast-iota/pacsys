@@ -1168,41 +1168,42 @@ class GRPCBackend(Backend):
         _validate_callback(callback, on_error)
 
         self._ensure_reactor()
-        assert self._loop is not None, "Reactor loop not initialized"
-        assert self._core is not None
-        core = self._core
-
-        handle = _GRPCSubscriptionHandle(
-            backend=self,
-            drfs=drfs,
-            callback=callback,
-            on_error=on_error,
-        )
-
-        # Create the streaming task on the reactor loop
-        async def _create_task():
-            async def _run_stream():
-                try:
-                    await core.stream(
-                        drfs,
-                        handle._dispatch,
-                        lambda: handle._stopped,
-                        handle._dispatch_error,
-                    )
-                finally:
-                    handle._signal_stop()
-                    with self._handles_lock:
-                        if handle in self._handles:
-                            self._handles.remove(handle)
-
-            return asyncio.ensure_future(_run_stream())
-
-        with self._handles_lock:
+        with self._reactor_lock:
             if self._closed:
                 raise RuntimeError("Backend is closed")
-            self._handles.append(handle)
+            assert self._loop is not None, "Reactor loop not initialized"
+            assert self._core is not None
+            core = self._core
 
-        fut = asyncio.run_coroutine_threadsafe(_create_task(), self._loop)
+            handle = _GRPCSubscriptionHandle(
+                backend=self,
+                drfs=drfs,
+                callback=callback,
+                on_error=on_error,
+            )
+
+            # Create the streaming task on the reactor loop
+            async def _create_task():
+                async def _run_stream():
+                    try:
+                        await core.stream(
+                            drfs,
+                            handle._dispatch,
+                            lambda: handle._stopped,
+                            handle._dispatch_error,
+                        )
+                    finally:
+                        handle._signal_stop()
+                        with self._handles_lock:
+                            if handle in self._handles:
+                                self._handles.remove(handle)
+
+                return asyncio.ensure_future(_run_stream())
+
+            with self._handles_lock:
+                self._handles.append(handle)
+
+            fut = asyncio.run_coroutine_threadsafe(_create_task(), self._loop)
         try:
             handle._task = fut.result(timeout=5.0)
         except Exception:

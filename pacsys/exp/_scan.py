@@ -12,6 +12,8 @@ import numpy as np
 from pacsys.exp._resolve import resolve_backend, resolve_drf
 from pacsys.exp._values import numeric_value
 
+from ..drf3.property import DRF_PROPERTY
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
@@ -81,6 +83,10 @@ def scan(
     np.linspace) or `start`/`stop`/`steps` (linear range). Exactly one
     mode must be used.
 
+    ACNET write devices must use READING or SETTING; both scan the SETTING
+    property. EPICS devices scan the named PV. Other ACNET properties raise
+    ValueError before I/O.
+
     Read devices are unique by resolved DRF string, in first-seen order.
     Use ``readings_per_step`` to control sampling per device at each step.
     With ``readings_per_step > 1`` OK readings are averaged per step (arrays
@@ -101,9 +107,12 @@ def scan(
 
     scan_values = _build_values(values, start, stop, steps)
 
-    from pacsys.device import Device
+    from ..device import Device
 
     write_dev = Device(write_drf, backend=be)
+    request = write_dev.request
+    if request.is_acnet and request.property not in (DRF_PROPERTY.READING, DRF_PROPERTY.SETTING):
+        raise ValueError("scan requires an ACNET READING/SETTING device or an EPICS PV")
 
     # Read the original setting so it can be restored.
     original: Value | None = None
