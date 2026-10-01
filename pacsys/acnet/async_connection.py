@@ -1152,7 +1152,7 @@ class AsyncAcnetConnectionTCP(AsyncAcnetConnectionBase):
 
             logger.debug("Opened async TCP channel to %s:%s", self._host, self._port)
 
-        except OSError as e:
+        except (OSError, asyncio.TimeoutError) as e:
             logger.error("Failed to open TCP channel: %s", e)
             raise AcnetUnavailableError from e
 
@@ -1326,7 +1326,7 @@ class AsyncAcnetConnectionUDP(AsyncAcnetConnectionBase):
             if cmd_socket is not None:
                 cmd_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, SEND_BUFFER_SIZE)
             logger.debug("Opened local async UDP channels to %s:%s", self._host, self._port)
-        except (OSError, TimeoutError) as e:
+        except (OSError, asyncio.TimeoutError) as e:
             await self._close_transport()
             logger.error("Failed to open local ACNET UDP channels: %s", e)
             raise AcnetUnavailableError from e

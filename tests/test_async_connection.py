@@ -483,6 +483,50 @@ class TestRequestIdReuseRace:
 class TestConnectFailureCleanup:
     """Failed connect() must not leak the transport or read task."""
 
+    @pytest.mark.parametrize("transport", ["tcp", "udp"])
+    def test_open_timeout_python310_raises_unavailable(self, transport):
+        class LegacyTimeoutError(Exception):
+            pass
+
+        async def _test():
+            conn = AsyncAcnetConnectionTCP("localhost") if transport == "tcp" else AsyncAcnetConnectionUDP()
+            data_transport = MagicMock()
+            endpoint = AsyncMock(return_value=(data_transport, MagicMock()))
+            timeout_error = LegacyTimeoutError("open timed out")
+            calls = 0
+
+            async def timed_out(aw, timeout):
+                nonlocal calls
+                calls += 1
+                if transport == "udp" and calls == 1:
+                    return await aw
+                aw.close()
+                raise timeout_error
+
+            with (
+                patch("pacsys.acnet.async_connection.asyncio.TimeoutError", LegacyTimeoutError),
+                patch("pacsys.acnet.async_connection.asyncio.wait_for", new=timed_out),
+                patch("pacsys.acnet.async_connection.asyncio.open_connection", new=AsyncMock()),
+                patch.object(asyncio.get_running_loop(), "create_datagram_endpoint", new=endpoint),
+                pytest.raises((AcnetUnavailableError, LegacyTimeoutError)) as exc,
+            ):
+                await conn.connect()
+
+            assert conn._disposed
+            assert not conn.connected
+            if transport == "udp":
+                assert endpoint.call_count == 2
+                data_transport.close.assert_called_once()
+                assert conn._data_transport is None
+                assert conn._cmd_transport is None
+            else:
+                assert conn._writer is None
+                assert conn._reader is None
+            assert isinstance(exc.value, AcnetUnavailableError)
+            assert exc.value.__cause__ is timeout_error
+
+        _run(_test())
+
     def _make_conn_with_fakes(self):
         conn = AsyncAcnetConnectionTCP("localhost", port=9999)
         writer = MagicMock()
