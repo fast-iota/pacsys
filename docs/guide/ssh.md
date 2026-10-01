@@ -296,22 +296,42 @@ with ssh.acl_session() as acl1:
 
 ### ACL Error Handling
 
-Both `acl()` and `ACLSession.send()` raise `ACLError` on failures:
+ACL script errors can be returned as text. One-shot `acl()` returns stdout-only
+script errors even when ACL exits with nonzero status. It raises `ACLError` if the
+temporary script cannot be created or written, or if ACL exits nonzero with
+nonempty stderr or empty stdout (after stripping whitespace). SSH connection and
+timeout failures can independently raise `SSHError`; channel setup may also
+propagate Paramiko exceptions such as `paramiko.SSHException`.
+
+`ACLSession.send()` returns script errors as text when the interpreter returns to
+its prompt. It raises `ACLError` for a closed session, send failure, interpreter
+exit, or failure to receive the prompt. Session startup can also raise `ACLError`
+while waiting for the initial prompt. Opening the channel can raise `SSHError`
+or propagate Paramiko exceptions.
 
 ```python
-from pacsys.errors import ACLError
+import paramiko
 
-with ssh.acl_session() as acl:
-    try:
-        acl.send("read Z:NOTFOUND")
-    except ACLError as e:
-        print(f"ACL error: {e}")
+from pacsys.errors import ACLError
+from pacsys.ssh import SSHError
+
+try:
+    with ssh.acl_session() as acl:
+        output = acl.send("read M:OUTTMP")
+except (ACLError, SSHError, paramiko.SSHException) as e:
+    print(f"ACL session failed: {e}")
+else:
+    print(output)
 ```
 
-Persistent sessions reject commands containing line breaks; combine statements with
-semicolons instead. If sending or prompt detection fails, the session closes itself to
-prevent delayed output from being attributed to a later command. Create a new session
-before retrying.
+Check the returned text for ACL diagnostics and the expected command output before
+using it; a bad-device error does not necessarily raise an exception.
+
+Persistent sessions reject commands containing line breaks with `ValueError` and
+remain open; combine statements with semicolons instead. If sending or prompt
+detection fails, the session closes itself to prevent delayed output from being
+attributed to a later command. Create a new session before retrying. Closing a
+session leaves the SSH client open.
 
 Sending on a closed session also raises `ACLError`:
 

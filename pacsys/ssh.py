@@ -930,10 +930,15 @@ class SSHClient:
             timeout: Command timeout in seconds (default 30.0)
 
         Returns:
-            Command output with ACL prompts stripped
+            Command output with ACL prompts stripped. Script errors reported
+            only on stdout are returned even if ACL exits with non-zero status.
 
         Raises:
-            ACLError: If the ACL process exits with non-zero status
+            ACLError: If the temp script cannot be created or written, or ACL
+                exits with non-zero status and stderr is nonempty or stdout is
+                empty (after stripping whitespace)
+            SSHError: If an SSH connection or timeout failure occurs
+            paramiko.SSHException: May propagate from SSH channel setup
             ValueError: If command list is empty
         """
         from pacsys.acl_session import _strip_acl_output
