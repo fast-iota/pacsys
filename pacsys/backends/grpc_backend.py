@@ -240,9 +240,11 @@ def _proto_value_to_python(proto_value: "device_pb2.Value") -> tuple[Value, Valu
     if value_type == "basicStatus":
         # DPM/gRPC sends per-bit display text (text0/text1 from the digital status DB,
         # e.g. {"On": "Yes", "Shutter": "Closed"}); the supervised proxy forwards a
-        # backend bool dict as "True"/"False" strings, which map back to bool here.
-        status = proto_value.basicStatus.value
-        return {k: _PROTO_STATUS_BOOL.get(v, v) for k, v in status.items()}, ValueType.BASIC_STATUS
+        # backend bool dict as "True"/"False" strings. Convert only when the whole
+        # map matches legacy status keys and bool values; otherwise keep all text.
+        status = dict(proto_value.basicStatus.value)
+        candidate = {k: _PROTO_STATUS_BOOL.get(v, v) for k, v in status.items()}
+        return candidate if _is_basic_status_dict(candidate) else status, ValueType.BASIC_STATUS
     if value_type is None:
         raise ValueError("Proto Value has no value set (empty oneof)")
     raise ValueError(f"Unknown proto value type: {value_type!r}")

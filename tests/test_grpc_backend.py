@@ -25,6 +25,7 @@ from unittest import mock
 import numpy as np
 import pytest
 
+from pacsys import DigitalStatus
 from pacsys.acnet.errors import ERR_RETRY, ERR_TIMEOUT, FACILITY_ACNET
 from pacsys.auth import JWTAuth
 from pacsys.errors import AuthenticationError, DeviceError, ReadError
@@ -353,6 +354,26 @@ class TestSingleDeviceRead:
         assert reading.value_type == ValueType.SCALAR
         assert reading.is_success
         assert reading.ok
+
+    def test_get_preserves_status_display_text(self, backend_with_mock_stub):
+        backend, mock_stub = backend_with_mock_stub
+        original = {"On": "False", "Ready": "Yes"}
+        reply = DAQ_pb2.ReadingReply(index=0)
+        reply.readings.reading.add().data.basicStatus.value.update(original)
+        mock_stub.Read.return_value = AsyncMockIterator([reply])
+
+        reading = backend.get("Z:ACLTST.STATUS")
+
+        assert reading.ok
+        assert reading.value == original
+        status = DigitalStatus.from_reading(reading)
+        assert len(status) == 2
+        assert status["On"].value == "False"
+        assert status["On"].is_set is False
+        assert status["Ready"].value == "Yes"
+        assert status["Ready"].is_set is True
+        assert status.on is False
+        assert status.ready is True
 
     def test_read_error_raises_device_error(self, backend_with_mock_stub):
         backend, mock_stub = backend_with_mock_stub

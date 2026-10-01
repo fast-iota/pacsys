@@ -148,7 +148,9 @@ status = pacsys.read("N|LGXS")       # | qualifier = STATUS
 # {"on": True, "ready": False, "remote": True, "positive": True, "ramp": False}
 ```
 
-Returns `dict` with five boolean keys. `value_type = ValueType.BASIC_STATUS`.
+Returns a `dict` with `value_type = ValueType.BASIC_STATUS`. Depending on the source,
+it contains a subset of the boolean attributes shown above or display-name keys
+with text values.
 
 For richer status information, see [Device Status](status.md).
 
