@@ -2103,6 +2103,7 @@ class DMQBackend(Backend):
                     daemon=True,
                 )
                 self._io_thread.start()
+            waited_thread = self._io_thread
             err = self._connection_error
 
         if err is None:
@@ -2112,7 +2113,10 @@ class DMQBackend(Backend):
                 raise ConnectionError(
                     f"Failed to connect to RabbitMQ at {self._host}:{self._port}: timed out after {wait}s"
                 )
-            err = self._connection_error
+            with self._stream_lock:
+                err = self._connection_error
+                if err is None and self._io_thread is not waited_thread:
+                    err = ConnectionError("connection restarted while waiting")
         if err is not None:
             detail = str(err) or type(err).__name__
             raise ConnectionError(f"Failed to connect to RabbitMQ at {self._host}:{self._port}: {detail}") from err

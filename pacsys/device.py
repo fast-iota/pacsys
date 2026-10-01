@@ -134,6 +134,8 @@ class Device(_DeviceBase):
         """Fetch ACNET digital status using DevDB definitions and BIT_VALUE.
 
         Without available definitions, read BIT_VALUE, BIT_NAMES, and BIT_VALUES.
+        ``timeout`` applies separately to the DevDB metadata lookup and backend
+        status request; ``None`` retains each component's default timeout.
         """
         if not self._request.is_acnet:
             raise ValueError(f"STATUS is ACNET-specific, not supported for non-ACNET device {self.name}")

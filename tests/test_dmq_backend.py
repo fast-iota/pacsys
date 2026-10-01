@@ -1153,6 +1153,95 @@ class TestDMQBackendInit:
 class TestDMQConnectionOpenError:
     """Startup and connection failures must leave the backend available for retry."""
 
+    @pytest.mark.parametrize("replacement_ready", [False, True])
+    def test_startup_waiter_rejects_restarted_connection(self, replacement_ready):
+        connections = Queue()
+        waiting = threading.Event()
+        awakened = threading.Event()
+        resume = threading.Event()
+        old_results = Queue()
+        new_results = Queue()
+        callers = []
+        io_threads = []
+        conns = []
+
+        def factory(
+            cls=None, parameters=None, on_open_callback=None, on_open_error_callback=None, on_close_callback=None
+        ):
+            conn = MockSelectConnection()
+            conn._on_open_callback = on_open_callback
+            conn._on_close_callback = on_close_callback
+            conns.append(conn)
+            connections.put((conn, on_open_error_callback))
+            return conn
+
+        with _mock_gssapi(), mock.patch.object(SelectConnection, "__new__", side_effect=factory):
+            backend = DMQBackend(host="localhost", auth=_create_mock_auth(), timeout=2.0)
+            real_wait = backend._connection_ready.wait
+
+            def gated_wait(timeout=None):
+                is_old_caller = threading.current_thread() is callers[0]
+                if is_old_caller:
+                    waiting.set()
+                ready = real_wait(timeout)
+                if is_old_caller and ready:
+                    awakened.set()
+                    assert resume.wait(timeout=3.0)
+                return ready
+
+            def ensure_connection(results):
+                try:
+                    backend._ensure_io_thread()
+                except Exception as error:  # noqa: BLE001 - surface worker failures in the test thread
+                    results.put(error)
+                else:
+                    results.put(None)
+
+            with mock.patch.object(backend._connection_ready, "wait", side_effect=gated_wait):
+                try:
+                    callers.append(threading.Thread(target=ensure_connection, args=(old_results,), daemon=True))
+                    callers[0].start()
+                    first, fail_open = connections.get(timeout=0.5)
+                    io_threads.append(backend._io_thread)
+                    assert waiting.wait(timeout=0.5)
+                    first.ioloop.add_callback_threadsafe(
+                        lambda: fail_open(first, ConnectionRefusedError("connection refused"))
+                    )
+                    assert awakened.wait(timeout=0.5)
+                    io_threads[0].join(timeout=0.5)
+                    assert not io_threads[0].is_alive()
+
+                    callers.append(threading.Thread(target=ensure_connection, args=(new_results,), daemon=True))
+                    callers[1].start()
+                    second, _ = connections.get(timeout=0.5)
+                    io_threads.append(backend._io_thread)
+                    assert io_threads[1] is not io_threads[0]
+                    assert backend._connection_error is None
+                    assert not backend._connection_ready.is_set()
+                    if replacement_ready:
+                        second.ioloop.add_callback_threadsafe(second._trigger_open)
+                        assert new_results.get(timeout=0.5) is None
+
+                    resume.set()
+                    error = old_results.get(timeout=0.5)
+                    assert isinstance(error, ConnectionError)
+                    assert isinstance(error.__cause__, ConnectionError)
+                    if not replacement_ready:
+                        assert new_results.empty()
+                        second.ioloop.add_callback_threadsafe(second._trigger_open)
+                        assert new_results.get(timeout=0.5) is None
+                    backend._ensure_io_thread()
+                    assert backend._select_connection is second
+                    assert second.is_open
+                finally:
+                    resume.set()
+                    for conn in conns:
+                        conn.ioloop.add_callback_threadsafe(conn.close)
+                    backend.close()
+                    for thread in callers + io_threads:
+                        thread.join(timeout=2.5)
+                    assert all(not thread.is_alive() for thread in callers + io_threads)
+
     def test_closed_connection_reports_cause_before_io_thread_exits_and_recovers(self):
         conns = []
         closed = threading.Event()

@@ -380,6 +380,8 @@ status.on                 # False
 
 This constructs a `DigitalStatus` using DevDB definitions plus `STATUS.BIT_VALUE` when definitions are available; otherwise it reads `STATUS.BIT_VALUE`, `STATUS.BIT_NAMES`, and `STATUS.BIT_VALUES`. The async method uses the three-sub-property path.
 
+For synchronous `Device.digital_status()`, `timeout` applies separately to the DevDB metadata lookup and the backend status request, not as a shared deadline for the whole call. `timeout=None` retains each component's default timeout.
+
 See [Device Status](status.md) for the full DigitalStatus API.
 
 ---

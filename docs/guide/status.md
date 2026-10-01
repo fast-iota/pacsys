@@ -39,6 +39,8 @@ print(status)
 
 Synchronous `Device.digital_status()` uses DevDB definitions plus a `BIT_VALUE` read when definitions are available; otherwise it reads `BIT_VALUE`, `BIT_NAMES`, and `BIT_VALUES`. `AsyncDevice.digital_status()` uses the three-sub-property path.
 
+For synchronous `Device.digital_status(timeout=T)`, the timeout applies separately to the DevDB metadata lookup and the backend status request; it is not a shared deadline for the whole call. `timeout=None` retains each component's default timeout.
+
 ### DigitalStatus API
 
 ```python
