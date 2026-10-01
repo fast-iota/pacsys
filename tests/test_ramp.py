@@ -1186,6 +1186,26 @@ class TestWriteRamps:
 
 
 class TestRampGroup:
+    def test_nested_lists_preserve_columns_through_view_and_write(self, fake_backend):
+        devices = ["B:HS23T", "B:HS24T"]
+        _seed_settings(fake_backend, *devices)
+        values = [[i, 100 + i] for i in range(64)]
+        times = [[i + 1, 200 + i] for i in range(64)]
+        group = _TestRampGroup(devices, values, times)
+        assert group.values.dtype == group.times.dtype == np.float64
+
+        ramp = group[devices[1]]
+        ramp.values[3] = 999
+        ramp.times[3] = 777
+        values[3][1] = 999
+        times[3][1] = 777
+        assert all(result.success for result in group.write(backend=fake_backend))
+
+        assert len(fake_backend.writes) == 2
+        for column, (drf, payload) in enumerate(fake_backend.writes):
+            assert drf == f"{devices[column]}.SETTING{{0:256}}.RAW@I"
+            assert payload == _make_ramp_bytes([(v[column], t[column]) for v, t in zip(values, times, strict=True)])
+
     def test_shapes(self, fake_backend):
         _setup_devices(fake_backend)
         group = _TestRampGroup.read(list(_DEV_DATA), backend=fake_backend)
@@ -1279,7 +1299,7 @@ class TestRampGroup:
             group["B:NONEXISTENT"]
 
     def test_constructor_validates_shape(self):
-        with pytest.raises(ValueError, match="Expected values shape"):
+        with pytest.raises(ValueError, match="3 columns but group has 2 devices"):
             _TestRampGroup(
                 devices=["A", "B"],
                 values=np.zeros((64, 3)),  # wrong: 3 columns for 2 devices

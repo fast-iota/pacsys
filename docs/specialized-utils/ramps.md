@@ -217,6 +217,8 @@ All ramp payloads are validated before the backend call. If any ramp is empty in
 
 `RampGroup` stores ramp data for multiple devices as 2D numpy arrays with shape `(64, N_devices)`. Axis 0 is the point index, axis 1 is the device.
 
+Construction and assignment accept numeric nested sequences and convert them to float64 arrays with the same shape requirements.
+
 ```python
 from pacsys.ramp import BoosterHVRampGroup
 

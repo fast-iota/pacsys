@@ -906,11 +906,6 @@ class RampGroup:
         n = len(devices)
         if len(set(devices)) != n:
             raise ValueError("Duplicate device names in RampGroup")
-        pts = type(self).base.POINTS_PER_SLOT
-        if values.shape != (pts, n):
-            raise ValueError(f"Expected values shape ({pts}, {n}), got {values.shape}")
-        if times.shape != (pts, n):
-            raise ValueError(f"Expected times shape ({pts}, {n}), got {times.shape}")
         self.devices = list(devices)
         self.values = values  # __setattr__ validates dtype and converts to float64
         self.times = times
