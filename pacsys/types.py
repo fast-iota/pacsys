@@ -722,7 +722,8 @@ class CombinedStream:
             (reading, handle) pairs from any subscription
 
         Raises:
-            Exception: If any subscription has an error and no on_error was provided
+            Exception: Terminal errors stored in any subscription's exc, regardless
+                of on_error, or errors raised by an underlying readings() iterator.
         """
         import heapq
         import queue as queue_mod

@@ -111,7 +111,7 @@ with pacsys.dpm(dispatch_mode=DispatchMode.DIRECT) as backend:
 !!! warning "DIRECT mode"
     In DIRECT mode, slow callbacks block the reactor thread and delay all readings on that connection. Only use DIRECT when your callback is very fast.
 
-Dispatch mode is configured per-backend, not per-subscription. The global backend (used by `pacsys.subscribe()`) always uses `WORKER`.
+Dispatch mode is configured per-backend, not per-subscription. `pacsys.subscribe()` uses the global backend's `WORKER` mode unless passed bound `Device` objects, which use their backend's dispatch mode.
 
 One worker thread serves every subscription on a backend, so one slow callback delays all of them and, if the queue fills, readings are dropped (`handle.dropped`). Give a slow consumer its own backend instance, or hand the work off to your own thread/executor from the callback.
 

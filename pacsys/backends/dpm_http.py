@@ -837,6 +837,7 @@ class DPMHTTPBackend(Backend):
             timeout: Default operation timeout in seconds (default: 5.0)
             auth: Authentication object (KerberosAuth for writes)
             role: Role for authenticated operations (e.g., "testing")
+            dispatch_mode: How streaming callbacks are dispatched (default: WORKER)
         """
         _validate_backend_args(host, port, pool_size, timeout, auth)
 

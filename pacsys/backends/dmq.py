@@ -544,6 +544,7 @@ class DMQBackend(Backend):
             timeout: Default operation timeout in seconds (default: 10.0)
             auth: KerberosAuth required for all DMQ operations
             write_session_ttl: Idle timeout for write sessions in seconds (default: 600)
+            dispatch_mode: How streaming callbacks are dispatched (default: WORKER)
 
         Raises:
             AuthenticationError: If auth is not provided or not KerberosAuth

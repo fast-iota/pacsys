@@ -624,7 +624,7 @@ def subscribe(
     callback: ReadingCallback | None = None,
     on_error: ErrorCallback | None = None,
 ) -> SubscriptionHandle:
-    """Subscribe to devices for streaming using the global DPM backend.
+    """Subscribe using the devices' bound backend, or the global backend.
 
     Creates subscriptions that immediately start receiving data.
     The handle can be used as a context manager for automatic cleanup.
@@ -632,11 +632,13 @@ def subscribe(
     Args:
         drfs: List of device request strings or Device objects (with events, e.g. "M:OUTTMP@p,1000")
         callback: Optional function called for each reading, receives (reading, handle).
-                 If provided, readings are pushed to the callback on the receiver thread.
+                 Uses the backend's dispatch mode: WORKER (default for network backends)
+                 runs on a dedicated thread; DIRECT runs inline on the delivering thread.
                  If None, use handle.readings() to iterate over readings.
-        on_error: Optional function called when a connection error occurs,
-                 receives (exception, handle). If not provided, errors are raised
-                 during iteration or logged in callback mode.
+        on_error: Optional function called on stream errors,
+                 receives (exception, handle). Terminal errors stored in handle.exc
+                 are re-raised during iteration regardless of on_error. Retryable gRPC
+                 errors may notify on_error while the subscription continues.
 
     Returns:
         SubscriptionHandle for managing this subscription
