@@ -26,6 +26,8 @@ from typing import Any, Generic, TypeVar, cast
 
 from pacsys.errors import DeviceError
 
+from . import _get_env_int
+
 logger = logging.getLogger(__name__)
 
 # Live clients closed at interpreter exit; WeakSet so closed+dereferenced ones are dropped.
@@ -409,7 +411,7 @@ class DevDBClient:
             raise ImportError(f"gRPC not available for DevDB: {_import_error}")
 
         self._host = host if host is not None else os.environ.get("PACSYS_DEVDB_HOST", DEFAULT_HOST)
-        self._port = port if port is not None else int(os.environ.get("PACSYS_DEVDB_PORT", str(DEFAULT_PORT)))
+        self._port = port if port is not None else cast(int, _get_env_int("PACSYS_DEVDB_PORT", DEFAULT_PORT))
         self._tls = tls if tls is not None else _env_flag("PACSYS_DEVDB_TLS", True)
         self._timeout = timeout if timeout is not None else 5.0
         self._cache = _TTLCache[DeviceInfoResult](cache_ttl)

@@ -39,6 +39,7 @@ from pacsys.types import (
     _validate_callback,
 )
 
+from .. import _get_env_int
 from ..drf_utils import ensure_immediate_event, is_chunked_historical_drf, prepare_for_write
 
 logger = logging.getLogger(__name__)
@@ -67,7 +68,7 @@ except (ImportError, TypeError) as e:
     _import_error = str(e)
 
 DEFAULT_HOST = os.environ.get("PACSYS_GRPC_HOST", "dce08.fnal.gov")
-DEFAULT_PORT = int(os.environ.get("PACSYS_GRPC_PORT", "50051"))
+DEFAULT_PORT = cast(int, _get_env_int("PACSYS_GRPC_PORT", 50051))
 DEFAULT_TIMEOUT = 5.0
 
 # Reconnection constants

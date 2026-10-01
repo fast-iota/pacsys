@@ -79,6 +79,8 @@ from pacsys.types import (
     _validate_callback,
 )
 
+from .. import _get_env_int
+
 if TYPE_CHECKING:
     from pika.adapters.select_connection import _Timeout
 
@@ -91,7 +93,7 @@ def _set_sample_ref_id(sample: object, ref_id: int) -> None:
 
 
 DEFAULT_HOST = os.environ.get("PACSYS_DMQ_HOST", "appsrv2.fnal.gov")
-DEFAULT_PORT = int(os.environ.get("PACSYS_DMQ_PORT", "5672"))
+DEFAULT_PORT = cast(int, _get_env_int("PACSYS_DMQ_PORT", 5672))
 DEFAULT_VHOST = "/"
 DEFAULT_TIMEOUT = 10.0
 INIT_EXCHANGE = "amq.topic"
