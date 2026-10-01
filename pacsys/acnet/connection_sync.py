@@ -216,6 +216,11 @@ class _SyncAcnetConnectionBase:
 
     def close(self):
         """Close the connection and clean up resources."""
+        if threading.current_thread() is self._reactor_thread:
+            raise RuntimeError(
+                "Synchronous ACNET methods cannot be called from the ACNET reactor thread "
+                "(reply/request handlers run there); use the async API or a worker thread"
+            )
         if self._async and self._loop:
             try:
                 self._run_sync(self._core.close(), timeout=5.0)

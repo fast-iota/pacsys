@@ -450,7 +450,8 @@ def conn():
     try:
         yield c
     finally:
-        c._async._connected = False  # skip disconnect handshake (0.5s timeout)
+        if c._async is not None:
+            c._async._connected = False  # skip disconnect handshake (0.5s timeout)
         c.close()
 
 
@@ -461,6 +462,54 @@ def test_sync_method_from_reactor_thread_raises_immediately():
 
     with pytest.raises(RuntimeError, match="cannot be called from the ACNET reactor thread"):
         conn.get_local_node()
+
+
+def test_sync_close_from_reactor_thread_preserves_connection(conn):
+    core, loop, thread = conn._async, conn._loop, conn._reactor_thread
+    writer = core._writer
+    writer.wait_closed = AsyncMock()
+    errors = []
+    finished = threading.Event()
+
+    def close_from_handler():
+        try:
+            conn.close()
+        except RuntimeError as exc:
+            errors.append(exc)
+        finally:
+            finished.set()
+
+    loop.call_soon_threadsafe(close_from_handler)
+    assert finished.wait(timeout=1.0)
+    assert len(errors) == 1
+    assert isinstance(errors[0], RuntimeError)
+    assert str(errors[0]) == (
+        "Synchronous ACNET methods cannot be called from the ACNET reactor thread "
+        "(reply/request handlers run there); use the async API or a worker thread"
+    )
+    assert conn._async is core
+    assert conn._loop is loop
+    assert conn._reactor_thread is thread
+    assert thread.is_alive()
+    assert loop.is_running()
+    assert conn.connected
+    assert not core._disposed
+    writer.close.assert_not_called()
+
+    ack = struct.pack(">HhBB", 4, 0, 12, 6)
+    with patch.object(core, "_xact", new=AsyncMock(return_value=ack)):
+        assert conn.get_default_node() == 12 * 256 + 6
+
+    core._connected = False  # skip disconnect handshake
+    conn.close()
+    assert core._disposed
+    writer.close.assert_called_once_with()
+    writer.wait_closed.assert_awaited_once_with()
+    assert not thread.is_alive()
+    assert loop.is_closed()
+    assert conn._async is None
+    assert conn._loop is None
+    assert conn._reactor_thread is None
 
 
 def test_sync_connect_rejects_second_connection():
