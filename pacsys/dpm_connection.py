@@ -213,6 +213,7 @@ class DPMConnection:
 
         Performs TCP connect, HTTP-style handshake, and extracts list_id
         from the OpenList response.
+        Blocking hostname resolution is not bounded by the socket timeout.
 
         Raises:
             DPMConnectionError: If connection fails or server returns HTTP error

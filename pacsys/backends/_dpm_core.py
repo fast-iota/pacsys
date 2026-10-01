@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from typing import TypeVar
+from typing import Any, TypeVar
 
 import numpy as np
 
@@ -59,6 +59,23 @@ from pacsys.types import (
 
 logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
+
+
+def _initialize_kerberos_context(gssapi: Any, auth: KerberosAuth, gss_name: str) -> tuple[Any, bytes | None, str]:
+    service_name = gssapi.Name(gss_name, gssapi.NameType.kerberos_principal)
+    creds, principal = auth._inspect_credentials()
+    ctx = gssapi.SecurityContext(
+        name=service_name,
+        usage="initiate",
+        creds=creds,
+        flags=(
+            gssapi.RequirementFlag.replay_detection
+            | gssapi.RequirementFlag.integrity
+            | gssapi.RequirementFlag.out_of_sequence_detection
+        ),
+        mech=gssapi.MechType.kerberos,
+    )
+    return ctx, ctx.step(), principal
 
 
 async def _await_with_deadline(
@@ -154,6 +171,7 @@ class _AsyncDpmCore:
         assert conn is not None
         if self._auth is None:
             raise AuthenticationError("KerberosAuth required for authentication")
+        auth = self._auth
 
         # Phase 1: request service name
         auth_req = Authenticate_request()
@@ -176,24 +194,14 @@ class _AsyncDpmCore:
 
         # Phase 2: GSSAPI context
         try:
-            service_name = gssapi.Name(gss_name, gssapi.NameType.kerberos_principal)
-            creds, principal = self._auth._inspect_credentials()
-            ctx = gssapi.SecurityContext(
-                name=service_name,
-                usage="initiate",
-                creds=creds,
-                flags=(
-                    gssapi.RequirementFlag.replay_detection
-                    | gssapi.RequirementFlag.integrity
-                    | gssapi.RequirementFlag.out_of_sequence_detection
-                ),
-                mech=gssapi.MechType.kerberos,
+            # Cancellation stops the wait; the worker owns no core or connection state.
+            ctx, token, principal = await _await_with_deadline(
+                lambda: asyncio.to_thread(_initialize_kerberos_context, gssapi, auth, gss_name),
+                deadline,
+                "Kerberos context initialization",
             )
-
-            token = ctx.step()
         except gssapi_exceptions.GSSError as e:
             raise AuthenticationError(f"Kerberos authentication failed for {gss_name}: {e}") from e
-        _remaining_timeout(deadline, "Kerberos context initialization")
 
         auth_req = Authenticate_request()
         auth_req.list_id = self.list_id

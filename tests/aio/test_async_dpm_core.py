@@ -2,6 +2,7 @@
 
 import asyncio
 import struct
+import threading
 from unittest import mock
 
 import numpy as np
@@ -1037,6 +1038,73 @@ class TestAuthenticate:
     """Tests for _AsyncDpmCore.authenticate() Kerberos handshake."""
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("stage", ["credentials", "first_step"])
+    @pytest.mark.parametrize("stop", ["deadline", "cancel"])
+    async def test_blocking_initialization_stops_without_late_progress(
+        self, make_core, mock_kerberos_auth, stage, stop
+    ):
+        loop = asyncio.get_running_loop()
+        entered = asyncio.Event()
+        release = threading.Event()
+        finished = threading.Event()
+        mock_gssapi = MockGSSAPIModule()
+
+        def block():
+            loop.call_soon_threadsafe(entered.set)
+            try:
+                assert release.wait(2), "blocking mock was not released"
+            finally:
+                finished.set()
+
+        class BlockingContext(MockGSSAPIContextForAuth):
+            def step(self, token=None):
+                if stage == "first_step":
+                    block()
+                return super().step(token)
+
+        mock_gssapi.SecurityContext = BlockingContext
+        with mock.patch.dict("sys.modules", {"gssapi": mock_gssapi}):
+            auth = mock_kerberos_auth(mock_gssapi)
+            credentials = mock_kerberos_auth.inspect_credentials.return_value
+            if stage == "credentials":
+
+                def inspect_credentials():
+                    block()
+                    return credentials
+
+                mock_kerberos_auth.inspect_credentials.side_effect = inspect_credentials
+            core, conn = make_core([make_auth_reply("dpm"), make_auth_reply()], auth=auth)
+            core._timeout = 0.25
+            task = asyncio.create_task(core.authenticate())
+            try:
+                # This separate loop task must run while the worker remains blocked.
+                await asyncio.wait_for(entered.wait(), timeout=1)
+                assert not finished.is_set()
+                if stop == "cancel":
+                    task.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await task
+                else:
+                    with pytest.raises(TimeoutError, match="Kerberos context initialization"):
+                        await task
+                assert not finished.is_set()
+                assert len(conn.sent) == 1
+                assert conn.sent[0].token == b""
+                assert core._mic is None
+                assert core._mic_message is None
+                assert core._principal is None
+            finally:
+                release.set()
+                await asyncio.gather(task, return_exceptions=True)
+                await loop.shutdown_default_executor()
+
+            assert finished.is_set()
+            assert len(conn.sent) == 1
+            assert core._mic is None
+            assert core._mic_message is None
+            assert core._principal is None
+
+    @pytest.mark.asyncio
     async def test_happy_path(self, make_core, mock_kerberos_auth):
         """Two-phase handshake completes, MIC is stored."""
         mock_gssapi = MockGSSAPIModule()
@@ -1052,6 +1120,57 @@ class TestAuthenticate:
             auth_reqs = [m for m in conn.sent if isinstance(m, Authenticate_request)]
             assert len(auth_reqs) == 2
             assert auth_reqs[0].token == b""
+
+    @pytest.mark.asyncio
+    async def test_initialization_gss_error_preserves_cause(self, make_core, mock_kerberos_auth):
+        mock_gssapi = MockGSSAPIModule()
+        error = mock_gssapi.exceptions.GSSError("initial step failed")
+
+        class FailingContext(MockGSSAPIContextForAuth):
+            def step(self, token=None):
+                raise error
+
+        mock_gssapi.SecurityContext = FailingContext
+        with mock.patch.dict("sys.modules", {"gssapi": mock_gssapi}):
+            auth = mock_kerberos_auth(mock_gssapi)
+            core, conn = make_core([make_auth_reply("dpm")], auth=auth)
+            with pytest.raises(AuthenticationError, match="Kerberos authentication failed for dpm@FNAL.GOV") as exc:
+                await core.authenticate()
+
+        assert exc.value.__cause__ is error
+        assert len(conn.sent) == 1
+        assert core._mic is None
+        assert core._principal is None
+
+    @pytest.mark.asyncio
+    async def test_mutual_auth_and_mic_follow_worker_on_loop_thread(self, make_core, mock_kerberos_auth):
+        loop_thread = threading.get_ident()
+        mock_gssapi = MockGSSAPIModule()
+
+        class MutualContext(MockGSSAPIContextForAuth):
+            def step(self, token=None):
+                if token is None:
+                    assert threading.get_ident() != loop_thread
+                    return b"initial_token"
+                assert threading.get_ident() == loop_thread
+                assert token == b"server_token"
+                self.complete = True
+                return b"mutual_token"
+
+            def get_signature(self, message):
+                assert threading.get_ident() == loop_thread
+                return super().get_signature(message)
+
+        mock_gssapi.SecurityContext = MutualContext
+        with mock.patch.dict("sys.modules", {"gssapi": mock_gssapi}):
+            auth = mock_kerberos_auth(mock_gssapi)
+            replies = [make_auth_reply("dpm"), _make_auth_reply_with_token(), make_auth_reply()]
+            core, conn = make_core(replies, auth=auth)
+            await core.authenticate()
+
+        assert [message.token for message in conn.sent] == [b"", b"initial_token", b"mutual_token"]
+        assert core._mic == b"mock_mic_signature"
+        assert core._principal == "test@FNAL.GOV"
 
     @pytest.mark.asyncio
     async def test_heartbeats_are_ignored(self, make_core, mock_kerberos_auth):
