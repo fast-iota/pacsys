@@ -378,7 +378,7 @@ status["Ready"].is_set    # True
 status.on                 # False
 ```
 
-This reads `STATUS.BIT_VALUE`, `STATUS.BIT_NAMES`, and `STATUS.BIT_VALUES` from the backend and constructs a `DigitalStatus` object.
+This constructs a `DigitalStatus` using DevDB definitions plus `STATUS.BIT_VALUE` when definitions are available; otherwise it reads `STATUS.BIT_VALUE`, `STATUS.BIT_NAMES`, and `STATUS.BIT_VALUES`. The async method uses the three-sub-property path.
 
 See [Device Status](status.md) for the full DigitalStatus API.
 

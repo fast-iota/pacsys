@@ -17,7 +17,7 @@ status = pacsys.read("Z|ACLTST")   # | qualifier = STATUS
 # {"on": True, "ready": False, "remote": True, "positive": True, "ramp": False}
 ```
 
-This returns a dict with five boolean keys: `on`, `ready`, `remote`, `positive`, `ramp`.
+Depending on the source, status contains boolean attributes such as `on`, `ready`, `remote`, `positive`, and `ramp`, or display-name keys with text values. Unavailable attributes may be omitted.
 
 ### Full Status - DigitalStatus
 
@@ -37,16 +37,16 @@ print(status)
 #   ...
 ```
 
-This fetches three sub-properties (`BIT_VALUE`, `BIT_NAMES`, `BIT_VALUES`) and constructs a `DigitalStatus` object.
+Synchronous `Device.digital_status()` uses DevDB definitions plus a `BIT_VALUE` read when definitions are available; otherwise it reads `BIT_VALUE`, `BIT_NAMES`, and `BIT_VALUES`. `AsyncDevice.digital_status()` uses the three-sub-property path.
 
 ### DigitalStatus API
 
 ```python
 # Lookup by name (case-insensitive)
 bit = status["Ready"]
-print(f"{bit.name}: {bit.value} (bit {bit.position}, set={bit.is_set})")
+print(f"{bit.name}: {bit.value} (position {bit.position}, is_set={bit.is_set})")
 
-# Lookup by bit position
+# Lookup by stored position (meaning depends on constructor)
 bit = status[0]
 
 # Safe lookup (returns None if not found)
@@ -77,20 +77,29 @@ status.positive
 status.ramp
 ```
 
-These are `None` if the bit doesn't exist for the device.
+These are `None` when the corresponding attribute is absent or cannot be recognized by name. Otherwise they follow the entry's `is_set` meaning below.
 
 ### StatusBit
 
-Each bit in `status.bits` is a frozen `StatusBit`:
+Each entry in `status.bits` is a frozen `StatusBit`:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `position` | `int` | Bit index (0-31) |
-| `name` | `str` | Label from database |
+| `position` | `int` | Stored position; constructor-dependent (see below) |
+| `name` | `str` | Label from source data |
 | `value` | `str` | Display text ("Yes", "On", "Minus", etc.) |
-| `is_set` | `bool` | Raw bit value |
+| `is_set` | `bool` | Raw bit, evaluated predicate, or reported state (see below) |
 
 `bool(bit)` returns `is_set`.
+
+| Construction path | `position` | `is_set` |
+|-------------------|------------|----------|
+| `from_bit_arrays()` or extended DevDB bits | Physical bit index | Corresponding raw bit |
+| DevDB basic attributes | Lowest mask bit; definition index for a zero mask | `((~raw_value if invert else raw_value) & mask) == match` |
+| Legacy boolean dict | Fixed semantic slot: on=0, ready=1, remote=2, positive=3, ramp=4 | Reported boolean |
+| gRPC text dict | Dict insertion index | Text truth heuristic |
+
+For DevDB basic attributes, the predicate can cover multiple bits or inverted logic, so `is_set` need not equal the raw bit at `position`.
 
 ---
 
@@ -126,6 +135,8 @@ status = DigitalStatus.from_reading(reading)
 # Or from a raw dict
 status = DigitalStatus.from_status_dict("Z:ACLTST", {"on": True, "ready": False})
 ```
+
+`from_reading()` delegates to `from_status_dict()`. Without an explicit `raw_value`, dict construction stores a synthetic encoding of the reported states, not a recovered hardware word. Passing `raw_value` preserves that word but does not make dict positions or `is_set` values physical bits.
 
 ---
 

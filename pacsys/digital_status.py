@@ -1,12 +1,12 @@
 """
 Digital status (basic status) helper for ACNET devices.
 
-DigitalStatus is a frozen value object representing a device's status bit field.
+DigitalStatus is a frozen value object representing a device's status entries.
 It is constructed from data already fetched by a backend or Device API -- it does
 no I/O itself.
 
 Construction paths:
-  - from_bit_arrays(): from BIT_VALUE + BIT_NAMES + BIT_VALUES (full picture)
+  - from_bit_arrays(): physical bits from BIT_VALUE + BIT_NAMES + BIT_VALUES
   - from_status_dict(): from a BasicStatus reading dict (legacy 5-attribute or gRPC map)
   - from_devdb_bits(): from device-database bit definitions
   - from_reading(): from a Reading containing status data
@@ -33,17 +33,17 @@ Example usage:
     )
 
     print(status)
-    # Z:ACLTST status=0x0002
+    # Z:ACLTST status=0x02
     #   On:       No
     #   Ready:    Yes
     #   Polarity: Minus
 
     status["Ready"]       # StatusBit(position=1, name='Ready', ...)
-    status[0]             # StatusBit at bit position 0
+    status[0]             # StatusBit at stored position 0
     status.on             # True/False/None
 
     for bit in status:
-        print(f"{bit.name}: {bit.value} (bit {bit.position}={'1' if bit.is_set else '0'})")
+        print(f"{bit.name}: {bit.value} (position {bit.position}, is_set={bit.is_set})")
 """
 
 from __future__ import annotations
@@ -71,13 +71,17 @@ _LEGACY_DISPLAY_NAMES: dict[str, tuple[str, ...]] = {
 
 @dataclass(frozen=True)
 class StatusBit:
-    """A single bit in a digital status word.
+    """A status entry whose position and truth meaning depend on its constructor.
 
     Attributes:
-        position: Bit index (0-31).
-        name: Label/description from the database.
+        position: Physical bit index for bit arrays/extended DevDB bits; lowest
+            mask bit for DevDB basic attributes (definition index for zero masks);
+            semantic slot for legacy dicts or insertion index for gRPC dicts.
+        name: Label/description from the source data.
         value: Current text representation (e.g. "Yes", "On", "Minus").
-        is_set: True if the raw bit is 1.
+        is_set: Raw bit for bit arrays/extended DevDB bits; mask/match/invert
+            predicate for DevDB basic attributes; reported boolean for legacy
+            dicts or text truth heuristic for gRPC dicts.
     """
 
     position: int
@@ -93,7 +97,8 @@ class StatusBit:
 class DigitalStatus:
     """Immutable representation of a device's digital status.
 
-    Contains the raw integer status word and per-bit decoded information.
+    Contains status entries and a raw integer, which is synthetic when built
+    from a status dict without an explicit raw_value.
     Supports lookup by name or position, iteration, and formatted display.
     """
 
@@ -121,7 +126,8 @@ class DigitalStatus:
           - device.STATUS.BIT_NAMES  → bit_names (list[str], indexed by bit position)
           - device.STATUS.BIT_VALUES → bit_values (list[str], indexed by bit position)
 
-        Empty strings in bit_names indicate undefined bit positions (skipped).
+        Positions are physical bit indices; is_set tests the corresponding raw bit.
+        Positions with both an empty name and empty value are skipped.
         """
         n = max(len(bit_names), len(bit_values))
         bits = []
@@ -154,7 +160,13 @@ class DigitalStatus:
           - PC/DMQ: {"on": True, "ready": False, ...} (bool values, lowercase keys)
           - gRPC:   {"On": "No", "Ready": "Yes", ...} (string values, display-name keys)
 
-        If raw_value is not provided, it is reconstructed from the dict where possible.
+        Legacy positions are fixed semantic slots (on, ready, remote, positive,
+        ramp), and is_set is the reported boolean. gRPC positions follow dict
+        insertion order, and is_set uses a text truth heuristic.
+
+        Without raw_value, a synthetic encoding of these entries is stored, not
+        a recovered hardware word. Supplying raw_value preserves that word but
+        does not make the entries' positions or is_set physical bits.
         """
         # Detect format: bool values = PC/DMQ, string values = gRPC
         if status_dict and isinstance(next(iter(status_dict.values())), bool):
@@ -231,10 +243,10 @@ class DigitalStatus:
     ) -> DigitalStatus:
         """Construct from DevDB status bit definitions + runtime raw value.
 
-        Uses mask/match/invert logic from DevDB DigitalStatusItem to evaluate
-        each bit against the raw value. This is more accurate than the positional
-        index approach in from_bit_arrays() because DevDB provides the actual
-        hardware bit masks.
+        Basic attributes use is_set = ((~raw_value if invert else raw_value)
+        & mask) == match. Their position is the lowest mask bit, or the definition
+        index for a zero mask; is_set need not equal that physical bit.
+        Extended entries use physical bit positions and raw bit values.
 
         Args:
             device: Device name.
@@ -286,6 +298,9 @@ class DigitalStatus:
     @classmethod
     def from_reading(cls, reading) -> DigitalStatus:
         """Construct from a Reading with value_type == BASIC_STATUS.
+
+        Delegates to from_status_dict(), including its synthetic raw encoding
+        and constructor-dependent positions and is_set values.
 
         Raises:
             ValueError: If the reading is not a basic status type or has no value.
@@ -349,8 +364,8 @@ class DigitalStatus:
 
     def __str__(self) -> str:
         width = max((len(b.name) for b in self.bits), default=0)
-        hex_digits = max(2, (self.raw_value.bit_length() + 3) // 4)
-        lines = [f"{self.device} status=0x{self.raw_value:0{hex_digits}X}"]
+        hex_digits = max(2, (abs(self.raw_value).bit_length() + 3) // 4)
+        lines = [f"{self.device} status={'-' if self.raw_value < 0 else ''}0x{abs(self.raw_value):0{hex_digits}X}"]
         lines.extend(f"  {bit.name + ':':<{width + 1}} {bit.value}" for bit in self.bits)
         return "\n".join(lines)
 
@@ -404,7 +419,7 @@ def _infer_legacy_from_bits(bits: list[StatusBit]) -> dict:
 
 
 def _reconstruct_raw(bits: list[StatusBit]) -> int:
-    """Best-effort raw value reconstruction from known bits."""
+    """Encode dict entries synthetically; this does not recover hardware bits."""
     raw = 0
     for bit in bits:
         if bit.is_set:

@@ -131,7 +131,10 @@ class Device(_DeviceBase):
         return devdb.get_device_info([self.name], timeout=timeout)[self.name]
 
     def digital_status(self, timeout: float | None = None) -> DigitalStatus:
-        """Fetch full ACNET digital status (BIT_VALUE + BIT_NAMES + BIT_VALUES)."""
+        """Fetch ACNET digital status using DevDB definitions and BIT_VALUE.
+
+        Without available definitions, read BIT_VALUE, BIT_NAMES, and BIT_VALUES.
+        """
         if not self._request.is_acnet:
             raise ValueError(f"STATUS is ACNET-specific, not supported for non-ACNET device {self.name}")
         from pacsys.digital_status import DigitalStatus
