@@ -1151,7 +1151,103 @@ class TestDMQBackendInit:
 
 
 class TestDMQConnectionOpenError:
-    """A failed initial connection must leave the backend available for retry."""
+    """Startup and connection failures must leave the backend available for retry."""
+
+    def test_closed_connection_reports_cause_before_io_thread_exits_and_recovers(self):
+        conns = []
+        closed = threading.Event()
+        release = threading.Event()
+        caller_done = threading.Event()
+        caller_unlocked = threading.Event()
+        resume_caller = threading.Event()
+        errors = []
+        reason = ConnectionResetError("broker disconnected")
+
+        def factory(
+            cls=None, parameters=None, on_open_callback=None, on_open_error_callback=None, on_close_callback=None
+        ):
+            conn = MockSelectConnection()
+            conn._on_open_callback = on_open_callback
+            conn._on_close_callback = on_close_callback
+            conn.ioloop.add_callback_threadsafe(conn._trigger_open)
+            conns.append(conn)
+            return conn
+
+        with _mock_gssapi(), mock.patch.object(SelectConnection, "__new__", side_effect=factory):
+            backend = DMQBackend(host="localhost", auth=_create_mock_auth(), timeout=2.0)
+            caller = None
+            try:
+                backend._ensure_io_thread()
+                thread = backend._io_thread
+                assert thread is not None
+                conn = conns[0]
+
+                def close_and_hold():
+                    conn._is_open = False
+                    conn._on_close_callback(conn, reason)
+                    closed.set()
+                    release.wait(timeout=3.0)
+
+                def ensure_connection():
+                    try:
+                        backend._ensure_io_thread()
+                    except ConnectionError as error:
+                        errors.append(error)
+                    finally:
+                        caller_done.set()
+
+                conn.ioloop.add_callback_threadsafe(close_and_hold)
+                assert closed.wait(timeout=0.5)
+                assert thread.is_alive()
+                caller = threading.Thread(target=ensure_connection, daemon=True)
+                caller.start()
+                assert caller_done.wait(timeout=0.5), "Caller waited for startup after a known connection failure"
+                assert len(errors) == 1
+                assert isinstance(errors[0], ConnectionError)
+                assert "broker disconnected" in str(errors[0])
+                assert errors[0].__cause__ is reason
+                assert thread.is_alive()
+                caller.join(timeout=0.5)
+                assert not caller.is_alive()
+
+                stream_lock = backend._stream_lock
+
+                def unlock_and_hold(*args):
+                    stream_lock.__exit__(*args)
+                    if threading.current_thread() is caller:
+                        caller_unlocked.set()
+                        resume_caller.wait(timeout=3.0)
+
+                # Let another caller restart after this caller observes the old live thread.
+                with mock.patch.object(backend, "_stream_lock") as lock:
+                    lock.__enter__.side_effect = stream_lock.__enter__
+                    lock.__exit__.side_effect = unlock_and_hold
+                    caller_done.clear()
+                    caller = threading.Thread(target=ensure_connection, daemon=True)
+                    caller.start()
+                    assert caller_unlocked.wait(timeout=0.5)
+                    release.set()
+                    thread.join(timeout=0.5)
+                    assert not thread.is_alive()
+                    backend._ensure_io_thread()
+                    assert backend._connection_error is None
+                    assert len(conns) == 2
+                    assert backend._select_connection is conns[1]
+                    assert conns[1].is_open
+                    resume_caller.set()
+                    assert caller_done.wait(timeout=0.5)
+                    assert len(errors) == 2
+                    assert "broker disconnected" in str(errors[1])
+                    assert errors[1].__cause__ is reason
+            finally:
+                release.set()
+                resume_caller.set()
+                try:
+                    if caller is not None:
+                        caller.join(timeout=2.5)
+                        assert not caller.is_alive()
+                finally:
+                    backend.close()
 
     def test_open_error_stops_io_thread_and_allows_retry(self):
         conns = []

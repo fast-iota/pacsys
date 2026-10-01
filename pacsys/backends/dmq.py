@@ -2103,15 +2103,17 @@ class DMQBackend(Backend):
                     daemon=True,
                 )
                 self._io_thread.start()
-
-        # Wait for connection to be ready
-        wait = timeout if timeout is not None else self._timeout
-        if not self._connection_ready.wait(timeout=wait):
-            raise ConnectionError(
-                f"Failed to connect to RabbitMQ at {self._host}:{self._port}: timed out after {wait}s"
-            )
-        if self._connection_error is not None:
             err = self._connection_error
+
+        if err is None:
+            # Wait for connection to be ready
+            wait = timeout if timeout is not None else self._timeout
+            if not self._connection_ready.wait(timeout=wait):
+                raise ConnectionError(
+                    f"Failed to connect to RabbitMQ at {self._host}:{self._port}: timed out after {wait}s"
+                )
+            err = self._connection_error
+        if err is not None:
             detail = str(err) or type(err).__name__
             raise ConnectionError(f"Failed to connect to RabbitMQ at {self._host}:{self._port}: {detail}") from err
 
@@ -2181,7 +2183,8 @@ class DMQBackend(Backend):
             error.__cause__ = reason
             reason = error
         logger.info("SelectConnection closed: %s", reason)
-        self._connection_ready.clear()
+        self._connection_error = reason
+        self._connection_ready.set()
 
         # Fail all pending writes. A multi-device write_many shares one tracker
         # across several sessions, so complete once per (tracker, init_drf) --
