@@ -20,6 +20,7 @@ import logging
 import os
 import threading
 import time
+from concurrent.futures import CancelledError
 from unittest import mock
 
 import numpy as np
@@ -1661,3 +1662,72 @@ class TestLoggerReadErrors:
         else:
             assert (readings[0].facility_code, readings[0].error_code) == (FACILITY_ACNET, ERR_RETRY)
         assert readings[1].ok and readings[1].value == 1.5
+
+
+@pytest.mark.parametrize("operation", ["read", "write"])
+@pytest.mark.parametrize("close_first", [True, False])
+def test_close_races_operation_submission(sample_jwt, operation, close_first):
+    backend = grpc_backend.GRPCBackend(auth=JWTAuth(token=sample_jwt))
+    backend._start_reactor()
+    entered = threading.Event()
+    release = threading.Event()
+    created = threading.Event()
+    core = mock.Mock()
+    result = [object()]
+
+    async def run(*args):
+        entered.set()
+        while not release.is_set():
+            await asyncio.sleep(0.001)
+        return result
+
+    def create(*args):
+        created.set()
+        return run(*args)
+
+    async def close():
+        if not close_first:
+            release.set()
+
+    core.read_many.side_effect = create
+    core.write_many.side_effect = create
+    core.close = close
+    backend._core = core
+    ensure = backend._ensure_reactor
+
+    def gated_ensure():
+        ensure()
+        if close_first:
+            entered.set()
+            assert release.wait(2.0)
+
+    outcome = []
+
+    def call():
+        try:
+            if operation == "read":
+                outcome.append(backend.get_many(["M:OUTTMP"]))
+            else:
+                outcome.append(backend.write_many([("M:OUTTMP", 1.0)]))
+        except Exception as exc:  # noqa: BLE001 -- report worker failures to the test thread
+            outcome.append(exc)
+
+    with mock.patch.object(backend, "_ensure_reactor", side_effect=gated_ensure):
+        worker = threading.Thread(target=call)
+        worker.start()
+        try:
+            assert entered.wait(1.0)
+            backend.close()
+        finally:
+            release.set()
+            worker.join(2.0)
+            backend.close()
+    assert not worker.is_alive()
+    assert len(outcome) == 1
+    if close_first:
+        assert not created.is_set()
+        assert isinstance(outcome[0], RuntimeError)
+        assert str(outcome[0]) == "Backend is closed"
+    else:
+        assert created.is_set()
+        assert outcome[0] == result or isinstance(outcome[0], CancelledError)

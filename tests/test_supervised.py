@@ -1589,3 +1589,75 @@ class TestPolicyTargetInvariants:
                 reply = DAQ_pb2_grpc.DAQStub(ch).Set(request, timeout=5.0)
                 assert reply.status[0].status_code == 0
                 assert fb.get_written_value("M:OUTTMP") == 100.0
+
+
+@pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.parametrize("late_acquisition", [False, True])
+def test_stop_waits_for_stream_handle(is_async, late_acquisition):
+    backend = AsyncFakeBackend() if is_async else FakeBackend()
+    stopped = threading.Event()
+    original_subscribe = backend.subscribe
+    subscribing = threading.Event()
+    release = threading.Event()
+    reading = Reading(drf="M:OUTTMP@p,1000", value=1.0, value_type=ValueType.SCALAR)
+
+    async def async_subscribe(drfs):
+        subscribing.set()
+        if late_acquisition:
+            assert await asyncio.to_thread(release.wait, 2.0)
+        handle = await original_subscribe(drfs)
+        original_stop = handle.stop
+
+        async def stop():
+            await asyncio.sleep(0.3)
+            await original_stop()
+            stopped.set()
+
+        handle.stop = stop
+        handle._dispatch(reading)
+        return handle
+
+    def sync_subscribe(drfs, callback, on_error):
+        subscribing.set()
+        if late_acquisition:
+            assert release.wait(2.0)
+        handle = original_subscribe(drfs, callback, on_error)
+        original_stop = handle.stop
+
+        def stop():
+            time.sleep(0.3)
+            original_stop()
+            stopped.set()
+
+        handle.stop = stop
+        callback(reading, handle)
+        return handle
+
+    backend.subscribe = async_subscribe if is_async else sync_subscribe
+    srv = SupervisedServer(backend, host="127.0.0.1", port=0)
+    try:
+        srv.start()
+        with _make_channel(srv) as ch:
+            stream = DAQ_pb2_grpc.DAQStub(ch).Read(DAQ_pb2.ReadingList(drf=[reading.drf]), timeout=3.0)
+            if late_acquisition:
+                assert subscribing.wait(1.0)
+                timer = threading.Timer(0.1, release.set)
+                timer.start()
+                try:
+                    srv.stop()
+                finally:
+                    timer.join(1.0)
+            else:
+                assert next(stream).readings.reading[0].data.scalar == 1.0
+                srv.stop()
+            assert stopped.is_set()
+            assert not backend._closed
+        srv.start()
+        srv.stop()
+        assert not backend._closed
+    finally:
+        srv.stop()
+        if is_async:
+            asyncio.run(backend.close())
+        else:
+            backend.close()

@@ -101,6 +101,8 @@ srv.run()  # blocks until signal received
 | `run()` | Start and block until SIGINT/SIGTERM (main thread only) |
 | `port` | Actual port (useful when `port=0`) |
 
+Shutdown cancels incoming RPCs and allows up to four seconds for pending RPC and late subscription cleanup before closing the server loop. Unfinished cleanup is logged. The server does not close the supplied backend; the caller remains responsible for its resources.
+
 ---
 
 ## Policies

@@ -534,8 +534,16 @@ class SupervisedServer:
             await stop_requested.wait()
         finally:
             await server.stop(grace=0)
-            if servicer._subscription_cleanups:
-                await asyncio.wait(set(servicer._subscription_cleanups), timeout=5.0)
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 4.0
+            current = asyncio.current_task()
+            # RPC cancellation can spawn late subscription cleanup while draining.
+            while pending := asyncio.all_tasks() - {current}:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    logger.warning("Server shutdown cleanup did not finish within 4s (%d tasks pending)", len(pending))
+                    break
+                await asyncio.wait(pending, timeout=remaining)
 
     def _run_loop(self):
         """Thread target: create event loop and run the server."""

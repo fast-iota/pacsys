@@ -1033,12 +1033,16 @@ class GRPCBackend(Backend):
                 "Use DispatchMode.WORKER or offload to another thread."
             )
 
-    def _run_sync(self, coro, timeout: float | None = None):
+    def _run_sync(self, operation, timeout: float | None = None):
         """Bridge sync → async: submit coroutine to reactor and wait."""
         self._ensure_reactor()
-        assert self._loop is not None, "Reactor loop not initialized"
         effective_timeout = timeout if timeout is not None else self._timeout
-        fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        with self._reactor_lock:
+            if self._closed:
+                raise RuntimeError("Backend is closed")
+            assert self._core is not None, "Reactor core not initialized"
+            assert self._loop is not None, "Reactor loop not initialized"
+            fut = asyncio.run_coroutine_threadsafe(operation(self._core), self._loop)
         try:
             return fut.result(timeout=effective_timeout + 1.0)
         except Exception:
@@ -1101,9 +1105,7 @@ class GRPCBackend(Backend):
         if not drfs:
             return []
         effective_timeout = timeout if timeout is not None else self._timeout
-        self._ensure_reactor()
-        assert self._core is not None
-        return self._run_sync(self._core.read_many(drfs, effective_timeout), timeout=effective_timeout)
+        return self._run_sync(lambda core: core.read_many(drfs, effective_timeout), timeout=effective_timeout)
 
     # ── Write methods ─────────────────────────────────────────────────────
 
@@ -1132,9 +1134,9 @@ class GRPCBackend(Backend):
             )
         prepared_settings = [(prepare_for_write(drf), value) for drf, value in settings]
         effective_timeout = timeout if timeout is not None else self._timeout
-        self._ensure_reactor()
-        assert self._core is not None
-        return self._run_sync(self._core.write_many(prepared_settings, effective_timeout), timeout=effective_timeout)
+        return self._run_sync(
+            lambda core: core.write_many(prepared_settings, effective_timeout), timeout=effective_timeout
+        )
 
     # ── Streaming ─────────────────────────────────────────────────────────
 
