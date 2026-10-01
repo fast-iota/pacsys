@@ -303,7 +303,13 @@ class TestBoundBackend:
         bound.set_reading("M:OUTTMP", 1.0)
         bound.set_reading("G:AMANDA", 2.0)
         devs = [Device("M:OUTTMP", backend=bound), Device("G:AMANDA", backend=bound)]
-        assert pacsys.read_many(devs) == [1.0, 2.0]
+        assert pacsys.read_many(d for d in devs) == [1.0, 2.0]
+        assert [r.value for r in pacsys.get_many(d for d in devs)] == [1.0, 2.0]
+        delivered = []
+        with pacsys.subscribe((d for d in devs), callback=lambda r, h: delivered.append(r.value)):
+            bound.emit_reading(devs[0].drf, 3.0)
+        assert delivered == [3.0]
+        assert fake._subscriptions == []
         pacsys.write_many({devs[0]: 5.0, devs[1]: 6.0})
         assert len(bound.writes) == 2 and fake.reads == []
 
@@ -313,8 +319,10 @@ class TestBoundBackend:
     def test_mixed_backends_raise_before_io(self, fake, second):
         bound = FakeBackend()
         devs = [Device("M:OUTTMP", backend=bound), second()]
-        with pytest.raises(ValueError, match="same backend"):
-            pacsys.read_many(devs)
+        for operation in (pacsys.read_many, pacsys.get_many, pacsys.subscribe):
+            with pytest.raises(ValueError, match="same backend"):
+                operation(d for d in devs)
+        assert bound._subscriptions == [] and fake._subscriptions == []
         with pytest.raises(ValueError, match="same backend"):
             pacsys.write_many([(d, 1.0) for d in devs])
         assert bound.reads == [] and fake.reads == [] and bound.writes == [] and fake.writes == []
@@ -322,6 +330,34 @@ class TestBoundBackend:
 
 class TestConfigure:
     """Tests for pacsys.configure()."""
+
+    def test_krb_configuration_lifecycle(self, fake):
+        pacsys._config_role = "testing"
+        pacsys._config_dpm_host = "old"
+        with mock.patch.object(
+            KerberosAuth, "_inspect_credentials", return_value=(object(), "test@FNAL.GOV")
+        ) as inspect:
+            for kwargs, message in (
+                ({"pool_size": 0}, "pool_size"),
+                ({"backend": "grpc"}, "gRPC backend auth"),
+                ({"backend": "dmq"}, "role is only used"),
+            ):
+                with pytest.raises(ValueError, match=message):
+                    pacsys.configure(auth="krb", **kwargs)
+                inspect.assert_not_called()
+                assert pacsys._global_backend is fake and not fake._closed
+                assert pacsys._config_dpm_host == "old" and pacsys._config_auth is None
+            inspect.side_effect = pacsys.AuthenticationError("credentials unavailable")
+            with pytest.raises(pacsys.AuthenticationError, match="credentials unavailable"):
+                pacsys.configure(auth="krb", dpm_host="new")
+            assert pacsys._global_backend is fake and not fake._closed
+            assert pacsys._config_dpm_host == "old" and pacsys._config_auth is None
+            inspect.side_effect = None
+            pacsys.configure(auth="krb", dpm_host="new")
+            assert inspect.call_count == 2
+        assert fake._closed and pacsys._global_backend is None
+        assert isinstance(pacsys._config_auth, KerberosAuth)
+        assert pacsys._config_dpm_host == "new" and pacsys._config_role == "testing"
 
     def test_configure_before_initialization(self):
         """configure() succeeds before backend initialization."""

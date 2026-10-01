@@ -63,6 +63,36 @@ def fake_backend():
 
 
 class TestConfigure:
+    @pytest.mark.asyncio
+    async def test_krb_configuration_lifecycle(self, fake_backend):
+        aio._config_backend = "grpc"
+        aio._config_host = "old"
+        with mock.patch.object(
+            pacsys.KerberosAuth, "_inspect_credentials", return_value=(object(), "test@FNAL.GOV")
+        ) as inspect:
+            for kwargs, message in (({"pool_size": 0}, "pool_size"), ({}, "gRPC backend auth")):
+                with pytest.raises(ValueError, match=message):
+                    aio.configure(auth="krb", **kwargs)
+                inspect.assert_not_called()
+                assert aio._global_async_backend is fake_backend
+                assert aio._config_host == "old" and aio._config_auth is None
+                fake_backend.close.assert_not_called()
+            inspect.side_effect = pacsys.AuthenticationError("credentials unavailable")
+            with pytest.raises(pacsys.AuthenticationError, match="credentials unavailable"):
+                aio.configure(backend="dpm", auth="krb", host="new")
+            assert aio._global_async_backend is fake_backend
+            assert aio._config_host == "old" and aio._config_auth is None
+            assert aio._config_backend == "grpc"
+            fake_backend.close.assert_not_called()
+            inspect.side_effect = None
+            aio.configure(backend="dpm", auth="krb", host="new")
+            assert inspect.call_count == 2
+        assert aio._global_async_backend is None
+        assert isinstance(aio._config_auth, pacsys.KerberosAuth)
+        assert aio._config_host == "new" and aio._config_backend == "dpm"
+        await asyncio.gather(*aio._background_tasks)
+        fake_backend.close.assert_awaited_once()
+
     def test_configure_stores_settings(self):
         aio.configure(backend="grpc", host="myhost", port=1234, timeout=10.0)
         assert aio._config_backend == "grpc"
@@ -382,22 +412,49 @@ class TestBoundBackend:
         bound.set_reading("M:OUTTMP", 1.0)
         dev = AsyncDevice("M:OUTTMP", backend=bound)
         assert await aio.read(dev) == 1.0
-        assert (await aio.read_many([dev])) == [1.0]
-        fake_backend.read.assert_not_called()
+        assert (await aio.read_many(d for d in [dev])) == [1.0]
+        assert [r.value for r in await aio.get_many(d for d in [dev])] == [1.0]
+        handle = await aio.subscribe(d for d in [dev])
+        try:
+            bound.emit_reading(dev.drf, 3.0)
+            reading, _ = await anext(handle.readings(timeout=0.1))
+            assert reading.value == 3.0
+        finally:
+            await handle.stop()
+            await bound.close()
+        assert fake_backend.mock_calls == []
 
     @pytest.mark.asyncio
     async def test_sync_bound_device_rejected(self, fake_backend):
         from pacsys import Device
         from pacsys.testing import FakeBackend
 
+        dev = Device("M:OUTTMP", backend=FakeBackend())
         with pytest.raises(TypeError, match="sync FakeBackend"):
-            await aio.read(Device("M:OUTTMP", backend=FakeBackend()))
+            await aio.read(dev)
+        for operation in (aio.read_many, aio.get_many, aio.subscribe):
+            with pytest.raises(TypeError, match="sync FakeBackend"):
+                await operation(d for d in [dev])
+        assert fake_backend.mock_calls == []
 
     @pytest.mark.asyncio
-    async def test_mixed_backends_raise(self, fake_backend):
-        devs = [AsyncDevice("M:OUTTMP", backend=AsyncFakeBackend()), "G:AMANDA"]
-        with pytest.raises(ValueError, match="same backend"):
-            await aio.read_many(devs)
+    @pytest.mark.parametrize(
+        "second",
+        [
+            lambda: "G:AMANDA",
+            lambda: AsyncDevice("G:AMANDA"),
+            lambda: AsyncDevice("G:AMANDA", backend=AsyncFakeBackend()),
+        ],
+    )
+    async def test_mixed_backends_raise(self, fake_backend, second):
+        devs = [AsyncDevice("M:OUTTMP", backend=AsyncFakeBackend()), second()]
+        for operation in (aio.read_many, aio.get_many, aio.subscribe):
+            with pytest.raises(ValueError, match="same backend"):
+                await operation(d for d in devs)
+        assert fake_backend.mock_calls == []
+        await devs[0]._backend.close()
+        if isinstance(devs[1], AsyncDevice) and devs[1]._backend is not None:
+            await devs[1]._backend.close()
 
     def test_configure_rejects_role_for_grpc(self):
         with pytest.raises(ValueError, match="role is only used by the DPM backend"):

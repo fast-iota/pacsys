@@ -10,6 +10,7 @@ import math
 import os
 import threading
 import weakref
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Optional
 
 from pacsys.auth import Auth, JWTAuth, KerberosAuth
@@ -200,12 +201,8 @@ def configure(
 
     if not isinstance(backend, _Unset) and backend is not None and backend not in _VALID_BACKENDS:
         raise ValueError(f"Invalid backend {backend!r}, must be one of {sorted(_VALID_BACKENDS)}")
-    if isinstance(auth, str):
-        if auth != "krb":
-            raise ValueError("auth string must be 'krb'")
-        normalized_auth = KerberosAuth()
-    else:
-        normalized_auth = auth
+    if isinstance(auth, str) and auth != "krb":
+        raise ValueError("auth string must be 'krb'")
 
     if not isinstance(dpm_host, _Unset):
         _validate_config_host(dpm_host, "dpm_host")
@@ -222,19 +219,26 @@ def configure(
 
     with _global_lock:
         configured_backend = backend if not isinstance(backend, _Unset) else _config_backend
-        configured_auth = normalized_auth if not isinstance(normalized_auth, _Unset) else _config_auth
+        configured_auth = auth if not isinstance(auth, _Unset) else _config_auth
         effective_backend = configured_backend or "dpm"
-        if effective_backend == "dpm" and configured_auth is not None and not isinstance(configured_auth, KerberosAuth):
+        if (
+            effective_backend == "dpm"
+            and configured_auth is not None
+            and not isinstance(configured_auth, (str, KerberosAuth))
+        ):
             raise ValueError("DPM backend auth must be KerberosAuth or None")
         if effective_backend == "grpc" and configured_auth is not None and not isinstance(configured_auth, JWTAuth):
             raise ValueError("gRPC backend auth must be JWTAuth or None")
-        if effective_backend == "dmq" and not isinstance(configured_auth, KerberosAuth):
+        if effective_backend == "dmq" and not isinstance(configured_auth, (str, KerberosAuth)):
             raise ValueError("DMQ backend requires KerberosAuth")
         if effective_backend == "acl" and configured_auth is not None:
             raise ValueError("ACL backend does not use auth")
         configured_role = role if not isinstance(role, _Unset) else _config_role
         if effective_backend != "dpm" and configured_role is not None:
             raise ValueError(f"role is only used by the DPM backend, not {effective_backend!r}")
+
+        if isinstance(auth, str):
+            auth = KerberosAuth()
 
         if _backend_initialized or _devdb_initialized:
             logger.debug("configure() called with active backend — auto-replacing")
@@ -243,8 +247,7 @@ def configure(
         if not isinstance(backend, _Unset):
             _config_backend = backend
         if not isinstance(auth, _Unset):
-            assert not isinstance(normalized_auth, _Unset)
-            _config_auth = normalized_auth
+            _config_auth = auth
         if not isinstance(role, _Unset):
             _config_role = role
         if not isinstance(dpm_host, _Unset):
@@ -513,13 +516,13 @@ def get(device: DeviceSpec, timeout: float | None = None) -> Reading:
 
 
 def get_many(
-    devices: list[DeviceSpec],
+    devices: Iterable[DeviceSpec],
     timeout: float | None = None,
 ) -> list[Reading]:
     """Read multiple devices in a single batch using the global DPM backend.
 
     Args:
-        devices: List of DRF strings or Device objects (can mix)
+        devices: Iterable of DRF strings or Device objects (can mix)
         timeout: Total timeout for entire batch in seconds (not per-device)
 
     Returns:
@@ -533,19 +536,20 @@ def get_many(
     Thread Safety:
         Safe to call from multiple threads.
     """
+    devices = list(devices)
     drfs = [_resolve_drf(d) for d in devices]
     backend = _resolve_backend(devices)
     return backend.get_many(drfs, timeout=timeout)
 
 
 def read_many(
-    devices: list[DeviceSpec],
+    devices: Iterable[DeviceSpec],
     timeout: float | None = None,
 ) -> list[Value]:
     """Read multiple device values in a single batch using the devices' bound backend, or the global backend.
 
     Args:
-        devices: List of DRF strings or Device objects (can mix)
+        devices: Iterable of DRF strings or Device objects (can mix)
         timeout: Total timeout for entire batch in seconds (not per-device)
 
     Returns:
@@ -559,6 +563,7 @@ def read_many(
     Thread Safety:
         Safe to call from multiple threads.
     """
+    devices = list(devices)
     drfs = [_resolve_drf(d) for d in devices]
     backend = _resolve_backend(devices)
     return backend.read_many(drfs, timeout=timeout)
@@ -620,7 +625,7 @@ def write_many(
 
 
 def subscribe(
-    drfs: list[DeviceSpec],
+    drfs: Iterable[DeviceSpec],
     callback: ReadingCallback | None = None,
     on_error: ErrorCallback | None = None,
 ) -> SubscriptionHandle:
@@ -630,7 +635,7 @@ def subscribe(
     The handle can be used as a context manager for automatic cleanup.
 
     Args:
-        drfs: List of device request strings or Device objects (with events, e.g. "M:OUTTMP@p,1000")
+        drfs: Iterable of device request strings or Device objects (with events, e.g. "M:OUTTMP@p,1000")
         callback: Optional function called for each reading, receives (reading, handle).
                  Uses the backend's dispatch mode: WORKER (default for network backends)
                  runs on a dedicated thread; DIRECT runs inline on the delivering thread.
@@ -672,6 +677,7 @@ def subscribe(
             on_error=on_error,
         )
     """
+    drfs = list(drfs)
     resolved = [_resolve_drf(d) for d in drfs]
     backend = _resolve_backend(drfs)
     return backend.subscribe(resolved, callback=callback, on_error=on_error)

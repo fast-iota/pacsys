@@ -12,6 +12,7 @@ for use in async code. Uses lazy-initialized global async backend.
 
 import asyncio
 import logging
+from collections.abc import Iterable
 
 from pacsys import _validate_config_host, _validate_config_port, _validate_config_positive
 from pacsys.aio._backends import AsyncBackend
@@ -165,12 +166,8 @@ def configure(
         timeout = default_timeout
     if not isinstance(backend, _Unset) and backend is not None and backend not in _VALID_ASYNC_BACKENDS:
         raise ValueError(f"Invalid backend {backend!r}, must be one of {sorted(_VALID_ASYNC_BACKENDS)}")
-    if isinstance(auth, str):
-        if auth != "krb":
-            raise ValueError("auth string must be 'krb'")
-        normalized_auth = KerberosAuth()
-    else:
-        normalized_auth = auth
+    if isinstance(auth, str) and auth != "krb":
+        raise ValueError("auth string must be 'krb'")
 
     if not isinstance(host, _Unset):
         _validate_config_host(host, "host")
@@ -182,15 +179,22 @@ def configure(
         _validate_config_positive(timeout, "timeout")
 
     configured_backend = backend if not isinstance(backend, _Unset) else _config_backend
-    configured_auth = normalized_auth if not isinstance(normalized_auth, _Unset) else _config_auth
+    configured_auth = auth if not isinstance(auth, _Unset) else _config_auth
     effective_backend = configured_backend or "dpm"
-    if effective_backend == "dpm" and configured_auth is not None and not isinstance(configured_auth, KerberosAuth):
+    if (
+        effective_backend == "dpm"
+        and configured_auth is not None
+        and not isinstance(configured_auth, (str, KerberosAuth))
+    ):
         raise ValueError("DPM backend auth must be KerberosAuth or None")
     if effective_backend == "grpc" and configured_auth is not None and not isinstance(configured_auth, JWTAuth):
         raise ValueError("gRPC backend auth must be JWTAuth or None")
     configured_role = role if not isinstance(role, _Unset) else _config_role
     if effective_backend != "dpm" and configured_role is not None:
         raise ValueError(f"role is only used by the DPM backend, not {effective_backend!r}")
+
+    if isinstance(auth, str):
+        auth = KerberosAuth()
 
     if _async_backend_initialized:
         old_backend = _global_async_backend
@@ -227,8 +231,7 @@ def configure(
     if not isinstance(backend, _Unset):
         _config_backend = backend
     if not isinstance(auth, _Unset):
-        assert not isinstance(normalized_auth, _Unset)
-        _config_auth = normalized_auth
+        _config_auth = auth
     if not isinstance(role, _Unset):
         _config_role = role
     if not isinstance(host, _Unset):
@@ -398,18 +401,20 @@ async def get(device, timeout: float | None = None):
     return await backend.get(drf, timeout=timeout)
 
 
-async def get_many(devices: list, timeout: float | None = None):
+async def get_many(devices: Iterable, timeout: float | None = None):
     """Read multiple devices in a single batch."""
+    devices = list(devices)
     drfs = [_resolve_drf(d) for d in devices]
     backend = _resolve_backend(devices)
     return await backend.get_many(drfs, timeout=timeout)
 
 
-async def read_many(devices: list, timeout: float | None = None):
+async def read_many(devices: Iterable, timeout: float | None = None):
     """Read multiple device values in a single batch.
 
     Returns bare values. Raises ReadError if any device fails.
     """
+    devices = list(devices)
     drfs = [_resolve_drf(d) for d in devices]
     backend = _resolve_backend(devices)
     return await backend.read_many(drfs, timeout=timeout)
@@ -431,8 +436,9 @@ async def write_many(settings, timeout: float | None = None):
     return await backend.write_many(resolved, timeout=timeout)
 
 
-async def subscribe(drfs: list, callback=None, on_error=None):
+async def subscribe(drfs: Iterable, callback=None, on_error=None):
     """Subscribe to devices for streaming."""
+    drfs = list(drfs)
     resolved = [_resolve_drf(d) for d in drfs]
     backend = _resolve_backend(drfs)
     return await backend.subscribe(resolved, callback=callback, on_error=on_error)
