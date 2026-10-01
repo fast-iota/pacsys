@@ -4,7 +4,7 @@ from typing import Any
 from .device import ACNET_NAME_GRAMMAR, PATTERN_NAME, get_qualified_device, parse_device
 from .event import DRF_EVENT, DefaultEvent, parse_event
 from .extra import DRF_EXTRA, parse_extra
-from .field import DEFAULT_FIELD_FOR_PROPERTY, DRF_FIELD, get_default_field, parse_field
+from .field import ALLOWED_FIELD_FOR_PROPERTY, DEFAULT_FIELD_FOR_PROPERTY, DRF_FIELD, get_default_field, parse_field
 from .property import DRF_PROPERTY, DRF_PROPERTY_ALIASES, get_default_property, parse_property
 from .range import ARRAY_RANGE, BYTE_RANGE, parse_range
 
@@ -289,6 +289,8 @@ def parse_request(device_str: str) -> DataRequest:
         field_obj = get_default_field(prop_obj)
     else:
         field_obj = parse_field(field.upper())
+        if field_obj not in ALLOWED_FIELD_FOR_PROPERTY[prop_obj]:
+            raise ValueError(f"Field {field!r} not allowed for {prop_obj.name}")
 
     if event is None:
         event_obj = DefaultEvent()

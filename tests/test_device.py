@@ -683,6 +683,11 @@ class TestDeviceReadMethods:
 class TestDeviceFieldValidation:
     """Tests that invalid fields raise ValueError (before backend call)."""
 
+    def test_invalid_constructor_field_rejected_before_read(self, mock_backend):
+        with pytest.raises(ValueError, match="ON.*READING"):
+            Device("M:OUTTMP.READING.ON", backend=mock_backend).read()
+        mock_backend.read.assert_not_called()
+
     def test_invalid_field_for_reading(self, fake):
         dev = Device("M:OUTTMP", backend=fake)
         with pytest.raises(ValueError, match="not allowed"):
@@ -706,6 +711,14 @@ class TestDeviceFieldValidation:
 
 class TestConstructorFieldCarryover:
     """Constructor DRF fields are preserved in backend requests."""
+
+    @pytest.mark.parametrize(("alias", "suffix"), [("volts", ".PRIMARY"), ("common", "")])
+    def test_alias_preserves_write_and_readback_units(self, mock_backend, alias, suffix):
+        dev = Device(f"M:OUTTMP.READING.{alias}", backend=mock_backend)
+        result = dev.write(72.5, verify=Verify(initial_delay=0, retry_delay=0))
+        mock_backend.write.assert_called_once_with(f"M:OUTTMP.SETTING{suffix}@N", 72.5, timeout=None)
+        mock_backend.read.assert_called_once_with(f"M:OUTTMP.SETTING{suffix}@I", None)
+        assert result.verified
 
     def test_read_honors_constructor_field(self, fake):
         fake.set_reading("M:OUTTMP.READING.RAW", b"\x01", value_type=ValueType.RAW)

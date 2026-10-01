@@ -172,7 +172,10 @@ Uses braces with byte offset/length (discouraged -- requires frontend knowledge)
 
 ## Fields
 
-Fields select specific data flavors within a property:
+Fields select specific data flavors within a property. ACNET property/field combinations
+are validated while parsing, including in `Device` and `AsyncDevice` constructors:
+`M:OUTTMP.READING.ON` raises `ValueError` before backend I/O. EPICS dot suffixes
+remain verbatim.
 
 ### Reading/Setting Fields
 
@@ -180,8 +183,8 @@ Fields select specific data flavors within a property:
 |-------|-------------|
 | `SCALED` | Engineering units (default) |
 | `PRIMARY` | Primary/volts units |
-| `VOLTS` | Volts units |
-| `COMMON` | Common (engineering) units |
+| `VOLTS` | Alias for `PRIMARY` |
+| `COMMON` | Alias for `SCALED` |
 | `RAW` | Raw binary data |
 
 ### Status Fields

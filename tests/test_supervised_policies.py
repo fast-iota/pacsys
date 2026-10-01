@@ -381,7 +381,7 @@ class TestValueRangePolicy:
         assert not d.allowed
         assert "outside range" in d.reason
 
-    @pytest.mark.parametrize("drf", ["M:OUTTMP.SETTING.RAW", "M:OUTTMP.SETTING.PRIMARY"])
+    @pytest.mark.parametrize("drf", ["M:OUTTMP.SETTING.RAW", "M:OUTTMP.SETTING.PRIMARY", "M:OUTTMP.READING.VOLTS"])
     def test_unscaled_field_write_denied(self, drf):
         """50 raw counts may be a huge engineering value: not comparable to the configured bounds."""
         p = ValueRangePolicy(limits={"M:*": (0.0, 100.0)})

@@ -5,7 +5,7 @@ from unittest import mock
 
 import pytest
 
-from pacsys.aio._device import AsyncArrayDevice, AsyncDevice, AsyncScalarDevice, AsyncTextDevice
+from pacsys.aio import AsyncArrayDevice, AsyncDevice, AsyncScalarDevice, AsyncTextDevice
 from pacsys.errors import DeviceError
 from pacsys.testing import AsyncFakeBackend
 from pacsys.types import BasicControl, ValueType
@@ -378,3 +378,20 @@ class TestAsyncHistoricalEvent:
         assert backend.subscribe.call_args[0][0] == ["M:OUTTMP.READING@p,500<-LOGGER:1690000000:1690003600"]
         await dev.write(1.0)
         assert backend.write.call_args[0][0] == "M:OUTTMP.SETTING@N<-LOGGER:1690000000:1690003600"
+
+
+@pytest.mark.asyncio
+async def test_invalid_constructor_field_rejected_before_read():
+    backend = mock.AsyncMock()
+    with pytest.raises(ValueError, match="ON.*READING"):
+        await AsyncDevice("M:OUTTMP.READING.ON", backend=backend).read()
+    backend.read.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("alias", "suffix"), [("volts", ".PRIMARY"), ("common", "")])
+async def test_alias_preserves_write_units(alias, suffix):
+    backend = mock.AsyncMock()
+    dev = AsyncDevice(f"M:OUTTMP.READING.{alias}", backend=backend)
+    await dev.write(1.5, verify=False)
+    backend.write.assert_awaited_once_with(f"M:OUTTMP.SETTING{suffix}@N", 1.5, timeout=None)

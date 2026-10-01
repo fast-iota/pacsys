@@ -258,6 +258,8 @@ def test_parse_request_is_acnet_flag():
         ("pv:name.VAL", ("VAL", None)),  # common EPICS record fields must parse
         ("pv:name.val", ("val", None)),  # case preserved
         ("pv:name.value.alarm", ("value", "alarm")),
+        ("pv:name.READING.ON", ("READING", "ON")),
+        ("pv:name.volts", ("volts", None)),
         ("XF:31IDA-OP{Tbl-Ax:X1}Mtr.RBV", ("RBV", None)),
         ("pv:name[0:5]", (None, None)),
     ],
@@ -375,6 +377,9 @@ def test_parse_time_freq(raw, expected_ms):
     [
         ("M:OUTTMP", "M:OUTTMP.SETTING@N"),
         ("M:OUTTMP.READING.RAW", "M:OUTTMP.SETTING.RAW@N"),
+        ("M:OUTTMP.READING.VOLTS", "M:OUTTMP.SETTING.PRIMARY@N"),
+        ("M_OUTTMP.volts", "M:OUTTMP.SETTING.PRIMARY@N"),
+        ("M:OUTTMP.READING.COMMON", "M:OUTTMP.SETTING@N"),
         ("M:OUTTMP.STATUS", "M:OUTTMP.CONTROL@N"),
         ("M:OUTTMP.STATUS.ON", "M:OUTTMP.CONTROL@N"),
         ("M_OUTTMP", "M:OUTTMP.SETTING@N"),
@@ -416,3 +421,42 @@ def test_array_range_rejects_negative_or_reversed_bounds(low, high):
 
 def test_array_range_single_element_span_allowed():
     assert parse_request("M:OUTTMP[5:5]").range == ARRAY_RANGE("std", 5, 5)
+
+
+@pytest.mark.parametrize(
+    ("suffix", "field", "prop"),
+    [
+        (".READING.ON", "ON", "READING"),
+        (".SETTING.TEXT", "TEXT", "SETTING"),
+        (".STATUS.PRIMARY", "PRIMARY", "STATUS"),
+        (".CONTROL.ON", "ON", "CONTROL"),
+        (".ANALOG.MASK", "MASK", "ANALOG"),
+        (".DIGITAL.MIN", "MIN", "DIGITAL"),
+        (".DESCRIPTION.RAW", "RAW", "DESCRIPTION"),
+        (".BIT_STATUS.PRIMARY", "PRIMARY", "BIT_STATUS"),
+    ],
+)
+def test_reject_field_for_property(suffix, field, prop):
+    with pytest.raises(ValueError, match=f"{field}.*{prop}"):
+        parse_request(f"M:OUTTMP{suffix}")
+
+
+@pytest.mark.parametrize(
+    ("drf", "field", "canonical"),
+    [
+        ("M:OUTTMP.READ.volts", DRF_FIELD.PRIMARY, "M:OUTTMP.READING.PRIMARY"),
+        ("M_OUTTMP.common", DRF_FIELD.SCALED, "M:OUTTMP.SETTING"),
+        ("M:OUTTMP.RAW", DRF_FIELD.RAW, "M:OUTTMP.READING.RAW"),
+        ("M|OUTTMP.ON", DRF_FIELD.ON, "M:OUTTMP.STATUS.ON"),
+        ("M:OUTTMP.ANALOG.STATUS", DRF_FIELD.ALARM_STATUS, "M:OUTTMP.ANALOG.ALARM_STATUS"),
+        ("M:OUTTMP.ANALOG.minimum", DRF_FIELD.MIN, "M:OUTTMP.ANALOG.MIN"),
+        ("M:OUTTMP.BIT_STATUS.BIT_NAMES", DRF_FIELD.BIT_NAMES, "M:OUTTMP.BIT_STATUS.BIT_NAMES"),
+        ("M:OUTTMP.DESCRIPTION.COMMON", DRF_FIELD.SCALED, "M:OUTTMP.DESCRIPTION.SCALED"),
+    ],
+)
+def test_valid_property_field_aliases(drf, field, canonical):
+    req = parse_request(drf)
+    assert req.field is field
+    assert req.field_explicit
+    assert req.to_canonical() == canonical
+    assert parse_request(canonical).field is field
