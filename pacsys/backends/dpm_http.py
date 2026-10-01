@@ -617,7 +617,6 @@ class _WriteConnection:
         self.conn = conn
         self.principal = principal
         self.role = role
-        self.authenticated = False
         self.last_used = time.monotonic()
 
     def is_stale(self, max_idle: float = 60.0) -> bool:
@@ -1467,7 +1466,6 @@ class DPMHTTPBackend(Backend):
             wc = _WriteConnection(conn, current_principal, current_role)
             mic, message = self._authenticate_connection(conn, deadline)
             self._enable_settings(conn, mic, message, deadline)
-            wc.authenticated = True
             logger.debug("Created new authenticated write connection (list_id=%s)", conn.list_id)
         except BaseException:
             with self._write_lock:

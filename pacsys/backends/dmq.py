@@ -1238,7 +1238,7 @@ class DMQBackend(Backend):
                     )
             trackers.setdefault(id(q_tracker), q_tracker)
         session.queued_sends = []
-        for corr_id, (i, drf, results_list, pending_tracker) in list(session.pending.items()):
+        for i, drf, results_list, pending_tracker in list(session.pending.values()):
             if results_list[i] is None:
                 results_list[i] = WriteResult(
                     drf=drf, facility_code=FACILITY_ACNET, error_code=ERR_RETRY, message=f"Session closed: {reason}"
@@ -1540,7 +1540,7 @@ class DMQBackend(Backend):
                         )
                 trackers.setdefault(id(q_tracker), q_tracker)
             session.queued_sends = []
-            for corr_id, (i, drf, results_list, pending_tracker) in list(session.pending.items()):
+            for i, drf, results_list, pending_tracker in list(session.pending.values()):
                 if results_list[i] is None:
                     results_list[i] = WriteResult(
                         drf=drf, facility_code=FACILITY_ACNET, error_code=ERR_RETRY, message=f"Channel closed: {reason}"
@@ -2219,7 +2219,7 @@ class DMQBackend(Backend):
                 note_completion(q_tracker, session.init_drf)
             session.queued_sends = []
             # Fail pending writes
-            for corr_id, (i, drf, results, tracker) in list(session.pending.items()):
+            for i, drf, results, tracker in list(session.pending.values()):
                 if results[i] is None:
                     results[i] = WriteResult(
                         drf=drf,

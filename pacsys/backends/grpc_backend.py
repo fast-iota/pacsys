@@ -376,19 +376,18 @@ def _aggregate_proto_readings(reading_list, drf: str, now: datetime) -> Reading:
     """
     warning: tuple[int, int, str | None] = (0, 0, None)
     for rd in reading_list:
-        if rd.status is not None:
-            facility, error, message = _proto_status_to_codes(rd.status)
-            if error < 0 or (error > 0 and rd.data.WhichOneof("value") is None):
-                ts = _proto_timestamp_to_datetime(rd.timestamp) or now
-                return Reading(
-                    drf=drf,
-                    facility_code=facility,
-                    error_code=error,
-                    message=message,
-                    timestamp=ts,
-                )
-            if error > 0 and warning[1] == 0:
-                warning = (facility, error, message)
+        facility, error, message = _proto_status_to_codes(rd.status)
+        if error < 0 or (error > 0 and rd.data.WhichOneof("value") is None):
+            ts = _proto_timestamp_to_datetime(rd.timestamp) or now
+            return Reading(
+                drf=drf,
+                facility_code=facility,
+                error_code=error,
+                message=message,
+                timestamp=ts,
+            )
+        if error > 0 and warning[1] == 0:
+            warning = (facility, error, message)
 
     try:
         data = np.array([_proto_value_to_python(rd.data)[0] for rd in reading_list], dtype=float)
