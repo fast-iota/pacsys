@@ -143,10 +143,16 @@ def test_percent_tolerance_identified_from_wire():
     ],
 )
 @pytest.mark.parametrize("repair", [False, True])
-def test_modify_unknown_metadata_raw_only(fake_backend, alarm_cls, prop, flags, repair):
+@pytest.mark.parametrize("structured", [False, True])
+def test_modify_unknown_metadata_raw_only(fake_backend, alarm_cls, prop, flags, repair, structured):
     initial = alarm_cls(flags=flags).to_bytes()
     fake_backend.set_reading(f"Z:TEST.{prop}{{0:20}}.RAW@I", initial, value_type=ValueType.RAW)
-    fake_backend.set_error(f"Z:TEST.{prop}@I", -1, "Structured scaling unavailable")
+    if not structured:
+        fake_backend.set_error(f"Z:TEST.{prop}@I", -1, "Structured scaling unavailable")
+    elif alarm_cls is AnalogAlarm:
+        fake_backend.set_analog_alarm(f"Z:TEST.{prop}@I", _analog_structured())
+    else:
+        fake_backend.set_digital_alarm(f"Z:TEST.{prop}@I", _digital_structured())
     with alarm_cls.modify("Z:TEST", backend=fake_backend) as alarm:
         alarm.ftd = FTD.periodic_ticks(60)
         if repair:
@@ -351,6 +357,22 @@ class TestEngineeringUnits:
 
 
 class TestAlarmSegments:
+    @pytest.mark.parametrize("alarm_cls", [AnalogAlarm, DigitalAlarm])
+    def test_structured_read_rejects_nonzero_segment_before_io(self, alarm_cls, fake_backend):
+        with pytest.raises(ValueError, match="supports only segment=0"):
+            alarm_cls.read("Z:TEST", backend=fake_backend, segment=1)
+
+        assert fake_backend.reads == []
+        assert fake_backend.writes == []
+
+    @pytest.mark.parametrize("alarm_cls", [AnalogAlarm, DigitalAlarm])
+    def test_modify_rejects_nonzero_segment_immediately(self, alarm_cls, fake_backend):
+        with pytest.raises(ValueError, match="supports only segment=0"):
+            alarm_cls.modify("Z:TEST", backend=fake_backend, segment=1)
+
+        assert fake_backend.reads == []
+        assert fake_backend.writes == []
+
     @pytest.mark.parametrize(
         ("alarm", "prop"),
         [(AnalogAlarm(), "ANALOG"), (DigitalAlarm(), "DIGITAL")],

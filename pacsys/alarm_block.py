@@ -810,9 +810,10 @@ class _AlarmModifyContext:
             if self._cls is AnalogAlarm:
                 value1_eng_changed = s.get("minimum") != init.get("minimum")
                 value2_eng_changed = s.get("maximum") != init.get("maximum")
-            elif isinstance(self._block, DigitalAlarm) and isinstance(init_block, DigitalAlarm):
-                value1_eng_changed = self._block.nominal != init_block.nominal
-                value2_eng_changed = self._block.mask != init_block.mask
+            else:
+                # Raw bytes, not nominal/mask: those decode via data_length, which may be reserved (Q=3)
+                value1_eng_changed = self._block.value1_raw != init_block.value1_raw
+                value2_eng_changed = self._block.value2_raw != init_block.value2_raw
             for key in ("alarm_enable", "abort_inhibit"):
                 if s.get(key) != init.get(key):
                     struct_changed = True
