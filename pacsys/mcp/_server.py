@@ -1,4 +1,4 @@
-"""FastMCP server setup — tool registration and backend lifecycle."""
+"""MCP server setup — tool registration and backend lifecycle."""
 
 import logging
 import os
@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from functools import partial
 
 from anyio.to_thread import run_sync
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import Context, MCPServer
 
 from pacsys.backends import Backend
 from pacsys.supervised._audit import AuditLog
@@ -30,7 +30,7 @@ class ServerContext:
 
 
 @asynccontextmanager
-async def _lifespan(server: FastMCP, *, config: MCPConfig):
+async def _lifespan(server: MCPServer[ServerContext], *, config: MCPConfig):
     """Manage backend and devdb lifecycle."""
     from pacsys.auth import KerberosAuth
     from pacsys.backends.dpm_http import DPMHTTPBackend
@@ -91,12 +91,12 @@ async def _lifespan(server: FastMCP, *, config: MCPConfig):
         logger.info("MCP server resources cleaned up")
 
 
-def create_server(config: MCPConfig) -> FastMCP:
-    """Create a configured FastMCP server instance."""
+def create_server(config: MCPConfig) -> MCPServer[ServerContext]:
+    """Create a server; pass SSE transport and port to ``run()`` explicitly."""
     config = config.finalized()
     build_policies(config)  # fail before accepting a client
     lifespan = partial(_lifespan, config=config)
-    mcp = FastMCP(
+    mcp = MCPServer[ServerContext](
         "pacsys",
         instructions=(
             "ACNET control system device interface. "
@@ -105,28 +105,27 @@ def create_server(config: MCPConfig) -> FastMCP:
             "Writes require policy approval — denied by default unless configured."
         ),
         lifespan=lifespan,
-        port=config.port or 8000,
     )
 
     @mcp.tool(
         description="Read a device value. Pass a DRF string like 'M:OUTTMP' or 'M:OUTTMP.SETTING' or 'M:OUTTMP[0:9]'."
     )
-    async def read_device(drf: str) -> dict:
-        ctx: ServerContext = mcp.get_context().request_context.lifespan_context
+    async def read_device(drf: str, context: Context[ServerContext, object]) -> dict:
+        ctx = context.request_context.lifespan_context
         return await run_sync(tool_read_device, ctx.backend, drf, ctx.policies)
 
     @mcp.tool(
         description="Write a value to a device. Requires policy approval. Pass DRF and value (float, string, or list)."
     )
-    async def write_device(drf: str, value: float | str | list) -> dict:
-        ctx: ServerContext = mcp.get_context().request_context.lifespan_context
+    async def write_device(drf: str, value: float | str | list, context: Context[ServerContext, object]) -> dict:
+        ctx = context.request_context.lifespan_context
         return await run_sync(tool_write_device, ctx.backend, drf, value, ctx.policies, ctx.audit_log)
 
     @mcp.tool(
         description="Look up device metadata (description, units, limits, control commands) from the device database."
     )
-    async def device_info(name: str) -> dict:
-        ctx: ServerContext = mcp.get_context().request_context.lifespan_context
+    async def device_info(name: str, context: Context[ServerContext, object]) -> dict:
+        ctx = context.request_context.lifespan_context
         return await run_sync(tool_device_info, ctx.devdb, name)
 
     return mcp

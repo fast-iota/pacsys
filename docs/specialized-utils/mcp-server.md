@@ -2,6 +2,10 @@
 
 The MCP server exposes pacsys device read/write as tools for AI agents (Claude Code, etc.) via the [Model Context Protocol](https://modelcontextprotocol.io/).
 
+Install with `pip install "pacsys[mcp]"`. The server uses the official MCP Python
+SDK 2.2 or newer (below 3.0), including compatibility with clients using the
+legacy initialization handshake. Tool results remain JSON text.
+
 ## Overview
 
 ```
@@ -130,6 +134,12 @@ python -m pacsys.mcp --config pacsys-mcp.toml --transport sse --port 9090 --role
 | `--port` | Port for SSE transport |
 | `--role` | DPM role for access control |
 | `--debug` | Enable debug logging |
+
+The CLI applies the configured SSE port (8000 by default). When using the public
+`create_server(config)` factory directly, SDK 2 returns an `MCPServer` whose
+transport options belong to `run()`: call `server.run()` for stdio or
+`server.run(transport="sse", port=9090)` for SSE. Set the port explicitly there;
+`config.port` is not stored as an SDK transport default.
 
 ### Environment variables
 

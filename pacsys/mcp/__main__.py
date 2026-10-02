@@ -33,7 +33,11 @@ def main():
     config = replace(config, **overrides).finalized()
 
     server = create_server(config)
-    server.run(transport=config.transport)  # ty: ignore[invalid-argument-type]
+    if config.transport == "sse":
+        assert config.port is not None
+        server.run(transport="sse", port=config.port)
+    else:
+        server.run()
 
 
 if __name__ == "__main__":
