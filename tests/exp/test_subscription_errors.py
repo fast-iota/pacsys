@@ -8,7 +8,7 @@ from unittest.mock import Mock
 import pytest
 
 from pacsys.backends.grpc_backend import GRPC_AVAILABLE, GRPCBackend, _GRPCSubscriptionHandle
-from pacsys.exp import DataLogger, read_fresh, watch
+from pacsys.exp import DataLogger, Monitor, read_fresh, watch
 from pacsys.types import DispatchMode, Reading, ValueType
 
 pytestmark = pytest.mark.skipif(not GRPC_AVAILABLE, reason="grpc not installed")
@@ -113,3 +113,22 @@ def test_logger_subscription_errors(subscription, fatal, caplog):
     writer.write_readings.assert_called_once_with([reading])
     writer.close.assert_called_once_with()
     assert not dl.running
+
+
+def test_monitor_logs_only_terminal_errors(subscription, caplog):
+    backend, handles = subscription
+    transient = ConnectionError("retrying")
+    terminal = RuntimeError("terminal stream failure")
+    mon = Monitor([DRF], backend=backend)
+    mon.start()
+    handle = handles[0]
+    try:
+        handle._dispatch_error(transient, fatal=False)
+        assert mon.running
+        assert "go stale" not in caplog.text
+        handle._signal_error(terminal)
+        handle._dispatch_error(transient, fatal=False)
+        assert str(terminal) in caplog.text
+        assert str(transient) not in caplog.text
+    finally:
+        mon.stop()

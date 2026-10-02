@@ -575,7 +575,7 @@ class Monitor:
             self._handle = backend.subscribe(
                 self._drfs,
                 callback=lambda r, h, t=token: self._on_reading(r, h, t),
-                on_error=lambda e, h, t=token: self._on_error(e, t),
+                on_error=lambda e, h, t=token: self._on_error(h, t),
             )
         except BaseException:
             with self._lock:
@@ -618,12 +618,15 @@ class Monitor:
                 self._received_at[drf] = time.monotonic()
                 self._lock.notify_all()
 
-    def _on_error(self, exc: Exception, token: object) -> None:
+    def _on_error(self, handle: SubscriptionHandle, token: object) -> None:
+        terminal = handle.exc
+        if terminal is None:
+            return  # backend is retrying; the stream may recover
         with self._lock:
             if token is not self._run_token:
                 return
             self._lock.notify_all()  # wake await_next so it raises handle.exc
-        logger.error("Monitor subscription for %s failed; channels will go stale: %s", self._drfs, exc)
+        logger.error("Monitor subscription for %s failed; channels will go stale: %s", self._drfs, terminal)
 
     def snapshot(self) -> MonitorResult:
         """Non-destructive peek at current data."""
