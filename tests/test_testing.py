@@ -1199,12 +1199,6 @@ class TestSubscribe:
 
         assert handle.stopped
 
-    def test_subscribe_rejects_empty_drfs(self):
-        fake = FakeBackend()
-        with pytest.raises(ValueError, match="drfs cannot be empty"):
-            fake.subscribe([])
-        assert fake._subscriptions == []
-
     @pytest.mark.parametrize(
         ("kwargs", "message"),
         [

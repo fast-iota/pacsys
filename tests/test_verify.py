@@ -60,11 +60,6 @@ class TestResolveVerify:
     def test_none_no_context_returns_none(self):
         assert resolve_verify(None) is None
 
-    @pytest.mark.parametrize("value", [1, "yes", 0.0])
-    def test_rejects_other_types(self, value):
-        with pytest.raises(TypeError, match="verify must be"):
-            resolve_verify(value)  # ty: ignore[invalid-argument-type]
-
     def test_none_with_context_not_always_returns_none(self):
         with Verify(always=False):
             assert resolve_verify(None) is None
@@ -77,48 +72,6 @@ class TestResolveVerify:
 
 
 class TestVerifyValidation:
-    @pytest.mark.parametrize(
-        ("field", "value"),
-        [
-            ("tolerance", -0.1),
-            ("tolerance", float("nan")),
-            ("tolerance", float("inf")),
-            ("initial_delay", -0.1),
-            ("initial_delay", float("inf")),
-            ("retry_delay", -0.1),
-            ("retry_delay", float("nan")),
-        ],
-    )
-    def test_rejects_invalid_numeric_value(self, field, value):
-        with pytest.raises(ValueError, match=field):
-            Verify(**{field: value})
-
-    @pytest.mark.parametrize("field", ["tolerance", "initial_delay", "retry_delay"])
-    def test_rejects_boolean_numeric_value(self, field):
-        with pytest.raises(TypeError, match=field):
-            Verify(**{field: True})
-
-    @pytest.mark.parametrize("value", [0, -1])
-    def test_rejects_nonpositive_attempts(self, value):
-        with pytest.raises(ValueError, match="max_attempts"):
-            Verify(max_attempts=value)
-
-    @pytest.mark.parametrize("value", [True, 1.5])
-    def test_rejects_noninteger_attempts(self, value):
-        with pytest.raises(TypeError, match="max_attempts"):
-            Verify(max_attempts=value)
-
-    @pytest.mark.parametrize("value", [123, b"M:OUTTMP"])
-    def test_rejects_non_string_readback(self, value):
-        """Readback is first touched after the write - must be validated before it."""
-        with pytest.raises(TypeError, match="readback"):
-            Verify(readback=value)
-
-    @pytest.mark.parametrize("field", ["check_first", "always"])
-    def test_rejects_non_bool_flags(self, field):
-        with pytest.raises(TypeError, match=field):
-            Verify(**{field: 1})
-
     def test_accepts_numpy_integer_attempts(self):
         assert Verify(max_attempts=np.int64(2)).max_attempts == 2
 

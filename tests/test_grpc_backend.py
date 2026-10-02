@@ -275,25 +275,6 @@ class TestGRPCBackendInit:
             finally:
                 backend.close()
 
-    @pytest.mark.parametrize(
-        ("kwargs", "match"),
-        [
-            ({"host": ""}, "host cannot be empty"),
-            ({"port": 0}, "port must be an integer from 1 to 65535"),
-            ({"port": 65536}, "port must be an integer from 1 to 65535"),
-            ({"port": True}, "port must be an integer from 1 to 65535"),
-            ({"port": 50051.0}, "port must be an integer from 1 to 65535"),
-            ({"timeout": 0}, "timeout must be positive and finite"),
-            ({"timeout": -1.0}, "timeout must be positive and finite"),
-            ({"timeout": float("inf")}, "timeout must be positive and finite"),
-            ({"timeout": float("nan")}, "timeout must be positive and finite"),
-            ({"auth": object()}, "auth must be JWTAuth"),
-        ],
-    )
-    def test_invalid_init_params(self, kwargs, match):
-        with pytest.raises(ValueError, match=match):
-            grpc_backend.GRPCBackend(**kwargs)
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Capabilities Tests

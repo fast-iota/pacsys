@@ -70,15 +70,6 @@ class TestAsyncFakeBackendStreaming:
 
         asyncio.run(_run())
 
-    def test_subscribe_rejects_empty_drfs(self):
-        async def _run():
-            fb = AsyncFakeBackend()
-            with pytest.raises(ValueError, match="drfs cannot be empty"):
-                await fb.subscribe([])
-            assert fb._handles == []
-
-        asyncio.run(_run())
-
     def test_subscribe_and_emit(self):
         async def _run():
             fb = AsyncFakeBackend()

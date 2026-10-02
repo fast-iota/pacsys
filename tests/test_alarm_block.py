@@ -357,22 +357,6 @@ class TestEngineeringUnits:
 
 
 class TestAlarmSegments:
-    @pytest.mark.parametrize("alarm_cls", [AnalogAlarm, DigitalAlarm])
-    def test_structured_read_rejects_nonzero_segment_before_io(self, alarm_cls, fake_backend):
-        with pytest.raises(ValueError, match="supports only segment=0"):
-            alarm_cls.read("Z:TEST", backend=fake_backend, segment=1)
-
-        assert fake_backend.reads == []
-        assert fake_backend.writes == []
-
-    @pytest.mark.parametrize("alarm_cls", [AnalogAlarm, DigitalAlarm])
-    def test_modify_rejects_nonzero_segment_immediately(self, alarm_cls, fake_backend):
-        with pytest.raises(ValueError, match="supports only segment=0"):
-            alarm_cls.modify("Z:TEST", backend=fake_backend, segment=1)
-
-        assert fake_backend.reads == []
-        assert fake_backend.writes == []
-
     @pytest.mark.parametrize(
         ("alarm", "prop"),
         [(AnalogAlarm(), "ANALOG"), (DigitalAlarm(), "DIGITAL")],

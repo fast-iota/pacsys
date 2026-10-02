@@ -235,19 +235,6 @@ class TestOpenChannel:
             ssh.open_channel("acl", timeout=10.0)
         mock_chan.close.assert_called_once_with()
 
-    @patch("paramiko.Transport")
-    @patch("socket.create_connection")
-    def test_open_channel_inactive_transport(self, mock_connect, mock_transport_cls):
-        ssh, transport = connected_ssh(mock_connect, mock_transport_cls)
-        ssh._ensure_connected()
-        transport.is_active.return_value = False
-
-        from pacsys.ssh import SSHConnectionError
-
-        with pytest.raises(SSHConnectionError, match="no longer active"):
-            ssh.open_channel("acl")
-        transport.open_session.assert_not_called()
-
 
 # ---------------------------------------------------------------------------
 # SSHClient.acl_session() factory

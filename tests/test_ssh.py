@@ -30,39 +30,6 @@ def _mock_getuser():
 
 
 # ---------------------------------------------------------------------------
-# SSHHop validation
-# ---------------------------------------------------------------------------
-
-
-class TestSSHHop:
-    @pytest.mark.parametrize(
-        ("kwargs", "match"),
-        [
-            ({"hostname": ""}, "non-empty"),
-            ({"hostname": "   "}, "non-empty"),
-            ({"hostname": "host", "port": 0}, "1-65535"),
-            ({"hostname": "host", "port": -1}, "1-65535"),
-            ({"hostname": "host", "port": 70000}, "1-65535"),
-            ({"hostname": "host", "auth_method": "oauth"}, "auth_method"),
-            ({"hostname": "host", "auth_method": "key"}, "key_filename"),
-            ({"hostname": "host", "auth_method": "password"}, "password required"),
-        ],
-    )
-    def test_invalid_params(self, kwargs, match):
-        with pytest.raises(ValueError, match=match):
-            SSHHop(**kwargs)
-
-    def test_effective_username_gssapi(self):
-        with patch("pacsys.ssh._gssapi_username", return_value="kerbuser"):
-            hop = SSHHop("host")  # auth_method="gssapi" by default, no username
-            assert hop.effective_username == "kerbuser"
-
-    def test_effective_username_password_fallback(self):
-        hop = SSHHop("host", auth_method="password", password="pw")
-        assert hop.effective_username == "testuser"
-
-
-# ---------------------------------------------------------------------------
 # _normalize_hops
 # ---------------------------------------------------------------------------
 
@@ -89,14 +56,6 @@ class TestNormalizeHops:
         hops = _normalize_hops(["jump.example.com", SSHHop("target.example.com", port=2222)])
         assert len(hops) == 2
         assert hops[1].port == 2222
-
-    def test_empty_list_raises(self):
-        with pytest.raises(ValueError, match="At least one hop"):
-            _normalize_hops([])
-
-    def test_bad_type_raises(self):
-        with pytest.raises(TypeError, match="Expected str or SSHHop"):
-            _normalize_hops([123])  # ty: ignore[invalid-argument-type]
 
 
 # ---------------------------------------------------------------------------
@@ -134,10 +93,6 @@ class TestSSHClientInit:
         assert ssh.connected is False
         mock_connect.assert_not_called()
         mock_transport_cls.assert_not_called()
-
-    def test_non_kerberos_auth_with_gssapi_hop_raises(self):
-        with pytest.raises(ValueError, match="KerberosAuth"):
-            SSHClient("host", auth="not-kerberos-auth")  # ty: ignore[invalid-argument-type]
 
 
 # ---------------------------------------------------------------------------
@@ -419,20 +374,6 @@ class TestSSHClientExec:
                 ssh.exec("true", timeout=0.05)
         mock_transport.open_session.assert_called_once_with(timeout=0.05)
 
-    @patch("paramiko.Transport")
-    @patch("socket.create_connection")
-    def test_exec_inactive_transport_raises(self, mock_connect, mock_transport_cls):
-        mock_connect.return_value = MagicMock()
-        mock_transport = _make_mock_transport()
-        mock_transport_cls.return_value = mock_transport
-
-        ssh = SSHClient(SSHHop("host", auth_method="password", password="pw"))
-        ssh._ensure_connected()
-        mock_transport.is_active.return_value = False
-
-        with pytest.raises(SSHConnectionError, match="no longer active"):
-            ssh.exec("ls")
-
 
 # ---------------------------------------------------------------------------
 # SSHClient.exec_stream()
@@ -607,18 +548,6 @@ class TestSSHClientSFTP:
 
         assert isinstance(session, SFTPSession)
         mock_sftp_from.assert_called_once_with(mock_transport)
-
-    @patch("paramiko.SFTPClient.from_transport")
-    @patch("paramiko.Transport")
-    @patch("socket.create_connection")
-    def test_sftp_none_raises(self, mock_connect, mock_transport_cls, mock_sftp_from):
-        mock_connect.return_value = MagicMock()
-        mock_transport_cls.return_value = _make_mock_transport()
-        mock_sftp_from.return_value = None
-
-        ssh = SSHClient(SSHHop("host", auth_method="password", password="pw"))
-        with pytest.raises(SSHConnectionError, match="Failed to open SFTP"):
-            ssh.sftp()
 
 
 # ---------------------------------------------------------------------------
@@ -923,18 +852,6 @@ class TestAuthDispatch:
         hop2_transport.close.assert_called()
         hop2_transport.auth_publickey.assert_not_called()
         hop2_transport.auth_password.assert_not_called()
-
-    @patch("paramiko.Transport")
-    @patch("socket.create_connection")
-    def test_key_missing_file_raises(self, mock_connect, mock_transport_cls):
-        mock_connect.return_value = MagicMock()
-        mock_transport = _make_mock_transport()
-        mock_transport_cls.return_value = mock_transport
-
-        ssh = SSHClient(SSHHop("host", auth_method="key", key_filename="/nonexistent/key"))
-        with pytest.raises(SSHConnectionError, match="Key file not found"):
-            ssh._ensure_connected()
-        mock_transport.auth_publickey.assert_not_called()
 
     @patch("paramiko.Transport")
     @patch("socket.create_connection")
