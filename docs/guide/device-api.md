@@ -97,7 +97,7 @@ print(info.reading.p_index)            # Primary transform index
 `info()` returns a `DeviceInfoResult` with fields: `device_index`, `description`, `reading` (`PropertyInfo`), `setting` (`PropertyInfo`), `control`, `status_bits`. Results are cached.
 
 !!! note "Requires DevDB"
-    DevDB connects to `ad-services.fnal.gov/services.devdb` by default. Override with `pacsys.configure(devdb_host=...)` or the `PACSYS_DEVDB_HOST` environment variable.
+    DevDB connects to `ad-services.fnal.gov` on port `443` with TLS by default. Override the endpoint with `pacsys.configure(devdb_host=..., devdb_port=...)` or the `PACSYS_DEVDB_HOST` and `PACSYS_DEVDB_PORT` environment variables. Explicit configuration takes precedence over environment variables.
 
 ---
 

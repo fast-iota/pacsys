@@ -19,10 +19,8 @@ from logging.handlers import RotatingFileHandler
 from pacsys import KerberosAuth, aio
 from pacsys.supervised import (
     AuditLog,
-    Policy,
-    PolicyDecision,
+    DeviceAccessPolicy,
     RateLimitPolicy,
-    RequestContext,
     SupervisedServer,
     ValueRangePolicy,
 )
@@ -33,30 +31,6 @@ WRITABLE_DEVICES = [
     "Z:ACLTST",
     "Z:CUBE_Z",
 ]
-
-# -- Custom policy --------------------------------------------------------
-
-
-class WriteDeviceAllowlistPolicy(Policy):
-    """Allow reads for everything, restrict writes to an explicit list."""
-
-    def __init__(self, writable: list[str]):
-        self._allowed = {d.upper() for d in writable}
-
-    def check(self, ctx: RequestContext) -> PolicyDecision:
-        if ctx.rpc_method != "Set":
-            return PolicyDecision(allowed=True)
-        from pacsys.drf_utils import get_device_name
-
-        for drf in ctx.drfs:
-            name = get_device_name(drf).upper()
-            if name not in self._allowed:
-                return PolicyDecision(
-                    allowed=False,
-                    reason=f"Device {name} not in write allowlist",
-                )
-        return PolicyDecision(allowed=True)
-
 
 # -- Logging config --------------------------------------------------------
 
@@ -108,7 +82,7 @@ def main():
 
     policies = [
         # 1. Reads allowed for everything; writes only for listed devices
-        WriteDeviceAllowlistPolicy(WRITABLE_DEVICES),
+        DeviceAccessPolicy(patterns=WRITABLE_DEVICES, mode="allow", action="set"),
         # 2. Rate limit: 200 requests/min per client
         RateLimitPolicy(max_requests=200, window_seconds=60),
         # 3. Value range enforcement for writable devices

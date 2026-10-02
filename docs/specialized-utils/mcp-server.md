@@ -37,25 +37,7 @@ Writes require Kerberos credentials. The server refuses to start if write device
 
 ### Read-only (no config needed)
 
-```bash
-claude --mcp-config scripts/.mcp_prod.json
-```
-
-Where `scripts/.mcp_prod.json` contains:
-
-```json
-{
-  "mcpServers": {
-    "pacsys": {
-      "type": "stdio",
-      "command": "python",
-      "args": ["-m", "pacsys.mcp"]
-    }
-  }
-}
-```
-
-Or register it with the CLI:
+Register the server without a policy config:
 
 ```bash
 claude mcp add --transport stdio --scope project pacsys -- python -m pacsys.mcp

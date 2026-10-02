@@ -74,8 +74,9 @@ When you call `write()`, the DPM server checks whether your Kerberos identity is
 
 | Parameter | Default | Environment Variable |
 |-----------|---------|---------------------|
-| `host` | acsys-proxy.fnal.gov | `PACSYS_DPM_HOST`* |
-| `port` | 6802 | `PACSYS_DPM_PORT`* |
-| `pool_size` | 4 | `PACSYS_POOL_SIZE`* |
+| `host` | acsys-proxy.fnal.gov | `PACSYS_DPM_HOST` |
+| `port` | 6802 | `PACSYS_DPM_PORT` |
+| `pool_size` | 4 | `PACSYS_POOL_SIZE` |
+| `timeout` | 5.0 seconds | `PACSYS_TIMEOUT` |
 
-*Environment variables only affect the global (implicit) backend used by `pacsys.read()` etc. The `pacsys.dpm()` factory uses parameters passed directly.
+Environment variables configure the global (implicit) backend used by `pacsys.read()` etc. They also supply omitted arguments to `pacsys.dpm()`, `pacsys.dpm_http()`, and `pacsys.aio.dpm()`. Explicit arguments take precedence.

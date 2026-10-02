@@ -111,7 +111,7 @@ with pacsys.SSHClient("jump.fnal.gov") as client:
         print(f"Listening on 127.0.0.1:{tunnel.local_port}")
 
         # Use with gRPC backend
-        with pacsys.grpc(port=tunnel.local_port) as backend:
+        with pacsys.grpc(host="127.0.0.1", port=tunnel.local_port) as backend:
             value = backend.read("M:OUTTMP")
 ```
 
