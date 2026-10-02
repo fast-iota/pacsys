@@ -50,6 +50,11 @@ both `reading.ok` and `reading.is_warning` are true. Batched and logger results
 retain all usable samples and the first warning's status and message. Samples
 with errors or warnings without data remain unusable.
 
+Writes reject names reserved for DPM list directives, such as `#AB:CD` and
+`#ROLE:x`, with a failed `WriteResult` for that item. Other valid items in the batch
+are sent normally and retain their matching statuses. Numeric ACNET names such
+as `#:123` remain supported. This applies to both sync and async backends.
+
 Sync and async subscriptions retry `UNAVAILABLE` and `CANCELLED` stream errors
 indefinitely until stopped, with exponential backoff from 1 to 30 seconds. Each
 retryable error logs a warning and invokes the optional `on_error` callback,

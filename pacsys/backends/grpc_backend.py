@@ -655,12 +655,15 @@ class _DaqCore:
 
         for i, (drf, value) in enumerate(settings):
             try:
+                # DPM list directives consume no setting/status slot in the positional reply.
+                if len(drf) > 4 and drf.startswith("#") and drf[1] != ":":
+                    raise ValueError("Write DRF is reserved for DPM list directives")
                 setting = DAQ_pb2.Setting()
                 setting.device = drf
                 setting.value.CopyFrom(_value_to_proto_value(value, for_write=True))
                 valid_items.append((i, drf, setting))
             except (TypeError, ValueError, NotImplementedError) as e:
-                logger.error("Failed to convert value for %s: %s", drf, e)
+                logger.error("Failed to validate setting for %s: %s", drf, e)
                 validation_errors[i] = str(e)
 
         # Phase 2: RPC

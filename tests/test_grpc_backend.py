@@ -632,6 +632,78 @@ class TestWriteOperations:
             assert (results[index].facility_code, results[index].error_code) == (FACILITY_ACNET, ERR_RETRY)
             assert results[index].message
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("async_backend", [False, True], ids=["sync", "async"])
+    async def test_write_many_reserved_directives_preserve_status_order(self, mock_stub, sample_jwt, async_backend):
+        import pacsys.aio
+
+        auth = JWTAuth(token=sample_jwt)
+        if async_backend:
+            backend = pacsys.aio.grpc(auth=auth)
+            backend._core = grpc_backend._DaqCore(backend._host, backend._port, auth, backend._timeout)
+            backend._core._stub = mock_stub
+            backend._connected = True
+        else:
+            backend = _make_backend_with_stub(mock_stub, auth=auth)
+
+        server_statuses = {
+            "M:OUTTMP.SETTING@N": 0,
+            "#:123.SETTING@N": -42,
+            "M:OUTTMP.LONG_NAME@N": -43,
+            "EPICS:PV:SET@N": 0,
+        }
+
+        async def set_reply(request, **kwargs):
+            # DPM consumes these list directives without allocating setting/status slots.
+            return make_setting_reply(
+                [
+                    server_statuses[setting.device]
+                    for setting in request.setting
+                    if setting.device not in {"#AB:CD@N", "#ROLE:x@N", "#plain@N"}
+                ]
+            )
+
+        mock_stub.Set = mock.AsyncMock(side_effect=set_reply)
+        settings = [
+            ("#AB:CD", 1.0),
+            ("M:OUTTMP", 72.5),
+            ("M:BAD", object()),
+            ("#ROLE:x", 2.0),
+            ("#:123", 3.0),
+            ("M#OUTTMP", "name"),
+            ("#plain", 4.0),
+            ("EPICS:PV:SET", 5.0),
+        ]
+        try:
+            results = await backend.write_many(settings) if async_backend else backend.write_many(settings)
+            assert results[1].success
+            assert results[4].error_code == -42
+            assert results[5].error_code == -43
+            assert results[7].success
+            assert [r.drf for r in results] == [
+                "#AB:CD@N",
+                "M:OUTTMP.SETTING@N",
+                "M:BAD.SETTING@N",
+                "#ROLE:x@N",
+                "#:123.SETTING@N",
+                "M:OUTTMP.LONG_NAME@N",
+                "#plain@N",
+                "EPICS:PV:SET@N",
+            ]
+            for index in (0, 2, 3, 6):
+                assert not results[index].success
+                assert (results[index].facility_code, results[index].error_code) == (FACILITY_ACNET, ERR_RETRY)
+            for index in (0, 3, 6):
+                assert "reserved for DPM list directives" in results[index].message
+            assert "Cannot convert value of type" in results[2].message
+            mock_stub.Set.assert_awaited_once()
+            assert [s.device for s in mock_stub.Set.call_args.args[0].setting] == list(server_statuses)
+        finally:
+            if async_backend:
+                await backend.close()
+            else:
+                _close_backend_fast_for_tests(backend)
+
     def test_write_prepares_drf(self, auth_backend_with_mock_stub):
         """write() applies prepare_for_write to convert shorthand DRFs."""
         backend, mock_stub = auth_backend_with_mock_stub
