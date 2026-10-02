@@ -308,13 +308,20 @@ class TestCombinedStream:
         fake = FakeBackend()
         h1 = fake.subscribe(["M:OUTTMP"])
 
-        def emit_then_stop():
+        def emit():
             fake.emit_reading("M:OUTTMP", 42.0)
-            h1.stop()
 
-        threading.Timer(0.05, emit_then_stop).start()
+        timer = threading.Timer(0.05, emit)
+        timer.start()
 
-        results = list(CombinedStream([h1]).readings(timeout=2))
+        results = []
+        try:
+            for item in CombinedStream([h1]).readings(timeout=2):
+                results.append(item)
+                h1.stop()
+        finally:
+            timer.join(timeout=1)
+            fake.close()
         assert len(results) == 1
         assert results[0][0].value == 42.0
 
@@ -324,15 +331,22 @@ class TestCombinedStream:
         h2 = fake.subscribe(["G:AMANDA"])
         cs = CombinedStream([h1, h2])
 
-        def emit_then_stop():
+        def emit():
             fake.emit_reading("M:OUTTMP", 1.0)
             fake.emit_reading("G:AMANDA", 2.0)
-            h1.stop()
-            h2.stop()
 
-        threading.Timer(0.05, emit_then_stop).start()
+        timer = threading.Timer(0.05, emit)
+        timer.start()
 
-        results = list(cs.readings(timeout=2))
+        results = []
+        try:
+            for item in cs.readings(timeout=2):
+                results.append(item)
+                if len(results) == 2:
+                    cs.stop()
+        finally:
+            timer.join(timeout=1)
+            fake.close()
         values = sorted(r[0].value for r in results)
         assert values == [1.0, 2.0]
 
@@ -417,13 +431,25 @@ class TestCombinedStream:
         fake = FakeBackend()
         h1 = fake.subscribe(["M:OUTTMP"])
 
-        def emit_then_stop():
+        def emit():
             fake.emit_reading("M:OUTTMP", 99.0)
-            h1.stop()
 
-        threading.Timer(0.05, emit_then_stop).start()
+        timer = threading.Timer(0.05, emit)
+        # Bound a missing-reading regression while exercising timeout=None.
+        fallback_stop = threading.Timer(2, h1.stop)
+        timer.start()
+        fallback_stop.start()
 
-        results = list(CombinedStream([h1]).readings(timeout=None))
+        results = []
+        try:
+            for item in CombinedStream([h1]).readings(timeout=None):
+                results.append(item)
+                h1.stop()
+        finally:
+            fallback_stop.cancel()
+            fallback_stop.join(timeout=1)
+            timer.join(timeout=1)
+            fake.close()
         assert len(results) == 1
         assert results[0][0].value == 99.0
 
