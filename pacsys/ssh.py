@@ -53,7 +53,7 @@ def _require_paramiko():
     if paramiko is None:
         raise ImportError(
             f"paramiko library required for SSH operations. "
-            f"Install with: pip install pacsys[kerberos]. "
+            f"Install with: pip install pacsys. "
             f"Original error: {_paramiko_import_error}"
         )
 

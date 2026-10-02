@@ -21,7 +21,7 @@ def _require_gssapi():
         import gssapi
     except (ImportError, OSError) as e:
         raise ImportError(
-            "gssapi library required for Kerberos authentication. Install with: pip install pacsys[kerberos]"
+            "gssapi library required for Kerberos authentication. Install with: pip install pacsys"
         ) from e
     return gssapi
 

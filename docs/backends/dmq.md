@@ -26,7 +26,7 @@ sequenceDiagram
 
 ## Characteristics
 
-- **Kerberos required**: All operations (reads, writes, streaming) require `KerberosAuth` (install with `pip install pacsys[kerberos]`)
+- **Kerberos required**: All operations (reads, writes, streaming) require `KerberosAuth` and valid Kerberos credentials. Dependencies are included in `pip install pacsys`.
 - **GSS-API signing**: Messages are signed with MIC for authentication
 - **Shared streaming connection**: All subscriptions share a single AMQP connection via SelectConnection with multiple channels
 - **Connection caching**: Write connections are cached per device for performance
