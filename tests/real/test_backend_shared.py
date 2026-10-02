@@ -269,13 +269,13 @@ class TestBackendErrors:
         assert not reading.ok
         assert reading.error_code != 0
 
-    def test_get_noprop_error(self, read_backend_cls: Backend):
+    def test_get_noprop_error(self, read_backend_cls: Backend, grpc_noprop_xfail):
         """get() returns error for missing property."""
         reading = read_backend_cls.get(NOPROP_DEVICE, timeout=TIMEOUT_READ)
         assert not reading.ok
         assert reading.error_code < 0
 
-    def test_read_setting_on_readonly_raises(self, read_backend_cls: Backend):
+    def test_read_setting_on_readonly_raises(self, read_backend_cls: Backend, grpc_noprop_xfail):
         """read() raises DeviceError for SETTING on read-only device."""
         with pytest.raises(DeviceError):
             read_backend_cls.read(SETTING_ON_READONLY, timeout=TIMEOUT_READ)

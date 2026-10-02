@@ -337,6 +337,20 @@ def read_backend_cls(request):
     backend.close()
 
 
+@pytest.fixture
+def grpc_noprop_xfail(request):
+    """The gRPC DPM sends no reply for DBM_NOPROP requests (DPM HTTP/DMQ do), so they time out.
+
+    Strict: a server fix turns these into failing XPASSes, prompting removal.
+    """
+    if "grpc" in request.node.callspec.params.values():
+        from pacsys.errors import ReadError
+
+        request.applymarker(
+            pytest.mark.xfail(raises=ReadError, strict=True, reason="gRPC DPM never replies with DBM_NOPROP")
+        )
+
+
 @pytest.fixture(params=["dpm_http", "dmq"])
 def write_backend(request):
     """Parametrized fixture that yields each write-capable backend.

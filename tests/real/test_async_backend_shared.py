@@ -210,13 +210,13 @@ class TestAsyncBackendErrors:
         assert not reading.ok
         assert reading.error_code != 0
 
-    async def test_get_noprop_error(self, async_read_backend_cls: AsyncBackend):
+    async def test_get_noprop_error(self, async_read_backend_cls: AsyncBackend, grpc_noprop_xfail):
         """get() returns error for missing property."""
         reading = await async_read_backend_cls.get(NOPROP_DEVICE, timeout=TIMEOUT_READ)
         assert not reading.ok
         assert reading.error_code < 0
 
-    async def test_read_setting_on_readonly_raises(self, async_read_backend_cls: AsyncBackend):
+    async def test_read_setting_on_readonly_raises(self, async_read_backend_cls: AsyncBackend, grpc_noprop_xfail):
         """read() raises DeviceError for SETTING on read-only device."""
         with pytest.raises(DeviceError):
             await async_read_backend_cls.read(SETTING_ON_READONLY, timeout=TIMEOUT_READ)
