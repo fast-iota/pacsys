@@ -43,7 +43,7 @@ Pre-defined subclasses for common elements:
 | `RecyclerSCRamp` | C475 | R:SC319T | raw / 3276.8 (2) | primary × 1.2000000477 (6, C1=1.2000000477, C2=1.0) |
 | `RecyclerHVSQRamp` | C453 | R:H626T, R:SQ410T | raw / 3276.8 (2) | primary × 1.2 (6, C1=12.0, C2=10.0) |
 
-**Scaling is per device, not per family.** The classes above pin the transform constants from DevDB for the devices listed; the library does not check them at runtime. Known exception: the quad trims **R:QT301T–R:QT308T** are scaled like correctors (C1=12.0, C2=10.0, ±12 A), not like the other `R:QT*T` tables (C1=2.0, ±20 A). Using `RecyclerQRamp` on them reads values 1.67× too large and writes 1.67× too small; use `RecyclerHVSQRamp` (same constants and card rate) or a custom subclass instead. When adding a new device, confirm its SETTING scaling with `Device("R:QT301T").info().setting` before picking a class.
+**Scaling is per device, not per family.** The classes above pin transform constants for the devices listed; the library does not check them at runtime. Known exception: the quad trims **R:QT301T–R:QT308T** are scaled like correctors (C1=12.0, C2=10.0, ±12 A), not like the other `R:QT*T` tables (C1=2.0, ±20 A). Using `RecyclerQRamp` on them reads values 1.67× too large and writes 1.67× too small; use `RecyclerHVSQRamp` (same constants and card rate) or a custom subclass instead. When adding a new device, confirm its SETTING scaling against authoritative database constants before picking a class; see the [DevDB coefficient limitation](scaling.md#from-devdb).
 
 ### Time Scaling
 
@@ -334,7 +334,9 @@ class BoosterHVRamp(Ramp):
 ramp = BoosterHVRamp.read("B:HS23T", slot=0)
 ```
 
-The scaling parameters can be found in the device database or looked up via DevDB:
+The scaling parameters can be found in the device database or looked up via DevDB.
+Before using DevDB coefficients, independently verify them as described in the
+[DevDB coefficient limitation](scaling.md#from-devdb):
 
 ```python
 from pacsys import Scaler
@@ -343,7 +345,7 @@ with pacsys.DevDBClient() as db:
     info = db.get_device_info(["B:HS23T"])
     prop = info["B:HS23T"].setting
     scaler = Scaler.from_property_info(prop, input_len=2)
-    print(scaler)  # Scaler(p_index=2, c_index=6, constants=(4.0, 1.0), input_len=2)
+    print(scaler)
 ```
 
 See [Scaling](scaling.md) for details on `Scaler`, transform indices, and supported operations.

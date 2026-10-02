@@ -937,25 +937,60 @@ class TestACLScript:
                 ssh.acl("read M:OUTTMP")
         assert [c.args[0] for c in ex.call_args_list] == [self._MKTEMP]
 
-    def test_cleanup_failure_does_not_mask_success(self, caplog):
+    @pytest.mark.parametrize(
+        "cleanup_error",
+        [
+            SSHTimeoutError("cleanup timed out"),
+            paramiko.ChannelException(1, "cleanup channel rejected"),
+            paramiko.SSHException("cleanup session disconnected"),
+            EOFError("cleanup transport EOF"),
+            OSError("cleanup socket failed"),
+        ],
+    )
+    def test_cleanup_failure_does_not_mask_success(self, caplog, cleanup_error):
         path = "/tmp/pacsys_acl_a1b2c3d4.acl"
         ssh = self._client()
+        transport = _make_mock_transport()
+        channels = [
+            make_exec_channel(stdout=f"{path}\n".encode()),
+            make_exec_channel(),
+            make_exec_channel(stdout=b"M:OUTTMP = 72.5\n"),
+        ]
+        transport.open_session.side_effect = [*channels, cleanup_error]
+        ssh._transports = [transport]
+        ssh._connected = True
 
-        def fake_exec(command, timeout=None, input=None):
-            if command == self._MKTEMP:
-                return self._result(command, stdout=f"{path}\n")
-            if command.startswith("rm -f "):
-                raise SSHTimeoutError("cleanup timed out")
-            if command.startswith("acl "):
-                return self._result(command, stdout="M:OUTTMP = 72.5\n")
-            return self._result(command)
-
-        with patch.object(ssh, "exec", side_effect=fake_exec):
-            result = ssh.acl("read M:OUTTMP")
-
-        assert result == "M:OUTTMP = 72.5"
+        assert ssh.acl("read M:OUTTMP") == "M:OUTTMP = 72.5"
+        assert transport.open_session.call_count == 4
+        transport.open_session.assert_called_with(timeout=5.0)
+        for channel in channels:
+            channel.close.assert_called_once()
         assert path in caplog.text
-        assert "cleanup timed out" in caplog.text
+        assert str(cleanup_error) in caplog.text
+
+    @pytest.mark.parametrize("stage", ["write", "acl"])
+    def test_cleanup_transport_failure_preserves_operation_error(self, caplog, stage):
+        path = "/tmp/pacsys_acl_a1b2c3d4.acl"
+        ssh = self._client()
+        transport = _make_mock_transport()
+        original = SSHTimeoutError("operation timed out")
+        cleanup_error = paramiko.ChannelException(1, "cleanup channel rejected")
+        responses = [make_exec_channel(stdout=f"{path}\n".encode())]
+        if stage == "acl":
+            responses.append(make_exec_channel())
+        responses.append(original)
+        transport.open_session.side_effect = [*responses, cleanup_error]
+        ssh._transports = [transport]
+        ssh._connected = True
+
+        with pytest.raises(SSHTimeoutError) as exc_info:
+            ssh._acl_script(["read M:OUTTMP"], 30.0, str.strip)
+
+        assert exc_info.value is original
+        transport.open_session.assert_called_with(timeout=5.0)
+        assert transport.open_session.call_count == len(responses) + 1
+        assert path in caplog.text
+        assert str(cleanup_error) in caplog.text
 
     @pytest.mark.parametrize(
         "stdout", ["/etc/passwd\n", "/tmp/pacsys_acl_x/../../home/u/.bashrc\n", "/tmp/pacsys_acl_a b$c.acl\n", ""]

@@ -985,7 +985,7 @@ class SSHClient:
         finally:
             try:
                 self.exec(f"rm -f {qname}", timeout=5.0)
-            except SSHError as e:
+            except (SSHError, paramiko.SSHException, EOFError, OSError) as e:
                 logger.warning("Failed to remove remote ACL script %s: %s", name, e)
 
     def acl_session(self, *, timeout: float = 30.0) -> ACLSession:

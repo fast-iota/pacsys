@@ -64,7 +64,13 @@ All methods accept `int`, `float`, or `numpy.ndarray`. Arrays are processed elem
 
 ### From DevDB
 
-The typical workflow retrieves scaling parameters from the device database:
+!!! warning "DevDB coefficient limitation (verified 2026-09-25)"
+    DevDB returned malformed `PropertyInfo.coeff` values in checks on 2026-09-25.
+    Independently verify coefficients against authoritative device database constants
+    before using them for client-side scaling. Use the manual `Scaler(...)` constructor
+    above with authoritative constants when the returned coefficients are incorrect.
+
+After independently verifying the returned coefficients, scaling parameters can be loaded from DevDB:
 
 ```python
 import pacsys
