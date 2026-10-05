@@ -479,6 +479,32 @@ class TestRequestIdReuseRace:
 
         _run(_test())
 
+    @pytest.mark.parametrize("make_conn", [_make_tcp_conn, _make_udp_conn], ids=["tcp", "udp"])
+    @pytest.mark.parametrize("closed", [False, True], ids=["lost", "closed"])
+    def test_connection_dropped_before_registration_raises(self, make_conn, closed):
+        """Loss between the ACK and send_request resuming must not register a handler that
+        missed the synthetic DISCONNECTED reply."""
+
+        async def _test():
+            conn = make_conn()
+            ack = struct.pack(">HhH", 2, 0, 7)
+
+            async def fake_xact(content, timeout=5.0):
+                if closed:
+                    conn._disposed = True
+                conn._on_connection_lost()
+                return ack
+
+            received = []
+            with patch.object(conn, "_xact", new=fake_xact):
+                with pytest.raises(AcnetUnavailableError):
+                    await conn.send_request(node=0x0901, task="DPM", data=b"", reply_handler=received.append)
+            assert conn._reply_handlers == {}
+            assert received == []
+            assert conn._pending_sends == 0
+
+        _run(_test())
+
 
 class TestConnectFailureCleanup:
     """Failed connect() must not leak the transport or read task."""

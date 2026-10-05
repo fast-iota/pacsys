@@ -2095,6 +2095,7 @@ class TestSnapshotStateTracking:
         async def setup():
             reader = asyncio.StreamReader()
             core._reader = reader
+            core._connected = True  # send_request refuses a connection that is not up
             core._reply_handlers[RequestId(1)] = AsyncRequestContext(
                 core,
                 "FTPMAN",

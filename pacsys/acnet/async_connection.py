@@ -716,6 +716,10 @@ class AsyncAcnetConnectionBase:
         self._pending_sends += 1
         try:
             ack = await self._xact(content)
+            # Lost/closed between the ACK and our resumption (wait_for yields on 3.10/3.11):
+            # handlers were already failed, so a late registration would never see DISCONNECTED.
+            if not self.connected:
+                raise AcnetUnavailableError
 
             if len(ack) < 4:
                 raise AcnetUnavailableError
