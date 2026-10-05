@@ -4,6 +4,7 @@ from unittest import mock
 
 import pytest
 
+from pacsys.mcp._config import MCPConfig, build_policies
 from pacsys.mcp._tools import tool_device_info, tool_read_device, tool_write_device
 from pacsys.supervised._audit import AuditLog
 from pacsys.supervised._policies import (
@@ -130,6 +131,56 @@ def test_write_device_unknown_device(backend):
     policies = [DeviceAccessPolicy(patterns=["Z:ACLTST"], mode="allow", action="set")]
     result = tool_write_device(backend, "Z:UNKNOWN", 42.0, policies=policies)
     assert result["ok"] is False
+
+
+# ── device-index aliases / DPM directives (gated before any policy) ─
+
+_UNCLASSIFIABLE = ["0:1234", "0_1234", "#:1234", "#LOG:5"]
+
+
+@pytest.fixture
+def wildcard_ranged_policies():
+    return build_policies(MCPConfig(write_devices=["*"], value_ranges={"Z:ACLTST": (0.0, 100.0)}))
+
+
+@pytest.mark.parametrize("drf", _UNCLASSIFIABLE)
+def test_write_device_index_alias_rejected_under_wildcard(backend, wildcard_ranged_policies, tmp_path, drf):
+    """An alias names no device, so it would skip the per-name range under write_devices=['*']."""
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    result = tool_write_device(backend, drf, 999.0, wildcard_ranged_policies, audit)
+    audit.close()
+    assert result == {"ok": False, "drf": drf, "error": f"Malformed or disallowed DRF: {drf!r}"}
+    assert backend.writes == []
+    entries = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()]
+    assert [(e["allowed"], e["drfs"]) for e in entries] == [(False, [drf])]
+
+
+def test_write_device_named_allowed_under_wildcard(backend, wildcard_ranged_policies):
+    assert tool_write_device(backend, "Z:ACLTST", 42.0, wildcard_ranged_policies)["ok"] is True
+    assert tool_write_device(backend, "Z:ACLTST", 999.0, wildcard_ranged_policies)["ok"] is False
+    assert backend.writes == [("Z:ACLTST.SETTING@N", 42.0)]
+
+
+@pytest.mark.parametrize("drf", _UNCLASSIFIABLE)
+def test_read_device_index_alias_rejected(backend, drf):
+    with mock.patch.object(backend, "get") as get:
+        result = tool_read_device(backend, drf, [])
+    get.assert_not_called()
+    assert result == {
+        "ok": False,
+        "name": drf,
+        "drf": drf,
+        "value": None,
+        "error": f"Malformed or disallowed DRF: {drf!r}",
+    }
+
+
+@pytest.mark.parametrize("name", _UNCLASSIFIABLE)
+def test_device_info_index_alias_rejected(name):
+    devdb = mock.MagicMock()
+    result = tool_device_info(devdb, name)
+    devdb.get_device_info.assert_not_called()
+    assert result == {"ok": False, "name": name, "error": f"Malformed or disallowed DRF: {name!r}"}
 
 
 # ── device_info (basic, no DevDB mock needed for error path) ─

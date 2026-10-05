@@ -14,38 +14,19 @@ from pacsys._proto.controls.service.DAQ.v1 import DAQ_pb2_grpc
 from pacsys.aio._backends import AsyncBackend
 from pacsys.backends import Backend
 from pacsys.backends.grpc_backend import _proto_value_to_python
-from pacsys.drf3 import parse_request
-from pacsys.drf_utils import get_device_name, is_chunked_historical_drf, prepare_for_write
+from pacsys.drf_utils import get_device_name, is_chunked_historical_drf
 from pacsys.errors import AuthenticationError
 from pacsys.types import Reading, Value
 
 from ._audit import AuditLog
 from ._conversions import reading_to_proto_replies, write_result_to_proto_status
 from ._event_classify import all_oneshot
-from ._policies import Policy, PolicyDecision, RequestContext, evaluate_policies
+from ._policies import Policy, PolicyDecision, RequestContext, acceptable_drf, evaluate_policies
 
 logger = logging.getLogger("pacsys.supervised")
 
 # Bounded queue prevents OOM if client is slower than backend
 _STREAM_QUEUE_MAXSIZE = 100_000
-
-
-def _acceptable_drf(drf: str, rpc_method: str) -> bool:
-    """Gate before any policy runs. Rejects what no pattern policy could classify: empty/padded or
-    non-printable-ASCII names (they parse as non-ACNET and match no glob), DRFs that do not parse
-    (as given, and for Set as the write will be issued), device-index aliases ``0:<di>``/``#:<di>``
-    that DPM resolves to any device, and ``#KEY:VALUE`` DPM list directives."""
-    if not drf or drf != drf.strip() or not (drf.isascii() and drf.isprintable()):
-        return False
-    if drf.startswith("#"):
-        return False  # '#:<di>' index alias, or a DPM list directive ('#LOG:N', '#ROLE:...') that is never a device
-    try:
-        req = parse_request(drf)
-        if rpc_method == "Set":
-            parse_request(prepare_for_write(drf))
-    except ValueError:
-        return False
-    return not (req.is_acnet and req.device.startswith("0"))
 
 
 def _device_summary(drfs: list[str]) -> str:
@@ -145,8 +126,8 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
             raw_request=raw_request,
             allowed=initial_allowed,
         )
-        # Fail closed on DRFs the policies cannot classify (see _acceptable_drf).
-        bad = next((d for d in drfs if not _acceptable_drf(d, rpc_method)), None)
+        # Fail closed on DRFs the policies cannot classify (see acceptable_drf).
+        bad = next((d for d in drfs if not acceptable_drf(d, rpc_method)), None)
         if bad is not None:
             return ctx, PolicyDecision(allowed=False, reason=f"Malformed or disallowed DRF: {bad!r}")
         if not self._policies:

@@ -29,6 +29,8 @@ Write safety comes from two layers:
 
 Without a policy config, all writes are denied. Reads are always allowed — the TOML config only expresses write policies, and `create_server` accepts no others. This is the same policy system used by [Supervised Mode](supervised.md); for read restrictions, run the supervised proxy instead.
 
+All three tools apply the supervised proxy's DRF gate before any policy runs: a DRF or device name that is empty, has surrounding whitespace or non-printable characters, does not parse (for a write: as the write would be issued), uses a device-index alias (`0:1234`, `#:1234` — DPM resolves these to a real device, so they would bypass `write_devices`/`value_ranges` rules naming that device), or starts with `#` (DPM list directives) is rejected with `"ok": false` and `"error": "Malformed or disallowed DRF: ..."`. Rejected writes are recorded in the audit log like any other denial.
+
 Writes require Kerberos credentials. The server refuses to start if write devices are configured but no Kerberos ticket is available.
 
 ---
@@ -155,7 +157,7 @@ These can be set in the MCP config JSON:
 
 ### read_device
 
-Read a device value. Accepts any valid DRF string.
+Read a device value. Accepts any valid DRF string that passes the DRF gate (no index aliases or `#` directives).
 
 **Parameters:**
 

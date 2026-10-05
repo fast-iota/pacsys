@@ -10,6 +10,7 @@ from pacsys.supervised._policies import (
     Policy,
     PolicyDecision,
     RequestContext,
+    acceptable_drf,
     evaluate_policies,
 )
 
@@ -20,6 +21,12 @@ logger = logging.getLogger("pacsys.mcp")
 
 # Serializes policy check + write so stateful policies see no interleaving
 _write_lock = threading.Lock()
+
+
+def _require_acceptable(drf: str, rpc_method: str) -> None:
+    """Same pre-policy gate as the supervised server: index aliases etc. would skip per-name rules."""
+    if not acceptable_drf(drf, rpc_method):
+        raise ValueError(f"Malformed or disallowed DRF: {drf!r}")
 
 
 def _audit_write(audit_log: AuditLog | None, ctx: RequestContext, decision: PolicyDecision) -> bool:
@@ -38,6 +45,7 @@ def tool_read_device(backend: Backend, drf: str, policies: list[Policy]) -> dict
     """Read a device value with policy enforcement. Returns a JSON-safe dict."""
     try:
         name = get_device_name(drf)  # single parse: a malformed DRF must not escape as a raw exception
+        _require_acceptable(drf, "Read")
     except ValueError as e:
         logger.warning("read_device rejected malformed drf=%r: %s", drf, e)
         return {"ok": False, "name": drf, "drf": drf, "value": None, "error": str(e)}
@@ -97,6 +105,7 @@ def _write_device_locked(
     try:
         write_drf = prepare_for_write(drf)
         device_name = get_device_name(write_drf)
+        _require_acceptable(drf, "Set")
     except ValueError as e:
         logger.warning("write_device rejected malformed drf=%r: %s", drf, e)
         raw_ctx = RequestContext(
@@ -159,6 +168,11 @@ def _write_device_locked(
 
 def tool_device_info(devdb, name: str) -> dict:
     """Query device metadata from DevDB. Returns a JSON-safe dict."""
+    try:
+        _require_acceptable(name, "Read")
+    except ValueError as e:
+        logger.warning("device_info rejected name=%r: %s", name, e)
+        return {"ok": False, "name": name, "error": str(e)}
     if devdb is None:
         return {"ok": False, "name": name, "error": "DevDB client unavailable"}
 

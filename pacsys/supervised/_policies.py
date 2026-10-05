@@ -81,6 +81,24 @@ def _raw_allowed(device_name: str, patterns: tuple[str, ...], is_acnet: bool) ->
     return any(_glob_matches(device_name, pattern, is_acnet) for pattern in patterns)
 
 
+def acceptable_drf(drf: str, rpc_method: str) -> bool:
+    """Gate before any policy runs. Rejects what no pattern policy could classify: empty/padded or
+    non-printable-ASCII names (they parse as non-ACNET and match no glob), DRFs that do not parse
+    (as given, and for Set as the write will be issued), device-index aliases ``0:<di>``/``#:<di>``
+    that DPM resolves to any device, and ``#KEY:VALUE`` DPM list directives."""
+    if not drf or drf != drf.strip() or not (drf.isascii() and drf.isprintable()):
+        return False
+    if drf.startswith("#"):
+        return False  # '#:<di>' index alias, or a DPM list directive ('#LOG:N', '#ROLE:...') that is never a device
+    try:
+        req = parse_request(drf)
+        if rpc_method == "Set":
+            parse_request(prepare_for_write(drf))
+    except ValueError:
+        return False
+    return not (req.is_acnet and req.device.startswith("0"))
+
+
 @dataclass(frozen=True)
 class RequestContext:
     """Context for a single RPC request, passed to policy checks."""
