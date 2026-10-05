@@ -14,6 +14,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, cast
 
+import numpy as np
+
 from pacsys.dpm_protocol import (
     AddToList_reply,
     AddToList_request,
@@ -53,7 +55,19 @@ _DEFAULT_DPM_NODE = "DPM06"
 _REPLY_QUEUE_SIZE = 10000  # bounded to prevent OOM on slow consumers
 
 
-@dataclass
+def _value_eq(a: object, b: object) -> bool:
+    """``==`` that compares ndarrays element-wise (NaN equals NaN) instead of raising on their truth value."""
+    if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+        if not (isinstance(a, np.ndarray) and isinstance(b, np.ndarray)):
+            return False  # array vs raw bytes/list/scalar/None: different payload types
+        try:
+            return bool(np.array_equal(a, b, equal_nan=True))
+        except TypeError:  # non-numeric dtype
+            return bool(np.array_equal(a, b))
+    return a is b or a == b  # identity first, like the generated tuple comparison (scalar NaN)
+
+
+@dataclass(eq=False)  # custom __eq__ below; stays unhashable like the generated one
 class DPMReading:
     """Data reading from DPM."""
 
@@ -61,9 +75,19 @@ class DPMReading:
     timestamp: int = 0
     cycle: int = 0
     status: int = 0
-    data: object = None
+    data: object = None  # np.ndarray for (Timed)ScalarArray replies
     meta: dict | None = None
     micros: object = None  # Per-sample timestamps from TimedScalarArray (int64 list)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, DPMReading):
+            return NotImplemented
+        return (
+            (self.ref_id, self.timestamp, self.cycle, self.status, self.meta)
+            == (other.ref_id, other.timestamp, other.cycle, other.status, other.meta)
+            and _value_eq(self.data, other.data)
+            and _value_eq(self.micros, other.micros)
+        )
 
 
 class DPMError(Exception):
