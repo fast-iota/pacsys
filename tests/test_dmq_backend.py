@@ -24,7 +24,12 @@ from unittest import mock
 import numpy as np
 import pytest
 from pika.adapters.select_connection import SelectConnection
-from pika.exceptions import ChannelWrongStateError
+from pika.exceptions import (
+    ChannelWrongStateError,
+    ConnectionClosedByClient,
+    ConnectionOpenAborted,
+    ConnectionWrongStateError,
+)
 
 from pacsys import DispatchMode
 from pacsys.acnet.errors import ERR_RETRY, ERR_TIMEOUT, FACILITY_ACNET, FACILITY_DMQ
@@ -266,6 +271,7 @@ class MockSelectConnection:
         self._replies = replies or []
         self._routing_keys = routing_keys or []
         self._is_open = False
+        self._closed = False
         self._on_open_callback = None
         self._on_close_callback = None
         self.ioloop = MockIOLoop(self)
@@ -273,6 +279,14 @@ class MockSelectConnection:
     @property
     def is_open(self):
         return self._is_open
+
+    @property
+    def is_closing(self):
+        return False
+
+    @property
+    def is_closed(self):
+        return self._closed
 
     def channel(self, on_open_callback=None):
         """Open a new channel."""
@@ -285,6 +299,7 @@ class MockSelectConnection:
     def close(self):
         """Close the connection."""
         self._is_open = False
+        self._closed = True
         if self._on_close_callback:
             self._on_close_callback(self, Exception("Connection closed"))
         self.ioloop.stop()
@@ -2021,6 +2036,44 @@ class TestDMQBackendSubscribe:
             handle.stop()
             assert handle.stopped
 
+    def test_remove_after_job_failure_suppresses_queued_callbacks(self):
+        """remove() after a terminal failure still drops readings queued on the callback worker."""
+        values, errors = [], Queue()
+        busy, release = threading.Event(), threading.Event()
+
+        def callback(reading, handle):
+            values.append(reading.value)
+            busy.set()
+            release.wait(1.0)
+
+        with _mock_dmq_backend() as backend:
+            handle = backend.subscribe([TEMP_DEVICE], callback=callback, on_error=lambda exc, h: errors.put(exc))
+            channel = backend._subscriptions[handle._sub_id].channel
+            conn = backend._select_connection
+            assert channel is not None and conn is not None
+            on_message = channel._on_message_callback
+
+            def deliver(routing_key, body, tag):
+                method = mock.MagicMock(routing_key=routing_key, delivery_tag=tag)
+                conn.ioloop.add_callback_threadsafe(partial(on_message, channel, method, None, body))
+
+            try:
+                deliver(f"R.{TEMP_DEVICE}", make_double_reply(1.0, ref_id=1), 1)
+                assert busy.wait(1.0)  # worker blocked: later readings queue behind it
+                deliver(f"R.{TEMP_DEVICE}", make_double_reply(2.0, ref_id=1), 2)
+                deliver("R.null", make_error_reply(facility_code=FACILITY_DMQ, error_number=-98), 3)
+                failed = threading.Event()
+                conn.ioloop.add_callback_threadsafe(failed.set)
+                assert failed.wait(1.0)
+                assert handle.stopped and backend._subscriptions == {}
+
+                backend.remove(handle)
+            finally:
+                release.set()
+            error = errors.get(timeout=1.0)  # on_error is queued after the reading
+        assert isinstance(error, DeviceError) and error.error_code == -98
+        assert values == [1.0]
+
     def test_subscribe_empty_drfs_raises(self):
         """Test that subscribe with empty drfs raises ValueError."""
         with _mock_gssapi():
@@ -2672,8 +2725,158 @@ class TestReplyToReading:
 # =============================================================================
 
 
+class _OpeningSelectConnection(MockSelectConnection):
+    """pika 1.3 close() semantics: closing an opening connection aborts it via the open-error callback."""
+
+    def __init__(self):
+        super().__init__()
+        self._state = "opening"
+        self._on_open_error_callback = None
+        self.close_calls = 0
+
+    @property
+    def is_closing(self):
+        return self._state == "closing"
+
+    @property
+    def is_closed(self):
+        return self._state == "closed"
+
+    def close(self):
+        if self._state in ("closing", "closed"):
+            raise ConnectionWrongStateError(f"close() while {self._state}")
+        self.close_calls += 1
+        was_open, self._state = self._state == "open", "closing"
+        self.ioloop.add_callback_threadsafe(partial(self._terminated, was_open))
+
+    def _terminated(self, was_open):
+        self._state, self._is_open = "closed", False
+        if was_open:
+            self._on_close_callback(self, ConnectionClosedByClient(200, "Normal shutdown"))
+        else:
+            self._on_open_error_callback(self, ConnectionOpenAborted("close() before connection finished opening"))
+
+    def _trigger_open(self):
+        if self._state == "opening":  # an aborted handshake never completes
+            self._state = "open"
+            super()._trigger_open()
+
+
+class _AssertingAbortConnection(_OpeningSelectConnection):
+    """pika 1.3.2 mid-handshake abort: open-error callback runs, then an internal AssertionError escapes the ioloop."""
+
+    def _terminated(self, was_open):
+        super()._terminated(was_open)
+        raise AssertionError
+
+
+@contextmanager
+def _opening_backend(publish: threading.Event | None = None, conn_cls=_OpeningSelectConnection):
+    """Backend whose handshake stalls until the test calls ``_trigger_open``; ``publish`` delays construction."""
+    conns = []
+
+    def factory(cls=None, parameters=None, on_open_callback=None, on_open_error_callback=None, on_close_callback=None):
+        if publish is not None:
+            assert publish.wait(2.0)
+        conn = conn_cls()
+        conn._on_open_callback = on_open_callback
+        conn._on_open_error_callback = on_open_error_callback
+        conn._on_close_callback = on_close_callback
+        conns.append(conn)
+        return conn
+
+    with _mock_gssapi(), mock.patch.object(SelectConnection, "__new__", side_effect=factory):
+        backend = DMQBackend(host="localhost", auth=_create_mock_auth(), timeout=2.0)
+        try:
+            with pytest.raises(ConnectionError, match="timed out"):
+                backend._ensure_io_thread(0.05)  # caller's budget runs out mid-startup
+            yield backend, conns
+        finally:
+            backend.close()
+
+
 class TestDMQBackendLifecycle:
     """Tests for DMQBackend lifecycle operations."""
+
+    def test_close_aborts_opening_connection_and_releases_waiters(self):
+        with _opening_backend() as (backend, conns):
+            io_thread, conn = backend._io_thread, conns[0]
+            assert io_thread is not None and backend._select_connection is conn
+            waiting, results = threading.Event(), Queue()
+            real_wait = backend._connection_ready.wait
+
+            def wait(timeout=None):
+                waiting.set()
+                return real_wait(timeout)
+
+            with mock.patch.object(backend._connection_ready, "wait", side_effect=wait):
+                waiter = threading.Thread(target=lambda: results.put(_catch(backend._ensure_io_thread)), daemon=True)
+                waiter.start()
+                assert waiting.wait(1.0)
+                start = time.monotonic()
+                backend.close()
+                assert time.monotonic() - start < 1.0
+                error = results.get(timeout=1.0)
+            assert isinstance(error, ConnectionError) and isinstance(error.__cause__, ConnectionOpenAborted)
+            assert conn.close_calls == 1 and conn.is_closed and not conn.is_open
+            assert not io_thread.is_alive()
+            assert backend._io_thread is None and backend._select_connection is None
+
+    def test_pika_abort_error_keeps_abort_cause_quietly(self, caplog):
+        with _opening_backend(conn_cls=_AssertingAbortConnection) as (backend, conns):
+            io_thread = backend._io_thread
+            assert io_thread is not None
+            with caplog.at_level("DEBUG", logger="pacsys.backends.dmq"):
+                backend.close()
+            assert not io_thread.is_alive() and conns[0].is_closed
+            assert isinstance(backend._connection_error, ConnectionOpenAborted)
+            assert not [r for r in caplog.records if r.name == "pacsys.backends.dmq" and r.levelname == "ERROR"]
+
+    def test_close_before_connection_created_aborts_it(self):
+        publish = threading.Event()
+        with _opening_backend(publish) as (backend, conns):
+            io_thread = backend._io_thread
+            assert io_thread is not None and backend._select_connection is None
+            real_join = io_thread.join
+
+            def join(timeout=None):
+                publish.set()  # SelectConnection is created after close() took its snapshot
+                real_join(timeout)
+
+            with mock.patch.object(io_thread, "join", side_effect=join):
+                backend.close()
+            assert len(conns) == 1 and conns[0].close_calls == 1 and conns[0].is_closed
+            assert not io_thread.is_alive() and backend._select_connection is None
+
+    def test_open_completing_after_close_is_closed(self):
+        with _opening_backend() as (backend, conns):
+            io_thread, conn = backend._io_thread, conns[0]
+            assert io_thread is not None
+            gated, gate = threading.Event(), threading.Event()
+            conn.ioloop.add_callback_threadsafe(lambda: (gated.set(), gate.wait(1.0)))
+            assert gated.wait(1.0)
+            # OpenOk is processed before the close() scheduled below
+            conn.ioloop.add_callback_threadsafe(conn._trigger_open)
+            ready_errors = []
+            real_set, real_join = backend._connection_ready.set, io_thread.join
+
+            def ready_set():
+                ready_errors.append(backend._connection_error)
+                real_set()
+
+            def join(timeout=None):
+                gate.set()
+                real_join(timeout)
+
+            with (
+                mock.patch.object(backend._connection_ready, "set", side_effect=ready_set),
+                mock.patch.object(io_thread, "join", side_effect=join),
+            ):
+                backend.close()
+            assert conn.close_calls == 1 and conn.is_closed and not conn.is_open
+            assert not io_thread.is_alive() and backend._select_connection is None
+            # Startup waiters are never told the connection is ready after close()
+            assert ready_errors and all(isinstance(e, ConnectionClosedByClient) for e in ready_errors)
 
     def test_close_idempotent(self):
         """Test that close() can be called multiple times."""
@@ -2792,6 +2995,7 @@ class TestDMQBackendLifecycle:
         backend._pending_session_setups = {}
         conn = mock.MagicMock()
         conn.is_open = True
+        conn.is_closing = conn.is_closed = False
         callbacks = []
         conn.ioloop.add_callback_threadsafe.side_effect = callbacks.append
         io_thread = mock.MagicMock()

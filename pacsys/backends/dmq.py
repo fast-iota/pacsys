@@ -2166,18 +2166,27 @@ class DMQBackend(Backend):
             )
             self._teardown_connection = None
             self._select_connection = conn
+            if self._closed:  # close() ran before conn was published
+                conn.ioloop.add_callback_threadsafe(lambda: self._close_connection(conn))
             logger.debug("Starting SelectConnection ioloop")
             conn.ioloop.start()
         except Exception as e:  # noqa: BLE001
-            logger.exception("IO loop thread failed")
-            self._connection_error = e
+            if self._closed:
+                # close() aborted an opening connection; pika 1.3 can then raise internally (AssertionError) -
+                # keep the abort cause from _on_connection_open_error
+                logger.debug("IO loop ended during close(): %r", e)
+                cause = self._connection_error or e
+            else:
+                logger.exception("IO loop thread failed")
+                cause = e
+            self._connection_error = cause
             if conn is not None:
                 try:
-                    self._on_connection_closed(conn, e)
+                    self._on_connection_closed(conn, cause)
                 except Exception:  # noqa: BLE001
                     logger.exception("Failed to tear down DMQ connection after IO loop failure")
                 with suppress(Exception):
-                    conn.close()
+                    self._close_connection(conn)
             self._connection_ready.set()
         finally:
             # Reset connection so _ensure_io_thread can restart if needed
@@ -2188,12 +2197,23 @@ class DMQBackend(Backend):
 
     def _on_connection_open(self, connection: SelectConnection) -> None:
         """Called when SelectConnection is established."""
+        if self._closed:
+            # Handshake finished after close(); _on_connection_closed releases waiters with an error
+            logger.info("SelectConnection opened after close(), closing")
+            self._close_connection(connection)
+            return
         logger.info("SelectConnection opened to %s:%s", self._host, self._port)
         self._connection_ready.set()
 
+    @staticmethod
+    def _close_connection(connection: SelectConnection) -> None:
+        """Close (or abort, if still opening) unless already closing/closed (IO thread)."""
+        if not (connection.is_closing or connection.is_closed):
+            connection.close()
+
     def _on_connection_open_error(self, connection: SelectConnection, error: BaseException) -> None:
         """Called when SelectConnection fails to open."""
-        logger.error("SelectConnection open error: %s", error)
+        (logger.debug if self._closed else logger.error)("SelectConnection open error: %s", error)
         self._connection_error = error
         self._connection_ready.set()
         # Stop the ioloop so the IO thread exits and _ensure_io_thread can restart it
@@ -2616,6 +2636,8 @@ class DMQBackend(Backend):
             raise TypeError(f"Expected _DMQSubscriptionHandle, got {type(handle).__name__}")
 
         sub_id = handle._sub_id
+        # Before the early return: a terminally failed sub is already gone but may have queued callbacks
+        handle._stop_requested = True
 
         with self._stream_lock:
             sub = self._subscriptions.pop(sub_id, None)
@@ -2623,7 +2645,6 @@ class DMQBackend(Backend):
         if sub is None:
             return
 
-        handle._stop_requested = True
         self._cancel_subscription_async(sub)
         handle._signal_stop()
         logger.info("Removed subscription sub_id=%s", sub_id[:8])
@@ -2659,14 +2680,11 @@ class DMQBackend(Backend):
         # to avoid cross-thread mutation.
         conn = self._select_connection
         io_thread = self._io_thread
-        if conn is not None and conn.is_open:
-
-            def close_connection():
-                if conn.is_open:
-                    conn.close()
-
+        if conn is not None:
+            # Not just when open: an opening connection is aborted (on_open_error stops the loop).
+            # A connection not created yet is closed by _io_loop_thread / _on_connection_open.
             try:
-                conn.ioloop.add_callback_threadsafe(close_connection)
+                conn.ioloop.add_callback_threadsafe(lambda: self._close_connection(conn))
             except OSError:
                 pass
 
