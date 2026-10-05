@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from pacsys._proto.controls.service.DAQ.v1 import DAQ_pb2, DAQ_pb2_grpc
+from pacsys.aio import _subscription as aio_subscription
 from pacsys.supervised import (
     DeviceAccessPolicy,
     ReadOnlyPolicy,
@@ -147,6 +148,10 @@ def _wait_subscribed(backend, timeout=2.0):
             return
         time.sleep(0.01)
     raise TimeoutError("No new subscription appeared within timeout")
+
+
+async def _collect(stream):
+    return [r async for r in stream]
 
 
 class _BlockingSubscribeBackend(FakeBackend):
@@ -403,6 +408,56 @@ class TestStreamingRead:
         assert backend.subscribed_drfs == [x, y, x_event, x_field]
         assert backend.handle.stopped
         assert backend.active_subscriptions() == []
+
+    async def _async_stream_with_ended_backlog(self, monkeypatch, error, lag=True):
+        """Stream 5 readings, hand out the first, then end upstream with 4 still queued."""
+        clock = mock.Mock()
+        clock.monotonic.return_value = 0.0
+        monkeypatch.setattr(aio_subscription, "time", clock)
+        drf = "M:OUTTMP@p,1000"
+        backend = _PerPositionAsyncBackend()
+        context = mock.Mock()
+        context.peer.return_value = "test-peer"
+        context.invocation_metadata.return_value = []
+        context.cancelled.return_value = False
+        stream = _DAQServicer(backend, []).Read(DAQ_pb2.ReadingList(drf=[drf]), context)
+        first = asyncio.create_task(anext(stream))
+        assert await asyncio.to_thread(backend.subscribed.wait, 1.0)
+        for i in range(5):
+            backend.emit_reading(drf, float(i))
+        reply = await asyncio.wait_for(first, 1.0)
+        if error is None:
+            backend.handle._signal_stop()
+        else:
+            backend.emit_error(error)
+        if lag:
+            clock.monotonic.return_value = 2.0  # slow client: the 1 s stream window expires
+        return backend, context, stream, [reply]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("lag", [True, False], ids=["slow", "prompt"])
+    @pytest.mark.parametrize("error", [None, RuntimeError("upstream died")], ids=["graceful", "error"])
+    async def test_async_producer_end_delivers_queued_tail(self, monkeypatch, error, lag):
+        backend, context, stream, replies = await self._async_stream_with_ended_backlog(monkeypatch, error, lag)
+        replies += await asyncio.wait_for(_collect(stream), 1.0)
+
+        assert [r.readings.reading[0].data.scalar for r in replies] == [0.0, 1.0, 2.0, 3.0, 4.0]
+        if error is None:
+            context.set_code.assert_not_called()
+        else:  # tail first, then the stream error
+            context.set_code.assert_called_once_with(grpc.StatusCode.INTERNAL)
+            assert "upstream died" in context.set_details.call_args.args[0]
+        assert backend.handle.stopped
+
+    @pytest.mark.asyncio
+    async def test_async_client_cancel_skips_queued_tail(self, monkeypatch):
+        backend, context, stream, replies = await self._async_stream_with_ended_backlog(monkeypatch, None)
+        context.cancelled.return_value = True
+        replies += await asyncio.wait_for(_collect(stream), 1.0)
+
+        assert len(replies) == 1
+        context.set_code.assert_not_called()
+        assert backend.handle._stopping
 
     def test_streaming_read(self, fake_backend):
         with SupervisedServer(fake_backend, port=0) as srv:

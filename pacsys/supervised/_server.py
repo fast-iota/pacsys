@@ -238,19 +238,27 @@ class _DAQServicer(DAQ_pb2_grpc.DAQServicer):
                     handle = await self._acquire_subscription(acquisition, peer)
                     try:
                         while not context.cancelled():
-                            async for reading, _ in handle.readings(timeout=1.0):
-                                if context.cancelled():
+                            # A timed window can expire ahead of a stopped stream's queued tail (and
+                            # raise its error first); once stopped, drain non-blocking: tail, then error
+                            draining = handle.stopped
+                            try:
+                                async for reading, _ in handle.readings(timeout=0 if draining else 1.0):
+                                    if context.cancelled():
+                                        break
+                                    indices = drf_indices.get(reading.drf)
+                                    if indices is None:
+                                        raise ValueError(f"Backend returned unexpected DRF {reading.drf!r}")
+                                    for idx in indices:
+                                        for reply_proto in reading_to_proto_replies(reading, idx):
+                                            self._audit_response(seq, peer, "Read", reply_proto)
+                                            yield reply_proto
+                                        item_count += 1
+                            except Exception as e:
+                                if draining or e is not handle.exc:
+                                    raise
+                            else:
+                                if draining:
                                     break
-                                indices = drf_indices.get(reading.drf)
-                                if indices is None:
-                                    raise ValueError(f"Backend returned unexpected DRF {reading.drf!r}")
-                                for idx in indices:
-                                    for reply_proto in reading_to_proto_replies(reading, idx):
-                                        self._audit_response(seq, peer, "Read", reply_proto)
-                                        yield reply_proto
-                                    item_count += 1
-                            if handle.stopped:
-                                break
                     finally:
                         await handle.stop()
                         logger.debug("stream peer=%s event=stopped items=%d", peer, item_count)
