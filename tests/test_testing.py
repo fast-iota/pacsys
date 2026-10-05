@@ -1026,6 +1026,44 @@ class TestWriteUpdatesState:
         fake.write("M:OUTTMP.SETTING@I", 72.5)
         assert fake.read("M:OUTTMP.SETTING@I") == 72.5
 
+    def test_write_updates_other_seeded_event_slots(self):
+        """A write updates every seeded event slot of the same device state, not other sources."""
+        fake = FakeBackend()
+        fake.set_reading("Z:TEST.SETTING@I", 1.0)
+        fake.set_reading("Z:TEST.SETTING@p,1000", 1.0)
+        fake.set_reading("Z:TEST.SETTING@I<-FTP", 1.0)
+        fake.set_reading("Z:TEST.READING@I", 1.0)
+        assert fake.write("Z:TEST.SETTING@N", 2.0).success
+        assert fake.read("Z:TEST.SETTING@I") == 2.0
+        assert fake.get("Z:TEST.SETTING@p,1000").value == 2.0  # seeded slot stays exact
+        assert fake.read("Z:TEST.SETTING@p,500") == 2.5  # unseeded event still perturbs the base value
+        assert fake.read("Z:TEST.SETTING@I<-FTP") == 1.0
+        assert fake.read("Z:TEST.READING@I") == 1.0
+
+    def test_ranged_write_updates_seeded_event_slot(self):
+        fake = FakeBackend()
+        fake.set_reading("B:HS23T.SETTING@I", np.array([1.0, 2.0, 3.0]), value_type=ValueType.SCALAR_ARRAY)
+        assert fake.write("B:HS23T.SETTING[1]@N", 9.0).success
+        np.testing.assert_array_equal(fake.read("B:HS23T.SETTING@I"), [1.0, 9.0, 3.0])
+
+    @pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+    def test_verify_reads_back_write_over_seeded_immediate_slot(self, use_async):
+        import asyncio
+
+        from pacsys.aio import AsyncDevice
+        from pacsys.testing import AsyncFakeBackend
+        from pacsys.verify import Verify
+
+        v = Verify(initial_delay=0, retry_delay=0, max_attempts=1)
+        fake = AsyncFakeBackend() if use_async else FakeBackend()
+        fake.set_reading("Z:TEST.SETTING@I", 1.0)
+        if use_async:
+            result = asyncio.run(AsyncDevice("Z:TEST", backend=fake).write(2.0, verify=v))
+        else:
+            result = Device("Z:TEST", backend=fake).write(2.0, verify=v)
+        assert result.verified is True
+        assert result.readback == 2.0
+
     def test_write_clears_error_with_event(self):
         """Write clears error stored under event-specific full key."""
         fake = FakeBackend()

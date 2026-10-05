@@ -881,8 +881,10 @@ class FakeBackend(Backend):
         slice assignment instead of replacing the whole value. Callers reject
         partial ranges when nothing is stored.
 
-        Updates both the base key and the event-specific full key so that
-        subsequent reads (which check the full key first) see the write.
+        Updates the base key, the written event's full key, and every other
+        stored event slot of the same base key (e.g. a seeded ``@I`` that
+        verify reads back) so that subsequent reads (which check the full key
+        first) see the write. Errors seeded for other events stay (failure injection).
         """
         full = _full_key(drf)
         rng = _get_range(drf)
@@ -918,6 +920,8 @@ class FakeBackend(Backend):
             )
 
         self._readings[key] = updated
+        for k in [k for k in self._readings if k != key and _base_key(k) == key]:
+            self._readings[k] = updated
         if full != key:
             self._readings[full] = updated
 
