@@ -932,6 +932,68 @@ class TestDMQCleanup:
                 channel.close.assert_called_once_with()
                 assert long_results[0].success and long.completed_devices == 1
 
+    def test_cancelled_write_not_flushed_when_session_confirms(self):
+        """PENDING handled before the timed-out caller's abort: flush skips the cancelled batch."""
+        backend = DMQBackend.__new__(DMQBackend)
+        backend._select_connection = mock.MagicMock()
+        backend._select_connection.is_open = True
+        backend._write_session_ttl = 600.0
+        backend._local_ip = b"127.0.0.1"
+        backend._create_gss_context = mock.MagicMock(return_value=_mock_gss_context())
+        backend._write_sessions = {}
+        init_drf = prepare_for_write(TEMP_DEVICE)
+        cancelled, live = _WriteCompletionTracker(total_devices=1), _WriteCompletionTracker(total_devices=1)
+        cancelled_results, live_results = [None], [None]
+        backend._pending_session_setups = {
+            init_drf: [
+                ([(0, TEMP_DEVICE, b"cancelled")], cancelled_results, cancelled),
+                ([(0, TEMP_DEVICE, b"live")], live_results, live),
+            ]
+        }
+        channel = mock.MagicMock(is_open=True)
+        backend._create_write_session(channel, "write-exchange", "write-queue", init_drf)
+        session = backend._write_sessions[init_drf]
+
+        cancelled.cancel()
+        on_message = channel.basic_consume.call_args.kwargs["on_message_callback"]
+        method = mock.MagicMock(routing_key="R", delivery_tag=1)
+        pending = make_error_reply(FACILITY_DMQ, 1)
+        on_message(channel, method, mock.MagicMock(correlation_id=session.init_message_id), pending)
+        backend._abort_pending_writes({init_drf}, cancelled)
+
+        sent = [c.kwargs["body"] for c in channel.basic_publish.call_args_list if c.kwargs["routing_key"] != "I"]
+        assert sent == [b"live"]
+        assert cancelled_results == [None]  # left for the caller's backfill
+        assert [t for *_, t in session.pending.values()] == [live]
+
+    def test_cancel_between_settings_stops_publishing(self):
+        """Caller times out mid-batch: already-published settings are aborted, the rest never sent."""
+        backend = DMQBackend.__new__(DMQBackend)
+        backend._select_connection = mock.MagicMock()
+        backend._local_ip = b"127.0.0.1"
+        backend._pending_session_setups = {}
+        session = self._write_session(init_confirmed=True)
+        backend._write_sessions = {session.init_drf: session}
+        tracker = _WriteCompletionTracker(total_devices=1)
+        results = [None, None]
+
+        def sign(*_args):
+            if session.channel.basic_publish.call_count == 1:
+                tracker.cancel()
+            return b"mic"
+
+        backend._sign_message = sign
+        backend._send_settings_async(
+            session, [(0, TEMP_DEVICE, b"first"), (1, TEMP_DEVICE, b"second")], results, tracker
+        )
+        backend._abort_pending_writes({session.init_drf}, tracker)
+
+        sent = [
+            c.kwargs["body"] for c in session.channel.basic_publish.call_args_list if c.kwargs["routing_key"] != "D"
+        ]
+        assert sent == [b"first"]
+        assert results[0].error_code == ERR_TIMEOUT and results[1] is None
+
     def test_timeout_only_aborts_callers_writes_and_preserves_fifo(self):
         backend = DMQBackend.__new__(DMQBackend)
         backend._select_connection = mock.MagicMock()
@@ -2220,6 +2282,38 @@ class TestDMQBackendWrite:
                 backend.write(TEMP_DEVICE, b"\x00", timeout=5.0)
             assert backend._write_sessions.get(session.init_drf) is session
             assert backend.write(TEMP_DEVICE, 73.5, timeout=5.0).success
+
+    @pytest.mark.parametrize("release", ["during_abort_wait", "after_return"])
+    def test_timed_out_write_not_published_after_io_stall(self, monkeypatch, release):
+        """IO thread stalled past the caller's timeout: the queued batch must never reach the server."""
+        monkeypatch.setattr("pacsys.backends.dmq._WRITE_ABORT_WAIT", 0.05 if release == "after_return" else 2.0)
+        with _mock_dmq_write_backend() as backend:
+            assert backend.write(TEMP_DEVICE, TEMP_VALUE, timeout=2.0).success
+            session = backend._write_sessions[prepare_for_write(TEMP_DEVICE)]
+            conn = backend._select_connection
+            assert conn is not None
+            stalled, gate = threading.Event(), threading.Event()
+            conn.ioloop.add_callback_threadsafe(lambda: (stalled.set(), gate.wait(2.0)))  # e.g. blocking DIRECT cb
+            assert stalled.wait(1.0)
+            if release == "during_abort_wait":
+                # Unblock once the batch and its abort are both queued behind the stall
+                def release_when_queued():
+                    while len(conn.ioloop._callbacks) < 2 and not gate.is_set():
+                        time.sleep(0.005)
+                    gate.set()
+
+                threading.Thread(target=release_when_queued, daemon=True).start()
+            try:
+                result = backend.write(TEMP_DEVICE, TEMP_VALUE + 1, timeout=0.1)
+            finally:
+                gate.set()
+            assert result.error_code == ERR_TIMEOUT
+            drained = threading.Event()
+            conn.ioloop.add_callback_threadsafe(drained.set)
+            assert drained.wait(1.0)
+            settings = [m for m in session.channel._published_messages if m["routing_key"].startswith("S.")]
+            assert len(settings) == 1, "timed-out write was published after the caller returned"
+            assert not session.pending and not session.queued_sends
 
     def test_write_auth_failure_returns_error_result(self):
         """Test that GSS context failure during async write returns error WriteResult."""

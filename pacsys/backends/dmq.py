@@ -117,6 +117,9 @@ DEFAULT_WRITE_SESSION_TTL = 600.0
 # Maximum concurrent write sessions (protects against channel exhaustion)
 MAX_WRITE_SESSIONS = 1024
 
+# How long a timed-out write_many waits for the IO thread to run its abort (seconds)
+_WRITE_ABORT_WAIT = 2.0
+
 # Map backend-agnostic BasicControl enum → SDD protocol constants.
 # Only commands 0-6 have SDD enum values; LOCAL/REMOTE/TRIP (7-9) are
 # sent as DoubleSample since the DMQ proto enum lacks them.
@@ -230,6 +233,14 @@ class _WriteCompletionTracker:
     completed_devices: int = 0
     done_event: threading.Event = field(default_factory=threading.Event)
     exception: Exception | None = None
+    # Set by the timed-out caller; the IO thread checks it under publish_lock right before each SETTING publish
+    cancelled: bool = False
+    publish_lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def cancel(self) -> None:
+        """Caller gave up (caller thread): no further settings of this batch may be published."""
+        with self.publish_lock:
+            self.cancelled = True
 
     def device_complete(self) -> None:
         """Called when all writes for one device are done."""
@@ -1299,6 +1310,8 @@ class DMQBackend(Backend):
         tracker: _WriteCompletionTracker,
     ) -> None:
         """Execute write_many on IO thread (settings carry marshalled sample bodies)."""
+        if tracker.cancelled:
+            return  # IO thread stalled past the caller's timeout; its backfill owns results
         try:
             # Group by init_drf (property-aware, not just device name)
             by_init_drf: dict[str, list[tuple[int, str, bytes]]] = defaultdict(list)
@@ -1559,7 +1572,13 @@ class DMQBackend(Backend):
         results: list[WriteResult | None],
         tracker: _WriteCompletionTracker,
     ) -> None:
-        """Send marshalled SETTING messages for device (IO thread)."""
+        """Send marshalled SETTING messages for device (IO thread).
+
+        A cancelled batch (caller timed out) is dropped without touching results:
+        the caller backfills them, and _abort_pending_writes aborts any already published.
+        """
+        if tracker.cancelled:
+            return
         if session.channel is None or not session.channel.is_open:
             for i, drf, _ in device_settings:
                 results[i] = WriteResult(
@@ -1578,15 +1597,18 @@ class DMQBackend(Backend):
 
                 mic = self._sign_message(session.gss_context, body, message_id)
 
-                session.channel.basic_publish(
-                    exchange=session.exchange_name,
-                    routing_key=f"S.{session.init_drf}",
-                    body=body,
-                    properties=pika.BasicProperties(
-                        message_id=message_id,
-                        headers={"signature": mic, "host-address": self._local_ip},
-                    ),
-                )
+                with tracker.publish_lock:
+                    if tracker.cancelled:
+                        return
+                    session.channel.basic_publish(
+                        exchange=session.exchange_name,
+                        routing_key=f"S.{session.init_drf}",
+                        body=body,
+                        properties=pika.BasicProperties(
+                            message_id=message_id,
+                            headers={"signature": mic, "host-address": self._local_ip},
+                        ),
+                    )
                 # Register pending AFTER successful publish to avoid orphaned entries
                 session.pending[message_id] = (i, drf, results, tracker)
                 pending_for_device += 1
@@ -2015,9 +2037,11 @@ class DMQBackend(Backend):
 
         # Block until done or timeout
         if not tracker.done_event.wait(max(deadline - time.monotonic(), 0)):
-            # Timeout - schedule abort on IO thread and wait for it to finish
-            # before touching results.  This avoids a race where the main thread
-            # overwrites a successful result with ERR_TIMEOUT.
+            # Timeout - forbid further publishes first: a stalled IO thread runs the
+            # queued batch (or flushes it on PENDING) before do_abort.  Then schedule
+            # abort on IO thread and wait for it to finish before touching results.
+            # This avoids a race where the main thread overwrites a successful result with ERR_TIMEOUT.
+            tracker.cancel()
             init_drfs_involved = {prepare_for_write(drf) for drf, _ in settings}
             abort_done = threading.Event()
 
@@ -2036,10 +2060,11 @@ class DMQBackend(Backend):
                     # died -- fall through and wait so results can't be mutated
                     # under the backfill below.
                     pass
-                if not abort_done.wait(timeout=2.0):
+                if not abort_done.wait(timeout=_WRITE_ABORT_WAIT):
                     logger.warning(
-                        "Write abort for %d device(s) did not complete within 2s; IO thread may be unresponsive",
+                        "Write abort for %d device(s) did not complete within %ss; IO thread may be unresponsive",
                         len(init_drfs_involved),
+                        _WRITE_ABORT_WAIT,
                     )
             # else: connection already lost -- _on_connection_closed filled
             # results and the IO thread has exited, so results are safe to touch
