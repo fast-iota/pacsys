@@ -514,6 +514,55 @@ def _normalize_hops(hops: HopSpec | list[HopSpec]) -> list[SSHHop]:
     return result
 
 
+def _exec_command(chan: paramiko.Channel, command: str, deadline: float | None, timeout: float | None) -> None:
+    """``chan.exec_command`` bounded by ``deadline``.
+
+    Paramiko waits for the exec reply with no timeout, so at the deadline a watchdog sets
+    ``chan.event`` (never sending on the transport); with no reply recorded the wait raises
+    SSHException. Callers close the channel. A server rejection raises unchanged.
+    Not covered: the request send itself blocking on a stalled transport (or rekey).
+    """
+    if deadline is None:
+        chan.exec_command(command)
+        return
+    msg = f"Command timed out after {timeout}s before the server started it: {command!r}"
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise SSHTimeoutError(msg)
+    lock = threading.Lock()
+    done = threading.Event()
+    expired = False
+
+    def watchdog():
+        nonlocal expired
+        if done.wait(remaining):
+            return
+        with lock:
+            if done.is_set():
+                return
+            expired = True
+        # Repeat: exec_command clears chan.event right before sending the request
+        while True:
+            chan.event.set()
+            if done.wait(0.05):
+                return
+
+    try:
+        threading.Thread(target=watchdog, name="ssh-exec-deadline", daemon=True).start()
+        chan.exec_command(command)
+    except Exception as e:
+        with lock:
+            done.set()
+        if expired:
+            raise SSHTimeoutError(msg) from e
+        raise
+    finally:
+        with lock:
+            done.set()
+    if expired:
+        raise SSHTimeoutError(msg)
+
+
 class SSHClient:
     """SSH client supporting multi-hop connections, command execution, tunneling, and SFTP.
 
@@ -753,7 +802,7 @@ class SSHClient:
         """
         chan, deadline = self._open_session(command, timeout)
         try:
-            chan.exec_command(command)
+            _exec_command(chan, command, deadline, timeout)
 
             if input is not None:
                 chan.sendall(input.encode())
@@ -809,7 +858,7 @@ class SSHClient:
         """
         chan, deadline = self._open_session(command, timeout)
         try:
-            chan.exec_command(command)
+            _exec_command(chan, command, deadline, timeout)
             chan.shutdown_write()
 
             buf = ""
@@ -885,20 +934,25 @@ class SSHClient:
 
         Args:
             command: Command to execute on the remote host
-            timeout: Timeout in seconds for session opening and channel reads/writes
-                (None = Paramiko's default for opening, blocking reads/writes)
+            timeout: Deadline in seconds for opening the session and starting the command, and
+                timeout for each channel read/write (None = Paramiko's default for opening,
+                no bound on starting, blocking reads/writes)
 
         Returns:
             paramiko.Channel with the command running and stdin open
+
+        Raises:
+            SSHTimeoutError: If the command is not started within timeout
         """
         transport = self._final_transport
         if not transport.is_active():
             raise SSHConnectionError("Transport is no longer active")
 
+        deadline = time.monotonic() + timeout if timeout is not None else None
         chan = transport.open_session(timeout=timeout)
         try:
             chan.settimeout(timeout)
-            chan.exec_command(command)
+            _exec_command(chan, command, deadline, timeout)
         except BaseException:
             chan.close()
             raise
