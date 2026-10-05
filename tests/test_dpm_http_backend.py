@@ -1696,6 +1696,38 @@ class TestDPMSubscribeCloseRace:
             backend.close()
 
 
+def test_subscribe_survives_caller_mutating_drfs():
+    import asyncio
+    import threading
+
+    from pacsys.backends.dpm_http import _AsyncDPMConnection, _DpmStreamCore
+
+    gate = threading.Event()
+    seen = []
+
+    async def gated_connect(self):
+        while not gate.is_set():
+            await asyncio.sleep(0.005)
+
+    async def fake_stream(self, drfs, dispatch_fn, stop_check, error_fn):
+        seen.append(list(drfs))
+
+    backend = DPMHTTPBackend()
+    try:
+        with (
+            mock.patch.object(_AsyncDPMConnection, "connect", gated_connect),
+            mock.patch.object(_DpmStreamCore, "stream", fake_stream),
+        ):
+            drfs = ["M:OUTTMP@p,1000"]
+            handle = backend.subscribe(drfs)
+            drfs.clear()
+            gate.set()
+            assert list(handle.readings(timeout=1.0)) == []
+        assert seen == [["M:OUTTMP@p,1000"]]
+    finally:
+        backend.close()
+
+
 class TestDPMSubscribeConnectFailure:
     """A dead server must surface through the handle, not silent empty readings."""
 

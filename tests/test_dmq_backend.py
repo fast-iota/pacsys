@@ -2074,6 +2074,22 @@ class TestDMQBackendSubscribe:
         assert isinstance(error, DeviceError) and error.error_code == -98
         assert values == [1.0]
 
+    def test_subscribe_survives_caller_mutating_drfs(self):
+        with _mock_dmq_backend() as backend:
+            drfs = [TEMP_DEVICE]
+            handle = backend.subscribe(drfs)
+            drfs.clear()
+            channel = backend._subscriptions[handle._sub_id].channel
+            conn = backend._select_connection
+            assert channel is not None and conn is not None
+            method = mock.MagicMock(routing_key=f"R.{TEMP_DEVICE}", delivery_tag=1)
+            conn.ioloop.add_callback_threadsafe(
+                partial(channel._on_message_callback, channel, method, None, make_double_reply(TEMP_VALUE, ref_id=1))
+            )
+            reading, _h = next(handle.readings(timeout=1.0))
+            handle.stop()
+        assert (reading.drf, reading.value) == (TEMP_DEVICE, TEMP_VALUE)
+
     def test_subscribe_empty_drfs_raises(self):
         """Test that subscribe with empty drfs raises ValueError."""
         with _mock_gssapi():

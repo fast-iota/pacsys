@@ -2119,6 +2119,7 @@ class DPMHTTPBackend(Backend):
         """
         if not drfs:
             raise ValueError("drfs cannot be empty")
+        drfs = list(drfs)  # the stream task builds its setup batch after we return
 
         if self._closed:
             raise RuntimeError("Backend is closed")

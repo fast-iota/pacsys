@@ -136,6 +136,7 @@ class AsyncGRPCBackend(AsyncBackend):
     ) -> AsyncSubscriptionHandle:
         if not drfs:
             raise ValueError("drfs cannot be empty")
+        drfs = list(drfs)  # the stream resolves reply indices against it after we return
         _validate_callback(callback, on_error)
         await self._ensure_connected()
         assert self._core is not None

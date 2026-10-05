@@ -2543,6 +2543,7 @@ class DMQBackend(Backend):
 
         if not drfs:
             raise ValueError("drfs cannot be empty")
+        drfs = list(drfs)  # replies are resolved against it after we return
         _validate_callback(callback, on_error)
 
         # Ensure IO thread is running

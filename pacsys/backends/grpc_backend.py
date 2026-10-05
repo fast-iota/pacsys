@@ -1166,6 +1166,7 @@ class GRPCBackend(Backend):
             raise ImportError("grpc package required for streaming")
         if not drfs:
             raise ValueError("drfs cannot be empty")
+        drfs = list(drfs)  # the stream resolves reply indices against it after we return
         if self._closed:
             raise RuntimeError("Backend is closed")
         _validate_callback(callback, on_error)

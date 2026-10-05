@@ -399,6 +399,7 @@ class AsyncDPMHTTPBackend(AsyncBackend):
         self._check_closed()
         if not drfs:
             raise ValueError("drfs cannot be empty")
+        drfs = list(drfs)  # the stream task builds its setup batch after we return
         _validate_callback(callback, on_error)
         core = await self._create_core()
         # Until handle._core is set and the handle registered, a raise here

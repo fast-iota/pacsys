@@ -139,6 +139,20 @@ class TestAsyncGRPCSubscribe:
         assert not handle._queue.empty()
 
     @pytest.mark.asyncio
+    async def test_caller_mutating_drfs_after_subscribe_has_no_effect(self, backend):
+        seen = []
+
+        async def fake_stream(drfs, dispatch_fn, stop_check, error_fn):
+            seen.append(list(drfs))
+
+        backend._core.stream = fake_stream
+        drfs = ["M:OUTTMP@p,1000"]
+        handle = await backend.subscribe(drfs)
+        drfs.clear()
+        await handle._task
+        assert seen == [["M:OUTTMP@p,1000"]]
+
+    @pytest.mark.asyncio
     async def test_subscribe_with_callback(self, backend):
         collected = []
 

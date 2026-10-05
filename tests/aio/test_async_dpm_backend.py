@@ -295,6 +295,25 @@ class TestAsyncDPMSubscribe:
         assert not handle._queue.empty()
 
     @pytest.mark.asyncio
+    async def test_caller_mutating_drfs_after_subscribe_has_no_effect(self, backend):
+        seen = []
+
+        async def fake_stream(drfs, dispatch, stop, error):
+            seen.append(list(drfs))
+
+        async def fake_create():
+            core = _mock_core()
+            core.stream = fake_stream
+            return core
+
+        backend._create_core = fake_create
+        drfs = ["M:OUTTMP@p,1000"]
+        handle = await backend.subscribe(drfs)
+        drfs.clear()
+        await handle._task
+        assert seen == [["M:OUTTMP@p,1000"]]
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("callback_mode", [False, True])
     @pytest.mark.parametrize("async_on_error", [False, True])
     async def test_stream_death_closes_core_and_removes_handle(self, backend, callback_mode, async_on_error):

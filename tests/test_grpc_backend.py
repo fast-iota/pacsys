@@ -491,6 +491,31 @@ class TestWarningData:
         assert (reading.facility_code, reading.error_code, reading.message) == (66, status, f"status {status}")
 
 
+def test_subscribe_survives_caller_mutating_drfs(backend_with_mock_stub):
+    backend, stub = backend_with_mock_stub
+    gate = threading.Event()
+    requests = []
+
+    class GatedIterator(AsyncMockIterator):
+        async def __anext__(self):
+            while not gate.is_set():
+                await asyncio.sleep(0.005)
+            return await super().__anext__()
+
+    def read(request, **kwargs):
+        requests.append(list(request.drf))
+        return GatedIterator([make_reading_reply(0, scalar_value=1.5)])
+
+    stub.Read.side_effect = read
+    drfs = ["M:OUTTMP@p,1000"]
+    with backend.subscribe(drfs) as handle:
+        drfs.clear()
+        gate.set()
+        readings = [r for r, _h in handle.readings(timeout=0.5)]
+    assert requests == [["M:OUTTMP@p,1000"]]
+    assert [(r.drf, r.value) for r in readings] == [("M:OUTTMP@p,1000", 1.5)]
+
+
 class TestMultipleDeviceRead:
     """Tests for multiple device get_many operations."""
 
