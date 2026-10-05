@@ -213,3 +213,39 @@ class TestValuesMatch:
 
     def test_numpy_broadcast_compatible_shapes_do_not_match(self):
         assert not values_match(np.array([1.0, 2.0]), np.array([[1.0, 2.0]]))
+
+    def test_integer_arrays_compare_exactly(self):
+        big = np.array([2**53, 7], dtype=np.int64)
+        assert values_match(big, big.copy())
+        assert not values_match(big, big + [1, 0])
+        assert values_match(big, big + [1, 0], tolerance=1.0)
+        assert not values_match(big, big + [2, 0], tolerance=1.5)
+        signed, unsigned = np.array([2**63 - 1], dtype=np.int64), np.array([2**63 - 2], dtype=np.uint64)
+        assert not values_match(signed, unsigned)
+        assert values_match(signed, unsigned, tolerance=1.0)
+        assert values_match(np.array([], dtype=np.int64), np.array([], dtype=np.int64))
+
+    def test_integer_vs_float_arrays_keep_float_comparison(self):
+        assert values_match(np.array([1, 2]), np.array([1.05, 2.0]), tolerance=0.1)
+        assert not values_match(np.array([1, 2]), np.array([1.5, 2.0]), tolerance=0.1)
+
+
+@pytest.mark.parametrize(("readback", "verified"), [(2**53 + 1, False), (2**53, True)])
+@pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+def test_device_write_verifies_integer_arrays_exactly(readback, verified, use_async):
+    from unittest import mock
+
+    from pacsys import Device
+    from pacsys.aio import AsyncDevice
+    from pacsys.types import WriteResult
+
+    backend = mock.AsyncMock() if use_async else mock.MagicMock()
+    backend.write.return_value = WriteResult(drf="Z:ACLTST.SETTING@N")
+    backend.read.return_value = np.array([readback], dtype=np.int64)
+    value = np.array([2**53], dtype=np.int64)
+    v = Verify(initial_delay=0, retry_delay=0, max_attempts=1)
+    if use_async:
+        result = asyncio.run(AsyncDevice("Z:ACLTST", backend=backend).write(value, verify=v))
+    else:
+        result = Device("Z:ACLTST", backend=backend).write(value, verify=v)
+    assert result.verified is verified

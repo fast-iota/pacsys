@@ -134,6 +134,9 @@ def values_match(a: Value, b: Value, tolerance: float = 0.0) -> bool:
                 return a_bool and b_bool and bool(np.array_equal(a_arr, b_arr))
             if a_arr.dtype.kind not in "iufc" or b_arr.dtype.kind not in "iufc":
                 return bool(np.array_equal(a_arr, b_arr))
+            if a_arr.dtype.kind in "iu" and b_arr.dtype.kind in "iu":
+                # Exact like the scalar path: allclose's float64 loses precision above 2**53
+                return all(abs(x - y) <= tolerance for x, y in zip(a_arr.ravel().tolist(), b_arr.ravel().tolist()))
             return bool(np.allclose(a_arr, b_arr, atol=tolerance, rtol=0.0, equal_nan=False))
         except (TypeError, ValueError):
             return False
