@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import csv
+import io
 import json
 from pathlib import Path
 from typing import Any, Protocol, cast, runtime_checkable
@@ -84,19 +85,45 @@ def _format_value_str(r: Reading) -> str:
 
 
 class CsvWriter:
-    """Write readings to a CSV file.
+    """Write readings to a UTF-8 CSV file.
 
     Columns: timestamp, drf, value, units, facility_code, error_code, message.
     Values are serialized as parseable strings: scalars as-is, arrays as JSON
     lists, dicts as JSON objects, raw bytes as base64. Status fields come directly
     from each reading; missing messages are empty.
+
+    A batch that fails to write is truncated away, so a retry writes each row once.
+    If that rollback fails, every later batch is rejected.
     """
 
     def __init__(self, path: str | Path):
         self._path = Path(path)
-        self._file = self._path.open("w", newline="")
-        self._writer = csv.writer(self._file)
-        self._writer.writerow(["timestamp", "drf", "value", "units", "facility_code", "error_code", "message"])
+        self._file = self._path.open("wb", buffering=0)
+        self._rollback_error: BaseException | None = None
+        try:
+            self._write_rows([["timestamp", "drf", "value", "units", "facility_code", "error_code", "message"]])
+        except BaseException:
+            self._file.close()
+            raise
+
+    def _write_rows(self, rows: list[list[Any]]) -> None:
+        if self._rollback_error is not None:
+            raise RuntimeError(f"CsvWriter disabled: partial batch left in {self._path}") from self._rollback_error
+        text = io.StringIO(newline="")
+        csv.writer(text).writerows(rows)
+        data = memoryview(text.getvalue().encode("utf-8"))
+        start = self._file.tell()
+        try:
+            while data:
+                data = data[self._file.write(data) :]
+        except BaseException:
+            try:
+                self._file.truncate(start)
+                self._file.seek(start)
+            except BaseException as exc:
+                self._rollback_error = exc
+                raise RuntimeError(f"CsvWriter disabled: partial batch left in {self._path}") from exc
+            raise
 
     def write_readings(self, readings: list[Reading]) -> None:
         rows = []
@@ -112,8 +139,7 @@ class CsvWriter:
                     r.message if r.message is not None else "",
                 ]
             )
-        self._writer.writerows(rows)
-        self._file.flush()
+        self._write_rows(rows)
 
     def close(self) -> None:
         self._file.close()

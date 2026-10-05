@@ -404,7 +404,7 @@ dl.stop()  # Flushes remaining data and closes the writer
 |----------|------|-------------|
 | `running` | `bool` | Whether the logger is actively collecting |
 | `last_error` | `Exception \| None` | Last write or subscription error, if any |
-| `failed` | `bool` | True once a batch was dropped after exhausting write retries (logging continues) or the subscription failed (logging stops) |
+| `failed` | `bool` | True once a batch was dropped after exhausting write retries or interrupted mid-write (e.g. `KeyboardInterrupt`; logging continues), or the subscription failed (logging stops) |
 | `dropped_count` | `int` | Readings lost so far (sticky until the next `start()`) |
 
 Recoverable subscription errors allow logging to continue while the backend retries; they do not set `failed` or `last_error`.
@@ -434,7 +434,8 @@ Timed arrays retain their `data` and `micros` fields as JSON in CSV values and P
 
 Simple CSV output with columns: `timestamp`, `drf`, `value`, `units`, `facility_code`, `error_code`, `message`.
 Status fields are preserved from each reading; missing messages are empty. Error rows can be distinguished from successful empty text values, and warnings retain their values.
-Each batch is flushed to the operating system before `write_readings()` returns.
+Output is UTF-8. Each batch is flushed to the operating system before `write_readings()` returns.
+A batch that fails to write is removed from the file, so `DataLogger` retries write each row once; if removal fails, later batches are rejected and `DataLogger` reports them as dropped.
 Parquet files require a successful `close()` before they are readable.
 
 ```python

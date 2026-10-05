@@ -225,6 +225,13 @@ class DataLogger:
                         self._retry_count = 0
                         self._dropped_count += len(batch)
                     return
+            except BaseException:
+                # Interrupted (e.g. KeyboardInterrupt): unknown whether the batch landed, so report it rather than
+                # requeue it (a completed write would be duplicated)
+                with self._lock:
+                    self._retry_count = 0
+                    self._dropped_count += len(batch)
+                raise
 
     def __enter__(self) -> DataLogger:
         self.start()

@@ -2,16 +2,19 @@
 
 import base64
 import csv
+import errno
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import numpy as np
 import pytest
 
-from pacsys.exp import CsvWriter, LogWriter, ParquetWriter
+from pacsys.exp import CsvWriter, LogWriter, ParquetWriter, _writers
 from pacsys.types import DeviceMeta, Reading, ValueType
 
 TS = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+CSV_HEADER = ["timestamp", "drf", "value", "units", "facility_code", "error_code", "message"]
 
 
 def _reading(drf="M:OUTTMP", value=72.5, **kwargs) -> Reading:
@@ -22,6 +25,43 @@ def _reading(drf="M:OUTTMP", value=72.5, **kwargs) -> Reading:
         timestamp=TS,
         **kwargs,
     )
+
+
+def csv_row(value: float) -> list[str]:
+    return [TS.isoformat(), "M:OUTTMP", str(value), "", "0", "0", ""]
+
+
+class TransientQuota:
+    """Wrap files opened by CsvWriter so one write fails like RLIMIT_FSIZE after `allow` more chars/bytes.
+
+    The failing write first lands its allowed prefix in the real file; the quota is then lifted.
+    """
+
+    def __init__(self, monkeypatch):
+        self.allow: int | None = None
+        quota = self
+
+        class QuotaFile:
+            def __init__(self, f):
+                self._f = f
+
+            def __getattr__(self, name):
+                return getattr(self._f, name)
+
+            def write(self, data):
+                if quota.allow is not None and len(data) > quota.allow:
+                    self._f.write(data[: quota.allow])
+                    quota.allow = None
+                    raise OSError(errno.EFBIG, "File too large")
+                if quota.allow is not None:
+                    quota.allow -= len(data)
+                return self._f.write(data)
+
+        class QuotaPath(type(Path())):
+            def open(self, *args, **kwargs):
+                return QuotaFile(super().open(*args, **kwargs))
+
+        monkeypatch.setattr(_writers, "Path", QuotaPath)
 
 
 class TestCsvWriter:
@@ -87,6 +127,51 @@ class TestCsvWriter:
             [TS.isoformat(), "M:OUTTMP", "72.5", "", "0", "0", ""],
             ["", "D:ARRAY", "[1.0, 2.0]", "", "0", "0", ""],
         ]
+
+    def test_failed_batch_is_rolled_back_for_retry(self, tmp_path, monkeypatch):
+        quota = TransientQuota(monkeypatch)
+        path = tmp_path / "test.csv"
+        first = [_reading(value=float(i)) for i in range(3)]
+        second = [_reading(value=float(i)) for i in range(3, 13)]
+        writer = CsvWriter(path)
+        try:
+            writer.write_readings(first)
+            quota.allow = 100  # two rows and part of a third land before the failure
+            with pytest.raises(OSError, match="File too large"):
+                writer.write_readings(second)
+            with path.open(newline="") as f:
+                assert list(csv.reader(f)) == [CSV_HEADER] + [csv_row(float(i)) for i in range(3)]
+            writer.write_readings(second)
+        finally:
+            writer.close()
+
+        with path.open(newline="") as f:
+            assert list(csv.reader(f)) == [CSV_HEADER] + [csv_row(float(i)) for i in range(13)]
+
+    def test_failed_rollback_rejects_later_batches(self, tmp_path, monkeypatch):
+        quota = TransientQuota(monkeypatch)
+        path = tmp_path / "test.csv"
+        rollback_error = OSError(errno.EIO, "I/O error")
+
+        def fail_truncate(size):
+            raise rollback_error
+
+        writer = CsvWriter(path)
+        try:
+            writer._file.truncate = fail_truncate
+            quota.allow = 10
+            with pytest.raises(RuntimeError, match="partial batch") as info:
+                writer.write_readings([_reading()])
+            assert info.value.__cause__ is rollback_error
+            assert isinstance(rollback_error.__context__, OSError)
+            assert rollback_error.__context__.errno == errno.EFBIG
+            size = path.stat().st_size
+            with pytest.raises(RuntimeError, match="partial batch") as info:
+                writer.write_readings([_reading()])
+            assert info.value.__cause__ is rollback_error
+            assert path.stat().st_size == size
+        finally:
+            writer.close()
 
     def test_csv_array_as_json(self, tmp_path):
         """Scalar arrays are serialized as JSON lists, not Python repr."""

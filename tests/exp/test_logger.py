@@ -1,6 +1,7 @@
 """Tests for DataLogger."""
 
 import csv
+import errno
 import threading
 import time
 
@@ -11,6 +12,7 @@ from pacsys.exp._logger import DataLogger
 from pacsys.exp._writers import CsvWriter
 from pacsys.testing import FakeBackend
 from pacsys.types import Reading, ValueType
+from tests.exp.test_writers import CSV_HEADER, TransientQuota
 
 
 @pytest.fixture
@@ -161,6 +163,76 @@ class TestDataLogger:
             assert list(csv.reader(f)) == [
                 ["timestamp", "drf", "value", "units", "facility_code", "error_code", "message"]
             ]
+
+    def test_transient_csv_failure_retries_without_duplicates(self, fake, tmp_path, monkeypatch):
+        quota = TransientQuota(monkeypatch)
+        path = tmp_path / "log.csv"
+        dl = DataLogger(["M:OUTTMP@p,1000"], writer=CsvWriter(path), flush_interval=999, backend=fake)
+        dl.start()
+        try:
+            for i in range(10):
+                fake.emit_reading("M:OUTTMP@p,1000", float(i))
+            quota.allow = 100  # one row and part of the next land before the failure
+        finally:
+            dl.stop()
+
+        assert isinstance(dl.last_error, OSError)
+        assert not dl.failed
+        with path.open(newline="") as f:
+            rows = list(csv.reader(f))
+        assert rows[0] == CSV_HEADER
+        assert [row[2] for row in rows[1:]] == [str(float(i)) for i in range(10)]
+
+    def test_interrupted_flush_reports_batch_as_dropped(self, fake, tmp_path, monkeypatch):
+        path = tmp_path / "log.csv"
+        writer = CsvWriter(path)
+        real_write = writer._file.write
+        calls = 0
+
+        def interrupt_once(data):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                real_write(bytes(data[:20]))
+                raise KeyboardInterrupt
+            return real_write(data)
+
+        monkeypatch.setattr(writer._file, "write", interrupt_once)
+        dl = DataLogger(["M:OUTTMP@p,1000"], writer=writer, flush_interval=999, backend=fake)
+        dl.start()
+        for i in range(3):
+            fake.emit_reading("M:OUTTMP@p,1000", float(i))
+        with pytest.raises(KeyboardInterrupt):
+            dl.stop()
+        with pytest.raises(RuntimeError, match="Dropped 3 readings"):
+            dl.stop()
+
+        assert dl.failed
+        with path.open(newline="") as f:
+            assert list(csv.reader(f)) == [CSV_HEADER]  # rolled back, never duplicated
+
+    def test_csv_rollback_failure_is_reported_as_drop(self, fake, tmp_path, monkeypatch):
+        quota = TransientQuota(monkeypatch)
+        path = tmp_path / "log.csv"
+        writer = CsvWriter(path)
+
+        def fail_truncate(size):
+            raise OSError(errno.EIO, "I/O error")
+
+        writer._file.truncate = fail_truncate
+        dl = DataLogger(["M:OUTTMP@p,1000"], writer=writer, flush_interval=999, backend=fake)
+        dl.start()
+        try:
+            fake.emit_reading("M:OUTTMP@p,1000", 72.5)
+            fake.emit_reading("M:OUTTMP@p,1000", 73.0)
+            quota.allow = 10
+        finally:
+            with pytest.raises(RuntimeError, match="Dropped 2 readings") as info:
+                dl.stop()
+
+        assert "partial batch" in str(info.value.__cause__)
+        assert dl.failed
+        assert writer._file.closed
 
     def test_worker_drop_during_stop_is_reported(self, fake):
         class BlockingFailingWriter:
