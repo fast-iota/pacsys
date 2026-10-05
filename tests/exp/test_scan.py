@@ -233,6 +233,40 @@ class TestScan:
         assert exc_info.value.result.restored is False
         assert exc_info.value.__cause__ is (failure if isinstance(failure, Exception) else None)
 
+    @staticmethod
+    def _ignore_restore_writes(fake):
+        """Restore write (42.0) is accepted but never lands, so its verify readback fails."""
+        real_write = fake.write
+
+        def write(drf, value, timeout=None):
+            return WriteResult(drf=drf) if value == 42.0 else real_write(drf, value, timeout)
+
+        return mock.patch.object(fake, "write", side_effect=write)
+
+    def test_ambient_verify_failed_restore_readback_is_not_restored(self, fake):
+        fake.set_reading("Z:ACLTST.SETTING", 42.0)
+        with (
+            self._ignore_restore_writes(fake),
+            Verify(always=True, initial_delay=0, retry_delay=0, max_attempts=1),
+            pytest.raises(ScanRestoreError, match=r"failed to restore Z:ACLTST to 42.0: readback=2.0") as exc_info,
+        ):
+            scan("Z:ACLTST", ["M:OUTTMP"], values=[1.0, 2.0], settle=0, backend=fake)
+        result = exc_info.value.result
+        assert result.restored is False
+        assert [wr.verified for wr in result.write_results] == [True, True]
+
+    def test_ambient_verify_failed_error_cleanup_restore_is_logged(self, fake, caplog):
+        fake.set_reading("Z:ACLTST.SETTING", 42.0)
+        fake.get_many = mock.Mock(side_effect=RuntimeError("read failed"))
+        with (
+            self._ignore_restore_writes(fake),
+            Verify(always=True, initial_delay=0, retry_delay=0, max_attempts=1),
+            caplog.at_level(logging.ERROR, logger="pacsys.exp._scan"),
+            pytest.raises(RuntimeError, match="read failed"),
+        ):
+            scan("Z:ACLTST", ["M:OUTTMP"], values=[1.0], settle=0, backend=fake)
+        assert "Failed to restore Z:ACLTST to 42.0 during error cleanup: readback=1.0" in caplog.text
+
     def test_no_restore(self, fake):
         fake.set_reading("Z:ACLTST.SETTING", 42.0)
         result = scan(

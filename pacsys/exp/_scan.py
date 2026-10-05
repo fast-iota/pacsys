@@ -154,8 +154,8 @@ def scan(
         if restore and original is not None:
             try:
                 restore_result = write_dev.write(original, timeout=timeout)
-                if not restore_result.ok:
-                    detail = restore_result.message or f"error_code={restore_result.error_code}"
+                if not restore_result.confirmed:
+                    detail = _failure_detail(restore_result)
                     logger.error("Failed to restore %s to %s during error cleanup: %s", write_drf, original, detail)
             except Exception:
                 logger.exception("Failed to restore %s to %s during error cleanup", write_drf, original)
@@ -165,8 +165,8 @@ def scan(
         if restore and original is not None:
             try:
                 restore_result = write_dev.write(original, timeout=timeout)
-                restored = restore_result.ok
-                detail = restore_result.message
+                restored = restore_result.confirmed  # an ambient Verify(always=True) can fail readback
+                detail = _failure_detail(restore_result)
             except Exception as exc:  # noqa: BLE001 -- preserve completed data for any restore failure
                 restore_cause = exc
                 detail = str(exc)
@@ -186,6 +186,12 @@ def scan(
     if restore_error is not None:
         raise ScanRestoreError(restore_error, result) from restore_cause
     return result
+
+
+def _failure_detail(wr: WriteResult) -> str:
+    if wr.message:
+        return wr.message
+    return f"readback={wr.readback!r}" if wr.ok else f"error_code={wr.error_code}"
 
 
 def _build_values(
