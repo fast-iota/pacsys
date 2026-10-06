@@ -99,7 +99,9 @@ alarm.bypass = False
 alarm.write("Z:ACLTST")
 ```
 
-Note: for manual-style writes, all alarm fields are written every time.
+Note: for manual-style writes, all alarm fields are written every time as one raw block. `write()`
+cannot apply engineering-unit `minimum`/`maximum` edits; it raises `ValueError` if they changed
+since `read()`. Use `modify()` for limits.
 
 ---
 
@@ -189,7 +191,9 @@ elif alarm.limit_type == LimitType.NOM_PCT_TOL:
 
 Changing `value1` or `value2` inside `modify()` performs a raw alarm-block
 write. Do not change the corresponding engineering-unit property in the same
-operation.
+operation. Outside `MIN_MAX` mode, both engineering limits derive from both raw words,
+so any `value1`/`value2` change combined with any `minimum`/`maximum` change raises
+`ValueError` before any write.
 
 Changing `minimum` or `maximum` together with `limit_type`, `data_type`, or
 `data_length` raises `ValueError` before any write. Those fields change how raw

@@ -15,9 +15,9 @@ Example usage:
         alarm.maximum = 100.0
         alarm.bypass = False
 
-    # Or manual read/modify/write
+    # Or manual read/modify/write of the raw block (minimum/maximum edits need modify())
     alarm = AnalogAlarm.read("Z:ACLTST")
-    alarm.minimum = 50.0
+    alarm.bypass = True
     alarm.write("Z:ACLTST")
 """
 
@@ -543,6 +543,8 @@ class AnalogAlarm(AlarmBlock):
     def write(self, device: str, backend: Backend | None = None, segment: int = 0) -> WriteResult:
         """Write analog alarm block to device.
 
+        Sends the raw block only; edit ``minimum``/``maximum`` via ``modify()``.
+
         Args:
             device: Device name or DRF string
             backend: Optional backend. If None, uses global default.
@@ -550,9 +552,20 @@ class AnalogAlarm(AlarmBlock):
 
         Returns:
             WriteResult from the backend
+
+        Raises:
+            ValueError: ``minimum``/``maximum`` changed since ``read()`` (nothing is written)
         """
         from pacsys.drf_utils import get_device_name
 
+        s, init = self._structured, self._initial_structured
+        # Identity first: an untouched NaN limit is the same object but != itself
+        if (
+            s is not None
+            and init is not None
+            and any(s.get(k) is not init.get(k) and s.get(k) != init.get(k) for k in ("minimum", "maximum"))
+        ):
+            raise ValueError("minimum/maximum edits need AnalogAlarm.modify(); write() sends the raw block only")
         name = get_device_name(device)
         offset = segment * 20
         drf = f"{name}.ANALOG{{{offset}:20}}.RAW@N"
@@ -753,7 +766,7 @@ class _AlarmModifyContext:
         name = get_device_name(self._device)
         offset = self._segment * 20
 
-        prop = "ANALOG" if self._cls is AnalogAlarm else "DIGITAL"
+        prop = "ANALOG" if issubclass(self._cls, AnalogAlarm) else "DIGITAL"
 
         # Fetch raw storage and structured engineering values together.
         raw_drf = f"{name}.{prop}{{{offset}:20}}.RAW@I"
@@ -795,7 +808,7 @@ class _AlarmModifyContext:
         backend = _get_backend(self._backend)
         name = get_device_name(self._device)
         offset = self._segment * 20
-        prop = "ANALOG" if self._cls is AnalogAlarm else "DIGITAL"
+        prop = "ANALOG" if issubclass(self._cls, AnalogAlarm) else "DIGITAL"
 
         current_raw = self._block.to_bytes()
         raw_changed = current_raw != self._initial_raw
@@ -807,7 +820,7 @@ class _AlarmModifyContext:
         s = self._block._structured
         init = self._block._initial_structured
         if s is not None and init is not None:
-            if self._cls is AnalogAlarm:
+            if issubclass(self._cls, AnalogAlarm):
                 value1_eng_changed = s.get("minimum") != init.get("minimum")
                 value2_eng_changed = s.get("maximum") != init.get("maximum")
             else:
@@ -834,6 +847,13 @@ class _AlarmModifyContext:
                 raise ValueError("Cannot change both raw value1 and engineering minimum")
             if value2_raw_changed and value2_eng_changed:
                 raise ValueError("Cannot change both raw value2 and engineering maximum")
+            # Outside MIN_MAX, DPM derives both limits from both raw words (nominal +/- tolerance)
+            if (
+                eng_changed
+                and (value1_raw_changed or value2_raw_changed)
+                and (init_block.flags >> 8) & 0x03 != LimitType.MIN_MAX
+            ):
+                raise ValueError("Cannot change raw value1/value2 with engineering limits unless limit_type is MIN_MAX")
 
         data_length_changed = bool((self._block.flags ^ init_block.flags) & 0x60)
         interpretation_changed = (
@@ -928,7 +948,7 @@ class _AlarmModifyContext:
         drf = f"{name}.{prop}@N"
 
         # Build write value from structured data
-        if self._cls is AnalogAlarm:
+        if issubclass(self._cls, AnalogAlarm):
             write_val = {
                 "minimum": s["minimum"],
                 "maximum": s["maximum"],

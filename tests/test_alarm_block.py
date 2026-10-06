@@ -377,6 +377,43 @@ class TestAlarmSegments:
         assert AnalogAlarm.from_bytes(value).abort
 
 
+class TestAnalogWrite:
+    """write() sends only the raw block; engineering limits go through modify()."""
+
+    @pytest.fixture
+    def alarm(self, fake_backend):
+        fake_backend.set_reading("Z:TEST.ANALOG{0:20}.RAW@I", AnalogAlarm().to_bytes(), value_type=ValueType.RAW)
+        fake_backend.set_analog_alarm("Z:TEST.ANALOG@I", _analog_structured())
+        return AnalogAlarm.read("Z:TEST", backend=fake_backend)
+
+    @pytest.mark.parametrize("field", ["minimum", "maximum"])
+    def test_limit_edit_rejected(self, fake_backend, alarm, field):
+        setattr(alarm, field, 50.0)
+
+        with pytest.raises(ValueError, match="modify"):
+            alarm.write("Z:TEST", backend=fake_backend)
+
+        assert fake_backend.writes == []
+
+    def test_unchanged_nan_limits_allow_raw_write(self, fake_backend):
+        nan = float("nan")
+        fake_backend.set_reading("Z:TEST.ANALOG{0:20}.RAW@I", AnalogAlarm().to_bytes(), value_type=ValueType.RAW)
+        fake_backend.set_analog_alarm("Z:TEST.ANALOG@I", _analog_structured(minimum=nan, maximum=nan))
+        alarm = AnalogAlarm.read("Z:TEST", backend=fake_backend)
+        alarm.bypass = True
+
+        alarm.write("Z:TEST", backend=fake_backend)
+
+        assert len(fake_backend.writes) == 1
+
+    def test_raw_edit_writes_raw_block(self, fake_backend, alarm):
+        alarm.bypass = True
+
+        alarm.write("Z:TEST", backend=fake_backend)
+
+        assert fake_backend.writes == [("Z:TEST.ANALOG{0:20}.RAW@N", alarm.to_bytes())]
+
+
 class TestAlarmReadStatus:
     @pytest.mark.parametrize(("alarm_cls", "prop"), [(AnalogAlarm, "ANALOG"), (DigitalAlarm, "DIGITAL")])
     def test_read_rejects_warning_without_value(self, alarm_cls, prop, fake_backend):
@@ -711,6 +748,7 @@ class TestModifyContext:
     def test_modify_combined_analog_patches_only_changed_raw_limit(self, fake_backend):
         initial = AnalogAlarm()
         initial.data_type = DataType.FLOAT
+        initial.limit_type = LimitType.MIN_MAX
         initial.value1 = 10.0
         initial.value2 = 100.0
         raw_read_drf = "Z:TEST.ANALOG{0:20}.RAW@I"
@@ -733,6 +771,22 @@ class TestModifyContext:
         patched = AnalogAlarm.from_bytes(raw_value)
         assert patched.value1 == pytest.approx(20.0)
         assert patched.value2 == pytest.approx(104.0)
+
+    @pytest.mark.parametrize("limit_type", [LimitType.NOM_TOL, LimitType.NOM_PCT_TOL])
+    def test_modify_raw_value_with_limit_edit_rejected_outside_min_max(self, fake_backend, limit_type):
+        # Both limits derive from both raw words here: patching value1 would shift the new maximum
+        initial = AnalogAlarm()
+        initial.data_type = DataType.FLOAT
+        initial.limit_type = limit_type
+        fake_backend.set_reading("Z:TEST.ANALOG{0:20}.RAW@I", initial.to_bytes(), value_type=ValueType.RAW)
+        fake_backend.set_analog_alarm("Z:TEST.ANALOG@I", _analog_structured())
+
+        with pytest.raises(ValueError, match="MIN_MAX"):
+            with AnalogAlarm.modify("Z:TEST", backend=fake_backend) as alarm:
+                alarm.value1 = 20.0
+                alarm.maximum = 300.0
+
+        assert fake_backend.writes == []
 
     def test_modify_combined_change_requires_fresh_raw_bytes(self, fake_backend, monkeypatch):
         initial = AnalogAlarm()
