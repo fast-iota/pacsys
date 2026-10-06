@@ -39,7 +39,7 @@ with pacsys.acl() as backend:
 
 ## Advanced: Raw ACL Commands
 
-The `execute()` method sends arbitrary ACL command strings directly to the CGI endpoint. The argument is placed verbatim after `?acl=` in the URL. Spaces are `+`, semicolons are `\;`.
+The `execute()` method sends arbitrary ACL command strings directly to the CGI endpoint. The argument is placed verbatim after `?acl=` in the URL. Spaces are `+`, semicolons are `\;`, and DRF characters (`:`, `[]`, `@`, `.`) must not be percent-encoded (the CGI does not decode `%3A` etc.).
 
 ```python
 with pacsys.acl() as backend:
@@ -61,10 +61,6 @@ with pacsys.acl() as backend:
 ```
 
 See the [ACL command reference](https://www-bd.fnal.gov/issues/wiki/ACLCommands) for operations not available through the standard ACNET backends.
-
-## URL Encoding
-
-The ACL CGI only decodes `+`/`%20` (space) and `%27` (quote) from the query string. General `%XX` sequences like `%3A` are **not** decoded - DRF characters (`:`, `[]`, `@`, `.`) must be sent raw. The backend handles this automatically for `read`/`get`/`get_many`.
 
 ## Limitations
 

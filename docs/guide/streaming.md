@@ -175,7 +175,7 @@ with pacsys.dpm() as backend:
             print(f"{reading.name}: {reading.value}")
 ```
 
-Each `subscribe()` call creates its own TCP connection (on DPM/HTTP), so subscriptions are truly independent - stopping one doesn't affect the others.
+Each `subscribe()` call creates its own TCP connection (on DPM/HTTP), so stopping one subscription doesn't affect the others.
 
 `CombinedStream` is at-most-once: prefetched readings are discarded if you exit the loop early
 or a subscription errors. Iterate each handle directly if you need every buffered reading.

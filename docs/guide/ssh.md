@@ -1,10 +1,7 @@
 # SSH Utility
 
-The `pacsys.ssh` module provides SSH command execution, port tunneling, and SFTP
-over multi-hop SSH chains using paramiko and GSSAPI (Kerberos) authentication.
-
-This is a standalone utility -- not a backend subclass -- useful for running
-remote commands, transferring files, and setting up tunnels (e.g., for gRPC).
+The `pacsys.ssh` module provides SSH command execution, port tunneling (e.g., for gRPC),
+and SFTP over multi-hop SSH chains using paramiko and GSSAPI (Kerberos) authentication.
 
 ## Quick Start
 

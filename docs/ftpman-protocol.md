@@ -443,8 +443,6 @@ Per device (20B):
 
 ### Arm and Trigger Selection Word
 
-The Java DPM implementation uses a slightly different bit layout from the original 1998 protocol spec, with a "new protocol" flag at bit 7:
-
 | Field | Bits | Values |
 |-------|:----:|--------|
 | AS (Arm Source) | 1:0 | 0=device, 2=clock events, 3=external (AM specifies which) |
@@ -455,7 +453,7 @@ The Java DPM implementation uses a slightly different bit layout from the origin
 | TM (Trigger Modifier) | 11:10 | 0-3, only meaningful when TS=3 |
 
 !!! warning "AS=1 (ARM_IMMEDIATELY) is not used"
-    The protocol defines AS=1 as "arm immediately", but the Java SnapShotPool never sends it on the wire.  Even for immediate arming, it sends AS=2 (clock events) with all-0xFF arm events and arm_delay=0.  Some front-ends (ecbpm) reject AS=1.  The `pacsys` implementation follows this Java convention.
+    The protocol defines AS=1 as "arm immediately", but some front-ends (ecbpm) reject it. Arm immediately with AS=2 (clock events), all-0xFF arm events and arm_delay=0 instead - the `start_snapshot()` defaults.
 
 **Plot modes**:
 
@@ -481,7 +479,7 @@ Per device (18B):
     [4B: reserved]
 ```
 
-**Short error replies**: If the front-end rejects the request outright, it may return only the 2-byte error field with no further data. Always check the error before attempting to parse the full reply.
+**Short error replies**: If the front-end rejects the request outright, it may return only the 2-byte error field with no further data.
 
 **Per-device status**: Positive values are informational and expected:
 
@@ -620,12 +618,12 @@ Plots compete for front-end resources. Higher priority plots can preempt lower p
 
 ### Differences from the 1998 Protocol Spec
 
-The Java codebase is the authoritative implementation. Key differences from the original FTPMAN spec:
+The deployed protocol (DPM and pacsys) differs from the original spec in these ways:
 
-1. **Arm/trigger word bit layout**: Java implementation adds a "new protocol" flag at bit 7.
+1. **Arm/trigger word bit layout**: adds a "new protocol" flag (NP) at bit 7.
 2. **`task_name` field**: Each setup gets a unique RAD50-encoded name (e.g. SNP001, SNP002) so the FE can match retrieval/restart requests back to the correct setup.  The `FTPClient` generates these automatically.
 3. **Error signedness**: All error fields are **signed 16-bit integers**. Only negative values indicate errors; positive values are informational status codes (e.g., `FTP_COLLECTING = +4`).
-4. **ARM_IMMEDIATELY not used**: Java SnapShotPool never puts AS=1 on the wire. For immediate arming it uses AS=2 (clock events) with all-0xFF arm events. Some FEs (ecbpm) reject AS=1.
+4. **ARM_IMMEDIATELY (AS=1) not used**: see [Arm and Trigger Selection Word](#arm-and-trigger-selection-word).
 5. **`arm_clock_events` encoding**: Each byte is a **literal TCLK event number** (0x00–0xFD), NOT a bitmask.  0xFE and 0xFF mean "unused slot".  For event 0x02: `[0x02, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]`.
 
 ### Error Handling Pattern

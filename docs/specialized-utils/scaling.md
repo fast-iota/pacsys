@@ -60,7 +60,7 @@ Scaler(p_index: int, c_index: int, constants: tuple[float, ...], input_len: int)
 | `common_to_primary(v)` | engineering -> primary | Inverse second stage |
 | `primary_to_raw(p)` | primary -> raw | Inverse first stage |
 
-All methods accept `int`, `float`, or `numpy.ndarray`. Arrays are processed element-wise via `np.vectorize`.
+All methods accept `int`, `float`, or `numpy.ndarray`; arrays are converted element-wise.
 
 ### From DevDB
 

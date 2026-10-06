@@ -307,7 +307,7 @@ MyRamp.from_dict(d)              # works — bypasses registry
 ## Custom Machine Types
 
 !!! info
-    When the new DevDB service is deployed in a more production-ready state, device property scaling will be automatic for known channels. For now, this step is kept manual.
+Ramp scaling is not looked up automatically; each machine type defines its own.
 
 ### Using Scaler (recommended)
 

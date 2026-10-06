@@ -28,7 +28,7 @@ sequenceDiagram
 
 - **Kerberos required**: All operations (reads, writes, streaming) require `KerberosAuth` and valid Kerberos credentials
 - **GSS-API signing**: Messages are signed with MIC for authentication
-- **Shared streaming connection**: All subscriptions share a single AMQP connection via SelectConnection with multiple channels
+- **Shared streaming connection**: All subscriptions share a single AMQP connection
 - **Connection caching**: Write connections are cached per device for performance
 - **Integer settings**: Integer scalars must fit in signed 32 bits; out-of-range values raise `ValueError` before I/O
 - **Heartbeats**: Client sends heartbeats every 5 seconds to maintain connections
@@ -139,16 +139,10 @@ FIFO ordering to match responses to pending writes.
 | `DMQ_SECURITY_VIOLATION` | -99 | MIC signature verification failed (wrong sign format) |
 | `DMQ_PENDING` | 1 | Not an error - INIT still processing, wait for final status |
 
-For writes, the server sends PENDING only after full job creation (`InitTask.run`),
-which includes ACNET backend setup. `CLIENT_INIT_RATE` is the reference client's
-INIT retry interval, not a server deadline. Queued writes wait for PENDING within
-each caller's timeout; the session heartbeat and idle cleanup still apply.
-For reads, PENDING is sent immediately.
-
-The signing format must match Java's `GSSUtil.createBody`: the MIC covers not
-just the binary body but also `messageId`, `correlationId`, `replyTo`, `appId`,
-and `hostAddress`, separated by null bytes. Getting this wrong is a silent
-authentication failure.
+For writes, the server sends PENDING only after full job creation, which includes
+ACNET backend setup. Queued writes wait for PENDING within each caller's timeout;
+the session heartbeat and idle cleanup still apply. For reads, PENDING is sent
+immediately.
 
 ### Session Reuse
 

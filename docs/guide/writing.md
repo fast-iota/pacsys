@@ -193,7 +193,7 @@ backend.write("Z|ACLTST", BasicControl.DC)
     `backend.write("Z:ACLTST", BasicControl.ON)` on a bare name is a SETTING write of the enum ordinal. Use a `&`/`|` qualifier or `.CONTROL`. Module-level writes, `acput`, and `Device.control()` route `BasicControl` values for you.
 
 !!! note "Control Commands Are Sequential"
-    Each `BasicControl` value is a single command. To toggle on/off and set polarity, issue separate writes. There is no batch control command in the protocol.
+    Each `BasicControl` value is one command; e.g. turning a device on and setting its polarity takes two writes.
 
 See [Device Status](status.md) for reading back status after control writes.
 
@@ -280,7 +280,7 @@ result = dev.write(45.0, verify=Verify(tolerance=0.1))
 print(result.confirmed)  # True if the write succeeded and readback matched
 ```
 
-Note: verification is a `Device.write()` feature, not a backend `write()` feature. Backend `write()` methods do not accept `verify` or `tolerance` parameters.
+Backend `write()` methods do not accept `verify` or `tolerance` parameters.
 
 `acput --verify` supports settings, basic control commands (verified through STATUS), and single alarm fields such as `Z:ACLTST.ANALOG.NOM`. Any other target, such as a whole alarm block or an ACNET RAW field, rejects the whole command before writing.
 

@@ -1,6 +1,6 @@
 # ACNET protocol
 
-This page documents the low-level ACNET protocol for advanced users who need to communicate directly with frontends or implement custom logic.
+This page documents the low-level ACNET protocol primitives for communicating directly with frontends.
 
 !!! danger "Low-level protocol -- prefer higher-level APIs"
     This module provides direct access to ACNET protocol primitives. Prefer the higher-level `pacsys` APIs unless you need custom ACNET interactions.

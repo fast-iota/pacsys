@@ -13,10 +13,10 @@ The `SupervisedServer` is a DPM/gRPC server that wraps any Backend, forwarding r
 Use cases:
 
 - **Testing** -- expose a `FakeBackend` as a real gRPC server for integration tests
-- **Digital twins** -- connect to arbitrary data sources, similarly to EPICS soft IOC
-- **Access control** -- restrict which operations are allowed, apply value/rate limits, etc.
+- **Custom data sources** -- serve any `Backend` implementation over DPM/gRPC
+- **Access control** -- restrict which operations are allowed, apply value/rate limits
 - **Audit logging** -- log client info, timing, data, and policy decisions
-- **Custom logic** -- MCR killswitch, status GUI, etc.
+- **Custom logic** -- deny requests or modify write values with [custom policies](#custom-policies)
 
 ---
 
@@ -26,8 +26,6 @@ Reads are **allowed by default** — any client can read any device without expl
 
 Writes (Set RPCs) are **denied by default** — every write must be explicitly approved by a `DeviceAccessPolicy` with `mode="allow"` covering the `"set"` (or `"all"`) action. Without such a policy, all writes return `PERMISSION_DENIED`.
 
-This means:
-- A server with no policies allows all reads and denies all writes
 - Policies like `RateLimitPolicy` or `ValueRangePolicy` do not unlock writes — they only constrain already-approved writes
 - Requests with a malformed DRF (empty, padded, non-printable, or unparseable), a device-index alias (`0:1234`, `#:1234`), or a `#` list directive are denied with `PERMISSION_DENIED` before any policy runs, since such names would bypass device patterns
 - `ValueRangePolicy` never gates `.CONTROL` writes: a command ordinal is not a value. Restrict commands with `DeviceAccessPolicy`
@@ -153,7 +151,7 @@ policies = [DeviceAccessPolicy(patterns=[r"M:OUT.*", r"G:AMANDA"], action="set",
 | `action` | `str` | `"all"` | `"all"` = both Read and Set, `"read"` = Read only, `"set"` = Set only |
 | `syntax` | `str` | `"glob"` | `"glob"` (fnmatch) or `"regex"` (full-match); case-insensitive for ACNET devices and case-sensitive for EPICS PVs |
 
-**Per-slot approval (writes only):** In `mode="allow"`, the policy tracks which request slots (device indices) it approves. Multiple `DeviceAccessPolicy` instances compose — each adds its approved slots. After the full policy chain, any unapproved **write** slots cause `PERMISSION_DENIED`. Read slots are pre-approved by default and unaffected by allow-mode policies.
+**Per-slot approval (writes only):** Approval is tracked per request slot (device index), and multiple allow-mode `DeviceAccessPolicy` instances add up. After the full policy chain, any unapproved **write** slot causes `PERMISSION_DENIED`.
 
 ### RateLimitPolicy
 
@@ -198,7 +196,7 @@ policies = [ValueRangePolicy(
 
 ### AuditLog
 
-Structured audit log that writes JSON lines and optionally tagged length-delimited binary protobuf. Not a `Policy` — passed as a separate `audit_log=` parameter to `SupervisedServer`. Logs both allowed and denied requests. Called automatically by the server after each policy decision. If the log cannot record an *allowed* `Set`, the write is blocked (`INTERNAL`) rather than executed unrecorded; reads and denials stay best-effort.
+Structured audit log that writes JSON lines and optionally tagged length-delimited binary protobuf. Not a `Policy` — passed as a separate `audit_log=` parameter to `SupervisedServer`. Logs both allowed and denied requests. If the log cannot record an *allowed* `Set`, the write is blocked (`INTERNAL`) rather than executed unrecorded; reads and denials stay best-effort.
 
 Two modes controlled by `log_responses`:
 
@@ -255,7 +253,7 @@ The server calls `close()` automatically on `stop()`.
 
 ### Combining Policies
 
-Policies compose naturally -- stack them in order of priority:
+Policies run in list order:
 
 ```python
 from pacsys.supervised import (

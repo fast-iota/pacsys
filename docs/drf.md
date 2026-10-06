@@ -19,7 +19,7 @@ req.range           # ARRAY_RANGE [0:10]
 req.event           # PeriodicEvent with .freq == 1000
 
 # Get canonical (normalized) form
-req.to_canonical()  # "M:OUTTMP.READING[0:10]@p,1000" - we follow Java here instead of writing 1S
+req.to_canonical()  # "M:OUTTMP.READING[0:10]@p,1000"
 
 # Validation happens at parse time for events/fields/ranges
 parse_request("M:OUTTMP@p,bad")  # raises ValueError (bad event)
@@ -28,8 +28,6 @@ parse_request("M:OUTTMP@p,bad")  # raises ValueError (bad event)
 Note: an unrecognized device name is accepted as an EPICS PV (`is_acnet == False`), so
 `parse_request("INVALID!")` succeeds. An ACNET device name followed by malformed DRF syntax
 raises `ValueError` instead (e.g. `"M:OUTTMP."`, `"M:OUTTMP.READING.RAW[0:2]"`).
-
-The parser accepts any valid DRF2/DRF3 syntax including property aliases, qualifier shortcuts, and various event formats.
 
 `ensure_immediate_event()` returns a canonical DRF when it replaces the default event
 with `@I`. Requests with explicit non-default events and historical logger requests are
@@ -231,8 +229,8 @@ Continuous data at fixed intervals:
 | `@p,500,TRUE` | 500ms, immediate first reading |
 | `@q,1000` | Non-continuous (only on change) |
 
-Periodic values default to **milliseconds**, but unit suffixes are supported (matching the Java
-`TimeFreq` parser) and converted to milliseconds: `S`=seconds, `M`=milliseconds (default),
+Periodic values default to **milliseconds**, but unit suffixes are supported and converted
+to milliseconds: `S`=seconds, `M`=milliseconds (default),
 `U`=microseconds, `H`=Hz, `K`=kHz. For example `@p,1S` == `@p,1000` and `@p,2H` == `@p,500`.
 
 ### Clock Event (`@E`)
