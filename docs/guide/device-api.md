@@ -34,7 +34,7 @@ If the actual value doesn't match the expected type, `read()` raises `TypeError`
 
 ## Reading Properties
 
-Each property has a dedicated read method. All use `@I` (immediate) event, except for historical logger sources (`<-LOGGER`, `<-LOGGERDURATION`, `<-LOGGERSINGLE`): these keep the device's event, or none, because the logger selects data by event.
+Each property has a dedicated read method. All use `@I` (immediate) event, except for historical logger sources (`<-LOGGER`, `<-LOGGERDURATION`, `<-LOGGERSINGLE`), which keep the device's event.
 
 ```python
 dev = Device("M:OUTTMP")
@@ -170,10 +170,8 @@ result = dev.write(72.5, verify=v)
 result = dev.write(72.5, verify=False)
 ```
 
-`tolerance` is an absolute tolerance; relative tolerance is not applied. Array
-readbacks must have the same shape, booleans only match booleans, and NaN never
-matches. Tolerance and delays must be finite and nonnegative, and
-`max_attempts` must be at least 1.
+`tolerance` is absolute. Array readbacks must have the same shape, booleans only
+match booleans, and NaN never matches.
 
 ### Check First (Skip Redundant Writes)
 
@@ -197,8 +195,7 @@ with Verify(always=True, tolerance=0.1):
     dev.write(90.0, verify=False)  # explicitly disabled
 ```
 
-Verification contexts are isolated between threads and concurrent asyncio
-tasks. A child task created inside the block inherits its defaults.
+The context is per thread and per asyncio task; tasks created inside the block inherit it.
 
 ### Control Verification
 
@@ -209,10 +206,6 @@ result = dev.on(verify=True)
 # Reads STATUS.ON after writing CONTROL, confirms it's True
 assert result.verified
 ```
-
-Backends may return the full basic-status mapping for that read. Verification
-extracts the mapped field; malformed or custom readbacks are retained verbatim
-and fail the strict boolean comparison.
 
 ### WriteResult Fields
 
@@ -228,9 +221,6 @@ and fail the strict boolean comparison.
 | `readback` | `float` or `str` or `bytes` or `...` or `None` | Last readback value |
 | `skipped` | `bool` | True if check_first found value correct |
 | `attempts` | `int` | Number of readback attempts made |
-
-`success` and `ok` report whether the backend accepted the write. When verification
-was requested, use `confirmed` to require both write success and successful readback.
 
 ---
 
@@ -378,11 +368,7 @@ status["Ready"].is_set    # True
 status.on                 # False
 ```
 
-This constructs a `DigitalStatus` using DevDB definitions plus `STATUS.BIT_VALUE` when definitions are available; otherwise it reads `STATUS.BIT_VALUE`, `STATUS.BIT_NAMES`, and `STATUS.BIT_VALUES`. The async method uses the three-sub-property path.
-
-For synchronous `Device.digital_status()`, `timeout` applies separately to the DevDB metadata lookup and the backend status request, not as a shared deadline for the whole call. `timeout=None` retains each component's default timeout.
-
-See [Device Status](status.md) for the full DigitalStatus API.
+This combines DevDB bit definitions with `STATUS.BIT_VALUE` when available, falling back to `STATUS.BIT_VALUE`/`BIT_NAMES`/`BIT_VALUES`. See [Device Status](status.md) for details and the full DigitalStatus API.
 
 ---
 
@@ -403,8 +389,8 @@ devices = {Device("M:OUTTMP"), Device("G:AMANDA")}
 ## Async
 
 `pacsys.aio.AsyncDevice` (and `AsyncScalarDevice`/`AsyncArrayDevice`/`AsyncTextDevice`) mirror
-the sync classes: every I/O method above is `await`-able with the same arguments, verification
-follows the same plan (shared code, not a copy), and fluent modifiers return the same subclass.
+the sync classes: every I/O method above is `await`-able with the same arguments and verification
+behavior, and fluent modifiers return the same subclass.
 
 ```python
 from pacsys.aio import AsyncDevice, AsyncScalarDevice

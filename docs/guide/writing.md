@@ -126,9 +126,8 @@ result = backend.write("Z:ACLTS1[0:10]", np.array([1.0, 2.0, 3.0]))
 result = backend.write("Z:ACLTS1[0:10]", [1.0, 2.0, 3.0])   # list also works
 ```
 
-DPM/HTTP accepts one-dimensional homogeneous arrays: all numeric values or all strings.
-Mixed text/numeric arrays and multidimensional NumPy arrays raise `TypeError` before any
-protocol message is sent.
+DPM/HTTP accepts one-dimensional arrays that are all numeric or all strings; anything
+else raises `TypeError` before I/O.
 
 ---
 
@@ -180,7 +179,7 @@ from pacsys import BasicControl
 backend.write("Z&ACLTST", BasicControl.ON)
 backend.write("Z|ACLTST", BasicControl.ON)  # STATUS → CONTROL auto-conversion
 backend.write("Z|ACLTST", BasicControl.OFF)
-pacsys.write("Z:ACLTST", BasicControl.ON)   # module-level: bare name routed to CONTROL, never SETTING
+pacsys.write("Z:ACLTST", BasicControl.ON)   # module-level: bare name routed to CONTROL
 
 # Other control commands
 backend.write("Z|ACLTST", BasicControl.RESET)
@@ -191,7 +190,7 @@ backend.write("Z|ACLTST", BasicControl.DC)
 ```
 
 !!! warning "Backend `write()` does not retarget"
-    `backend.write("Z:ACLTST", BasicControl.ON)` on a bare name is a SETTING write of the enum ordinal. Use a `&`/`|` qualifier or an explicit `.CONTROL` there; `pacsys.write()`, `pacsys.write_many()`, their `pacsys.aio` twins, `acput`, and `Device.control()` route `BasicControl` values for you.
+    `backend.write("Z:ACLTST", BasicControl.ON)` on a bare name is a SETTING write of the enum ordinal. Use a `&`/`|` qualifier or `.CONTROL`. Module-level writes, `acput`, and `Device.control()` route `BasicControl` values for you.
 
 !!! note "Control Commands Are Sequential"
     Each `BasicControl` value is a single command. To toggle on/off and set polarity, issue separate writes. There is no batch control command in the protocol.
@@ -246,13 +245,11 @@ Allowed keys for digital alarms: `nominal`, `mask`, `alarm_enable`, `abort_inhib
 Unknown and read-only keys (`abort`, `alarm_status`, `tries_now`) raise
 `ValueError`. Boolean values are converted to 0/1 automatically.
 
-The dict is expanded to sequential per-field writes because alarm fields share a
-hardware block. The operation is not atomic: if a later field fails, earlier
-changes remain applied.
+The dict is expanded to sequential per-field writes, each a server-side read-modify-write
+of the shared alarm block. It is not atomic: if a later field fails, earlier changes stay applied.
 
-DPM/gRPC alarm dict writes are unsupported: the client returns a failed
-`WriteResult` without sending the alarm dict. DMQ support on deployed servers is unverified;
-the reference server rejects structured alarm writes. Use DPM/HTTP for this shortcut.
+gRPC returns a failed `WriteResult` for alarm dicts. DMQ is unverified (the reference
+server rejects structured alarm writes).
 
 ### Context Manager (Recommended)
 
@@ -284,10 +281,8 @@ print(result.confirmed)  # True if the write succeeded and readback matched
 ```
 
 Note: verification is a `Device.write()` feature, not a backend `write()` feature. Backend `write()` methods do not accept `verify` or `tolerance` parameters.
-`WriteResult.success` reports backend write acceptance; `WriteResult.confirmed`
-also requires requested verification to succeed.
 
-`acput --verify` writes and reads back the requested target: SETTING (a bare name or READING maps to SETTING), basic control commands (verified through STATUS), or a single alarm field such as `Z:ACLTST.ANALOG.NOM`. The command checks every pair before connecting. It rejects other targets, including whole alarm blocks and ACNET RAW fields (CLI values are never bytes), and writes nothing.
+`acput --verify` supports settings, basic control commands (verified through STATUS), and single alarm fields such as `Z:ACLTST.ANALOG.NOM`. Any other target, such as a whole alarm block or an ACNET RAW field, rejects the whole command before writing.
 
 ---
 

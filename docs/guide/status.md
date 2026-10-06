@@ -39,7 +39,7 @@ print(status)
 
 Synchronous `Device.digital_status()` uses DevDB definitions plus a `BIT_VALUE` read when definitions are available; otherwise it reads `BIT_VALUE`, `BIT_NAMES`, and `BIT_VALUES`. `AsyncDevice.digital_status()` uses the three-sub-property path.
 
-For synchronous `Device.digital_status(timeout=T)`, the timeout applies separately to the DevDB metadata lookup and the backend status request; it is not a shared deadline for the whole call. `timeout=None` retains each component's default timeout.
+For synchronous `Device.digital_status(timeout=T)`, the timeout applies separately to the DevDB lookup and the status read, not as a shared deadline.
 
 ### DigitalStatus API
 
@@ -79,7 +79,7 @@ status.positive
 status.ramp
 ```
 
-These are `None` when the corresponding attribute is absent or cannot be recognized by name. Otherwise they follow the entry's `is_set` meaning below.
+These are `None` when the attribute is absent or not recognized by name.
 
 ### StatusBit
 
@@ -87,21 +87,14 @@ Each entry in `status.bits` is a frozen `StatusBit`:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `position` | `int` | Stored position; constructor-dependent (see below) |
+| `position` | `int` | Bit index (see below) |
 | `name` | `str` | Label from source data |
 | `value` | `str` | Display text ("Yes", "On", "Minus", etc.) |
-| `is_set` | `bool` | Raw bit, evaluated predicate, or reported state (see below) |
+| `is_set` | `bool` | Whether the bit or attribute is set |
 
 `bool(bit)` returns `is_set`.
 
-| Construction path | `position` | `is_set` |
-|-------------------|------------|----------|
-| `from_bit_arrays()` or extended DevDB bits | Physical bit index | Corresponding raw bit |
-| DevDB basic attributes | Lowest mask bit; definition index for a zero mask | `((~raw_value if invert else raw_value) & mask) == match` |
-| Legacy boolean dict | Fixed semantic slot: on=0, ready=1, remote=2, positive=3, ramp=4 | Reported boolean |
-| gRPC text dict | Dict insertion index | Text truth heuristic |
-
-For DevDB basic attributes, the predicate can cover multiple bits or inverted logic, so `is_set` need not equal the raw bit at `position`.
+`position` is the physical bit index only for `from_bit_arrays()` and DevDB per-bit definitions. DevDB basic attributes are mask predicates (possibly multi-bit or inverted), and dict-based status (`from_status_dict()`, `from_reading()`) uses synthetic positions. For text values, `is_set` is a heuristic: unrecognized text counts as set.
 
 ---
 
@@ -138,7 +131,7 @@ status = DigitalStatus.from_reading(reading)
 status = DigitalStatus.from_status_dict("Z:ACLTST", {"on": True, "ready": False})
 ```
 
-`from_reading()` delegates to `from_status_dict()`. Without an explicit `raw_value`, dict construction stores a synthetic encoding of the reported states, not a recovered hardware word. Passing `raw_value` preserves that word but does not make dict positions or `is_set` values physical bits.
+Without `raw_value=`, dict-based `status.raw_value` is a synthetic encoding, not the hardware word.
 
 ---
 

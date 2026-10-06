@@ -29,7 +29,7 @@ Writes (Set RPCs) are **denied by default** — every write must be explicitly a
 This means:
 - A server with no policies allows all reads and denies all writes
 - Policies like `RateLimitPolicy` or `ValueRangePolicy` do not unlock writes — they only constrain already-approved writes
-- A request containing a DRF that is empty, has surrounding whitespace or non-printable characters, does not parse (for a Set: as the write would be issued), uses a device-index alias (`0:1234`, `#:1234` — DPM resolves these to any device), or starts with `#` (DPM list directives such as `#LOG:N` are not devices) is denied (`PERMISSION_DENIED`, "Malformed or disallowed DRF") before any policy runs — such names would otherwise match no device pattern
+- Requests with a malformed DRF (empty, padded, non-printable, or unparseable), a device-index alias (`0:1234`, `#:1234`), or a `#` list directive are denied with `PERMISSION_DENIED` before any policy runs, since such names would bypass device patterns
 - `ValueRangePolicy` never gates `.CONTROL` writes: a command ordinal is not a value. Restrict commands with `DeviceAccessPolicy`
 
 ## Quick Start
@@ -101,7 +101,7 @@ srv.run()  # blocks until signal received
 | `run()` | Start and block until SIGINT/SIGTERM (main thread only) |
 | `port` | Actual port (useful when `port=0`) |
 
-Shutdown cancels incoming RPCs and allows up to four seconds for pending RPC and late subscription cleanup before closing the server loop. Unfinished cleanup is logged. The server does not close the supplied backend; the caller remains responsible for its resources.
+The server does not close the supplied backend; the caller owns it.
 
 ---
 
@@ -173,7 +173,13 @@ policies = [RateLimitPolicy(max_requests=100, window_seconds=60)]
 
 ### ValueRangePolicy
 
-Deny writes where numeric values fall outside allowed ranges. Device patterns are case-insensitive for ACNET devices and case-sensitive for EPICS PVs. Every matching rule applies: their bounds are intersected, and an empty intersection denies the write as contradictory. Unmatched devices are passed through. For range-limited devices the policy fails closed: array/list values are checked element-by-element, and non-numeric values (including raw bytes), NaN, and infinity are denied. Structured raw writes such as ramp or alarm blocks, and writes to `.RAW`/`.PRIMARY`/`.VOLTS` fields (device counts are not comparable to engineering-unit bounds), require an explicit `allow_raw` device pattern, matched with the same case rules.
+Deny writes where numeric values fall outside allowed ranges. Unmatched devices are passed through. For range-limited devices:
+
+- Bounds of every matching pattern are intersected; an empty intersection denies the write
+- Arrays are checked element-wise; non-numeric values, NaN, and infinity are denied
+- Raw writes (ramp/alarm blocks, `.RAW`/`.PRIMARY`/`.VOLTS` fields) are denied unless the device matches `allow_raw`
+
+Patterns are case-insensitive for ACNET devices and case-sensitive for EPICS PVs.
 
 ```python
 from pacsys.supervised import ValueRangePolicy
@@ -245,7 +251,7 @@ with SupervisedServer(backend, port=50051, audit_log=audit) as srv:
 | `0x02` | `SettingRequest` |
 | `0x03` | `SettingReply` |
 
-The server calls `close()` automatically on `stop()`; this flushes and releases file handles, and subsequent audit writes reopen the files in append mode.
+The server calls `close()` automatically on `stop()`.
 
 ### Combining Policies
 
@@ -404,7 +410,7 @@ The server automatically detects one-shot vs streaming requests based on the DRF
 | `@I`, `@N`, or a logger source (`<-LOGGER`, `<-LOGGERDURATION`, `<-LOGGERSINGLE`) | One-shot: uses `get_many()`, returns all results |
 | Everything else (no event, `@U`, `@P`, `@Q`, `@E`, `@S`) | Streaming: uses `subscribe()`, yields until client disconnects |
 
-Bare DRFs (no event) and `@U` resolve to the device's default event, which is typically `@p,1000` — so they are routed through streaming. Logger results are forwarded the way DPM sends them: in chunks followed by an empty terminator reply. If the server cannot encode a reading, it sends an error status for that request index and keeps the RPC open.
+Bare DRFs (no event) and `@U` resolve to the device's default event, which is typically `@p,1000` — so they are routed through streaming. A reading that cannot be encoded is sent as an error status for its request index.
 
 ```python
 # One-shot (returns immediately)

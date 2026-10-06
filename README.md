@@ -111,7 +111,7 @@ with pacsys.dpm(auth=pacsys.KerberosAuth(), role="testing") as backend:
 
 ## Async capabilities
 
-Native async versions with the same API surface (`AsyncDevice` mirrors `Device` except `info()`, which needs the sync DevDB client).
+Native async versions with the same API surface.
 
 ```python
 import pacsys
@@ -224,7 +224,6 @@ acget --format json M:OUTTMP
 # Write devices (requires authentication: -a kerberos, or -a jwt with -b grpc)
 acput -a kerberos Z:ACLTST 72.5
 acput -a kerberos -b dmq --verify --tolerance 0.5 Z:ACLTST 72.5
-acput -a kerberos --verify Z:ACLTST.ANALOG.NOM 5   # alarm field, verified in place
 
 # Monitor (streaming on default event or custom one)
 acmonitor M:OUTTMP

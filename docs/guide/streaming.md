@@ -54,13 +54,12 @@ with pacsys.subscribe(["M:OUTTMP@p,1000"]) as stream:
 
 Breaking out of the `for` loop also works - the context manager calls `stop()` on exit.
 
-After `stop()` returns, reading callbacks still queued for that handle are discarded (an
-`on_error` callback is always delivered). A callback that is already executing when `stop()`
-is called runs to completion (an `async` callback stopped from another task is cancelled at its
-next `await`). A stream that ends on its own still delivers every queued reading.
+After `stop()` returns, queued reading callbacks for that handle are discarded (`on_error` is
+still delivered). A running sync callback finishes; an async callback stopped from another task
+is cancelled at its next `await`. A stream that ends on its own delivers every queued reading.
 
-`handle.dropped` counts readings discarded because the iterator buffer or the callback queue
-was full (cumulative for the life of the handle; a throttled warning is logged as well).
+`handle.dropped` counts readings discarded because the iterator buffer or callback queue was
+full; a throttled warning is also logged.
 
 ---
 
@@ -113,7 +112,7 @@ with pacsys.dpm(dispatch_mode=DispatchMode.DIRECT) as backend:
 
 Dispatch mode is configured per-backend, not per-subscription. `pacsys.subscribe()` uses the global backend's `WORKER` mode unless passed bound `Device` objects, which use their backend's dispatch mode.
 
-One worker thread serves every subscription on a backend, so one slow callback delays all of them and, if the queue fills, readings are dropped (`handle.dropped`). Give a slow consumer its own backend instance, or hand the work off to your own thread/executor from the callback.
+One worker thread serves every subscription on a backend, so a slow callback delays all of them and can cause drops. Give a slow consumer its own backend, or hand work off to your own thread/executor.
 
 ---
 
@@ -178,11 +177,8 @@ with pacsys.dpm() as backend:
 
 Each `subscribe()` call creates its own TCP connection (on DPM/HTTP), so subscriptions are truly independent - stopping one doesn't affect the others.
 
-Delivery through `CombinedStream` is at-most-once: readings it has prefetched but not yet
-yielded are discarded if you exit the loop early or a subscription errors. Iterate each
-handle directly if you need every buffered reading. The shared buffer is bounded (same
-cap as a single handle); a slow consumer backpressures the source handles, which drop
-newest and count in `handle.dropped` as usual.
+`CombinedStream` is at-most-once: prefetched readings are discarded if you exit the loop early
+or a subscription errors. Iterate each handle directly if you need every buffered reading.
 
 `CombinedStream` properties:
 

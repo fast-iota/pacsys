@@ -62,8 +62,7 @@ with AcnetConnectionTCP() as conn:
 ```
 
 Continuous batches and `SnapshotHandle.device_states` are keyed by zero-based
-position in the setup device list. This remains unambiguous when multiple list
-entries refer to the same device index, property, or offset.
+position in the setup device list, not by device index.
 
 ### Immediate Snapshot
 
@@ -149,9 +148,6 @@ with AcnetConnectionTCP() as conn:
             snap.restart()  # re-arm for next capture - avoids repeated setup
 ```
 
-After `restart()` succeeds, statuses already received for the preceding cycle
-cannot make the new cycle report readiness.
-
 ### Sequential Multi-Chunk Retrieval
 
 For large captures that exceed `retrieval_max` (512 for most classes):
@@ -190,10 +186,8 @@ with AcnetConnectionTCP() as conn:
         # => Total: 2047 points  (2048 minus 1 skipped metadata point)
 ```
 
-Automatic metadata skipping is tracked independently for each device. Random-access
-retrievals keep the requested first point. `restart()` and `reset_pointers()` rewind the
-tracking; pass `skip_first_point=True` or `False` only when overriding class behavior
-explicitly.
+For classes with a metadata point, it is skipped on each device's first sequential page
+(again after `restart()`/`reset_pointers()`); pass `skip_first_point` only to override this.
 
 ### Class Code Lookup
 
@@ -293,7 +287,7 @@ Per device (6B):
     [2B: SNP class code]   Snapshot class (0 = unsupported on success)
 ```
 
-A nonzero ACNET packet status or payload overall status applies to every requested device. In that case each result has `ftp=0`, `snap=0`, and the nonzero `error`; no per-device records are parsed. These zero class fields mean the lookup result is unknown, not that the device is unsupported. Class zero means unsupported only when `error == 0`.
+A nonzero ACNET packet or overall status applies to every requested device: each result carries that `error` with `ftp=0`, `snap=0`, meaning unknown rather than unsupported.
 
 ### FTP Class Codes (Continuous)
 
@@ -404,9 +398,7 @@ Variable data per device:
 
 **Error handling**: Only negative values in the header `error` field indicate errors. Positive values (including `FTP_COLLECTING`) are informational. Per-device errors use `!= 0` (any non-zero skips that device's data for this reply).
 
-A terminal reply with a negative ACNET packet status is an abnormal stream termination. The reader raises that status instead of treating it as normal end-of-stream; explicit client cancellation remains a clean stop.
-
-The data offsets are absolute within the current ACNET reply. A successful data reply must contain the full per-device header and every point declared by each count; a short payload is malformed, not a partial batch. Extra trailing bytes are allowed.
+A terminal reply with a negative ACNET packet status raises instead of ending the stream cleanly. Data offsets are absolute within the current ACNET reply.
 
 **Timestamps**: Unsigned 16-bit values with 100 microsecond resolution, reset on each TCLK event 0x02 (which occurs every 5 seconds). Multiply by 100 to convert to microseconds.
 
@@ -491,8 +483,6 @@ Per device (18B):
 
 **Short error replies**: If the front-end rejects the request outright, it may return only the 2-byte error field with no further data. Always check the error before attempting to parse the full reply.
 
-For a nonnegative status, setup and later status replies contain the complete 24-byte header plus one complete 18-byte record per requested device. A short successful reply is malformed rather than a partial device result; extra trailing bytes are allowed.
-
 **Per-device status**: Positive values are informational and expected:
 
 | Status | Meaning |
@@ -530,9 +520,7 @@ Per point (variable):
 
 **Timestamps**: Whether timestamps are included depends on the snapshot class code. Classes like Quick Digitizer (code 16) and Swift Digitizer (code 19) return raw values only. Check `SnapClassInfo.has_timestamps` for the device's class.
 
-A nonnegative retrieve reply must contain every point declared by `num_points_returned`. A negative FTP-level status may be only two bytes. Extra trailing bytes after the declared points are allowed.
-
-`FTP_ENDOFDATA` is clean sequential exhaustion and returns an empty page. Older front-ends may place it in either the terminal ACNET packet status or the payload status; neither form advances the client's metadata-record state.
+`FTP_ENDOFDATA` (in either the ACNET packet status or the payload status) ends sequential retrieval with an empty page.
 
 **Post-trigger retrieval**: Data can be retrieved while collection is still in progress. Pre-trigger requires waiting until all data is collected.
 
@@ -649,7 +637,7 @@ FTPMAN replies have two levels of error checking:
 
 Always check error fields before attempting to parse reply data.
 
-After a nonnegative FTP-level status, require the complete fixed and count-declared payload. The original protocol document and the older DAE reply builders (`FtpCollector`, `SnapCollector`, and `SnapShotPool`) construct replies atomically; they do not define continuation fragments for missing records or points.
+With a nonnegative FTP-level status, a reply shorter than its fixed fields and declared counts is malformed, not partial; trailing bytes are ignored.
 
 ### acnetd Task Restrictions
 

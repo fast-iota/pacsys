@@ -43,7 +43,7 @@ Pre-defined subclasses for common elements:
 | `RecyclerSCRamp` | C475 | R:SC319T | raw / 3276.8 (2) | primary × 1.2000000477 (6, C1=1.2000000477, C2=1.0) |
 | `RecyclerHVSQRamp` | C453 | R:H626T, R:SQ410T | raw / 3276.8 (2) | primary × 1.2 (6, C1=12.0, C2=10.0) |
 
-**Scaling is per device, not per family.** The classes above pin transform constants for the devices listed; the library does not check them at runtime. Known exception: the quad trims **R:QT301T–R:QT308T** are scaled like correctors (C1=12.0, C2=10.0, ±12 A), not like the other `R:QT*T` tables (C1=2.0, ±20 A). Using `RecyclerQRamp` on them reads values 1.67× too large and writes 1.67× too small; use `RecyclerHVSQRamp` (same constants and card rate) or a custom subclass instead. When adding a new device, confirm its SETTING scaling against authoritative database constants before picking a class; see the [DevDB coefficient limitation](scaling.md#from-devdb).
+**Scaling is per device, not per family.** The classes pin transform constants for the listed devices and are not checked at runtime. Known exception: the quad trims **R:QT301T–R:QT308T** are scaled like correctors (C1=12.0, C2=10.0); use `RecyclerHVSQRamp` for them, not `RecyclerQRamp`. Confirm a new device's SETTING scaling against database constants before picking a class.
 
 ### Time Scaling
 
@@ -133,22 +133,15 @@ ramp.write(device="B:HS24T", slot=1)
 
 ### Active-span writes (advanced)
 
-Use `write_mode="active"` to send only the contiguous span from the first to the last point whose **value or delta time is nonzero**. This mode reduces the write payload without adding reads or tracking device state. Zero points inside that span are included. Activity is determined from the engineering-unit arrays before rounding to wire values; no tolerance is applied.
+Use `write_mode="active"` to send only the contiguous span from the first to the last point whose **value or delta time is nonzero** (interior zeros included):
 
 ```python
 ramp.write(write_mode="active")
 ```
 
-For example, active points 0 through 7 produce a 32-byte payload instead of the full 256 bytes. Point indices remain unchanged: in slot 2, this writes byte range `SETTING{512:32}.RAW`. Serialization and validation still cover the entire ramp.
+For example, active points 0–7 in slot 2 write 32 bytes at `SETTING{512:32}.RAW` instead of the full 256.
 
-**Active mode is a partial update. Points outside the span are left untouched.** It does not check whether those points are zero on the device, including when writing to a different device or slot.
-
-| Workflow | Behavior |
-|---|---|
-| Update points 0–7 | Active mode writes 0–7, including interior zeros. |
-| Expand to points 0–9 | Active mode writes 0–9. |
-| Shrink from 0–7 to 0–5 | Active mode leaves the device's old points 6–7 intact. Use a full write to clear them. |
-| All values and times are zero | Active mode raises `ValueError`. Use a full write to clear the slot. |
+**Active mode is a partial update: points outside the span are left untouched on the device.** Shrinking a ramp therefore leaves the old tail in place, and an all-zero ramp raises `ValueError`. Use a full write in both cases:
 
 ```python
 # Previously active through point 7; keep only points 0–5.
@@ -209,9 +202,7 @@ write_ramps(ramps, slot=2)              # override slot for all
 write_ramps([group, ramp, ("Z:ACLTST", 1.5)], write_mode="active")
 ```
 
-In active mode each ramp gets its own span. `(drf, value)` settings share the same backend call; their values are unchanged and the ramp slot override does not apply to them. As with `pacsys.write_many`, a `BasicControl` value is sent to the device's CONTROL property; a `BasicControl` for an EPICS PV is rejected before any write. Results follow the flattened input order. Check each result's `success`: the backend batch is not atomic and may partially succeed.
-
-All ramp payloads are validated before the backend call. If any ramp is empty in active mode, the whole batch raises `ValueError` before writing anything, including scalar settings. To mix partial ramp updates with a ramp that needs clearing, make a separate full write for the latter.
+In active mode each ramp gets its own span. `(drf, value)` settings are written as given (the `slot` override doesn't apply; `BasicControl` values go to CONTROL, as with `pacsys.write_many`). Results follow the flattened input order; the batch is not atomic, so check each result. An empty ramp in active mode rejects the whole batch with `ValueError` before anything is written.
 
 ---
 
@@ -262,7 +253,7 @@ group.write(devices=["B:OTHER1", "B:OTHER2", "B:OTHER3"], slot=1)
 group.write(write_mode="active")
 ```
 
-For example, column 0 active at points 0–7 sends 32 bytes, while column 1 active at points 4–8 sends 20 bytes. The group does not use a shared span across columns. Any empty active column rejects the whole batch before writing. Use `group.write()` to clear shortened or empty ramps, or `group[device].write()` for a full write of one column. Both individual and group `modify()` contexts continue to use full writes.
+Each column gets its own span, and any empty column rejects the whole batch. Use `group.write()` or `group[device].write()` for full writes. `modify()` contexts always use full writes.
 
 ### Group Context Manager (read-modify-write)
 
@@ -282,6 +273,7 @@ Ramps and ramp groups support round-trippable JSON serialization via `to_dict()`
 
 ```python
 import json
+from pacsys.ramp import BoosterHVRamp, BoosterHVRampGroup, Ramp, RampGroup
 
 # Ramp → dict → JSON → dict → Ramp
 ramp = BoosterHVRamp.read("B:HS23T", slot=0)
@@ -439,10 +431,8 @@ ramp.values = np.zeros(65)       # ValueError: Expected 64 values, got 65
 ramp.values = np.zeros((64, 2))  # ValueError: values must be 1-D
 ```
 
-Slot index is validated on all read/write/modify operations (must be `int`, `0..14` by default).
-These are zero-based physical storage slots: in the Java 453/46x/473 reference,
-maps 1–15 select stored tables and map 0 is the null table with no storage.
-Custom subclasses can override `MAX_SLOTS`.
+Slot index is validated on all read/write/modify operations (must be `int`, `0..14` by default;
+subclasses can override `MAX_SLOTS`).
 
 ```python
 BoosterHVRamp.read("B:HS23T", slot=-1)   # ValueError: slot must be 0..14

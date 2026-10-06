@@ -29,18 +29,14 @@ sequenceDiagram
 - **Connection pooling**: Multiple reads share pooled connections
 - **Independent subscriptions**: Each `subscribe()` creates its own TCP connection
 - **Kerberos auth**: Required for writes, optional for reads
-- **Text writes**: Strings and text arrays must be Latin-1 encodable. Unsupported
-  characters raise `UnicodeEncodeError` before any connection or write setup.
+- **Text writes**: Strings and text arrays must be Latin-1 encodable; otherwise
+  `UnicodeEncodeError` is raised before I/O
 - **Heartbeats**: Server sends `ListStatus_reply` every ~2 seconds
-- **Read deadline**: `timeout=` includes list setup and cleanup for sync and async
-  reads. Cleanup cannot extend the deadline; already received readings are preserved
-  and the connection is discarded if cleanup cannot finish in time.
-- **Write deadline**: `timeout=` covers the complete write, including connection,
-  authentication, list setup, retry, and reply handling
-- **Write retries**: Connection failures during list setup can be retried once.
-  Once sending `ApplySettings` begins, failures are never retried automatically.
-  A missing acknowledgement returns a failed `WriteResult` with an "outcome unknown"
-  message: the setting may already have been applied.
+- **Deadlines**: `timeout=` covers the whole read (including list setup and cleanup)
+  or write (including connection, authentication, and retry)
+- **Write retries**: Sync writes retry a list-setup connection failure once if time
+  remains; async writes do not retry. Nothing is retried once `ApplySettings` sending begins. A missing acknowledgement returns a failed
+  `WriteResult` with an "outcome unknown" message: the setting may have been applied.
 
 ## Usage
 

@@ -6,8 +6,6 @@ over multi-hop SSH chains using paramiko and GSSAPI (Kerberos) authentication.
 This is a standalone utility -- not a backend subclass -- useful for running
 remote commands, transferring files, and setting up tunnels (e.g., for gRPC).
 
-`pip install pacsys` includes Paramiko >= 3.2, < 5 and GSSAPI support.
-
 ## Quick Start
 
 ```python
@@ -296,49 +294,27 @@ with ssh.acl_session() as acl1:
 
 ### ACL Error Handling
 
-ACL script errors can be returned as text. One-shot `acl()` returns stdout-only
-script errors even when ACL exits with nonzero status. It raises `ACLError` if the
-temporary script cannot be created or written, or if ACL exits nonzero with
-nonempty stderr or empty stdout (after stripping whitespace). SSH connection and
-timeout failures can independently raise `SSHError`; channel setup may also
-propagate Paramiko exceptions such as `paramiko.SSHException`.
+ACL script errors (e.g. a bad device) are usually returned as text, not raised -
+check the output before using it.
 
-`ACLSession.send()` returns script errors as text when the interpreter returns to
-its prompt. It raises `ACLError` for a closed session, send failure, interpreter
-exit, or failure to receive the prompt. Session startup can also raise `ACLError`
-while waiting for the initial prompt. Opening the channel can raise `SSHError`
-or propagate Paramiko exceptions.
+- `acl()` raises `ACLError` if the temporary script cannot be written, or if ACL
+  exits nonzero with stderr output or no stdout.
+- `ACLSession.send()` raises `ACLError` if the session is closed, the interpreter
+  exits, or its prompt is not received. A failed session closes itself; open a new
+  one before retrying. Commands containing line breaks raise `ValueError` - use
+  semicolons instead.
+- Connection failures and timeouts raise `SSHError`; channel setup may also
+  propagate `paramiko.SSHException`.
 
 ```python
-import paramiko
-
 from pacsys.errors import ACLError
 from pacsys.ssh import SSHError
 
 try:
     with ssh.acl_session() as acl:
         output = acl.send("read M:OUTTMP")
-except (ACLError, SSHError, paramiko.SSHException) as e:
+except (ACLError, SSHError) as e:
     print(f"ACL session failed: {e}")
-else:
-    print(output)
-```
-
-Check the returned text for ACL diagnostics and the expected command output before
-using it; a bad-device error does not necessarily raise an exception.
-
-Persistent sessions reject commands containing line breaks with `ValueError` and
-remain open; combine statements with semicolons instead. If sending or prompt
-detection fails, the session closes itself to prevent delayed output from being
-attributed to a later command. Create a new session before retrying. Closing a
-session leaves the SSH client open.
-
-Sending on a closed session also raises `ACLError`:
-
-```python
-session = ssh.acl_session()
-session.close()
-session.send("read M:OUTTMP")  # raises ACLError("ACL session is closed")
 ```
 
 ## Authentication
@@ -360,9 +336,8 @@ The login name defaults to the principal of `auth` (or of the default credential
 only present the default credential-cache principal, so `SSHClient(..., auth=KerberosAuth(name=...))`
 raises at init unless that principal is the cache default (`kswitch` first).
 
-Ticket delegation (forwarding your TGT to the remote host) is enabled by default so remote
-Kerberized commands, such as ACL settings, can use your credentials. Disable it per hop when
-remote commands do not need a ticket; multi-hop connections themselves do not require delegation:
+Ticket delegation (forwarding your TGT) is enabled by default so remote Kerberized commands,
+such as ACL settings, can use your credentials. Disable it per hop when not needed:
 
 ```python
 SSHHop("host.fnal.gov", delegate_credentials=False)

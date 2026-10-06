@@ -2,9 +2,7 @@
 
 The MCP server exposes pacsys device read/write as tools for AI agents (Claude Code, etc.) via the [Model Context Protocol](https://modelcontextprotocol.io/).
 
-Install with `pip install "pacsys[mcp]"`. The server uses the official MCP Python
-SDK 2.2 or newer (below 3.0), including compatibility with clients using the
-legacy initialization handshake.
+Install with `pip install "pacsys[mcp]"` (uses the official MCP Python SDK).
 
 ## Overview
 
@@ -27,9 +25,9 @@ Write safety comes from two layers:
 1. **Claude Code's tool permission prompt** — human-in-the-loop approval for each write call
 2. **Server-side policy chain** — `DeviceAccessPolicy` → `ValueRangePolicy`
 
-Without a policy config, all writes are denied. Reads are always allowed — the TOML config only expresses write policies, and `create_server` accepts no others. This is the same policy system used by [Supervised Mode](supervised.md); for read restrictions, run the supervised proxy instead.
+Without a policy config, all writes are denied. Reads are always allowed; the config only expresses write policies. This is the same policy system used by [Supervised Mode](supervised.md); for read restrictions, run the supervised proxy instead.
 
-All three tools apply the supervised proxy's DRF gate before any policy runs: a DRF or device name that is empty, has surrounding whitespace or non-printable characters, does not parse (for a write: as the write would be issued), uses a device-index alias (`0:1234`, `#:1234` — DPM resolves these to a real device, so they would bypass `write_devices`/`value_ranges` rules naming that device), or starts with `#` (DPM list directives) is rejected with `"ok": false` and `"error": "Malformed or disallowed DRF: ..."`. Rejected writes are recorded in the audit log like any other denial.
+All three tools first apply the supervised proxy's [DRF gate](supervised.md#access-control-defaults): malformed DRFs, device-index aliases (`0:1234`, `#:1234`), and `#` list directives are rejected with `"ok": false`. Rejected writes are audited like any other denial.
 
 Writes require Kerberos credentials. The server refuses to start if write devices are configured but no Kerberos ticket is available.
 
@@ -93,15 +91,12 @@ allow_raw = ["B:HS*"]
 
 A sample config is provided at `scripts/pacsys-mcp.toml`.
 
-Configuration is validated strictly at startup. Unknown keys, malformed policy
-tables, invalid bounds, and transport-specific options such as `port` with
-`stdio` stop the server instead of silently weakening a policy.
+Configuration is validated strictly at startup: unknown keys, malformed policies, and
+options that don't fit the transport (such as `port` with `stdio`) stop the server.
 
-When `audit_log` is configured, every allowed or denied write attempt is
-recorded as JSON Lines with its requested DRF, value, decision, and reason. The
-file is opened during startup so an invalid audit destination prevents the
-server from accepting clients, and a write whose approval cannot be recorded
-is blocked rather than executed unlogged.
+When `audit_log` is configured, every write attempt is recorded as JSON Lines with its
+DRF, value, decision, and reason. An unwritable audit log stops the server at startup,
+and a write that cannot be recorded is blocked.
 
 ### CLI flags
 
@@ -119,11 +114,9 @@ python -m pacsys.mcp --config pacsys-mcp.toml --transport sse --port 9090 --role
 | `--role` | DPM role for access control |
 | `--debug` | Enable debug logging |
 
-The CLI applies the configured SSE port (8000 by default). When using the public
-`create_server(config)` factory directly, SDK 2 returns an `MCPServer` whose
-transport options belong to `run()`: call `server.run()` for stdio or
-`server.run(transport="sse", port=9090)` for SSE. Set the port explicitly there;
-`config.port` is not stored as an SDK transport default.
+The SSE port defaults to 8000. When calling `create_server(config)` directly, pass the
+transport to `run()`: `server.run()` for stdio or `server.run(transport="sse", port=9090)`
+for SSE (`config.port` is not applied).
 
 ### Environment variables
 
@@ -157,7 +150,7 @@ These can be set in the MCP config JSON:
 
 ### read_device
 
-Read a device value. Accepts any valid DRF string that passes the DRF gate (no index aliases or `#` directives).
+Read a device value. Accepts any DRF string that passes the DRF gate.
 
 **Parameters:**
 
@@ -193,7 +186,7 @@ On error:
 }
 ```
 
-Any non-zero status adds `facility_code` and `error_code`. A warning (`error_code > 0`) with usable data stays `"ok": true` and carries its text in `message`; failures carry `error` (the status message, or `"Read failed (facility=F, error=E)"` when there is none).
+Any non-zero status adds `facility_code` and `error_code`. A warning with usable data stays `"ok": true` with its text in `message`.
 
 ### write_device
 
@@ -218,7 +211,7 @@ On denial:
 {"ok": false, "drf": "Z:ACLTST.SETTING@N", "error": "Value 200.0 for Z:ACLTST outside range [0.0, 100.0]"}
 ```
 
-A backend write failure also includes the status codes; `error` falls back to `"Write failed (facility=F, error=E)"` when the server sends no message:
+A backend write failure also includes the status codes:
 
 ```json
 {"ok": false, "drf": "Z:ACLTST.SETTING@N", "facility_code": 17, "error_code": -44, "error": "Write failed (facility=17, error=-44)"}

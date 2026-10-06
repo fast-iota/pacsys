@@ -187,8 +187,7 @@ df = result.to_dataframe()
 df = result.to_dataframe("M:OUTTMP@p,1000", relative=True)
 ```
 
-Relative export requires both the collection start time and a timestamp on every included
-reading; missing timestamps raise `ValueError` instead of producing an invalid index.
+Relative export raises `ValueError` if any included reading lacks a timestamp.
 
 ---
 
@@ -196,7 +195,7 @@ reading; missing timestamps raise `ValueError` instead of producing an invalid i
 
 Wait for one or more fresh readings per channel via a temporary subscription.
 Consider it a `pacsys.read()` but with a lot more options and ability to collect
-multiple readings. Recoverable subscription errors leave the original timeout in effect; terminal errors are raised.
+multiple readings. Recoverable subscription errors are ridden out within the timeout; terminal errors are raised.
 
 ```python
 from pacsys.exp import read_fresh
@@ -276,19 +275,15 @@ print(f"Crossed threshold at {reading.timestamp}: {reading.value}")
 | `timeout` | `float` | `30.0` | Max seconds to wait |
 | `backend` | `Backend \| None` | `None` | Backend to use |
 
-Returns the `Reading` that satisfied the condition. Raises `TimeoutError` if the condition is not met within the timeout. Recoverable subscription errors leave that timeout in effect; terminal errors are raised.
+Returns the `Reading` that satisfied the condition. Raises `TimeoutError` if the condition is not met within the timeout. Recoverable subscription errors are ridden out within the timeout; terminal errors are raised.
 
 ---
 
 ## scan
 
-Ramp an ACNET SETTING or an EPICS PV through a series of values while reading other devices at each step. ACNET write devices must use READING or SETTING; both target SETTING. Other ACNET properties are rejected before I/O. Automatically restores the original setting or PV value on completion or error.
-Read devices are unique by resolved DRF string in first-seen order, including in `ScanResult.read_devices`; use `readings_per_step` to control sampling.
+Ramp an ACNET SETTING (a READING target also writes SETTING; other properties are rejected) or an EPICS PV through a series of values while reading other devices at each step. Automatically restores the original value on completion or error. Duplicate read devices are collapsed; use `readings_per_step` for repeated sampling.
 
-If restoration fails after the scan completes, `ScanRestoreError.result` retains the
-collected data with `restored=False`. A raised restoration exception is preserved as
-the cause. If the scan itself raises, restoration failure is logged and the original
-scan exception propagates.
+If restoration fails after a completed scan, `ScanRestoreError` is raised with the collected data in `.result` (`restored=False`). If the scan itself raises, that exception propagates and a restoration failure is only logged.
 
 ```python
 from pacsys.exp import scan
@@ -404,17 +399,12 @@ dl.stop()  # Flushes remaining data and closes the writer
 |----------|------|-------------|
 | `running` | `bool` | Whether the logger is actively collecting |
 | `last_error` | `Exception \| None` | Last write or subscription error, if any |
-| `failed` | `bool` | True once a batch was dropped after exhausting write retries or interrupted mid-write (e.g. `KeyboardInterrupt`; logging continues), or the subscription failed (logging stops) |
-| `dropped_count` | `int` | Readings lost so far (sticky until the next `start()`) |
+| `failed` | `bool` | True once data was lost (a dropped batch) or the subscription failed |
+| `dropped_count` | `int` | Readings lost since the last `start()` |
 
-Recoverable subscription errors allow logging to continue while the backend retries; they do not set `failed` or `last_error`.
+Failed writes are retried up to 3 times before the batch is dropped. Recoverable subscription errors don't stop logging or set `failed`.
 
-A dropped batch or failed subscription is never silent: `stop()` (and context-manager exit) flushes what was received, closes the writer, and raises `RuntimeError` chained to the subscription error or, for drops, to `last_error`.
-
-Failed writes are retried up to 3 times before the batch is dropped. Errors are logged and available via `last_error`.
-If a batch is dropped after `stop()` begins, shutdown closes the writer and raises
-`RuntimeError`; if the flush worker is stuck, shutdown raises without closing the
-writer from another thread.
+Data loss is never silent: `stop()` (and context-manager exit) flushes what was received, closes the writer, and raises `RuntimeError` chained to the underlying error.
 
 ---
 
@@ -428,15 +418,12 @@ class LogWriter(Protocol):
     def close(self) -> None: ...
 ```
 
-Timed arrays retain their `data` and `micros` fields as JSON in CSV values and Parquet `value_text`; historical array data preserves its rows of elements with one timestamp per row.
+Timed arrays are stored as JSON (`data` and `micros`) in CSV values and Parquet `value_text`.
 
 ### CsvWriter
 
-Simple CSV output with columns: `timestamp`, `drf`, `value`, `units`, `facility_code`, `error_code`, `message`.
-Status fields are preserved from each reading; missing messages are empty. Error rows can be distinguished from successful empty text values, and warnings retain their values.
-Output is UTF-8. Each batch is flushed to the operating system before `write_readings()` returns.
-A batch that fails to write is removed from the file, so `DataLogger` retries write each row once; if removal fails, later batches are rejected and `DataLogger` reports them as dropped.
-Parquet files require a successful `close()` before they are readable.
+UTF-8 CSV with columns: `timestamp`, `drf`, `value`, `units`, `facility_code`, `error_code`, `message`.
+Each batch is flushed before `write_readings()` returns; a batch that fails mid-write is removed, so retries don't duplicate rows.
 
 ```python
 from pacsys.exp import CsvWriter
@@ -446,7 +433,7 @@ writer = CsvWriter("output.csv")
 
 ### ParquetWriter
 
-Typed columnar output using Apache Parquet (requires `pyarrow`). Handles scalars, arrays, text, raw bytes, alarms, and status values in separate typed columns.
+Typed columnar output using Apache Parquet (requires `pyarrow`). Handles scalars, arrays, text, raw bytes, alarms, and status values in separate typed columns. The file is readable only after a successful `close()`.
 
 ```python
 from pacsys.exp import ParquetWriter
@@ -469,7 +456,7 @@ writer = ParquetWriter("output.parquet")
 | `units` | `string` | Engineering units |
 | `cycle` | `int64` | Cycle number |
 | `facility_code` | `int16` | ACNET facility identifier |
-| `message` | `string` | Status message; null when absent, distinct from an empty string |
+| `message` | `string` | Status message (null when absent) |
 
 You can also implement your own writer by conforming to the `LogWriter` protocol.
 

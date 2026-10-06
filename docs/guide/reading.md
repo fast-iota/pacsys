@@ -148,11 +148,8 @@ status = pacsys.read("N|LGXS")       # | qualifier = STATUS
 # {"on": True, "ready": False, "remote": True, "positive": True, "ramp": False}
 ```
 
-Returns a `dict` with `value_type = ValueType.BASIC_STATUS`. Depending on the source,
-it contains a subset of the boolean attributes shown above or display-name keys
-with text values.
-
-For richer status information, see [Device Status](status.md).
+Returns a `dict` with `value_type = ValueType.BASIC_STATUS`; keys depend on the backend.
+See [Device Status](status.md) for details and richer status information.
 
 ### Analog Alarm
 

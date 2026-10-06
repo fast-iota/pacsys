@@ -47,14 +47,9 @@ with DigitalAlarm.modify("Z:ACLTST") as alarm:
 
 Alarm state is read on context entrance and changes are written on context exit; nothing is written if no changes were made or an exception occurs.
 
-Digital `nominal`/`mask` and shared `tries_needed` changes are taken from the current
-alarm object. Raw-only changes such as FTD are written through the raw alarm block. If
-both raw and structured fields change together, `modify()` preserves both while
-retaining the server-transformed analog limits.
-
 ### Engineering Units
 
-Both `read()` and `modify()` request server-supplied engineering ('common') values alongside the raw block. If structured scaling is unavailable, the raw block remains usable, but `minimum`/`maximum` may be `None`; setting them without structured data raises `ValueError`. Reading `.RAW` directly returns bytes without scaling transforms.
+Both `read()` and `modify()` also fetch server-scaled engineering ('common') limits. If those are unavailable, `minimum`/`maximum` are `None` and setting them raises `ValueError`. Reading `.RAW` directly returns unscaled bytes.
 
 ```python
 alarm = AnalogAlarm.read("M:OUTTMP")
@@ -142,7 +137,7 @@ with AnalogAlarm.modify("Z:ACLTST") as alarm:
 
 ### Raw Limit Modes
 
-`minimum`/`maximum` expose engineering limits supplied by the server. Availability and conversion depend on the server and device scaling; these properties do not guarantee conversion for every raw limit mode.
+`minimum`/`maximum` are engineering limits supplied by the server; whether they are available for a given raw limit mode depends on the server and device scaling.
 
 <details markdown>
 <summary>Raw alarm block internals</summary>
@@ -160,14 +155,11 @@ the two 4-byte value fields are interpreted:
 without applying device scaling. `minimum`/`maximum` contain server-supplied
 engineering values when structured scaling succeeds.
 
-Structured analog messages expose `minimum` and `maximum`, not nominal/tolerance
-fields. Changing `limit_type` writes raw metadata; it does not convert either value.
-`NOM_PCT_TOL` identifies the raw percent-tolerance mode without adding percent
-arithmetic or guaranteeing structured engineering conversion.
+Structured analog messages expose only `minimum` and `maximum`. Changing `limit_type`
+writes raw metadata; it does not convert either value.
 
 Q bits 5–6 encode lengths 1, 2, and 4 bytes as codes 0, 1, and 2. Reserved Q=3
-and K=3 raise `ValueError` on typed metadata access. Raw parsing and serialization
-preserve these codes, so raw-only inspection and repairs remain possible.
+and K=3 raise `ValueError` on typed access but survive raw parsing and serialization.
 
 </details>
 
@@ -189,15 +181,10 @@ elif alarm.limit_type == LimitType.NOM_PCT_TOL:
     print(f"Percent tolerance (raw): {alarm.value2}")
 ```
 
-Changing `value1` or `value2` inside `modify()` performs a raw alarm-block
-write. Do not change the corresponding engineering-unit property in the same
-operation. Outside `MIN_MAX` mode, both engineering limits derive from both raw words,
-so any `value1`/`value2` change combined with any `minimum`/`maximum` change raises
-`ValueError` before any write.
-
-Changing `minimum` or `maximum` together with `limit_type`, `data_type`, or
-`data_length` raises `ValueError` before any write. Those fields change how raw
-limits are interpreted, so they cannot be combined with server-scaled limit edits.
+Within one `modify()`, a raw `value1`/`value2` edit cannot be combined with the matching
+`minimum`/`maximum` edit (or with any limit edit outside `MIN_MAX` mode), and limit edits
+cannot be combined with `limit_type`, `data_type`, or `data_length` changes. Conflicts
+raise `ValueError` before writing.
 
 ### Analog-Specific Properties
 
@@ -269,15 +256,12 @@ alarm.ftd = FTD.default()
 
 ## Alarm Segments
 
-Structured alarm reads and modifications support segment 0 only because the server ignores
-ranges for structured alarm fields. Access additional segments through range-qualified raw
-blocks:
+Structured alarm reads and `modify()` support segment 0 only (the server ignores ranges for
+structured alarm fields). Access other segments through raw blocks:
 
 ```python
 raw = backend.read("Z:ACLTST.ANALOG{20:20}.RAW@I")
 alarm1 = AnalogAlarm.from_bytes(raw)
-
-# Raw writes preserve the segment offset.
 alarm1.write("Z:ACLTST", backend=backend, segment=1)
 ```
 
@@ -336,18 +320,7 @@ backend.write("Z@ACLTST", {"minimum": 40.0, "maximum": 50.0, "alarm_enable": Tru
 backend.write("Z$ACLTST", {"nominal": 0x0001, "mask": 0x00FF})
 ```
 
-DPM/HTTP expands the dict into sequential per-field writes (e.g.,
-`DEVICE.ANALOG.MIN`, `DEVICE.ANALOG.MAX`). Each field triggers a server-side
-read-modify-write of the 20-byte alarm block. The operation is not atomic: if a
-later field fails, earlier changes remain applied.
-
-DPM/gRPC alarm dict writes are unsupported: the client returns a failed
-`WriteResult` without sending the alarm dict. DMQ support on deployed servers is unverified;
-the reference server rejects structured alarm writes. Use DPM/HTTP for this shortcut.
-
-Read-only keys (`abort`, `alarm_status`, `tries_now`) raise `ValueError`.
-
-See [Writing Guide - Alarm Configuration](../guide/writing.md#alarm-configuration-writes) for details.
+The dict becomes sequential, non-atomic per-field writes. See [Writing Guide - Alarm Configuration](../guide/writing.md#alarm-configuration-writes) for allowed keys and backend support.
 
 ---
 
