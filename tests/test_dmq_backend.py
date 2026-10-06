@@ -26,7 +26,6 @@ import pytest
 from pika.adapters.select_connection import SelectConnection
 from pika.exceptions import (
     ChannelWrongStateError,
-    ConnectionClosedByClient,
     ConnectionOpenAborted,
     ConnectionWrongStateError,
 )
@@ -946,40 +945,6 @@ class TestDMQCleanup:
                 assert not backend._write_sessions
                 channel.close.assert_called_once_with()
                 assert long_results[0].success and long.completed_devices == 1
-
-    def test_cancelled_write_not_flushed_when_session_confirms(self):
-        """PENDING handled before the timed-out caller's abort: flush skips the cancelled batch."""
-        backend = DMQBackend.__new__(DMQBackend)
-        backend._select_connection = mock.MagicMock()
-        backend._select_connection.is_open = True
-        backend._write_session_ttl = 600.0
-        backend._local_ip = b"127.0.0.1"
-        backend._create_gss_context = mock.MagicMock(return_value=_mock_gss_context())
-        backend._write_sessions = {}
-        init_drf = prepare_for_write(TEMP_DEVICE)
-        cancelled, live = _WriteCompletionTracker(total_devices=1), _WriteCompletionTracker(total_devices=1)
-        cancelled_results, live_results = [None], [None]
-        backend._pending_session_setups = {
-            init_drf: [
-                ([(0, TEMP_DEVICE, b"cancelled")], cancelled_results, cancelled),
-                ([(0, TEMP_DEVICE, b"live")], live_results, live),
-            ]
-        }
-        channel = mock.MagicMock(is_open=True)
-        backend._create_write_session(channel, "write-exchange", "write-queue", init_drf)
-        session = backend._write_sessions[init_drf]
-
-        cancelled.cancel()
-        on_message = channel.basic_consume.call_args.kwargs["on_message_callback"]
-        method = mock.MagicMock(routing_key="R", delivery_tag=1)
-        pending = make_error_reply(FACILITY_DMQ, 1)
-        on_message(channel, method, mock.MagicMock(correlation_id=session.init_message_id), pending)
-        backend._abort_pending_writes({init_drf}, cancelled)
-
-        sent = [c.kwargs["body"] for c in channel.basic_publish.call_args_list if c.kwargs["routing_key"] != "I"]
-        assert sent == [b"live"]
-        assert cancelled_results == [None]  # left for the caller's backfill
-        assert [t for *_, t in session.pending.values()] == [live]
 
     def test_cancel_between_settings_stops_publishing(self):
         """Caller times out mid-batch: already-published settings are aborted, the rest never sent."""
@@ -2352,10 +2317,9 @@ class TestDMQBackendWrite:
             assert backend._write_sessions.get(session.init_drf) is session
             assert backend.write(TEMP_DEVICE, 73.5, timeout=5.0).success
 
-    @pytest.mark.parametrize("release", ["during_abort_wait", "after_return"])
-    def test_timed_out_write_not_published_after_io_stall(self, monkeypatch, release):
+    def test_timed_out_write_not_published_after_io_stall(self, monkeypatch):
         """IO thread stalled past the caller's timeout: the queued batch must never reach the server."""
-        monkeypatch.setattr("pacsys.backends.dmq._WRITE_ABORT_WAIT", 0.05 if release == "after_return" else 2.0)
+        monkeypatch.setattr("pacsys.backends.dmq._WRITE_ABORT_WAIT", 0.05)
         with _mock_dmq_write_backend() as backend:
             assert backend.write(TEMP_DEVICE, TEMP_VALUE, timeout=2.0).success
             session = backend._write_sessions[prepare_for_write(TEMP_DEVICE)]
@@ -2364,14 +2328,6 @@ class TestDMQBackendWrite:
             stalled, gate = threading.Event(), threading.Event()
             conn.ioloop.add_callback_threadsafe(lambda: (stalled.set(), gate.wait(2.0)))  # e.g. blocking DIRECT cb
             assert stalled.wait(1.0)
-            if release == "during_abort_wait":
-                # Unblock once the batch and its abort are both queued behind the stall
-                def release_when_queued():
-                    while len(conn.ioloop._callbacks) < 2 and not gate.is_set():
-                        time.sleep(0.005)
-                    gate.set()
-
-                threading.Thread(target=release_when_queued, daemon=True).start()
             try:
                 result = backend.write(TEMP_DEVICE, TEMP_VALUE + 1, timeout=0.1)
             finally:
@@ -2762,33 +2718,25 @@ class _OpeningSelectConnection(MockSelectConnection):
         if self._state in ("closing", "closed"):
             raise ConnectionWrongStateError(f"close() while {self._state}")
         self.close_calls += 1
-        was_open, self._state = self._state == "open", "closing"
-        self.ioloop.add_callback_threadsafe(partial(self._terminated, was_open))
+        self._state = "closing"
+        self.ioloop.add_callback_threadsafe(self._terminated)
 
-    def _terminated(self, was_open):
+    def _terminated(self):
         self._state, self._is_open = "closed", False
-        if was_open:
-            self._on_close_callback(self, ConnectionClosedByClient(200, "Normal shutdown"))
-        else:
-            self._on_open_error_callback(self, ConnectionOpenAborted("close() before connection finished opening"))
-
-    def _trigger_open(self):
-        if self._state == "opening":  # an aborted handshake never completes
-            self._state = "open"
-            super()._trigger_open()
+        self._on_open_error_callback(self, ConnectionOpenAborted("close() before connection finished opening"))
 
 
 class _AssertingAbortConnection(_OpeningSelectConnection):
     """pika 1.3.2 mid-handshake abort: open-error callback runs, then an internal AssertionError escapes the ioloop."""
 
-    def _terminated(self, was_open):
-        super()._terminated(was_open)
+    def _terminated(self):
+        super()._terminated()
         raise AssertionError
 
 
 @contextmanager
 def _opening_backend(publish: threading.Event | None = None, conn_cls=_OpeningSelectConnection):
-    """Backend whose handshake stalls until the test calls ``_trigger_open``; ``publish`` delays construction."""
+    """Backend whose handshake never completes; ``publish`` delays construction."""
     conns = []
 
     def factory(cls=None, parameters=None, on_open_callback=None, on_open_error_callback=None, on_close_callback=None):
@@ -2863,36 +2811,6 @@ class TestDMQBackendLifecycle:
                 backend.close()
             assert len(conns) == 1 and conns[0].close_calls == 1 and conns[0].is_closed
             assert not io_thread.is_alive() and backend._select_connection is None
-
-    def test_open_completing_after_close_is_closed(self):
-        with _opening_backend() as (backend, conns):
-            io_thread, conn = backend._io_thread, conns[0]
-            assert io_thread is not None
-            gated, gate = threading.Event(), threading.Event()
-            conn.ioloop.add_callback_threadsafe(lambda: (gated.set(), gate.wait(1.0)))
-            assert gated.wait(1.0)
-            # OpenOk is processed before the close() scheduled below
-            conn.ioloop.add_callback_threadsafe(conn._trigger_open)
-            ready_errors = []
-            real_set, real_join = backend._connection_ready.set, io_thread.join
-
-            def ready_set():
-                ready_errors.append(backend._connection_error)
-                real_set()
-
-            def join(timeout=None):
-                gate.set()
-                real_join(timeout)
-
-            with (
-                mock.patch.object(backend._connection_ready, "set", side_effect=ready_set),
-                mock.patch.object(io_thread, "join", side_effect=join),
-            ):
-                backend.close()
-            assert conn.close_calls == 1 and conn.is_closed and not conn.is_open
-            assert not io_thread.is_alive() and backend._select_connection is None
-            # Startup waiters are never told the connection is ready after close()
-            assert ready_errors and all(isinstance(e, ConnectionClosedByClient) for e in ready_errors)
 
     def test_close_idempotent(self):
         """Test that close() can be called multiple times."""

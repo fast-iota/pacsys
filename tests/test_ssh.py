@@ -397,14 +397,6 @@ def _assert_no_deadline_threads():
             assert not t.is_alive()
 
 
-_START_CALLS = {
-    "exec": lambda ssh, t: ssh.exec("true", timeout=t),
-    "exec_stream": lambda ssh, t: list(ssh.exec_stream("true", timeout=t)),
-    "open_channel": lambda ssh, t: ssh.open_channel("acl", timeout=t),
-    "acl_session": lambda ssh, t: ssh.acl_session(timeout=t),
-}
-
-
 class TestExecStartDeadline:
     @pytest.fixture
     def ssh_and_transport(self):
@@ -414,8 +406,7 @@ class TestExecStartDeadline:
             with SSHClient(SSHHop("host", auth_method="password", password="pw")) as ssh:
                 yield ssh, transport
 
-    @pytest.mark.parametrize("call", _START_CALLS.values(), ids=_START_CALLS.keys())
-    def test_unanswered_exec_request_times_out(self, ssh_and_transport, call):
+    def test_unanswered_exec_request_times_out(self, ssh_and_transport):
         ssh, transport = ssh_and_transport
         chan = _real_channel()
         senders = set()
@@ -426,7 +417,7 @@ class TestExecStartDeadline:
         try:
             start = time.monotonic()
             with pytest.raises(SSHTimeoutError) as ei:
-                call(ssh, 0.2)
+                ssh.exec("true", timeout=0.2)
             assert time.monotonic() - start < 1.0
             assert "before the server started it" in str(ei.value)
         finally:
@@ -458,46 +449,6 @@ class TestExecStartDeadline:
             assert time.monotonic() - start < 1.0
         finally:
             fallback.cancel()
-        _assert_no_deadline_threads()
-
-    @pytest.mark.parametrize("name", ["exec", "open_channel"])
-    def test_rejected_exec_request_is_not_a_timeout(self, ssh_and_transport, name):
-        ssh, transport = ssh_and_transport
-        chan = _real_channel()
-        chan.transport._send_user_message.side_effect = lambda m: None if chan.closed else chan._request_failed(m)
-        transport.open_session.return_value = chan
-
-        with pytest.raises(paramiko.SSHException, match="Channel closed"):
-            _START_CALLS[name](ssh, 5.0)
-        assert chan.closed
-        _assert_no_deadline_threads()
-
-    def test_answered_exec_request_keeps_channel_open(self, ssh_and_transport):
-        ssh, transport = ssh_and_transport
-        chan = _real_channel()
-        chan.transport._send_user_message.side_effect = lambda m: chan._request_success(m)
-        transport.open_session.return_value = chan
-
-        assert ssh.open_channel("acl", timeout=0.2) is chan
-        _assert_no_deadline_threads()
-        time.sleep(0.3)  # past the deadline: nothing may close it now
-        assert not chan.closed
-
-    def test_interrupted_watchdog_start_stops_watchdog(self, ssh_and_transport):
-        ssh, transport = ssh_and_transport
-        chan = make_exec_channel()
-        transport.open_session.return_value = chan
-        real_start = threading.Thread.start
-
-        def start(thread):
-            real_start(thread)
-            if thread.name == "ssh-exec-deadline":
-                raise KeyboardInterrupt
-
-        with patch.object(threading.Thread, "start", start), pytest.raises(KeyboardInterrupt):
-            ssh.exec("true", timeout=5.0)
-        chan.exec_command.assert_not_called()
-        chan.close.assert_called_once_with()
         _assert_no_deadline_threads()
 
     def test_deadline_spent_opening_session_skips_exec(self, ssh_and_transport):

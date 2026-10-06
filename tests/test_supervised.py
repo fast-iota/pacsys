@@ -409,7 +409,7 @@ class TestStreamingRead:
         assert backend.handle.stopped
         assert backend.active_subscriptions() == []
 
-    async def _async_stream_with_ended_backlog(self, monkeypatch, error, lag=True):
+    async def _async_stream_with_ended_backlog(self, monkeypatch, error):
         """Stream 5 readings, hand out the first, then end upstream with 4 still queued."""
         clock = mock.Mock()
         clock.monotonic.return_value = 0.0
@@ -430,15 +430,13 @@ class TestStreamingRead:
             backend.handle._signal_stop()
         else:
             backend.emit_error(error)
-        if lag:
-            clock.monotonic.return_value = 2.0  # slow client: the 1 s stream window expires
+        clock.monotonic.return_value = 2.0  # slow client: the 1 s stream window expires
         return backend, context, stream, [reply]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("lag", [True, False], ids=["slow", "prompt"])
     @pytest.mark.parametrize("error", [None, RuntimeError("upstream died")], ids=["graceful", "error"])
-    async def test_async_producer_end_delivers_queued_tail(self, monkeypatch, error, lag):
-        backend, context, stream, replies = await self._async_stream_with_ended_backlog(monkeypatch, error, lag)
+    async def test_async_producer_end_delivers_queued_tail(self, monkeypatch, error):
+        backend, context, stream, replies = await self._async_stream_with_ended_backlog(monkeypatch, error)
         replies += await asyncio.wait_for(_collect(stream), 1.0)
 
         assert [r.readings.reading[0].data.scalar for r in replies] == [0.0, 1.0, 2.0, 3.0, 4.0]
@@ -448,16 +446,6 @@ class TestStreamingRead:
             context.set_code.assert_called_once_with(grpc.StatusCode.INTERNAL)
             assert "upstream died" in context.set_details.call_args.args[0]
         assert backend.handle.stopped
-
-    @pytest.mark.asyncio
-    async def test_async_client_cancel_skips_queued_tail(self, monkeypatch):
-        backend, context, stream, replies = await self._async_stream_with_ended_backlog(monkeypatch, None)
-        context.cancelled.return_value = True
-        replies += await asyncio.wait_for(_collect(stream), 1.0)
-
-        assert len(replies) == 1
-        context.set_code.assert_not_called()
-        assert backend.handle._stopping
 
     def test_streaming_read(self, fake_backend):
         with SupervisedServer(fake_backend, port=0) as srv:

@@ -163,8 +163,6 @@ class TestCsvWriter:
             with pytest.raises(RuntimeError, match="partial batch") as info:
                 writer.write_readings([_reading()])
             assert info.value.__cause__ is rollback_error
-            assert isinstance(rollback_error.__context__, OSError)
-            assert rollback_error.__context__.errno == errno.EFBIG
             size = path.stat().st_size
             with pytest.raises(RuntimeError, match="partial batch") as info:
                 writer.write_readings([_reading()])

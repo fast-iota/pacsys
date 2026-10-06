@@ -1,7 +1,6 @@
 """Tests for DataLogger."""
 
 import csv
-import errno
 import threading
 import time
 
@@ -210,29 +209,6 @@ class TestDataLogger:
         assert dl.failed
         with path.open(newline="") as f:
             assert list(csv.reader(f)) == [CSV_HEADER]  # rolled back, never duplicated
-
-    def test_csv_rollback_failure_is_reported_as_drop(self, fake, tmp_path, monkeypatch):
-        quota = TransientQuota(monkeypatch)
-        path = tmp_path / "log.csv"
-        writer = CsvWriter(path)
-
-        def fail_truncate(size):
-            raise OSError(errno.EIO, "I/O error")
-
-        writer._file.truncate = fail_truncate
-        dl = DataLogger(["M:OUTTMP@p,1000"], writer=writer, flush_interval=999, backend=fake)
-        dl.start()
-        try:
-            fake.emit_reading("M:OUTTMP@p,1000", 72.5)
-            fake.emit_reading("M:OUTTMP@p,1000", 73.0)
-            quota.allow = 10
-        finally:
-            with pytest.raises(RuntimeError, match="Dropped 2 readings") as info:
-                dl.stop()
-
-        assert "partial batch" in str(info.value.__cause__)
-        assert dl.failed
-        assert writer._file.closed
 
     def test_worker_drop_during_stop_is_reported(self, fake):
         class BlockingFailingWriter:

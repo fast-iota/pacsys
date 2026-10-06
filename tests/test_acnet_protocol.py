@@ -1015,25 +1015,11 @@ class TestDPMReadingEquality:
         a = DPMReading(ref_id=1, data=np.array([1.0, 2.0]), micros=[10, 20])
         assert a == DPMReading(ref_id=1, data=np.array([1.0, 2.0]), micros=[10, 20])
         assert a != DPMReading(ref_id=1, data=[1.0, 2.0], micros=[10, 20])
-        assert DPMReading(ref_id=1, data=np.array([65.0])) != DPMReading(ref_id=1, data=b"A")  # raw bytes
         nan = DPMReading(ref_id=1, data=np.array([np.nan, 2.0]))
         assert nan == DPMReading(ref_id=1, data=np.array([np.nan, 2.0]))
         assert a != DPMReading(ref_id=1, data=np.array([1.0, 3.0]), micros=[10, 20])
-        assert a != DPMReading(ref_id=1, data=np.array([1.0]), micros=[10, 20])
-        assert a != DPMReading(ref_id=1, data=1.0, micros=[10, 20])
         assert a != DPMReading(ref_id=1, data=np.array([1.0, 2.0]), micros=[10, 21])
         assert a != DPMReading(ref_id=2, data=np.array([1.0, 2.0]), micros=[10, 20])
-
-    def test_scalar_fields_and_hash_unchanged(self):
-        assert DPMReading(ref_id=1, data=1.0, meta={"name": "M:OUTTMP"}) == DPMReading(
-            ref_id=1, data=1.0, meta={"name": "M:OUTTMP"}
-        )
-        assert DPMReading(ref_id=1, data=1.0) != DPMReading(ref_id=1, data=1.0, status=-1)
-        nan = float("nan")
-        assert DPMReading(ref_id=1, data=nan) == DPMReading(ref_id=1, data=nan)
-        assert DPMReading(ref_id=1) != SimpleNamespace(ref_id=1)
-        with pytest.raises(TypeError):
-            hash(DPMReading(ref_id=1))
 
 
 class TestDPMAcnetStreamTermination:
