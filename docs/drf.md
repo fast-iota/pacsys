@@ -25,14 +25,9 @@ req.to_canonical()  # "M:OUTTMP.READING[0:10]@p,1000" - we follow Java here inst
 parse_request("M:OUTTMP@p,bad")  # raises ValueError (bad event)
 ```
 
-Note: an unrecognized device name is **not** rejected — by default it is accepted as an
-EPICS-style device (`DataRequest.is_acnet == False`). `parse_request("INVALID!")` returns
-a `DataRequest` with `device="INVALID!"`. The fallback is limited to names that are not
-ACNET-shaped: a valid ACNET device token followed by a DRF delimiter (`.`, `[`, `@`) that
-fails strict DRF parsing raises `ValueError` (e.g. `"M:OUTTMP.READING.RAW[0:2]"`,
-`"M:OUTTMP."`) instead of being silently accepted as a corrupted device name. EPICS names
-containing DRF delimiters therefore cannot ride the fallback; malformed events, fields,
-and ranges raise `ValueError` as before.
+Note: an unrecognized device name is accepted as an EPICS PV (`is_acnet == False`), so
+`parse_request("INVALID!")` succeeds. An ACNET device name followed by malformed DRF syntax
+raises `ValueError` instead (e.g. `"M:OUTTMP."`, `"M:OUTTMP.READING.RAW[0:2]"`).
 
 The parser accepts any valid DRF2/DRF3 syntax including property aliases, qualifier shortcuts, and various event formats.
 
@@ -75,8 +70,7 @@ req = parse_request("m:outtmp.read@p,1000")
 print(req.to_canonical())  # "M:OUTTMP.READING@p,1000"
 ```
 
-ACNET normalization preserves the original device token in `raw_string` and leaves
-EPICS names and suffixes unchanged. Existing event and extra handling is unchanged.
+The original device token is kept in `raw_string`. EPICS names and suffixes are not normalized.
 
 ---
 
@@ -178,7 +172,7 @@ Uses braces with byte offset/length (discouraged -- requires frontend knowledge)
 Fields select specific data flavors within a property. ACNET property/field combinations
 are validated while parsing, including in `Device` and `AsyncDevice` constructors:
 `M:OUTTMP.READING.ON` raises `ValueError` before backend I/O. EPICS dot suffixes
-remain verbatim.
+are kept verbatim.
 
 ### Reading/Setting Fields
 

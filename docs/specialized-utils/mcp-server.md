@@ -4,7 +4,7 @@ The MCP server exposes pacsys device read/write as tools for AI agents (Claude C
 
 Install with `pip install "pacsys[mcp]"`. The server uses the official MCP Python
 SDK 2.2 or newer (below 3.0), including compatibility with clients using the
-legacy initialization handshake. Tool results remain JSON text.
+legacy initialization handshake.
 
 ## Overview
 

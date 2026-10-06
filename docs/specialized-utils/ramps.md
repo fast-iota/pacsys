@@ -334,9 +334,8 @@ class BoosterHVRamp(Ramp):
 ramp = BoosterHVRamp.read("B:HS23T", slot=0)
 ```
 
-The scaling parameters can be found in the device database or looked up via DevDB.
-Before using DevDB coefficients, independently verify them as described in the
-[DevDB coefficient limitation](scaling.md#from-devdb):
+The scaling parameters can be found in the device database or looked up via DevDB
+(currently blocked by the [DevDB coefficient limitation](scaling.md#from-devdb)):
 
 ```python
 from pacsys import Scaler

@@ -45,15 +45,15 @@ with pacsys.grpc(auth=auth) as backend:
     result = backend.write("M:OUTTMP", 72.5)
 ```
 
-Readings with a positive ACNET warning remain usable when they include data:
+Readings with a positive ACNET warning are usable when they include data:
 both `reading.ok` and `reading.is_warning` are true. Batched and logger results
 retain all usable samples and the first warning's status and message. Samples
-with errors or warnings without data remain unusable.
+with errors or warnings without data are unusable.
 
 Writes reject names reserved for DPM list directives, such as `#AB:CD` and
 `#ROLE:x`, with a failed `WriteResult` for that item. Other valid items in the batch
 are sent normally and retain their matching statuses. Numeric ACNET names such
-as `#:123` remain supported. This applies to both sync and async backends.
+as `#:123` are allowed. This applies to both sync and async backends.
 
 Sync and async subscriptions retry `UNAVAILABLE` and `CANCELLED` stream errors
 indefinitely until stopped, with exponential backoff from 1 to 30 seconds. Each
@@ -74,8 +74,7 @@ Both sync and async backends use a five-minute keepalive interval for active
 RPCs, with a ten-second acknowledgement timeout. This matches gRPC's
 default server minimum and avoids disconnecting quiet subscriptions for excessive
 pings. Idle channels without active RPCs do not send keepalive pings. Detecting a
-silent connection loss can therefore take about five minutes plus ten seconds;
-ordinary RPC timeouts are unchanged.
+silent connection loss can therefore take about five minutes plus ten seconds.
 
 ## Write Permissions (JWT)
 
